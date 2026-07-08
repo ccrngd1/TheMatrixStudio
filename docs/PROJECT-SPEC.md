@@ -106,9 +106,39 @@ the branch model is correct and synchronous live-editing would have been a night
 - **Phase 1 — Control-room UI over the existing engine.** Cast board, live watch, per-agent
   dossiers (as rich as current engine state allows), avatars, cost meter. Validate the interaction
   model is what CC/customers actually want, cheaply, before deepening the engine.
-- **Phase 2 — Event-sourced engine + branching.** Add serializable state, checkpointing, structured
-  state events, branch-from-checkpoint interventions, timeline/branch UI. Same UI contract.
+- **Phase 1.5 — Post-run analysis layer (read-only).** End-of-run **summary** (consensus /
+  dissenters / key ideas), and **scoped aside conversations** over a *completed* run: talk to one
+  persona (in-character), to a neutral analyst, or to the whole room — all **read-only**, none
+  mutating the canonical run. Introduces the thread/target/mode abstraction that Phase 2 builds on.
+  See `docs/PHASE1.5-REQUIREMENTS.md`.
+- **Phase 2 — Event-sourced engine + branching + Contribute mode.** Add serializable state,
+  checkpointing, structured state events, branch-from-checkpoint interventions, timeline/branch UI.
+  **Turns on "Contribute" mode** on the Phase 1.5 thread abstraction: promoting an aside back into
+  the canonical conversation, injecting user input, and restarting/continuing the group discussion
+  are all branch-from-checkpoint operations (see §6a). Same UI contract.
 - **Phase 3 — Release polish.** Install story, BYO-key config UX, docs, license, examples, cost guards.
+
+## 6a. Phase 1.5 & Phase 2 interaction design (added 2026-07-08, CC design session)
+
+The post-run interaction surface is one unifying concept: **scoped threads over a run**, each with a
+**target** and a **mode**. This resolves the "private aside vs. feed-it-back-in" tension by making
+them the *same feature with a mode toggle* — and it draws the Phase 1.5 / Phase 2 line cleanly.
+
+**Target (who you're talking to):**
+- **One persona** — routed through that persona's own system prompt + the full transcript as context; answers in-character (expand a point, defend, self-fact-check).
+- **The analyst** — a neutral summarizer/analyst voice over the whole transcript (no persona).
+- **The room** — all personas (the group).
+
+**Mode (does it change the canonical record):**
+- **Aside (read-only)** — reply lives *in that side-thread only*; the canonical run is never mutated. Multiple asides can coexist and do not see each other. **← all of Phase 1.5.**
+- **Contribute (mutating)** — the reply/input is injected back into the canonical conversation, the group sees it, and the sim continues from there. **← Phase 2 (a branch-from-checkpoint).**
+
+**Phase split (the boundary to hold):**
+- **Phase 1.5 = Aside mode, any target.** Read-only lenses over a *finished* run: summary, ask-the-analyst, ask-a-persona, ask-the-room. No engine loop, no new canonical turns, no branching. Asides persist attached to the run but are clearly **not canon**.
+- **Phase 2 = Contribute mode + restart/continue.** "Promote this aside into the room," "inject my input and let the group continue," and "restart/continue the larger conversation" are the **same branch primitive** (§3.7): load checkpoint → apply the injected message → generate *forward* as a new timeline; the original run stays immutable and recorded.
+- **Why design the thread abstraction now (in 1.5) even though Contribute is Phase 2:** so Phase 2 is a clean *add* (flip on a mode + a "bring into conversation" action on the existing thread UI) rather than a rebuild. Data model (threads, target, mode) and UI anticipate Contribute from day one.
+- **Boundary rule:** a Phase 1.5 aside is *ephemeral analysis* — it must never alter the run or ripple to other personas. The moment a persona's clarification is meant to become "what everyone now knows," that is Phase 2's immutable branch — do not implement a half-way mutable version in 1.5.
+- **Schema note:** MasterControl already added `parent_run_id` / `branch_turn` columns to `runs` in Phase 1, anticipating branching. Phase 2's Contribute/restart uses these; Phase 1.5 does not.
 
 ## 7. Public-release scope multipliers (accepted, must be resourced)
 
