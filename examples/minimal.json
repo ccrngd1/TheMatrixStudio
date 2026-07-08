@@ -1,0 +1,19 @@
+{
+  "topic": "Planning a weekend hiking trip",
+  "cast": [
+    {
+      "name": "Taylor",
+      "persona": "An experienced hiker who loves planning and preparation. Safety-conscious and organized.",
+      "goals": ["Ensure the group is prepared for the hike"]
+    },
+    {
+      "name": "Jamie",
+      "persona": "A spontaneous adventurer who prefers to go with the flow. Optimistic and easygoing.",
+      "goals": ["Keep things fun and not over-complicated"]
+    }
+  ],
+  "config": {
+    "max_messages": 8,
+    "generate_avatars": false
+  }
+}

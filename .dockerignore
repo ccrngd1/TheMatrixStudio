@@ -1,0 +1,57 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info
+dist/
+build/
+*.egg
+.eggs/
+.venv/
+venv/
+ENV/
+env/
+
+# Testing
+.pytest_cache
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Data
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Environment
+.env
+.env.local
+
+# Documentation
+*.md
+!README.md
+
+# MasterControl
+.mastercontrol/
+
+# Node (for future frontend)
+node_modules/
+frontend/dist/
+frontend/build/
+
+# OS
+.DS_Store
+Thumbs.db

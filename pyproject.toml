@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: Apache-2.0
+
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "matrix-sim-studio"
+version = "0.1.0"
+description = "TheMatrix Simulation Studio - Multi-agent conversation simulator"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "Apache-2.0"}
+authors = [
+    {name = "TheMatrix Simulation Studio Contributors"}
+]
+keywords = ["simulation", "multi-agent", "llm", "conversation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "litellm>=1.40.0",
+    "boto3>=1.34.0",
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.29.0",
+    "aiosqlite>=0.20.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-mock>=3.12.0",
+]
+
+[project.scripts]
+matrix-studio = "matrix_studio.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["matrix_studio*"]
+
+[tool.setuptools.package-data]
+matrix_studio = ["static/**/*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

@@ -1,0 +1,33 @@
+{
+  "topic": "The merits and drawbacks of artificial intelligence in creative work",
+  "cast": [
+    {
+      "name": "Maya",
+      "persona": "A traditional artist who values human creativity and emotional authenticity. Skeptical of AI in art but open to thoughtful discussion.",
+      "goals": [
+        "Express concerns about AI replacing human artists",
+        "Advocate for the irreplaceable value of human experience in art"
+      ]
+    },
+    {
+      "name": "Alex",
+      "persona": "A tech-optimist and AI researcher who sees AI as a tool for expanding creative possibilities. Pragmatic and forward-thinking.",
+      "goals": [
+        "Demonstrate how AI can augment human creativity",
+        "Address concerns about AI in creative fields"
+      ]
+    },
+    {
+      "name": "Jordan",
+      "persona": "A working creative professional (writer/designer) who uses AI tools daily. Balanced perspective from practical experience.",
+      "goals": [
+        "Share real-world insights on using AI in creative work",
+        "Bridge the gap between artistic tradition and technological innovation"
+      ]
+    }
+  ],
+  "config": {
+    "max_messages": 15,
+    "generate_avatars": true
+  }
+}

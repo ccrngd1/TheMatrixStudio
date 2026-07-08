@@ -1,0 +1,41 @@
+{
+  "topic": "Reminiscing about college days and discussing career paths",
+  "cast": [
+    {
+      "name": "Sam",
+      "persona": "A software engineer at a startup, enthusiastic but slightly burned out. Former CS major who loved algorithms.",
+      "goals": [
+        "Reconnect with old friends",
+        "Get perspective on work-life balance"
+      ]
+    },
+    {
+      "name": "Riley",
+      "persona": "A high school teacher who switched from corporate marketing. Finds fulfillment in education despite lower pay.",
+      "goals": [
+        "Share insights about career satisfaction",
+        "Encourage friends to consider what truly matters"
+      ]
+    },
+    {
+      "name": "Casey",
+      "persona": "A freelance photographer still figuring things out. Creative and optimistic but financially unstable.",
+      "goals": [
+        "Learn from friends' experiences",
+        "Defend the value of following creative passion"
+      ]
+    },
+    {
+      "name": "Morgan",
+      "persona": "A medical resident, exhausted but driven. Always the responsible one in the group.",
+      "goals": [
+        "Catch up with friends despite hectic schedule",
+        "Reflect on whether the sacrifice is worth it"
+      ]
+    }
+  ],
+  "config": {
+    "max_messages": 20,
+    "generate_avatars": true
+  }
+}
