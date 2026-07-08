@@ -50,10 +50,12 @@ class Settings(BaseSettings):
     matrix_host: str = Field(default="127.0.0.1")
 
     # Avatar generation
-    enable_avatars: bool = Field(default=True, description="Enable avatar generation via Nova Canvas")
-    avatar_model_id: str = Field(default="amazon.nova-canvas-v1:0")
-    avatar_width: int = Field(default=512, ge=256, le=2048)
-    avatar_height: int = Field(default=512, ge=256, le=2048)
+    enable_avatars: bool = Field(default=True, description="Enable avatar generation via Stability image model on Bedrock")
+    avatar_model_id: str = Field(default="stability.sd3-5-large-v1:0")
+    # Image models are not always available in the same region as the text model;
+    # SD3.5 Large is served from us-west-2.
+    avatar_region: str = Field(default="us-west-2")
+    avatar_aspect_ratio: str = Field(default="1:1")
 
 
 # Global settings instance

@@ -1,186 +1,111 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for avatar generation module - verifying graceful fallback."""
+"""Tests for avatar generation - Stability image model, graceful fallback."""
+
+import json
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
-from matrix_studio.avatar import generate_avatar
+from matrix_studio.avatar import generate_avatar, _deterministic_seed
 from matrix_studio.settings import Settings
+
+
+def _settings(**overrides):
+    """Build settings ignoring any local .env for deterministic tests."""
+    base = dict(
+        enable_avatars=True,
+        avatar_model_id="stability.sd3-5-large-v1:0",
+        avatar_region="us-west-2",
+        avatar_aspect_ratio="1:1",
+    )
+    base.update(overrides)
+    return Settings(_env_file=None, **base)
+
+
+def _mock_response(payload: dict):
+    return {"body": MagicMock(read=MagicMock(return_value=json.dumps(payload).encode()))}
 
 
 @pytest.mark.asyncio
 async def test_avatar_disabled_in_settings():
-    """Test that avatar generation respects enable_avatars setting."""
-    with patch("matrix_studio.avatar.get_settings") as mock_settings:
-        mock_settings.return_value = Settings(enable_avatars=False)
-
-        result = await generate_avatar("Alice", "Friendly person")
-
-        assert result is None
-
-
-@pytest.mark.asyncio
-async def test_avatar_no_aws_credentials():
-    """Test that missing AWS credentials result in graceful fallback to None."""
-    with patch("matrix_studio.avatar.get_settings") as mock_settings:
-        # No AWS credentials set
-        mock_settings.return_value = Settings(
-            enable_avatars=True,
-            aws_access_key_id=None,
-            aws_secret_access_key=None,
-        )
-
-        result = await generate_avatar("Bob", "Curious researcher")
-
-        # Should return None without crashing
-        assert result is None
+    """enable_avatars=False short-circuits before any AWS call."""
+    with patch("matrix_studio.avatar.get_settings", return_value=_settings(enable_avatars=False)):
+        with patch("boto3.client") as mock_boto:
+            result = await generate_avatar("Alice", "Friendly person")
+    assert result is None
+    mock_boto.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_avatar_partial_aws_credentials():
-    """Test that partial AWS credentials are handled gracefully."""
-    with patch("matrix_studio.avatar.get_settings") as mock_settings:
-        # Only access key, no secret
-        mock_settings.return_value = Settings(
-            enable_avatars=True,
-            aws_access_key_id="AKIAIOSFODNN7EXAMPLE",
-            aws_secret_access_key=None,
-        )
+async def test_avatar_no_credentials():
+    """Missing credentials (NoCredentialsError at invoke) → graceful None."""
+    from botocore.exceptions import NoCredentialsError
 
-        result = await generate_avatar("Charlie", "Test persona")
-
-        # Should return None without crashing
-        assert result is None
-
-
-@pytest.mark.asyncio
-async def test_avatar_boto3_not_available():
-    """Test graceful handling when boto3 is not installed."""
-    with patch("matrix_studio.avatar.get_settings") as mock_settings:
-        mock_settings.return_value = Settings(
-            enable_avatars=True,
-            aws_access_key_id="test_key",
-            aws_secret_access_key="test_secret",
-        )
-
-        # Mock ImportError for boto3
-        with patch("matrix_studio.avatar.generate_avatar", side_effect=ImportError("No module named 'boto3'")):
-            # In real code, the function catches ImportError and returns None
-            # This test verifies the pattern
-            pass
+    mock_client = MagicMock()
+    mock_client.invoke_model.side_effect = NoCredentialsError()
+    with patch("matrix_studio.avatar.get_settings", return_value=_settings()):
+        with patch("boto3.client", return_value=mock_client):
+            result = await generate_avatar("Bob", "Curious researcher")
+    assert result is None
 
 
 @pytest.mark.asyncio
 async def test_avatar_successful_generation():
-    """Test successful avatar generation with valid AWS credentials."""
-    with patch("matrix_studio.avatar.get_settings") as mock_settings:
-        mock_settings.return_value = Settings(
-            enable_avatars=True,
-            aws_access_key_id="test_key",
-            aws_secret_access_key="test_secret",
-            aws_region="us-east-1",
-            avatar_model_id="amazon.nova-canvas-v1:0",
-            avatar_width=512,
-            avatar_height=512,
-        )
-
-        # Mock boto3 client
-        mock_client = MagicMock()
-        mock_response = {
-            "body": MagicMock(read=MagicMock(return_value=b'{"images": ["base64_encoded_image_data"]}'))
-        }
-        mock_client.invoke_model.return_value = mock_response
-
+    """Valid Stability response returns the base64 image."""
+    payload = {"images": ["base64_png_data"], "seeds": [42], "finish_reasons": [None]}
+    mock_client = MagicMock()
+    mock_client.invoke_model.return_value = _mock_response(payload)
+    with patch("matrix_studio.avatar.get_settings", return_value=_settings()):
         with patch("boto3.client", return_value=mock_client):
             result = await generate_avatar("Diana", "Artist with creative vision")
+    assert result == "base64_png_data"
+    mock_client.invoke_model.assert_called_once()
+    # Sanity: uses the configured model/region and Stability body shape.
+    _, kwargs = mock_client.invoke_model.call_args
+    body = json.loads(kwargs["body"])
+    assert body["mode"] == "text-to-image"
+    assert body["output_format"] == "png"
 
-            # Should return base64 string
-            assert result == "base64_encoded_image_data"
-            mock_client.invoke_model.assert_called_once()
+
+@pytest.mark.asyncio
+async def test_avatar_content_filtered():
+    """A non-null finish_reason (content filter) yields None, not a bad image."""
+    payload = {"images": [], "seeds": [1], "finish_reasons": ["CONTENT_FILTERED"]}
+    mock_client = MagicMock()
+    mock_client.invoke_model.return_value = _mock_response(payload)
+    with patch("matrix_studio.avatar.get_settings", return_value=_settings()):
+        with patch("boto3.client", return_value=mock_client):
+            result = await generate_avatar("Eve", "Test persona")
+    assert result is None
 
 
 @pytest.mark.asyncio
 async def test_avatar_unexpected_response_format():
-    """Test handling of unexpected Nova Canvas response format."""
-    with patch("matrix_studio.avatar.get_settings") as mock_settings:
-        mock_settings.return_value = Settings(
-            enable_avatars=True,
-            aws_access_key_id="test_key",
-            aws_secret_access_key="test_secret",
-        )
-
-        # Mock boto3 with unexpected response
-        mock_client = MagicMock()
-        mock_response = {
-            "body": MagicMock(read=MagicMock(return_value=b'{"unexpected": "format"}'))
-        }
-        mock_client.invoke_model.return_value = mock_response
-
-        with patch("boto3.client", return_value=mock_client):
-            result = await generate_avatar("Eve", "Test persona")
-
-            # Should return None when response format is unexpected
-            assert result is None
-
-
-@pytest.mark.asyncio
-async def test_avatar_aws_client_error():
-    """Test handling of AWS ClientError."""
-    with patch("matrix_studio.avatar.get_settings") as mock_settings:
-        mock_settings.return_value = Settings(
-            enable_avatars=True,
-            aws_access_key_id="test_key",
-            aws_secret_access_key="test_secret",
-        )
-
-        # Mock boto3 raising ClientError
-        from botocore.exceptions import ClientError
-
-        mock_client = MagicMock()
-        error_response = {"Error": {"Code": "AccessDenied", "Message": "Access denied"}}
-        mock_client.invoke_model.side_effect = ClientError(error_response, "InvokeModel")
-
+    """Unexpected response shape → None."""
+    mock_client = MagicMock()
+    mock_client.invoke_model.return_value = _mock_response({"unexpected": "format"})
+    with patch("matrix_studio.avatar.get_settings", return_value=_settings()):
         with patch("boto3.client", return_value=mock_client):
             result = await generate_avatar("Frank", "Test persona")
-
-            # Should return None without crashing
-            assert result is None
+    assert result is None
 
 
 @pytest.mark.asyncio
-async def test_avatar_deterministic_seed():
-    """Test that the same persona name generates the same seed."""
-    with patch("matrix_studio.avatar.get_settings") as mock_settings:
-        mock_settings.return_value = Settings(
-            enable_avatars=True,
-            aws_access_key_id="test_key",
-            aws_secret_access_key="test_secret",
-        )
+async def test_avatar_client_error():
+    """AWS ClientError → graceful None."""
+    from botocore.exceptions import ClientError
 
-        # Mock boto3 to capture the request body
-        captured_bodies = []
-        mock_client = MagicMock()
-
-        def capture_body(modelId, body, **kwargs):
-            import json
-            captured_bodies.append(json.loads(body))
-            return {
-                "body": MagicMock(read=MagicMock(return_value=b'{"images": ["test"]}'))
-            }
-
-        mock_client.invoke_model.side_effect = capture_body
-
+    mock_client = MagicMock()
+    err = {"Error": {"Code": "AccessDenied", "Message": "Access denied"}}
+    mock_client.invoke_model.side_effect = ClientError(err, "InvokeModel")
+    with patch("matrix_studio.avatar.get_settings", return_value=_settings()):
         with patch("boto3.client", return_value=mock_client):
-            # Generate avatar for same persona twice
-            await generate_avatar("Alice", "Test persona 1")
-            await generate_avatar("Alice", "Test persona 2")
+            result = await generate_avatar("Grace", "Test persona")
+    assert result is None
 
-            # Seeds should be the same (deterministic)
-            seed1 = captured_bodies[0]["imageGenerationConfig"]["seed"]
-            seed2 = captured_bodies[1]["imageGenerationConfig"]["seed"]
-            assert seed1 == seed2
 
-            # Different persona should have different seed
-            await generate_avatar("Bob", "Test persona")
-            seed3 = captured_bodies[2]["imageGenerationConfig"]["seed"]
-            assert seed1 != seed3
+def test_deterministic_seed_stable_and_distinct():
+    """Seed is stable per name (across processes) and differs between names."""
+    assert _deterministic_seed("Alice") == _deterministic_seed("Alice")
+    assert _deterministic_seed("Alice") != _deterministic_seed("Bob")
+    assert 0 <= _deterministic_seed("Alice") < 2**32 - 1

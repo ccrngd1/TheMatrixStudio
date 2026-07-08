@@ -1,11 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Avatar generation module using Amazon Nova Canvas via boto3.
+Avatar generation module using a Stability text-to-image model on Amazon Bedrock.
 
-LiteLLM does not route Bedrock image models, so we use direct boto3 calls.
-Gracefully falls back to None if AWS credentials are not available.
+LiteLLM does not route Bedrock image models, so we call bedrock-runtime directly
+via boto3. Authentication uses the standard boto3 credential chain, which includes
+the Bedrock API key / bearer token (``AWS_BEARER_TOKEN_BEDROCK``) as well as classic
+IAM access keys and instance/role credentials. Gracefully falls back to ``None`` if
+credentials are unavailable or generation fails, so a simulation never crashes just
+because avatars could not be produced.
 """
 
+import hashlib
 import json
 import logging
 from typing import Optional
@@ -14,10 +19,19 @@ from matrix_studio.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
+# Stability seed must fit in an unsigned 32-bit range.
+_SEED_MODULUS = 2**32 - 1
+
+
+def _deterministic_seed(persona_name: str) -> int:
+    """Stable per-persona seed (independent of Python hash randomization)."""
+    digest = hashlib.sha256(persona_name.encode("utf-8")).hexdigest()
+    return int(digest, 16) % _SEED_MODULUS
+
 
 async def generate_avatar(persona_name: str, persona_description: str) -> Optional[str]:
     """
-    Generate an avatar portrait using Amazon Nova Canvas.
+    Generate an avatar portrait using a Stability image model on Bedrock.
 
     Args:
         persona_name: Name of the persona
@@ -32,68 +46,64 @@ async def generate_avatar(persona_name: str, persona_description: str) -> Option
         logger.info("Avatar generation disabled in settings")
         return None
 
-    # Check if AWS credentials are available
-    if not settings.aws_access_key_id or not settings.aws_secret_access_key:
-        logger.warning("AWS credentials not available, skipping avatar generation")
+    try:
+        import boto3
+        from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError
+    except ImportError:
+        logger.warning("boto3 not available, cannot generate avatars")
         return None
 
     try:
-        import boto3
-        from botocore.exceptions import ClientError, NoCredentialsError
+        # Rely on the standard boto3 credential chain (bearer token / IAM keys /
+        # role). Do NOT force explicit keys — that blocked bearer-token auth.
+        client = boto3.client("bedrock-runtime", region_name=settings.avatar_region)
 
-        # Create Bedrock Runtime client
-        client = boto3.client(
-            "bedrock-runtime",
-            region_name=settings.aws_region,
-            aws_access_key_id=settings.aws_access_key_id,
-            aws_secret_access_key=settings.aws_secret_access_key,
+        prompt = (
+            f"Professional portrait photograph of {persona_name}. "
+            f"{persona_description}. High quality, photorealistic, neutral "
+            f"background, centered composition."
         )
 
-        # Construct the prompt for a portrait
-        prompt = f"Professional portrait photograph of {persona_name}. {persona_description}. High quality, photorealistic, neutral background, centered composition."
-
-        # Nova Canvas request body
+        # Stability SD3.x request shape (differs from the retired Nova Canvas API).
         body = json.dumps({
-            "taskType": "TEXT_IMAGE",
-            "textToImageParams": {
-                "text": prompt,
-                "negativeText": "deformed, distorted, disfigured, poor quality, cartoon, anime, illustration, low resolution"
-            },
-            "imageGenerationConfig": {
-                "numberOfImages": 1,
-                "height": settings.avatar_height,
-                "width": settings.avatar_width,
-                "cfgScale": 8.0,
-                "seed": hash(persona_name) % (2**31)  # Deterministic seed per persona name
-            }
+            "prompt": prompt,
+            "negative_prompt": "deformed, distorted, disfigured, poor quality, low resolution",
+            "mode": "text-to-image",
+            "aspect_ratio": settings.avatar_aspect_ratio,
+            "output_format": "png",
+            "seed": _deterministic_seed(persona_name),
         })
 
-        # Invoke the model
         response = client.invoke_model(
             modelId=settings.avatar_model_id,
             body=body,
             contentType="application/json",
-            accept="application/json"
+            accept="application/json",
         )
 
-        # Parse response - handle Nova Canvas response shape defensively
         result = json.loads(response["body"].read())
 
-        # Nova Canvas returns images as a list of base64 strings
-        if "images" in result and len(result["images"]) > 0:
-            image_b64 = result["images"][0]
-            logger.info(f"Successfully generated avatar for {persona_name}")
-            return image_b64
-        else:
-            logger.warning(f"Unexpected Nova Canvas response format for {persona_name}: {list(result.keys())}")
+        # Stability returns {"images": [<base64 png>], "seeds": [...], "finish_reasons": [...]}
+        images = result.get("images") or []
+        finish = (result.get("finish_reasons") or [None])[0]
+        if finish and finish != "SUCCESS":
+            # Non-null finish reason (e.g. content filter) means no usable image.
+            logger.warning(
+                "Avatar generation filtered for %s: finish_reason=%s", persona_name, finish
+            )
             return None
+        if images:
+            logger.info("Successfully generated avatar for %s", persona_name)
+            return images[0]
 
-    except (NoCredentialsError, ClientError) as e:
-        logger.warning(f"AWS error generating avatar for {persona_name}: {e}")
+        logger.warning(
+            "Unexpected image response format for %s: %s", persona_name, list(result.keys())
+        )
         return None
-    except ImportError:
-        logger.warning("boto3 not available, cannot generate avatars")
+
+    except (NoCredentialsError, ClientError, BotoCoreError) as e:
+        logger.warning("AWS error generating avatar for %s: %s", persona_name, e)
         return None
-    except Exception as e:
-        logger.error(f"Unexpected error generating avatar for {persona_name}: {e}", exc_info=True)
+    except Exception as e:  # noqa: BLE001 - never let avatars crash a simulation
+        logger.error("Unexpected error generating avatar for %s: %s", persona_name, e, exc_info=True)
         return None
