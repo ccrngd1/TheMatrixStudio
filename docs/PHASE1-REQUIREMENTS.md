@@ -5,7 +5,7 @@
 **Owner:** CC
 **Author:** Main (CABAL)
 **Date:** 2026-07-08
-**Status:** DRAFT — awaiting CC sign-off before MasterControl handoff
+**Status:** APPROVED — CC sign-off 2026-07-08 (web stack + playback + thematic codenames confirmed). Cleared for MasterControl handoff.
 **Spec:** `~/wiki/projects/matrix-sim-studio.md` (§3, §6 Phase 1)
 **Builds on:** Phase 0 (COMPLETE, verified live 2026-07-08 against real Bedrock — text engine, SQLite event store, cold-start prompt, and Stability SD3.5 avatars all working)
 
