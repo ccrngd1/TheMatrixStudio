@@ -134,9 +134,22 @@ Your goals: {', '.join(agent.goals) if agent.goals else 'Engage authentically'}
 
 Respond naturally as this character. Keep responses conversational (2-4 sentences)."""
 
+    if conv_text:
+        user_content = f"Recent conversation:\n{conv_text}\n\nRespond as {speaker_name}:"
+    else:
+        # Cold start: no one has spoken yet. Prompt the first speaker to open the
+        # conversation rather than react to an empty history (which otherwise makes
+        # the model complain there is nothing to respond to).
+        user_content = (
+            f'You are opening the conversation about "{topic}". No one has spoken yet. '
+            f"Start the discussion naturally as {speaker_name} with an opening remark "
+            f"that reflects your persona and invites the others in. Do not mention that "
+            f"the conversation is empty or that there is nothing to respond to."
+        )
+
     messages = [
         {"role": "system", "content": system_message},
-        {"role": "user", "content": f"Recent conversation:\n{conv_text}\n\nRespond as {speaker_name}:"},
+        {"role": "user", "content": user_content},
     ]
 
     try:

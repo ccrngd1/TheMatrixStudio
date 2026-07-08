@@ -12,8 +12,9 @@ from matrix_studio.settings import Settings
 
 def test_settings_defaults():
     """Test that settings have sensible defaults."""
-    settings = Settings()
-    assert settings.litellm_model == "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0"
+    # Ignore any local .env so we assert the true code defaults.
+    settings = Settings(_env_file=None)
+    assert settings.litellm_model == "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0"
     assert settings.litellm_temperature == 0.7
     assert settings.max_messages == 20
     assert settings.aws_region == "us-east-1"

@@ -22,7 +22,7 @@ class Settings(BaseSettings):
 
     # LiteLLM model configuration
     litellm_model: str = Field(
-        default="bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+        default="bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0",
         description="LiteLLM model string (e.g., openai/gpt-4o, anthropic/..., bedrock/...)"
     )
     litellm_temperature: float = Field(default=0.7, ge=0.0, le=2.0)

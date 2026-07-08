@@ -8,6 +8,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from matrix_studio.engine import run_simulation
+from matrix_studio.engine.simulator import _generate_response
+from matrix_studio.settings import Settings
+from matrix_studio.state import AgentState
 from matrix_studio.storage import Database
 
 
@@ -343,3 +346,35 @@ async def test_simulation_with_avatars_disabled():
 
             # Agent should not have a portrait
             assert result["agents"]["Alice"]["portrait"] is None
+
+
+@pytest.mark.asyncio
+async def test_cold_start_uses_opening_prompt():
+    """First speaker (empty conversation) gets an opening instruction, not an
+    empty 'Recent conversation:' block that makes the model complain."""
+    agent = AgentState(name="Maya", persona="A thoughtful artist", goals=["Share views"])
+    settings = Settings(_env_file=None)
+
+    with patch("matrix_studio.engine.simulator.litellm.acompletion") as mock_completion:
+        mock_completion.return_value = MockLiteLLMResponse("Let's begin.")
+        await _generate_response("Maya", agent, "AI in art", [], settings)
+
+    user_msg = mock_completion.call_args.kwargs["messages"][-1]["content"]
+    assert "opening the conversation" in user_msg.lower()
+    assert "Recent conversation:" not in user_msg
+
+
+@pytest.mark.asyncio
+async def test_ongoing_conversation_uses_history():
+    """With prior turns, the prompt includes the recent conversation transcript."""
+    agent = AgentState(name="Alex", persona="A pragmatic researcher", goals=[])
+    settings = Settings(_env_file=None)
+    history = [{"speaker": "Maya", "content": "I worry about authenticity."}]
+
+    with patch("matrix_studio.engine.simulator.litellm.acompletion") as mock_completion:
+        mock_completion.return_value = MockLiteLLMResponse("Fair point.")
+        await _generate_response("Alex", agent, "AI in art", history, settings)
+
+    user_msg = mock_completion.call_args.kwargs["messages"][-1]["content"]
+    assert "Recent conversation:" in user_msg
+    assert "Maya: I worry about authenticity." in user_msg
