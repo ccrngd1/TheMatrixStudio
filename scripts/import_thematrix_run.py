@@ -69,19 +69,28 @@ async def main(request_path: str, result_path: str) -> None:
     await db.update_run_status(run_id, "running")
 
     # Event log: sim.started, then per message speaker.selected + agent.response.
-    seq = 0
-    await db.append_event(run_id, turn=0, seq=seq, event_type="sim.started",
+    # The engine assigns a GLOBALLY MONOTONIC seq across all events (the frontend
+    # keys/dedupes by it), so we must do the same — not per-turn seq.
+    seq_counter = 0
+
+    def nxt() -> int:
+        nonlocal seq_counter
+        s = seq_counter
+        seq_counter += 1
+        return s
+
+    await db.append_event(run_id, turn=0, seq=nxt(), event_type="sim.started",
                           payload={"topic": topic, "cast": list(persona_by_name.keys()),
                                    "config": {"imported": True}})
     for i, msg in enumerate(conversation, start=1):
         sp = msg["speaker"]
-        await db.append_event(run_id, turn=i, seq=0, event_type="speaker.selected",
+        await db.append_event(run_id, turn=i, seq=nxt(), event_type="speaker.selected",
                               payload={"turn": i}, agent_name=sp)
-        await db.append_event(run_id, turn=i, seq=1, event_type="agent.response",
+        await db.append_event(run_id, turn=i, seq=nxt(), event_type="agent.response",
                               payload={"content": msg["content"], "tokens_in": 0,
                                        "tokens_out": 0, "cost_usd": 0.0}, agent_name=sp)
     total_turns = len(conversation)
-    await db.append_event(run_id, turn=total_turns, seq=2, event_type="sim.completed",
+    await db.append_event(run_id, turn=total_turns, seq=nxt(), event_type="sim.completed",
                           payload={"total_turns": total_turns, "total_cost_usd": 0.0,
                                    "imported": True})
 
