@@ -1,12 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-API module stub for TheMatrix Simulation Studio.
+API package for TheMatrix Simulation Studio (Phase 1).
 
-Phase 0: Stub only - functional FastAPI server is Phase 1.
-This module is a placeholder for the WebSocket server and REST API
-that will be implemented in Phase 1.
+Exposes the FastAPI control-room server: REST endpoints, a WebSocket live event
+stream, and static frontend serving — all over the unchanged Phase 0 engine.
 """
 
-# Placeholder for future FastAPI app
-# from fastapi import FastAPI
-# app = FastAPI()
+from matrix_studio.api.app import create_app
+
+__all__ = ["create_app"]

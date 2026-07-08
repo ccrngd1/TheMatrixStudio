@@ -47,10 +47,13 @@ data/
 # MasterControl
 .mastercontrol/
 
-# Node (for future frontend)
+# Node — never copy host node_modules or a stale local build into the image;
+# the frontend-builder stage installs deps and builds fresh.
 node_modules/
+**/node_modules/
 frontend/dist/
 frontend/build/
+matrix_studio/static/
 
 # OS
 .DS_Store

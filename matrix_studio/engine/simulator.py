@@ -15,9 +15,13 @@ import logging
 import os
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 import litellm
+
+# Type alias for the Phase 1 live-emit callback. It receives one structured
+# event dict (same shape as a persisted row) for each event the engine emits.
+OnEvent = Callable[[Dict[str, Any]], Awaitable[None]]
 
 from matrix_studio.avatar import generate_avatar
 from matrix_studio.settings import get_settings
@@ -193,6 +197,7 @@ async def run_simulation(
     request: Dict[str, Any],
     db: Optional[Database] = None,
     run_id: Optional[str] = None,
+    on_event: Optional[OnEvent] = None,
 ) -> Dict[str, Any]:
     """
     Run a complete simulation from a request dict.
@@ -201,6 +206,12 @@ async def run_simulation(
         request: Simulation request with topic, cast, and optional config
         db: Optional database for event persistence
         run_id: Optional run ID (generated if not provided)
+        on_event: Optional async callback invoked with each structured event as
+            it occurs (Phase 1 live-emit seam). It is fired at exactly the same
+            points the engine persists via ``db.append_event`` — plus one
+            ``avatar.ready`` event per avatar. This is purely additive: it does
+            not change persistence, the event schema, the JSON result, or any
+            Phase 0 timing/ordering. A failing callback never breaks the run.
 
     Returns:
         Result dict with run_id, conversation, agents, and metadata
@@ -215,7 +226,9 @@ async def run_simulation(
             "config": {
                 "max_messages": 20,
                 "generate_avatars": true
-            }
+            },
+            "name": "optional-codename",
+            "description": "optional one-line description"
         }
     """
     settings = get_settings()
@@ -226,12 +239,58 @@ async def run_simulation(
     config = request.get("config", {})
     max_messages = config.get("max_messages", settings.max_messages)
     generate_avatars_flag = config.get("generate_avatars", settings.enable_avatars)
+    run_name = request.get("name")
+    run_description = request.get("description")
 
     # Generate run ID
     if run_id is None:
         run_id = str(uuid.uuid4())
 
     logger.info(f"Starting simulation {run_id}: {topic}")
+
+    # Monotonic sequence counter so persisted rows and live events share the
+    # same ordering. Kept as a closure so the avatar tasks (which run before the
+    # loop's `seq`) and the loop agree on ordering.
+    seq_counter = 0
+
+    def _next_seq() -> int:
+        nonlocal seq_counter
+        s = seq_counter
+        seq_counter += 1
+        return s
+
+    async def _emit(
+        turn: int,
+        seq: int,
+        event_type: str,
+        payload: Dict[str, Any],
+        agent_name: Optional[str] = None,
+    ) -> None:
+        """Persist an event (if a db is present) then push it to the live
+        subscriber (if any). Persistence is unchanged from Phase 0; the live
+        callback is additive and its failures never break the run."""
+        if db:
+            await db.append_event(
+                run_id=run_id,
+                turn=turn,
+                seq=seq,
+                event_type=event_type,
+                agent_name=agent_name,
+                payload=payload,
+            )
+        if on_event is not None:
+            event = {
+                "run_id": run_id,
+                "turn": turn,
+                "seq": seq,
+                "event_type": event_type,
+                "agent_name": agent_name,
+                "payload": payload,
+            }
+            try:
+                await on_event(event)
+            except Exception as cb_err:  # noqa: BLE001 - live emit must never break a run
+                logger.warning("on_event callback failed for %s: %s", event_type, cb_err)
 
     # Initialize agents
     agents: Dict[str, AgentState] = {}
@@ -243,39 +302,54 @@ async def run_simulation(
         )
         agents[agent.name] = agent
 
-    # Generate avatars in parallel
-    if generate_avatars_flag:
-        logger.info("Generating avatars...")
-        avatar_tasks = [
-            generate_avatar(agent.name, agent.persona)
-            for agent in agents.values()
-        ]
-        avatars = await asyncio.gather(*avatar_tasks)
-        for agent, avatar_b64 in zip(agents.values(), avatars):
-            agent.portrait = avatar_b64
-
-    # Create run in database
+    # Create run in database (before events so the FK/order is sane)
     if db:
         await db.create_run(
             run_id=run_id,
             topic=topic,
             cast=cast,
+            name=run_name,
+            description=run_description,
             config=config,
         )
         await db.update_run_status(run_id, "running")
-        await db.append_event(
-            run_id=run_id,
-            turn=0,
-            seq=0,
-            event_type="sim.started",
-            payload={"topic": topic, "agent_count": len(agents)},
-        )
+
+    # sim.started is emitted at turn 0, seq 0 (Phase 0 parity).
+    await _emit(
+        turn=0,
+        seq=_next_seq(),
+        event_type="sim.started",
+        payload={"topic": topic, "agent_count": len(agents)},
+    )
+
+    # Generate avatars in parallel. Phase 0 generated them serially before the
+    # loop and blocked on all of them; here we still gather() them but emit an
+    # `avatar.ready` event as each finishes so a live UI can fill cards in
+    # progressively. Avatars remain optional eye-candy — a None result (disabled,
+    # no creds, content filter, error) yields a null portrait and never fails
+    # the run.
+    if generate_avatars_flag:
+        logger.info("Generating avatars...")
+
+        async def _make_avatar(agent: AgentState) -> None:
+            portrait = await generate_avatar(agent.name, agent.persona)
+            agent.portrait = portrait
+            # avatar.ready lives outside the turn stream (turn 0); give it its
+            # own seq so ordering stays total and replay is deterministic.
+            await _emit(
+                turn=0,
+                seq=_next_seq(),
+                event_type="avatar.ready",
+                agent_name=agent.name,
+                payload={"agent_name": agent.name, "portrait_b64": portrait},
+            )
+
+        await asyncio.gather(*[_make_avatar(a) for a in agents.values()])
 
     # Simulation loop
     conversation: List[Dict[str, Any]] = []
     last_speaker: Optional[str] = None
     turn = 0
-    seq = 1
 
     try:
         while turn < max_messages:
@@ -286,16 +360,13 @@ async def run_simulation(
                 topic, agents, conversation, last_speaker, settings
             )
 
-            if db:
-                await db.append_event(
-                    run_id=run_id,
-                    turn=turn,
-                    seq=seq,
-                    event_type="speaker.selected",
-                    agent_name=speaker_name,
-                    payload={"speaker": speaker_name, "candidates": list(agents.keys())},
-                )
-                seq += 1
+            await _emit(
+                turn=turn,
+                seq=_next_seq(),
+                event_type="speaker.selected",
+                agent_name=speaker_name,
+                payload={"speaker": speaker_name, "candidates": list(agents.keys())},
+            )
 
             # Phase 2: Generate response
             speaker = agents[speaker_name]
@@ -321,22 +392,19 @@ async def run_simulation(
             speaker.total_cost_usd += response_data["cost_usd"]
 
             # Log event
-            if db:
-                await db.append_event(
-                    run_id=run_id,
-                    turn=turn,
-                    seq=seq,
-                    event_type="agent.response",
-                    agent_name=speaker_name,
-                    payload={
-                        "speaker": speaker_name,
-                        "message": response_data["content"],
-                        "tokens_in": response_data["tokens_in"],
-                        "tokens_out": response_data["tokens_out"],
-                        "cost_usd": response_data["cost_usd"],
-                    },
-                )
-                seq += 1
+            await _emit(
+                turn=turn,
+                seq=_next_seq(),
+                event_type="agent.response",
+                agent_name=speaker_name,
+                payload={
+                    "speaker": speaker_name,
+                    "message": response_data["content"],
+                    "tokens_in": response_data["tokens_in"],
+                    "tokens_out": response_data["tokens_out"],
+                    "cost_usd": response_data["cost_usd"],
+                },
+            )
 
             last_speaker = speaker_name
 
@@ -344,16 +412,20 @@ async def run_simulation(
 
         # Simulation complete
         completion_time = int(time.time())
+        total_cost = sum(a.total_cost_usd for a in agents.values())
+
+        await _emit(
+            turn=turn,
+            seq=_next_seq(),
+            event_type="sim.completed",
+            payload={
+                "total_turns": turn,
+                "message_count": len(conversation),
+                "total_cost_usd": total_cost,
+            },
+        )
 
         if db:
-            await db.append_event(
-                run_id=run_id,
-                turn=turn,
-                seq=seq,
-                event_type="sim.completed",
-                payload={"total_turns": turn, "message_count": len(conversation)},
-            )
-
             # Save completion snapshot
             snapshot = SimSnapshot(
                 run_id=run_id,
@@ -379,20 +451,19 @@ async def run_simulation(
             "conversation": conversation,
             "agents": {name: agent.model_dump() for name, agent in agents.items()},
             "total_turns": turn,
-            "total_cost_usd": sum(a.total_cost_usd for a in agents.values()),
+            "total_cost_usd": total_cost,
         }
 
     except Exception as e:
         logger.error(f"Simulation {run_id} failed: {e}", exc_info=True)
 
+        await _emit(
+            turn=turn,
+            seq=_next_seq(),
+            event_type="sim.failed",
+            payload={"error": str(e)},
+        )
         if db:
-            await db.append_event(
-                run_id=run_id,
-                turn=turn,
-                seq=seq,
-                event_type="sim.failed",
-                payload={"error": str(e)},
-            )
             await db.update_run_status(run_id, "failed")
 
         return {

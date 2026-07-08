@@ -64,6 +64,8 @@ class Database:
             CREATE TABLE IF NOT EXISTS runs (
                 id TEXT PRIMARY KEY,
                 name TEXT,
+                description TEXT,
+                slug TEXT,
                 topic TEXT NOT NULL,
                 cast_json TEXT NOT NULL,
                 config_json TEXT,
@@ -73,6 +75,22 @@ class Database:
                 created_at INTEGER NOT NULL,
                 completed_at INTEGER
             )
+        """)
+
+        # Phase 1 additive migration: existing Phase 0 databases have a `runs`
+        # table without the `description`/`slug` columns. Add them if missing so
+        # older rows/queries keep working (nullable, backward-compatible).
+        async with self._conn.execute("PRAGMA table_info(runs)") as cursor:
+            existing_cols = {row[1] for row in await cursor.fetchall()}
+        for col in ("name", "description", "slug"):
+            if col not in existing_cols:
+                await self._conn.execute(f"ALTER TABLE runs ADD COLUMN {col} TEXT")
+
+        # Enforce name uniqueness for the runs that have one (nullable names are
+        # exempt so legacy rows and unnamed runs never collide).
+        await self._conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS runs_name_unique
+            ON runs(name) WHERE name IS NOT NULL
         """)
 
         await self._conn.execute("""
@@ -113,6 +131,8 @@ class Database:
         topic: str,
         cast: List[Dict[str, Any]],
         name: Optional[str] = None,
+        description: Optional[str] = None,
+        slug: Optional[str] = None,
         config: Optional[Dict[str, Any]] = None,
         parent_run_id: Optional[str] = None,
         branch_turn: Optional[int] = None,
@@ -124,20 +144,25 @@ class Database:
             run_id: Unique run identifier
             topic: Simulation topic
             cast: List of persona definitions
-            name: Optional run name
+            name: Optional memorable run name (unique when present)
+            description: Optional one-line human description
+            slug: Optional normalized slug (defaults to name)
             config: Optional configuration dict
             parent_run_id: Parent run ID if this is a branch
             branch_turn: Turn number branched from
         """
         await self._conn.execute(
             """
-            INSERT INTO runs (id, name, topic, cast_json, config_json, status,
-                              parent_run_id, branch_turn, created_at)
-            VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+            INSERT INTO runs (id, name, description, slug, topic, cast_json,
+                              config_json, status, parent_run_id, branch_turn,
+                              created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
             """,
             (
                 run_id,
                 name,
+                description,
+                slug or name,
                 topic,
                 json.dumps(cast),
                 json.dumps(config) if config else None,
@@ -147,6 +172,13 @@ class Database:
             ),
         )
         await self._conn.commit()
+
+    async def name_exists(self, name: str) -> bool:
+        """Return True if a run with this memorable name already exists."""
+        async with self._conn.execute(
+            "SELECT 1 FROM runs WHERE name = ? LIMIT 1", (name,)
+        ) as cursor:
+            return await cursor.fetchone() is not None
 
     async def update_run_status(
         self, run_id: str, status: str, completed_at: Optional[int] = None
@@ -246,6 +278,111 @@ class Database:
             if row:
                 return dict(row)
             return None
+
+    async def get_run_by_ref(self, ref: str) -> Optional[Dict[str, Any]]:
+        """
+        Resolve a run by either its UUID id or its memorable name.
+
+        Args:
+            ref: A run_id (UUID) or a memorable name.
+
+        Returns:
+            Run dict or None if not found.
+        """
+        async with self._conn.execute(
+            "SELECT * FROM runs WHERE id = ? OR name = ? LIMIT 1", (ref, ref)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def list_runs(
+        self, q: Optional[str] = None, limit: int = 200
+    ) -> List[Dict[str, Any]]:
+        """
+        List runs (newest first), optionally filtered by a case-insensitive
+        substring matching name, description, or topic.
+
+        Each returned dict includes derived aggregates (turn_count,
+        total_cost_usd) computed from the event log so the history list needs
+        no extra round-trips.
+        """
+        if q:
+            like = f"%{q.lower()}%"
+            query = """
+                SELECT * FROM runs
+                WHERE lower(COALESCE(name, '')) LIKE ?
+                   OR lower(COALESCE(description, '')) LIKE ?
+                   OR lower(topic) LIKE ?
+                ORDER BY created_at DESC
+                LIMIT ?
+            """
+            params = (like, like, like, limit)
+        else:
+            query = "SELECT * FROM runs ORDER BY created_at DESC LIMIT ?"
+            params = (limit,)
+
+        async with self._conn.execute(query, params) as cursor:
+            rows = [dict(r) for r in await cursor.fetchall()]
+
+        for run in rows:
+            stats = await self.get_run_stats(run["id"])
+            run.update(stats)
+        return rows
+
+    async def get_run_stats(self, run_id: str) -> Dict[str, Any]:
+        """Aggregate turn count and total cost from the event log for a run."""
+        async with self._conn.execute(
+            """
+            SELECT COUNT(*) AS turns FROM events
+            WHERE run_id = ? AND event_type = 'agent.response'
+            """,
+            (run_id,),
+        ) as cursor:
+            turn_row = await cursor.fetchone()
+
+        async with self._conn.execute(
+            """
+            SELECT payload FROM events
+            WHERE run_id = ? AND event_type = 'agent.response'
+            """,
+            (run_id,),
+        ) as cursor:
+            payloads = await cursor.fetchall()
+
+        total_cost = 0.0
+        for row in payloads:
+            try:
+                total_cost += float(json.loads(row[0]).get("cost_usd", 0.0) or 0.0)
+            except (ValueError, TypeError, json.JSONDecodeError):
+                continue
+
+        return {
+            "turn_count": turn_row[0] if turn_row else 0,
+            "total_cost_usd": total_cost,
+        }
+
+    async def get_events_after(
+        self, run_id: str, after_seq: int = -1, limit: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get events for a run ordered by (turn, seq), starting strictly after the
+        given global sequence number. Used for replay / late-join / paging.
+
+        The engine assigns a monotonic per-run ``seq`` across all events, so a
+        client can pass the highest seq it has already seen to resume.
+        """
+        query = """
+            SELECT * FROM events
+            WHERE run_id = ? AND seq > ?
+            ORDER BY turn, seq
+        """
+        params: tuple = (run_id, after_seq)
+        if limit is not None:
+            query += " LIMIT ?"
+            params = (run_id, after_seq, limit)
+
+        async with self._conn.execute(query, params) as cursor:
+            return [dict(row) for row in await cursor.fetchall()]
 
     async def get_events(
         self, run_id: str, from_turn: int = 0, to_turn: Optional[int] = None

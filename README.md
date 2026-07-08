@@ -1,16 +1,20 @@
 # TheMatrix Simulation Studio
 
-**Phase 0 Release** - Multi-agent conversation simulator with provider-agnostic LLM support.
+**Phase 1** - Multi-agent conversation simulator with a live "control-room" web UI.
 
-TheMatrix Simulation Studio is a standalone tool for running multi-agent conversation simulations. Define a topic and a cast of personas, and watch them engage in natural dialogue. Built on LiteLLM for provider flexibility - bring your own API key for OpenAI, Anthropic, AWS Bedrock, or local models via Ollama.
+TheMatrix Simulation Studio is a standalone tool for running multi-agent conversation simulations. Define a topic and a cast of personas, hit **Run**, and watch the conversation unfold live: a **cast board** of character cards (avatar + persona + goals), a **live-scrolling conversation feed**, a highlight of **who's speaking now**, and a **running token/$ cost meter**. Click a card for that agent's **dossier**; browse and **replay past runs** by their memorable codename. Built on LiteLLM for provider flexibility — bring your own API key for OpenAI, Anthropic, AWS Bedrock, or local models via Ollama.
 
 ## Features
 
+- **Control-room web UI** (Phase 1): cast board, live conversation feed, active-speaker highlight, cost meter, per-agent dossier, new-run/cast-builder form, and searchable run history — served from the same process as the API.
+- **Live streaming**: runs stream over a WebSocket as they progress (late joiners catch up via replayed events, then continue live).
+- **UI-only playback**: pause / resume / step / reveal-speed operate purely on the buffered client-side stream — they never pause, slow, or gate the engine (it always runs to completion at full speed).
+- **Named runs**: every run gets a memorable, topically-resonant two-word codename (e.g. an AI-ethics topic → `trusted-robot`) via a cheap LLM call, with a random-wordlist fallback so naming never blocks a run.
 - **Provider-agnostic**: Use any LLM supported by LiteLLM (OpenAI, Anthropic, Bedrock, OpenRouter, Ollama)
 - **Event-sourced storage**: SQLite database captures full simulation history for replay and analysis
-- **Avatar generation**: Optional persona portraits via Amazon Nova Canvas (Bedrock)
-- **CLI-first**: Run simulations from JSON request files with simple command-line interface
-- **Docker support**: Containerized deployment with environment-based configuration
+- **Avatar generation**: Optional persona portraits via a Stability image model on Bedrock (`stability.sd3-5-large-v1:0`), generated in parallel at run start with a mandatory initials/color placeholder fallback
+- **CLI**: `run` a simulation from a JSON request file, or `serve` the web app
+- **Docker support**: one image serves both the API and the built UI on one port
 
 ## Quick Start
 
@@ -43,7 +47,10 @@ cp .env.example .env
 
 #### For AWS Bedrock:
 ```bash
-LITELLM_MODEL=bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0
+LITELLM_MODEL=bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0
+# Bedrock API key / bearer token (recommended):
+AWS_BEARER_TOKEN_BEDROCK=your_bearer_token
+# ...or classic IAM keys:
 AWS_ACCESS_KEY_ID=your_access_key
 AWS_SECRET_ACCESS_KEY=your_secret_key
 AWS_REGION=us-east-1
@@ -57,7 +64,7 @@ OPENAI_API_KEY=your_openai_key
 
 #### For Anthropic:
 ```bash
-LITELLM_MODEL=anthropic/claude-3-5-sonnet-20241022
+LITELLM_MODEL=anthropic/claude-sonnet-4-6
 ANTHROPIC_API_KEY=your_anthropic_key
 ```
 
@@ -69,20 +76,46 @@ LITELLM_MODEL=ollama/llama2
 
 See [LiteLLM provider docs](https://docs.litellm.ai/docs/providers) for all supported models.
 
-### Running Your First Simulation
+### Running the Web UI (Phase 1)
+
+```bash
+# Start the control-room server (defaults to MATRIX_HOST/MATRIX_PORT, i.e. 127.0.0.1:8000)
+matrix-studio serve
+
+# Or choose host/port explicitly
+matrix-studio serve --host 0.0.0.0 --port 8000
+```
+
+Then open <http://127.0.0.1:8000> in your browser: define a cast and topic (or
+**Load example**), hit **Run**, and watch the conversation stream live. Past runs
+are listed by their memorable codename and can be replayed.
+
+> The server serves the pre-built frontend from `matrix_studio/static/`. When
+> installing from source, build it once with `cd frontend && npm install && npm run build`
+> (the Docker image does this for you). Without a build, the API still runs and
+> `/` returns a small JSON notice.
+
+**Frontend dev mode** (hot reload, proxies `/api` to the backend on :8000):
+
+```bash
+matrix-studio serve            # terminal 1: backend
+cd frontend && npm run dev     # terminal 2: Vite dev server
+```
+
+### Running a Simulation from the CLI (Phase 0 behavior, unchanged)
 
 ```bash
 # Run an example simulation
-matrix-studio examples/minimal.json
+matrix-studio run examples/minimal.json
 
 # Run with custom output file
-matrix-studio examples/debate.json -o results.json
+matrix-studio run examples/debate.json -o results.json
 
 # Run with custom turn limit
-matrix-studio examples/coffeeshop.json --max-messages 10
+matrix-studio run examples/coffeeshop.json --max-messages 10
 
 # Skip database (faster for testing)
-matrix-studio examples/minimal.json --no-db
+matrix-studio run examples/minimal.json --no-db
 ```
 
 ### Creating Custom Simulations
@@ -110,30 +143,35 @@ See `examples/` directory for complete examples.
 
 ## Docker Usage
 
+The image is multi-stage: a Node stage builds the React/Vite frontend into
+`matrix_studio/static`, and the Python stage installs the package and serves
+both the API and the built UI on one port.
+
 ### Build the Image
 
 ```bash
 docker build -t matrix-studio .
 ```
 
-### Run a Simulation
+### Serve the Web UI (default)
 
 ```bash
-# Run with environment file
+docker run --rm -p 8000:8000 \
+  --env-file .env \
+  -v $(pwd)/data:/app/data \
+  matrix-studio
+# open http://localhost:8000
+```
+
+### Run a Simulation from the CLI in the container
+
+```bash
 docker run --rm \
   --env-file .env \
   -v $(pwd)/examples:/examples \
   -v $(pwd)/data:/app/data \
   matrix-studio \
-  python -m matrix_studio /examples/minimal.json
-
-# Run with output to host
-docker run --rm \
-  --env-file .env \
-  -v $(pwd)/examples:/examples \
-  -v $(pwd)/output:/output \
-  matrix-studio \
-  python -m matrix_studio /examples/debate.json -o /output/results.json
+  python -m matrix_studio run /examples/minimal.json
 ```
 
 ## Project Structure
@@ -143,16 +181,19 @@ matrix-sim-studio/
 ├── matrix_studio/          # Main package
 │   ├── engine/            # Simulation engine (litellm orchestration)
 │   ├── storage/           # SQLite event-sourced storage
-│   ├── api/               # API stub (Phase 1)
+│   ├── api/               # FastAPI app, WebSocket stream, run manager (Phase 1)
+│   ├── static/            # Built frontend assets (generated by the Vite build)
+│   ├── naming.py          # Memorable run codename generation (Phase 1)
 │   ├── settings.py        # Configuration management
 │   ├── state.py           # Pydantic state models
-│   ├── avatar.py          # Avatar generation (Nova Canvas)
-│   └── __main__.py        # CLI entrypoint
+│   ├── avatar.py          # Avatar generation (Stability SD3.5 on Bedrock)
+│   └── __main__.py        # CLI entrypoint (run / serve subcommands)
+├── frontend/              # React + Vite + TypeScript + Tailwind UI (Phase 1)
 ├── examples/              # Example simulation configs
-├── tests/                 # Test suite
+├── tests/                 # Backend test suite (engine/API/storage/naming)
 ├── docs/                  # Documentation
 ├── pyproject.toml         # Package configuration
-├── Dockerfile             # Container definition
+├── Dockerfile             # Multi-stage container (frontend build + Python app)
 ├── LICENSE                # Apache-2.0 license
 └── README.md             # This file
 ```
@@ -170,11 +211,17 @@ This event-sourced design enables future features like branching and replay (Pha
 
 ## Avatar Generation
 
-Avatar generation uses Amazon Nova Canvas via AWS Bedrock. Requirements:
-- AWS credentials in environment (see Configuration above)
+Avatar generation uses a Stability text-to-image model on AWS Bedrock
+(`stability.sd3-5-large-v1:0`, served from `AVATAR_REGION=us-west-2`). Portraits
+are generated **in parallel** at run start and stream to the UI via `avatar.ready`
+events as each finishes. Requirements:
+- AWS credentials in environment (bearer token or IAM keys; see Configuration above)
 - `ENABLE_AVATARS=true` in your `.env`
 
-**Graceful fallback**: If AWS credentials are unavailable, avatars are returned as `null` and the simulation continues without error.
+**Graceful fallback (mandatory)**: if avatars are disabled or generation returns
+nothing (no credentials, content filter, or error), the UI shows a deterministic
+**initials/color placeholder** and the run proceeds normally. Avatars are
+eye-candy, never a hard dependency.
 
 To disable avatars entirely:
 ```bash
@@ -216,10 +263,10 @@ Core dependencies (from `pyproject.toml`):
 
 ## Roadmap
 
-- **Phase 0** (current): Standalone CLI, provider-agnostic, event-sourced storage
-- **Phase 1**: Web UI with cast board, live simulation watching, dossier views
-- **Phase 2**: Branching, checkpoint restore, intervention features
-- **Phase 3**: Polish, templates, cost controls
+- **Phase 0**: Standalone CLI, provider-agnostic, event-sourced storage
+- **Phase 1** (current): Control-room web UI — cast board, live watching, cost meter, scoped dossier, named runs, replay
+- **Phase 2**: Branching, checkpoint restore, intervention features; rich dossier (memory streams, reflections, relationships, "why did it say that?")
+- **Phase 3**: Polish, in-browser BYO-key, enforced spend caps, templates
 
 ## Architecture Notes
 
