@@ -142,6 +142,19 @@ async def test_resolve_model_skips_stale_imported_model():
     # An explicit override always wins.
     assert service.resolve_model(imported, override="bedrock/x") == "bedrock/x"
 
+    # A BRANCH/resumed run inherits its parent's (possibly stale/EOL) config
+    # model even though it generated with the current settings model. Fresh
+    # analysis must decline the inherited model and use the current default.
+    branch = {
+        "parent_run_id": "parent-123",
+        "config_json": '{"model": "bedrock/anthropic.claude-3-5-haiku-20241022-v1:0"}',
+    }
+    assert service.resolve_model(branch) is None  # -> current settings default
+    # Override still wins for a branch.
+    assert service.resolve_model(branch, override="bedrock/y") == "bedrock/y"
+    # A root run with no parent still forwards its own configured model.
+    assert service.resolve_model(native) == "bedrock/some-current-model"
+
 
 @pytest.mark.asyncio
 async def test_readonly_invariant_events_snapshot_cost_unchanged(db):
