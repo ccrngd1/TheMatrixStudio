@@ -595,10 +595,24 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
                 detail="Avatar generation is unavailable or was filtered; try again.",
             )
 
-        # Persist the new portrait onto the latest snapshot (save_snapshot takes
-        # the snapshot only; run_id lives on the snapshot).
+        # Persist the new portrait so it survives reload AND shows across the UI.
+        # The cast board / live view derive avatars from the `avatar.ready`
+        # EVENT (not the snapshot), so we must append a fresh one; deriveState
+        # applies the last avatar.ready per agent, so the new portrait wins.
+        # We also update the latest snapshot so the dossier API reflects it.
         agent.portrait = portrait
         await db.save_snapshot(snapshot)
+
+        all_events = await db.get_events_after(run["id"], after_seq=-1, limit=None)
+        next_seq = max((e["seq"] for e in all_events), default=-1) + 1
+        await db.append_event(
+            run_id=run["id"],
+            turn=0,
+            seq=next_seq,
+            event_type="avatar.ready",
+            agent_name=name,
+            payload={"agent_name": name, "portrait_b64": portrait},
+        )
 
         return {
             "run_id": run["id"],

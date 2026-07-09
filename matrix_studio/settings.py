@@ -81,7 +81,7 @@ class Settings(BaseSettings):
     # misrepresentation / synthetic-media-labeling / accidental-likeness risk).
     # Options: 'illustration' (flat vector), 'anime', '3d' (stylized cartoon
     # render). Unknown values fall back to 'illustration'.
-    avatar_style: str = Field(default="illustration", description="Avatar art style (env AVATAR_STYLE)")
+    avatar_style: str = Field(default="anime", description="Avatar art style (env AVATAR_STYLE)")
 
 
 # Global settings instance
