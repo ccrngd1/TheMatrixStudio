@@ -1,6 +1,6 @@
 # Requirements — TheMatrix Simulation Studio, Phase 2c
 
-**Status:** DRAFT v2 — four opens resolved by CC 2026-07-09; ready for build approval
+**Status:** BUILT — all 5 steps shipped 2026-07-09 (commits 5b32cdf, 70cab88, 72b90e3, da5507d, b2a3db9)
 **Spec:** `docs/PROJECT-SPEC.md` (§6 Phase 2c, §8b why-not-AutoGen, §6a interaction design)
 **Builds on:** Phase 2a (event log + per-turn snapshots) and Phase 2b (branch-with-mutation).
 
