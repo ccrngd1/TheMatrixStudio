@@ -105,6 +105,21 @@ async def main(request_path: str, result_path: str) -> None:
                            conversation=conversation, status="complete",
                            created_at=now, completed_at=now, total_turns=total_turns)
     await db.save_snapshot(snapshot)
+
+    # Phase 1.5: if the legacy result carried a source summary, preserve it as an
+    # 'imported' summary — surfaced separately from any freshly generated one and
+    # NEVER overwritten. Costs are unknown for imports, recorded as 0.0 (never
+    # fabricated).
+    source_summary = res.get("summary")
+    if source_summary:
+        payload = (
+            {"overview": source_summary}
+            if isinstance(source_summary, str)
+            else source_summary
+        )
+        await db.save_summary(run_id, payload=payload, kind="imported",
+                              tokens_in=0, tokens_out=0, cost_usd=0.0)
+
     await db.update_run_status(run_id, "complete", now)
     await db.close()
 

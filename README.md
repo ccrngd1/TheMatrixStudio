@@ -1,12 +1,13 @@
 # TheMatrix Simulation Studio
 
-**Phase 1** - Multi-agent conversation simulator with a live "control-room" web UI.
+**Phase 1.5** - Multi-agent conversation simulator with a live "control-room" web UI plus a read-only post-run analysis layer (summaries + aside conversations).
 
 TheMatrix Simulation Studio is a standalone tool for running multi-agent conversation simulations. Define a topic and a cast of personas, hit **Run**, and watch the conversation unfold live: a **cast board** of character cards (avatar + persona + goals), a **live-scrolling conversation feed**, a highlight of **who's speaking now**, and a **running token/$ cost meter**. Click a card for that agent's **dossier**; browse and **replay past runs** by their memorable codename. Built on LiteLLM for provider flexibility — bring your own API key for OpenAI, Anthropic, AWS Bedrock, or local models via Ollama.
 
 ## Features
 
 - **Control-room web UI** (Phase 1): cast board, live conversation feed, active-speaker highlight, cost meter, per-agent dossier, new-run/cast-builder form, and searchable run history — served from the same process as the API.
+- **Post-run analysis** (Phase 1.5, read-only): an auto-generated structured **summary** (consensus / dissenters / key ideas / open questions / overview; configurable at run creation, on by default) and **aside conversations** — ask the **analyst** (neutral, about the whole run), a **single persona** (in-character, using that agent's real stored persona), or the **room** (all personas react into the thread). Asides are private side-threads that never mutate the canonical run; their token/cost is tracked separately. Summaries and aside replies are model-generated *analysis*, labeled as such.
 - **Live streaming**: runs stream over a WebSocket as they progress (late joiners catch up via replayed events, then continue live).
 - **UI-only playback**: pause / resume / step / reveal-speed operate purely on the buffered client-side stream — they never pause, slow, or gate the engine (it always runs to completion at full speed).
 - **Named runs**: every run gets a memorable, topically-resonant two-word codename (e.g. an AI-ethics topic → `trusted-robot`) via a cheap LLM call, with a random-wordlist fallback so naming never blocks a run.
@@ -264,8 +265,9 @@ Core dependencies (from `pyproject.toml`):
 ## Roadmap
 
 - **Phase 0**: Standalone CLI, provider-agnostic, event-sourced storage
-- **Phase 1** (current): Control-room web UI — cast board, live watching, cost meter, scoped dossier, named runs, replay
-- **Phase 2**: Branching, checkpoint restore, intervention features; rich dossier (memory streams, reflections, relationships, "why did it say that?")
+- **Phase 1**: Control-room web UI — cast board, live watching, cost meter, scoped dossier, named runs, replay
+- **Phase 1.5** (current): Read-only post-run analysis — structured end-of-run summary + aside conversations (analyst / persona / room). Introduces the thread/target/mode data model; no engine-loop changes, no mutation of the canonical run.
+- **Phase 2**: Contribute mode (promote an aside into the conversation) + branching, checkpoint restore, intervention features; rich dossier (memory streams, reflections, relationships, "why did it say that?")
 - **Phase 3**: Polish, in-browser BYO-key, enforced spend caps, templates
 
 ## Architecture Notes

@@ -8,6 +8,9 @@ import { ConversationFeed } from '../components/ConversationFeed'
 import { CostMeter } from '../components/CostMeter'
 import { PlaybackControls } from '../components/PlaybackControls'
 import { Dossier } from '../components/Dossier'
+import { SummaryPanel } from '../components/SummaryPanel'
+import { AsidesDrawer } from '../components/AsidesDrawer'
+import type { StoredSummary } from '../types'
 
 interface Props {
   runId: string
@@ -20,16 +23,24 @@ export function LiveView({ runId, onBack }: Props) {
   const [detail, setDetail] = useState<RunDetail | null>(null)
   const [cast, setCast] = useState<Persona[]>([])
   const [selected, setSelected] = useState<string | null>(null)
+  const [asidesOpen, setAsidesOpen] = useState(false)
+  const [generated, setGenerated] = useState<StoredSummary | null>(null)
+  const [imported, setImported] = useState<StoredSummary | null>(null)
 
   useEffect(() => {
     api.getRun(runId).then((d) => {
       setDetail(d)
       setCast(d.cast || [])
+      setGenerated(d.summary?.generated ?? null)
+      setImported(d.summary?.imported ?? null)
     })
   }, [runId])
 
   const stream = useRunStream({ runId, cast })
   const { state } = stream
+
+  // A run is analyzable once it has completed (live or on reload).
+  const completed = detail?.status === 'complete' || state.status === 'complete'
 
   return (
     <div className="flex h-screen flex-col">
@@ -48,9 +59,20 @@ export function LiveView({ runId, onBack }: Props) {
             <p className="text-xs text-slate-500">{detail?.description ?? detail?.topic}</p>
           </div>
         </div>
-        <span className="text-xs text-slate-500">
-          {stream.connected ? '🔌 connected' : '… connecting'}
-        </span>
+        <div className="flex items-center gap-3">
+          {completed && (
+            <button
+              onClick={() => setAsidesOpen(true)}
+              className="rounded border border-matrix-border px-3 py-1 text-sm text-slate-300 hover:border-matrix-accent"
+              title="Ask read-only questions about the finished run"
+            >
+              💬 Asides
+            </button>
+          )}
+          <span className="text-xs text-slate-500">
+            {stream.connected ? '🔌 connected' : '… connecting'}
+          </span>
+        </div>
       </header>
 
       <div className="border-b border-matrix-border px-4 py-2">
@@ -75,6 +97,15 @@ export function LiveView({ runId, onBack }: Props) {
             tokensOut={state.totalTokensOut}
           />
           <CastBoard state={state} onSelect={setSelected} />
+          {completed && (
+            <SummaryPanel
+              runId={runId}
+              generated={generated}
+              imported={imported}
+              canGenerate={completed}
+              onUpdated={setGenerated}
+            />
+          )}
         </aside>
 
         <main className="overflow-hidden rounded-lg border border-matrix-border bg-matrix-panel">
@@ -98,6 +129,10 @@ export function LiveView({ runId, onBack }: Props) {
           feed={state.feed}
           onClose={() => setSelected(null)}
         />
+      )}
+
+      {asidesOpen && (
+        <AsidesDrawer runId={runId} cast={cast} onClose={() => setAsidesOpen(false)} />
       )}
     </div>
   )

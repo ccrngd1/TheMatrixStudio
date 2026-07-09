@@ -31,6 +31,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from matrix_studio import service
 from matrix_studio.api.manager import RunManager, TERMINAL_EVENTS, event_row_to_wire
 from matrix_studio.naming import generate_run_name
 from matrix_studio.settings import get_settings
@@ -56,6 +57,15 @@ class RunConfigModel(BaseModel):
     generate_avatars: Optional[bool] = None
 
 
+class SummaryConfigModel(BaseModel):
+    """Optional summary generation config (Phase 1.5). Omitted → default
+    (enabled with the full field set, no focus)."""
+
+    enabled: bool = True
+    fields: Optional[List[str]] = None
+    focus: Optional[str] = None
+
+
 class CreateRunModel(BaseModel):
     topic: str
     cast: List[PersonaModel]
@@ -63,6 +73,29 @@ class CreateRunModel(BaseModel):
     model: Optional[str] = None
     name: Optional[str] = None
     description: Optional[str] = None
+    # Phase 1.5: optional summary config; defaults applied server-side when omitted.
+    summary: Optional[SummaryConfigModel] = None
+
+
+class SummaryRequestModel(BaseModel):
+    """Body for on-demand (re)generation of a run's structured summary."""
+
+    fields: Optional[List[str]] = None
+    focus: Optional[str] = None
+    model: Optional[str] = None
+
+
+class CreateThreadModel(BaseModel):
+    """Open an aside thread. persona_name is required only for target='persona'."""
+
+    target: str  # 'analyst' | 'persona' | 'room'
+    persona_name: Optional[str] = None
+
+
+class ThreadMessageModel(BaseModel):
+    """Post a user message into an aside thread."""
+
+    content: str
 
 
 def _run_summary(run: Dict[str, Any]) -> Dict[str, Any]:
@@ -186,7 +219,19 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         except json.JSONDecodeError:
             config = {}
 
-        return {**summary, "cast": cast, "config": config, "result": result}
+        # Phase 1.5: attach any stored summaries (generated + imported original)
+        # so a reloaded run shows its analysis panel immediately.
+        summary_rows = await db.get_summaries(run["id"])
+        generated = next((r for r in summary_rows if r["kind"] == "generated"), None)
+        imported = next((r for r in summary_rows if r["kind"] == "imported"), None)
+
+        return {
+            **summary,
+            "cast": cast,
+            "config": config,
+            "result": result,
+            "summary": {"generated": generated, "imported": imported},
+        }
 
     @app.get("/api/runs/{ref}/events")
     async def get_events(
@@ -200,6 +245,94 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         rows = await db.get_events_after(run["id"], after_seq=after_seq, limit=limit)
         events = [event_row_to_wire(r) for r in rows]
         return {"run_id": run["id"], "events": events}
+
+    # ------------------- Phase 1.5: summary + aside threads ---------------- #
+    # All routes below are ADDITIVE and READ-ONLY over the canonical run: they
+    # read the run's transcript/cast and write only to the new summaries /
+    # threads / thread_messages tables. They never emit a canonical event,
+    # mutate the snapshot, or change the run's recorded cost. Summaries and
+    # aside replies are model-generated ANALYSIS, labeled as such by the UI.
+
+    async def _require_run(ref: str) -> Dict[str, Any]:
+        run = await db.get_run_by_ref(ref)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        return run
+
+    def _shape_summaries(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Split stored summaries into generated + imported for the client."""
+        generated = next((r for r in rows if r["kind"] == "generated"), None)
+        imported = next((r for r in rows if r["kind"] == "imported"), None)
+        return {"generated": generated, "imported": imported}
+
+    @app.get("/api/runs/{ref}/summary")
+    async def get_summary(ref: str) -> Dict[str, Any]:
+        run = await _require_run(ref)
+        rows = await db.get_summaries(run["id"])
+        return {"run_id": run["id"], **_shape_summaries(rows)}
+
+    @app.post("/api/runs/{ref}/summary")
+    async def post_summary(
+        ref: str, body: SummaryRequestModel = SummaryRequestModel()
+    ) -> Dict[str, Any]:
+        run = await _require_run(ref)
+        if run.get("status") != "complete":
+            raise HTTPException(
+                status_code=409,
+                detail="Summary can only be generated for a completed run.",
+            )
+        cfg = service.summary_config(run)
+        fields = body.fields or cfg["fields"]
+        focus = body.focus if body.focus is not None else cfg["focus"]
+        saved = await service.generate_and_store_summary(
+            db, run, fields=fields, focus=focus, model=body.model
+        )
+        rows = await db.get_summaries(run["id"])
+        return {"run_id": run["id"], "generated": saved, **_shape_summaries(rows)}
+
+    @app.get("/api/runs/{ref}/threads")
+    async def list_threads(ref: str) -> Dict[str, Any]:
+        run = await _require_run(ref)
+        threads = await db.list_threads(run["id"])
+        return {"run_id": run["id"], "threads": threads}
+
+    @app.post("/api/runs/{ref}/threads", status_code=201)
+    async def create_thread(ref: str, body: CreateThreadModel) -> Dict[str, Any]:
+        run = await _require_run(ref)
+        try:
+            thread = await service.create_thread(
+                db, run, target=body.target, persona_name=body.persona_name
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        return thread
+
+    @app.get("/api/threads/{thread_id}")
+    async def get_thread(thread_id: str) -> Dict[str, Any]:
+        thread = await db.get_thread(thread_id)
+        if not thread:
+            raise HTTPException(status_code=404, detail="Thread not found")
+        messages = await db.get_thread_messages(thread_id)
+        cost = await db.thread_cost(thread_id)
+        return {**thread, "messages": messages, "total_cost_usd": cost}
+
+    @app.post("/api/threads/{thread_id}/messages", status_code=201)
+    async def post_thread_message(
+        thread_id: str, body: ThreadMessageModel
+    ) -> Dict[str, Any]:
+        thread = await db.get_thread(thread_id)
+        if not thread:
+            raise HTTPException(status_code=404, detail="Thread not found")
+        if not body.content.strip():
+            raise HTTPException(status_code=422, detail="Message content is required")
+        run = await db.get_run(thread["run_id"])
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        reply = await service.post_aside_message(
+            db, run, thread, user_message=body.content.strip()
+        )
+        cost = await db.thread_cost(thread_id)
+        return {"thread_id": thread_id, "reply": reply, "total_cost_usd": cost}
 
     # --------------------------- WebSocket stream -------------------------- #
     @app.websocket("/api/runs/{ref}/stream")

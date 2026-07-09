@@ -123,6 +123,78 @@ class Database:
             )
         """)
 
+        # ------------------------------------------------------------------ #
+        # Phase 1.5 additive tables (post-run analysis layer).
+        #
+        # These are NEW tables only. The Phase 0/1 tables above (runs, events,
+        # snapshots) are untouched: no columns added, no semantics changed, so
+        # every existing query/row keeps working. Summaries and aside threads
+        # are read-only analysis attached to a run — they never write to the
+        # canonical event log, snapshot, or the run's recorded cost.
+        # ------------------------------------------------------------------ #
+
+        # Model-generated (or imported) structured analysis of a completed run.
+        # `kind` distinguishes a freshly generated summary from an imported
+        # source summary carried in by the importer — the generated one never
+        # overwrites the imported original.
+        await self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS summaries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL REFERENCES runs(id),
+                kind TEXT NOT NULL DEFAULT 'generated',
+                payload_json TEXT NOT NULL,
+                tokens_in INTEGER NOT NULL DEFAULT 0,
+                tokens_out INTEGER NOT NULL DEFAULT 0,
+                cost_usd REAL NOT NULL DEFAULT 0.0,
+                created_at INTEGER NOT NULL
+            )
+        """)
+        await self._conn.execute("""
+            CREATE INDEX IF NOT EXISTS summaries_run
+            ON summaries(run_id, kind, created_at)
+        """)
+
+        # A scoped aside thread over a run. `mode` is always 'aside' in Phase
+        # 1.5; the column exists now so Phase 2 can add 'contribute' without a
+        # migration. `target` is 'analyst' | 'persona' | 'room'; persona_name is
+        # set only for a persona-target thread.
+        await self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS threads (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL REFERENCES runs(id),
+                target TEXT NOT NULL,
+                persona_name TEXT,
+                mode TEXT NOT NULL DEFAULT 'aside',
+                created_at INTEGER NOT NULL
+            )
+        """)
+        await self._conn.execute("""
+            CREATE INDEX IF NOT EXISTS threads_run
+            ON threads(run_id, created_at)
+        """)
+
+        # Messages within an aside thread. `role` is 'user' | 'target';
+        # `speaker` labels the responding voice (e.g. 'analyst', a persona name,
+        # or 'user'). Token/cost are tracked per message and counted SEPARATELY
+        # from the canonical run cost.
+        await self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS thread_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                thread_id TEXT NOT NULL REFERENCES threads(id),
+                role TEXT NOT NULL,
+                speaker TEXT,
+                content TEXT NOT NULL,
+                tokens_in INTEGER NOT NULL DEFAULT 0,
+                tokens_out INTEGER NOT NULL DEFAULT 0,
+                cost_usd REAL NOT NULL DEFAULT 0.0,
+                created_at INTEGER NOT NULL
+            )
+        """)
+        await self._conn.execute("""
+            CREATE INDEX IF NOT EXISTS thread_messages_thread
+            ON thread_messages(thread_id, id)
+        """)
+
         await self._conn.commit()
 
     async def create_run(
@@ -450,3 +522,205 @@ class Database:
             if row:
                 return SimSnapshot.model_validate_json(row[0])
             return None
+
+    # --------------------------------------------------------------------- #
+    # Phase 1.5 — post-run analysis (summaries + aside threads).
+    #
+    # All methods below operate ONLY on the additive tables. None of them write
+    # to `events`, `snapshots`, or mutate a run's recorded cost — the read-only
+    # invariant is enforced by construction here.
+    # --------------------------------------------------------------------- #
+
+    async def save_summary(
+        self,
+        run_id: str,
+        payload: Dict[str, Any],
+        kind: str = "generated",
+        tokens_in: int = 0,
+        tokens_out: int = 0,
+        cost_usd: float = 0.0,
+    ) -> Dict[str, Any]:
+        """
+        Persist a summary for a run. Appends a new row (versioned by created_at)
+        rather than replacing, so history is retained; the getters return the
+        latest per kind. A generated summary NEVER overwrites an imported one
+        (they are distinct ``kind`` values).
+        """
+        created_at = int(time.time())
+        cursor = await self._conn.execute(
+            """
+            INSERT INTO summaries (run_id, kind, payload_json, tokens_in,
+                                   tokens_out, cost_usd, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                kind,
+                json.dumps(payload),
+                tokens_in,
+                tokens_out,
+                cost_usd,
+                created_at,
+            ),
+        )
+        await self._conn.commit()
+        return {
+            "id": cursor.lastrowid,
+            "run_id": run_id,
+            "kind": kind,
+            "payload": payload,
+            "tokens_in": tokens_in,
+            "tokens_out": tokens_out,
+            "cost_usd": cost_usd,
+            "created_at": created_at,
+        }
+
+    async def get_summaries(self, run_id: str) -> List[Dict[str, Any]]:
+        """
+        Return the latest summary of each kind for a run (newest per kind),
+        each with its parsed payload. Kinds are typically 'generated' and
+        'imported'; both may be present simultaneously.
+        """
+        async with self._conn.execute(
+            """
+            SELECT * FROM summaries
+            WHERE run_id = ?
+            ORDER BY created_at DESC, id DESC
+            """,
+            (run_id,),
+        ) as cursor:
+            rows = [dict(r) for r in await cursor.fetchall()]
+
+        latest_by_kind: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            if row["kind"] in latest_by_kind:
+                continue
+            try:
+                payload = json.loads(row["payload_json"])
+            except json.JSONDecodeError:
+                payload = {}
+            latest_by_kind[row["kind"]] = {
+                "id": row["id"],
+                "run_id": row["run_id"],
+                "kind": row["kind"],
+                "payload": payload,
+                "tokens_in": row["tokens_in"],
+                "tokens_out": row["tokens_out"],
+                "cost_usd": row["cost_usd"],
+                "created_at": row["created_at"],
+            }
+        return list(latest_by_kind.values())
+
+    async def create_thread(
+        self,
+        thread_id: str,
+        run_id: str,
+        target: str,
+        persona_name: Optional[str] = None,
+        mode: str = "aside",
+    ) -> Dict[str, Any]:
+        """Create an aside thread over a run. ``mode`` is always 'aside' in 1.5."""
+        created_at = int(time.time())
+        await self._conn.execute(
+            """
+            INSERT INTO threads (id, run_id, target, persona_name, mode, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (thread_id, run_id, target, persona_name, mode, created_at),
+        )
+        await self._conn.commit()
+        return {
+            "id": thread_id,
+            "run_id": run_id,
+            "target": target,
+            "persona_name": persona_name,
+            "mode": mode,
+            "created_at": created_at,
+        }
+
+    async def get_thread(self, thread_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch a thread's metadata (without messages)."""
+        async with self._conn.execute(
+            "SELECT * FROM threads WHERE id = ?", (thread_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def list_threads(self, run_id: str) -> List[Dict[str, Any]]:
+        """List aside threads for a run (oldest first) with message counts."""
+        async with self._conn.execute(
+            """
+            SELECT t.*, COUNT(m.id) AS message_count,
+                   COALESCE(SUM(m.cost_usd), 0.0) AS total_cost_usd
+            FROM threads t
+            LEFT JOIN thread_messages m ON m.thread_id = t.id
+            WHERE t.run_id = ?
+            GROUP BY t.id
+            ORDER BY t.created_at ASC, t.id ASC
+            """,
+            (run_id,),
+        ) as cursor:
+            return [dict(r) for r in await cursor.fetchall()]
+
+    async def add_thread_message(
+        self,
+        thread_id: str,
+        role: str,
+        content: str,
+        speaker: Optional[str] = None,
+        tokens_in: int = 0,
+        tokens_out: int = 0,
+        cost_usd: float = 0.0,
+    ) -> Dict[str, Any]:
+        """Append a message (user or target) to an aside thread."""
+        created_at = int(time.time())
+        cursor = await self._conn.execute(
+            """
+            INSERT INTO thread_messages (thread_id, role, speaker, content,
+                                         tokens_in, tokens_out, cost_usd, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                thread_id,
+                role,
+                speaker,
+                content,
+                tokens_in,
+                tokens_out,
+                cost_usd,
+                created_at,
+            ),
+        )
+        await self._conn.commit()
+        return {
+            "id": cursor.lastrowid,
+            "thread_id": thread_id,
+            "role": role,
+            "speaker": speaker,
+            "content": content,
+            "tokens_in": tokens_in,
+            "tokens_out": tokens_out,
+            "cost_usd": cost_usd,
+            "created_at": created_at,
+        }
+
+    async def get_thread_messages(self, thread_id: str) -> List[Dict[str, Any]]:
+        """Return all messages in a thread, oldest first."""
+        async with self._conn.execute(
+            """
+            SELECT * FROM thread_messages
+            WHERE thread_id = ?
+            ORDER BY id ASC
+            """,
+            (thread_id,),
+        ) as cursor:
+            return [dict(r) for r in await cursor.fetchall()]
+
+    async def thread_cost(self, thread_id: str) -> float:
+        """Total USD cost of all target messages in a thread (asides only)."""
+        async with self._conn.execute(
+            "SELECT COALESCE(SUM(cost_usd), 0.0) FROM thread_messages WHERE thread_id = ?",
+            (thread_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return float(row[0]) if row else 0.0
