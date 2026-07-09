@@ -35,6 +35,10 @@ export function useRunStream({ runId, cast, autoConnect = true, reloadKey = 0 }:
   const [speedMs, setSpeedMs] = useState(700) // reveal pace during auto-play
   const [connected, setConnected] = useState(false)
   const [engineDone, setEngineDone] = useState(false)
+  // Whether we've done the one-time "jump to furthest point" on load. Until
+  // primed, we don't gradually reveal — we wait for the initial backlog so we
+  // can dump it all at once, then stream only new events.
+  const [primed, setPrimed] = useState(false)
   // Wall-clock (ms) when the most recent event was received; used to detect a
   // run that is still "running" server-side but has gone quiet (stalled).
   const [lastEventAt, setLastEventAt] = useState<number | null>(null)
@@ -51,6 +55,7 @@ export function useRunStream({ runId, cast, autoConnect = true, reloadKey = 0 }:
     setMode('live')
     setEngineDone(false)
     setLastEventAt(null)
+    setPrimed(false)
     seenSeqs.current = new Set()
   }, [runId, reloadKey])
 
@@ -109,13 +114,44 @@ export function useRunStream({ runId, cast, autoConnect = true, reloadKey = 0 }:
     }
   }, [runId, autoConnect, reloadKey, pushEvents])
 
-  // Auto-play: while live and not caught up, advance the cursor on a timer.
+  // On load, jump straight to the FURTHEST already-generated point: fetch the
+  // current backlog once and reveal all of it instantly (cursor -> its length),
+  // then let only newly-arriving live events stream in gradually. For a finished
+  // run this reveals the whole conversation at once; for a run 10-in-and-going
+  // it dumps the 10 immediately, then streams 11, 12, ... as they arrive.
   useEffect(() => {
+    if (!runId) return
+    let alive = true
+    api
+      .getEvents(runId)
+      .then((evts) => {
+        if (!alive) return
+        pushEvents(evts)
+        // The backlog is the lowest-seq `evts.length` events (seq is monotonic;
+        // any live event already received has a higher seq and stays unrevealed).
+        setCursor((c) => Math.max(c, evts.length))
+        setPrimed(true)
+      })
+      .catch(() => {
+        // Even if the prime fetch fails, unblock gradual reveal so the WS path
+        // still renders.
+        if (alive) setPrimed(true)
+      })
+    return () => {
+      alive = false
+    }
+  }, [runId, reloadKey, pushEvents])
+
+  // Auto-play: while live and not caught up, advance the cursor on a timer.
+  // Gated on `primed` so we don't drip-feed the initial backlog before the
+  // one-time jump-to-furthest has run.
+  useEffect(() => {
+    if (!primed) return
     if (mode !== 'live') return
     if (cursor >= buffer.length) return
     const id = setTimeout(() => setCursor((c) => Math.min(c + 1, buffer.length)), speedMs)
     return () => clearTimeout(id)
-  }, [mode, cursor, buffer.length, speedMs])
+  }, [primed, mode, cursor, buffer.length, speedMs])
 
   // Derived view state from the revealed slice only.
   const revealed = useMemo(() => buffer.slice(0, cursor), [buffer, cursor])
