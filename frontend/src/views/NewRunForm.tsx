@@ -38,6 +38,10 @@ export function NewRunForm({ onStarted, onCancel }: Props) {
   const [avatars, setAvatars] = useState(false)
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
+  // Phase 1.5 summary options (collapsed by default; useful default = enabled).
+  const [summaryOpen, setSummaryOpen] = useState(false)
+  const [summaryEnabled, setSummaryEnabled] = useState(true)
+  const [summaryFocus, setSummaryFocus] = useState('')
   const [model, setModel] = useState('')
   const [models, setModels] = useState<string[]>([])
   const [suggesting, setSuggesting] = useState(false)
@@ -99,6 +103,12 @@ export function NewRunForm({ onStarted, onCancel }: Props) {
         model: model || undefined,
         name: name.trim() || undefined,
         description: description.trim() || undefined,
+        // Only send a summary config when it differs from the useful default
+        // (enabled, no focus) — omitting it lets the server apply the default.
+        summary:
+          !summaryEnabled || summaryFocus.trim()
+            ? { enabled: summaryEnabled, focus: summaryFocus.trim() || undefined }
+            : undefined,
       })
       onStarted(res.run_id)
     } catch (e) {
@@ -191,6 +201,43 @@ export function NewRunForm({ onStarted, onCancel }: Props) {
               ))}
             </select>
           </label>
+        )}
+      </div>
+
+      <div className="mt-4 rounded-lg border border-matrix-border p-3">
+        <button
+          type="button"
+          onClick={() => setSummaryOpen((o) => !o)}
+          className="flex w-full items-center justify-between text-left text-sm font-semibold text-slate-300"
+        >
+          <span>Summary options</span>
+          <span className="text-xs text-slate-500">
+            {summaryEnabled ? 'auto-summary on' : 'auto-summary off'} {summaryOpen ? '▲' : '▼'}
+          </span>
+        </button>
+        {summaryOpen && (
+          <div className="mt-3 space-y-2">
+            <p className="text-[11px] text-slate-500">
+              When the run completes, generate a structured analyst summary (consensus,
+              dissenters, key ideas, open questions, overview). Model-generated analysis — you
+              can also generate it later on the run page.
+            </p>
+            <label className="flex items-center gap-2 text-sm text-slate-300">
+              <input
+                type="checkbox"
+                checked={summaryEnabled}
+                onChange={(e) => setSummaryEnabled(e.target.checked)}
+              />
+              Auto-generate summary at completion
+            </label>
+            <input
+              value={summaryFocus}
+              onChange={(e) => setSummaryFocus(e.target.value)}
+              disabled={!summaryEnabled}
+              placeholder="Optional focus (e.g. emphasize legal and ethical risk)"
+              className="w-full rounded border border-matrix-border bg-matrix-bg p-2 text-sm disabled:opacity-40"
+            />
+          </div>
         )}
       </div>
 

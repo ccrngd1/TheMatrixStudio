@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from matrix_studio.engine import run_simulation
 from matrix_studio.naming import generate_run_name
+from matrix_studio.service import maybe_autogenerate_summary
 from matrix_studio.storage import Database
 
 logger = logging.getLogger(__name__)
@@ -119,6 +120,20 @@ class RunManager:
         engine_request = dict(request)
         engine_request["name"] = name
         engine_request["description"] = description
+
+        # Phase 1.5: fold an optional top-level `summary` config into the run's
+        # stored config so it persists in config_json and drives auto-summary at
+        # completion. Omitted → default (enabled + full field set) applies later.
+        summary_cfg = request.get("summary")
+        if summary_cfg is not None:
+            cfg = dict(engine_request.get("config") or {})
+            cfg["summary"] = summary_cfg
+            engine_request["config"] = cfg
+        # Record the per-run model in config so analysis calls default to it.
+        if model:
+            cfg = dict(engine_request.get("config") or {})
+            cfg.setdefault("model", model)
+            engine_request["config"] = cfg
         if model:
             # Engine reads model from settings; per-run model override is not a
             # Phase 0 feature, so we only record it for now (kept additive).
@@ -132,12 +147,20 @@ class RunManager:
 
         async def _runner() -> None:
             try:
-                await run_simulation(
+                result = await run_simulation(
                     engine_request,
                     db=self.db,
                     run_id=run_id,
                     on_event=_on_event,
                 )
+                # Phase 1.5: after a run completes, auto-generate the structured
+                # summary (unless disabled in the run's summary config). This is
+                # read-only — it writes only to the additive `summaries` table,
+                # never a canonical event/snapshot/run-cost — so it happens after
+                # the broker has already streamed the terminal event and never
+                # affects the canonical run. Best-effort: it never raises.
+                if result.get("status") == "complete":
+                    await maybe_autogenerate_summary(self.db, run_id)
             except Exception:  # noqa: BLE001
                 logger.exception("Background run %s crashed", run_id)
             finally:

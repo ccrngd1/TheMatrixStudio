@@ -2,7 +2,16 @@
 // Thin REST client. Keys never touch the browser — all provider credentials
 // live server-side; these endpoints only exchange run metadata and events.
 
-import type { RunDetail, RunSummary, SimEvent } from './types'
+import type {
+  AsideTarget,
+  RunDetail,
+  RunSummary,
+  SimEvent,
+  StoredSummary,
+  ThreadDetail,
+  ThreadMessage,
+  ThreadSummary,
+} from './types'
 
 async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
@@ -29,6 +38,8 @@ export interface CreateRunBody {
   model?: string
   name?: string
   description?: string
+  // Phase 1.5: optional summary config (omit → default: enabled + full fields).
+  summary?: { enabled: boolean; fields?: string[]; focus?: string }
 }
 
 export interface CreateRunResponse {
@@ -67,6 +78,39 @@ export const api = {
 
   getModels: () =>
     jsonFetch<{ default: string; models: string[] }>('/api/models'),
+
+  // -------- Phase 1.5: post-run analysis (read-only) -------- //
+
+  getSummary: (ref: string) =>
+    jsonFetch<{ run_id: string; generated: StoredSummary | null; imported: StoredSummary | null }>(
+      `/api/runs/${encodeURIComponent(ref)}/summary`,
+    ),
+
+  generateSummary: (ref: string, body?: { fields?: string[]; focus?: string }) =>
+    jsonFetch<{ run_id: string; generated: StoredSummary; imported: StoredSummary | null }>(
+      `/api/runs/${encodeURIComponent(ref)}/summary`,
+      { method: 'POST', body: JSON.stringify(body || {}) },
+    ),
+
+  listThreads: (ref: string) =>
+    jsonFetch<{ run_id: string; threads: ThreadSummary[] }>(
+      `/api/runs/${encodeURIComponent(ref)}/threads`,
+    ).then((r) => r.threads),
+
+  createThread: (ref: string, target: AsideTarget, personaName?: string) =>
+    jsonFetch<ThreadSummary>(`/api/runs/${encodeURIComponent(ref)}/threads`, {
+      method: 'POST',
+      body: JSON.stringify({ target, persona_name: personaName }),
+    }),
+
+  getThread: (threadId: string) =>
+    jsonFetch<ThreadDetail>(`/api/threads/${encodeURIComponent(threadId)}`),
+
+  postThreadMessage: (threadId: string, content: string) =>
+    jsonFetch<{ thread_id: string; reply: ThreadMessage; total_cost_usd: number }>(
+      `/api/threads/${encodeURIComponent(threadId)}/messages`,
+      { method: 'POST', body: JSON.stringify({ content }) },
+    ),
 }
 
 // Build the WebSocket URL for a run's live stream.
