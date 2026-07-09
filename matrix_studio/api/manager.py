@@ -188,6 +188,7 @@ class RunManager:
         name: Optional[str] = None,
         description: Optional[str] = None,
         model: Optional[str] = None,
+        mutation: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Fork ``parent_run`` at ``from_turn`` into a NEW run that resumes
@@ -209,6 +210,7 @@ class RunManager:
             name=name,
             description=description,
             gen_model=model,
+            mutation=mutation,
         )
         branch_run_id = meta["run_id"]
         max_messages = meta["max_messages"]
@@ -230,6 +232,7 @@ class RunManager:
                     max_messages=max_messages,
                     on_event=_on_event,
                     model=branch_model,
+                    mutation=mutation,
                 )
                 # Auto-summarize a completed branch, same as a fresh run. Purely
                 # additive (writes only the summaries table); never touches the
