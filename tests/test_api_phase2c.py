@@ -177,6 +177,15 @@ def test_regenerate_avatar_persists_and_returns_new_portrait(client):
     d = client.get(f"/api/runs/{run_id}/agents/Ada/dossier").json()
     assert d["portrait_b64"] == "NEWFAKEB64"
 
+    # And a fresh avatar.ready event is appended so the portrait survives reload
+    # and shows across the event-derived UI (not just the snapshot).
+    events = client.get(f"/api/runs/{run_id}/events").json()["events"]
+    ready = [e for e in events
+             if e["event_type"] == "avatar.ready"
+             and (e["payload"].get("agent_name") == "Ada")]
+    assert ready, "expected an avatar.ready event for Ada"
+    assert ready[-1]["payload"]["portrait_b64"] == "NEWFAKEB64"
+
 
 def test_regenerate_avatar_unknown_agent_404(client):
     run_id = _mk_plain_run(client)
