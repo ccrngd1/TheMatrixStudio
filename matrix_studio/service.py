@@ -42,15 +42,25 @@ def resolve_model(run: Dict[str, Any], override: Optional[str] = None) -> Option
     run's configured model, else None (analysis falls back to the current
     settings default).
 
-    Exception for IMPORTED runs: their stored model string comes from a legacy
-    system and may be end-of-life (e.g. the bridge-kibble fixture records an EOL
-    Haiku). A summary/aside is NEW analysis we compute now — not a replay — so
-    for imported runs we prefer the current settings default rather than
-    forwarding a possibly-dead model. We never substitute a specific EOL model;
-    we only decline to reuse a stale imported one.
+    Exception for IMPORTED and BRANCH runs: their stored model string is not a
+    model this run actually generated fresh with here —
+      * imported runs carry a legacy model from another system (e.g. the
+        bridge-kibble fixture records an EOL Haiku);
+      * branch/resumed runs inherit their parent's config model, which may be
+        stale/EOL, even though the engine always generates with the current
+        settings default (never the config model).
+    A summary/aside is NEW analysis we compute now — not a replay — so for these
+    runs we prefer the current settings default rather than forwarding a
+    possibly-dead inherited model. We never substitute a specific EOL model; we
+    only decline to reuse a stale one.
     """
     if override:
         return override
+    # A branch (parent_run_id set) inherited its config model from the parent;
+    # treat it like an imported run and use the current default for fresh
+    # analysis rather than the possibly-stale inherited model.
+    if run.get("parent_run_id"):
+        return None
     cfg = _run_config(run)
     if cfg.get("imported"):
         return None  # use the current settings default for fresh analysis
