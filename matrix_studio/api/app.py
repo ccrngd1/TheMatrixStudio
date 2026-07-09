@@ -176,6 +176,30 @@ def _run_summary(run: Dict[str, Any]) -> Dict[str, Any]:
 _SUPPORTED_MUTATION_KINDS = {"inject_message", "continue", "edit_goal", "add_persona", "remove_persona", "promote_aside"}
 
 
+# Friendly labels for the model dropdown. Exact known ids map to clean names;
+# anything else falls back to a best-effort cleanup of the raw id tail.
+_MODEL_LABELS = {
+    "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0": "Haiku 4.5",
+    "bedrock/global.anthropic.claude-sonnet-4-6": "Sonnet 4.6",
+    "bedrock/global.anthropic.claude-opus-4-8": "Opus 4.8",
+    "bedrock/amazon.nova-pro-v1:0": "Nova Pro",
+    "bedrock/us.amazon.nova-pro-v1:0": "Nova Pro",
+    "bedrock/amazon.nova-premier-v1:0": "Nova Premier",
+    "bedrock/us.amazon.nova-premier-v1:0": "Nova Premier",
+    "bedrock/us.meta.llama4-maverick-17b-instruct-v1:0": "Llama 4 Maverick",
+    "bedrock/us.meta.llama4-scout-17b-instruct-v1:0": "Llama 4 Scout",
+}
+
+
+def _model_label(model_id: str) -> str:
+    """Human-friendly label for a model id used in the UI dropdown."""
+    if model_id in _MODEL_LABELS:
+        return _MODEL_LABELS[model_id]
+    # Fallback: last path segment, provider/version noise trimmed.
+    tail = model_id.split("/")[-1]
+    return tail
+
+
 def _validate_branch_mutation(
     mutation: Optional["BranchMutationModel"],
 ) -> Optional[Dict[str, Any]]:
@@ -335,11 +359,15 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
 
     @app.get("/api/models")
     async def models() -> Dict[str, Any]:
-        """Model string(s) selectable in the new-run form + in-thread pickers.
-        Keys stay server-side; this only exposes the allowlist of model strings."""
+        """Models selectable in the new-run form + in-thread pickers. Returns each
+        model as ``{id, label}`` (friendly label for the UI dropdown). Keys stay
+        server-side; this only exposes the allowlist of model strings."""
         return {
             "default": settings.litellm_model,
-            "models": settings.available_model_list,
+            "models": [
+                {"id": m, "label": _model_label(m)}
+                for m in settings.available_model_list
+            ],
         }
 
     @app.get("/api/name/suggest")

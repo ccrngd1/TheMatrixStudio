@@ -43,7 +43,7 @@ export function NewRunForm({ onStarted, onCancel }: Props) {
   const [summaryEnabled, setSummaryEnabled] = useState(true)
   const [summaryFocus, setSummaryFocus] = useState('')
   const [model, setModel] = useState('')
-  const [models, setModels] = useState<string[]>([])
+  const [models, setModels] = useState<{ id: string; label: string }[]>([])
   const [suggesting, setSuggesting] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -195,8 +195,8 @@ export function NewRunForm({ onStarted, onCancel }: Props) {
               className="rounded border border-matrix-border bg-matrix-bg p-1 text-sm"
             >
               {models.map((m) => (
-                <option key={m} value={m}>
-                  {m}
+                <option key={m.id} value={m.id}>
+                  {m.label}
                 </option>
               ))}
             </select>
