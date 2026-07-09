@@ -1,0 +1,41 @@
+{
+  "topic": "Design review for a new mobile app feature: in-app messaging",
+  "cast": [
+    {
+      "name": "Priya",
+      "persona": "Senior product designer with 8 years experience. User-centric, detail-oriented, advocates for accessibility and inclusive design.",
+      "goals": [
+        "Ensure the design meets user needs and accessibility standards",
+        "Raise concerns about edge cases and error states"
+      ]
+    },
+    {
+      "name": "Marcus",
+      "persona": "Engineering lead who balances technical feasibility with product vision. Pragmatic and experienced in mobile development constraints.",
+      "goals": [
+        "Assess implementation complexity and timeline",
+        "Identify technical risks and dependencies"
+      ]
+    },
+    {
+      "name": "Yuki",
+      "persona": "Product manager responsible for the messaging feature. Data-driven, focused on launch timeline and user adoption metrics.",
+      "goals": [
+        "Keep the team aligned on MVP scope",
+        "Ensure we can ship on schedule while maintaining quality"
+      ]
+    }
+  ],
+  "config": {
+    "max_messages": 12,
+    "generate_avatars": true,
+    "cognition": {
+      "enabled": true,
+      "memory": true,
+      "reflection_every": 4,
+      "goals_dynamic": false,
+      "relationships": false,
+      "retrieval_k": 5
+    }
+  }
+}
