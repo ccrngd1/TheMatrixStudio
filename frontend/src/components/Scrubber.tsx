@@ -13,13 +13,17 @@ interface Props {
   // The run's original turn budget — the default length of a new discussion
   // round after an injected message.
   defaultBudget?: number
-  // Phase 2b: optional mutation forwarded to the branch; no mutation = plain fork
-  onBranch: (fromTurn: number, mutation?: Record<string, unknown>) => void
+  // Selectable models + the default (inherited from the page's model picker).
+  models?: { id: string; label: string }[]
+  defaultModel?: string
+  // Phase 2b: optional mutation + optional model override forwarded to the
+  // branch; no mutation = plain fork.
+  onBranch: (fromTurn: number, mutation?: Record<string, unknown>, model?: string) => void
   branching?: boolean
 }
 
 // Checkpoint scrubber (Phase 2a+2b): read-only turn slider + Phase 2b intervention panel.
-export function Scrubber({ runId, maxTurn, cast, defaultBudget, onBranch, branching = false }: Props) {
+export function Scrubber({ runId, maxTurn, cast, defaultBudget, models = [], defaultModel, onBranch, branching = false }: Props) {
   const [events, setEvents] = useState<SimEvent[]>([])
   const [turn, setTurn] = useState(maxTurn)
   const [loading, setLoading] = useState(true)
@@ -27,6 +31,8 @@ export function Scrubber({ runId, maxTurn, cast, defaultBudget, onBranch, branch
   const [mutKind, setMutKind] = useState<string>('inject_message')
   const [injectSpeaker, setInjectSpeaker] = useState('')
   const [injectContent, setInjectContent] = useState('')
+  // Model for the intervention branch; defaults to the page's selected model.
+  const [branchModel, setBranchModel] = useState<string>(defaultModel ?? '')
   // Length of the new discussion round after an injected message; defaults to
   // the run's original budget.
   const [injectTurns, setInjectTurns] = useState<number>(defaultBudget ?? maxTurn ?? 20)
@@ -71,7 +77,7 @@ export function Scrubber({ runId, maxTurn, cast, defaultBudget, onBranch, branch
   }
 
   const handleBranch = (withMutation: boolean) =>
-    onBranch(turn, withMutation ? buildMutation() : undefined)
+    onBranch(turn, withMutation ? buildMutation() : undefined, branchModel || undefined)
 
   return (
     <div className="flex h-full flex-col">
@@ -111,6 +117,16 @@ export function Scrubber({ runId, maxTurn, cast, defaultBudget, onBranch, branch
                 <option value="add_persona">➕ Add persona</option>
                 <option value="remove_persona">➖ Remove persona</option>
               </select>
+              {models.length > 0 && (
+                <>
+                  <label className="ml-auto text-xs text-slate-400">Model</label>
+                  <select value={branchModel} onChange={(e) => setBranchModel(e.target.value)}
+                    title="Model the branched discussion generates with (defaults to the page's model)"
+                    className="max-w-[12rem] rounded border border-matrix-border bg-matrix-panel px-2 py-1 text-xs text-slate-200">
+                    {models.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+                  </select>
+                </>
+              )}
             </div>
 
             {mutKind === 'inject_message' && (<>

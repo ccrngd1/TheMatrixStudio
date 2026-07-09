@@ -74,6 +74,6 @@ describe('Scrubber', () => {
     fireEvent.change(slider, { target: { value: '2' } })
     fireEvent.click(screen.getByRole('button', { name: /branch from here/i }))
 
-    expect(onBranch).toHaveBeenCalledWith(2, undefined)
+    expect(onBranch).toHaveBeenCalledWith(2, undefined, undefined)
   })
 })
