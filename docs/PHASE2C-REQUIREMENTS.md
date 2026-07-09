@@ -1,6 +1,6 @@
 # Requirements — TheMatrix Simulation Studio, Phase 2c
 
-**Status:** DRAFT — for CC approval (2026-07-09)
+**Status:** DRAFT v2 — four opens resolved by CC 2026-07-09; ready for build approval
 **Spec:** `docs/PROJECT-SPEC.md` (§6 Phase 2c, §8b why-not-AutoGen, §6a interaction design)
 **Builds on:** Phase 2a (event log + per-turn snapshots) and Phase 2b (branch-with-mutation).
 
@@ -79,7 +79,8 @@ snapshot state, exactly like `agent.response` is today.
 - **Memory retrieval.** Before a turn, the top-K memories (by importance + recency) are injected into
   that agent's prompt; the ids surfaced are exactly the `memory_refs` the rationale may cite. This is
   what makes memory *causal*, not decorative.
-- **Reflection/beliefs.** Every N turns (configurable, default off→opt-in) an agent condenses recent
+- **Reflection/beliefs.** Every N turns (default N=4, **on** when cognition is enabled; CC
+  2026-07-09) an agent condenses recent
   memories into a higher-level `belief` (a `MemoryItem` tagged `reflection`), emitted as
   `agent.reflected`. Keeps the stream from growing unboundedly and produces the "beliefs" view.
 - **Goal updates.** If an agent's turn implies a goal shift, it may update its own `goals`; emitted
@@ -96,7 +97,8 @@ snapshot state, exactly like `agent.response` is today.
 - `cognition.enabled` (bool, default False) — master switch. When False, generation is exactly the
   current plain-text path; no new events; zero extra token cost.
 - `cognition.memory` (bool) — form + retrieve memories.
-- `cognition.reflection_every` (int, default 0 = off) — reflect every N turns.
+- `cognition.reflection_every` (int, default 4 = ON, CC 2026-07-09) — reflect every N turns.
+  Reflection is **on by default** when `cognition.enabled` is true; set to 0 to disable.
 - `cognition.goals_dynamic` (bool) — allow self goal updates.
 - `cognition.relationships` (bool) — track stance strings.
 - `cognition.retrieval_k` (int, default 5) — memories injected per turn.
@@ -190,11 +192,16 @@ Each step: additive, all prior tests green, its own tests + commit + push (same 
 
 ---
 
+## Decisions (CC 2026-07-09)
+1. **Reflection: ON by default** (`reflection_every=4`) whenever cognition is enabled; 0 disables.
+2. **Structured-output transport: single litellm JSON-mode call** (assistant's call) — cheaper and
+   keeps the rationale causally tied to the utterance it explains (one generation, one record).
+3. **Legacy-run "why" trace: SHIP the labeled option-B aside in 2c** — reuse Phase 1.5 aside
+   machinery; unmistakably labeled "model interpretation, not the agent's recorded reasoning";
+   delivered as a read-only aside, never persisted as `AgentState`.
+4. **Retrieval ranking: importance+recency heuristic for v1** — no embeddings / vector store
+   (single-node install, §7); embedding-based semantic relevance is a documented later option.
+
 ## Open questions (for CC / PreCog)
-1. **Reflection default:** off (opt-in) for v1 to keep cost/latency predictable — confirm.
-2. **Structured output transport:** litellm JSON-mode vs. a second lightweight call. Leaning
-   single JSON-mode call (cheaper, keeps rationale causally tied to the utterance). Confirm.
-3. **Trace for legacy runs:** ship the labeled option-B aside in 2c, or defer and just show
-   `{available:false}`? (Leaning: ship it — it's cheap reuse of Phase 1.5 and demos well.)
-4. **Retrieval ranking:** importance+recency heuristic for v1 (no embeddings) — confirm acceptable
-   before we consider a vector store later.
+- None blocking — all four opens resolved above. Embedding-based retrieval is deferred, not cut;
+  revisit if recall quality on longer runs proves insufficient.
