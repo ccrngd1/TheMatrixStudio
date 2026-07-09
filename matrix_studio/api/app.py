@@ -58,6 +58,7 @@ class CognitionConfigModel(BaseModel):
     ``enabled`` is False the engine path is byte-for-byte identical to Phase 2b.
     ``reflection_every`` is ON by default (4) but only takes effect when enabled."""
     enabled: bool = False
+    memory: bool = True
     reflection_every: int = Field(default=4, ge=0)
     goals_dynamic: bool = False
     relationships: bool = False

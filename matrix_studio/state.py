@@ -7,6 +7,7 @@ and migration support.
 """
 
 from typing import Any, Dict, List, Optional
+import uuid
 from pydantic import BaseModel, Field
 
 
@@ -14,6 +15,7 @@ class MemoryItem(BaseModel):
     """A single memory item in an agent's memory stream."""
     type: str = Field(default="MemoryItem", description="Type discriminator")
     schema_version: str = Field(default="1.0.0", description="Schema version for migration")
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, description="Stable memory id (for memory_refs)")
     timestamp: int = Field(description="Unix timestamp")
     content: str = Field(description="Memory content")
     importance: Optional[float] = Field(default=None, description="Importance score 0-1")
@@ -48,6 +50,7 @@ class CognitionConfig(BaseModel):
     type: str = Field(default="CognitionConfig", description="Type discriminator")
     schema_version: str = Field(default="1.0.0", description="Schema version")
     enabled: bool = Field(default=False, description="Master switch for cognition")
+    memory: bool = Field(default=True, description="Form + retrieve agent memories (on when enabled)")
     reflection_every: int = Field(
         default=4, ge=0,
         description="Reflect every N turns (0 disables); ON by default when enabled",
