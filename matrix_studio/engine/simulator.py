@@ -867,6 +867,53 @@ async def _run_turns(
 
             logger.info(f"Turn {turn}/{max_messages}: {speaker_name}: {response_data['content'][:100]}...")
 
+            # Phase 3: check cost cap AFTER each turn (additive; when cap is 0 this
+            # adds zero overhead). The cap acts on accumulated REAL cost_usd; when
+            # litellm reports no cost for a call we count $0 for that call (no
+            # fabrication). Cap-reached stops generation and ends in a terminal
+            # "capped" status (so WebSocket closes).
+            cap = settings.max_run_cost_usd
+            if cap > 0:
+                total_cost = sum(a.total_cost_usd for a in agents.values())
+                if total_cost >= cap:
+                    completion_time = int(time.time())
+                    await emit(
+                        turn=turn,
+                        seq=next_seq(),
+                        event_type="sim.capped",
+                        payload={
+                            "total_turns": turn,
+                            "message_count": len(conversation),
+                            "total_cost_usd": total_cost,
+                            "cap_usd": cap,
+                        },
+                    )
+                    if db:
+                        snapshot = SimSnapshot(
+                            run_id=run_id,
+                            turn=turn,
+                            topic=topic,
+                            agents=agents,
+                            conversation=conversation,
+                            status="capped",
+                            created_at=completion_time,
+                            completed_at=completion_time,
+                            total_turns=turn,
+                        )
+                        await db.save_snapshot(snapshot)
+                        await db.update_run_status(run_id, "capped", completion_time)
+                    logger.info(f"Simulation {run_id} capped at ${total_cost:.4f} (cap ${cap})")
+                    return {
+                        "run_id": run_id,
+                        "status": "capped",
+                        "topic": topic,
+                        "conversation": conversation,
+                        "agents": {name: agent.model_dump() for name, agent in agents.items()},
+                        "total_turns": turn,
+                        "total_cost_usd": total_cost,
+                        "cap_usd": cap,
+                    }
+
         # Simulation complete
         completion_time = int(time.time())
         total_cost = sum(a.total_cost_usd for a in agents.values())
