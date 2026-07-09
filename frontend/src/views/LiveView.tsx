@@ -93,11 +93,14 @@ export function LiveView({ runId, onBack, onOpenRun }: Props) {
 
   // Fork this run at the given turn into a NEW run, then navigate to its live
   // view. The parent (this run) is never modified.
-  const branchFrom = async (fromTurn: number) => {
+  const branchFrom = async (fromTurn: number, mutation?: Record<string, unknown>) => {
     setBranching(true)
     setBranchError(null)
     try {
-      const res = await api.branchRun(runId, fromTurn, analysisModel ? { model: analysisModel } : undefined)
+      const opts: Record<string, unknown> = {}
+      if (analysisModel) opts.model = analysisModel
+      if (mutation) opts.mutation = mutation
+      const res = await api.branchRun(runId, fromTurn, Object.keys(opts).length ? opts : undefined)
       setScrubbing(false)
       if (onOpenRun) onOpenRun(res.run_id)
     } catch (e) {

@@ -8,42 +8,59 @@ import { ConversationFeed } from './ConversationFeed'
 
 interface Props {
   runId: string
-  // Highest turn available (parent's turn count). The slider spans 0..maxTurn.
   maxTurn: number
   cast: Persona[]
-  // Called with the current scrubber turn when the user forks "from here".
-  onBranch: (fromTurn: number) => void
+  // Phase 2b: optional mutation forwarded to the branch; no mutation = plain fork
+  onBranch: (fromTurn: number, mutation?: Record<string, unknown>) => void
   branching?: boolean
 }
 
-// Checkpoint scrubber (Phase 2a): a read-only turn slider that shows the cast
-// board + conversation feed AS OF turn N. State is reconstructed by replaying
-// the run's own event log up to the selected turn — the same fold the live view
-// uses — so it works identically for a completed run, an imported run, or a
-// branch. Nothing here mutates the run; the only write action is "Branch from
-// here", which forks a NEW run and leaves this one untouched.
+// Checkpoint scrubber (Phase 2a+2b): read-only turn slider + Phase 2b intervention panel.
 export function Scrubber({ runId, maxTurn, cast, onBranch, branching = false }: Props) {
   const [events, setEvents] = useState<SimEvent[]>([])
   const [turn, setTurn] = useState(maxTurn)
   const [loading, setLoading] = useState(true)
+  const [showIntervene, setShowIntervene] = useState(false)
+  const [mutKind, setMutKind] = useState<string>('inject_message')
+  const [injectSpeaker, setInjectSpeaker] = useState('')
+  const [injectContent, setInjectContent] = useState('')
+  const [addBudget, setAddBudget] = useState(5)
+  const [editPersona, setEditPersona] = useState('')
+  const [editGoals, setEditGoals] = useState('')
+  const [addName, setAddName] = useState('')
+  const [addPersonaText, setAddPersonaText] = useState('')
+  const [addGoals, setAddGoals] = useState('')
+  const [removePersona, setRemovePersona] = useState('')
 
   useEffect(() => {
     setLoading(true)
-    api
-      .getEvents(runId)
-      .then((evts) => {
-        setEvents(evts)
-        setTurn(maxTurn)
-      })
-      .catch(() => setEvents([]))
-      .finally(() => setLoading(false))
+    api.getEvents(runId).then((evts) => { setEvents(evts); setTurn(maxTurn) })
+      .catch(() => setEvents([])).finally(() => setLoading(false))
   }, [runId, maxTurn])
 
-  // Fold only the events up to and including the selected turn.
   const state = useMemo(() => {
     const upto = events.filter((e) => e.turn <= turn)
     return deriveState(initialState(cast), upto)
   }, [events, turn, cast])
+
+  const castNames = Object.keys(state.agents)
+
+  const buildMutation = (): Record<string, unknown> | undefined => {
+    if (mutKind === 'inject_message')
+      return { kind: 'inject_message', speaker: injectSpeaker.trim(), content: injectContent.trim() }
+    if (mutKind === 'continue') return { kind: 'continue', add_budget: addBudget }
+    if (mutKind === 'edit_goal')
+      return { kind: 'edit_goal', persona_name: editPersona,
+               goals: editGoals.split('\n').map((g) => g.trim()).filter(Boolean) }
+    if (mutKind === 'add_persona')
+      return { kind: 'add_persona', name: addName.trim(), persona: addPersonaText.trim(),
+               goals: addGoals.split('\n').map((g) => g.trim()).filter(Boolean) }
+    if (mutKind === 'remove_persona') return { kind: 'remove_persona', persona_name: removePersona }
+    return undefined
+  }
+
+  const handleBranch = (withMutation: boolean) =>
+    onBranch(turn, withMutation ? buildMutation() : undefined)
 
   return (
     <div className="flex h-full flex-col">
@@ -51,54 +68,109 @@ export function Scrubber({ runId, maxTurn, cast, onBranch, branching = false }: 
         <div className="mb-1 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span className="text-sm font-semibold text-slate-200">Checkpoint scrubber</span>
-            <span className="rounded bg-matrix-border px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-400">
-              read-only
-            </span>
+            <span className="rounded bg-matrix-border px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-400">read-only</span>
           </div>
-          <span className="text-xs text-slate-400">
-            turn {turn} / {maxTurn}
-          </span>
+          <span className="text-xs text-slate-400">turn {turn} / {maxTurn}</span>
         </div>
-        <div className="flex items-center gap-3">
-          <input
-            type="range"
-            min={0}
-            max={maxTurn}
-            value={turn}
-            aria-label="checkpoint turn"
+        <div className="flex flex-wrap items-center gap-2">
+          <input type="range" min={0} max={maxTurn} value={turn} aria-label="checkpoint turn"
             onChange={(e) => setTurn(Number(e.target.value))}
-            className="flex-1 accent-matrix-accent"
-          />
-          <button
-            onClick={() => onBranch(turn)}
-            disabled={branching}
-            title="Fork a new run that resumes forward from this turn — the original is preserved"
-            className="whitespace-nowrap rounded bg-matrix-accent px-3 py-1 text-sm font-semibold text-matrix-bg hover:bg-sky-400 disabled:opacity-40"
-          >
+            className="flex-1 min-w-[120px] accent-matrix-accent" />
+          <button onClick={() => handleBranch(false)} disabled={branching}
+            title="Fork a new run from this turn — original preserved"
+            className="whitespace-nowrap rounded bg-matrix-accent px-3 py-1 text-sm font-semibold text-matrix-bg hover:bg-sky-400 disabled:opacity-40">
             {branching ? 'Branching…' : '⑂ Branch from here'}
           </button>
+          <button onClick={() => setShowIntervene((v) => !v)}
+            title="Branch with an intervention applied at this turn"
+            className={`whitespace-nowrap rounded border px-3 py-1 text-sm ${showIntervene ? 'border-matrix-accent text-matrix-accent' : 'border-matrix-border text-slate-400 hover:border-sky-500 hover:text-sky-400'}`}>
+            ⚡ Intervene
+          </button>
         </div>
+
+        {showIntervene && (
+          <div className="mt-3 rounded border border-matrix-border bg-matrix-bg p-3 text-sm space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="text-xs text-slate-400">Mutation</label>
+              <select value={mutKind} onChange={(e) => setMutKind(e.target.value)}
+                className="rounded border border-matrix-border bg-matrix-panel px-2 py-1 text-xs text-slate-200">
+                <option value="inject_message">💬 Inject message</option>
+                <option value="continue">▶ Continue (+N turns)</option>
+                <option value="edit_goal">🎯 Edit goal</option>
+                <option value="add_persona">➕ Add persona</option>
+                <option value="remove_persona">➖ Remove persona</option>
+              </select>
+            </div>
+
+            {mutKind === 'inject_message' && (<>
+              <input placeholder="Speaker name (can be new, e.g. Moderator)"
+                value={injectSpeaker} onChange={(e) => setInjectSpeaker(e.target.value)}
+                className="w-full rounded border border-matrix-border bg-matrix-bg px-2 py-1 text-xs text-slate-200" />
+              <textarea placeholder="Message content…" value={injectContent} rows={3}
+                onChange={(e) => setInjectContent(e.target.value)}
+                className="w-full rounded border border-matrix-border bg-matrix-bg px-2 py-1 text-xs text-slate-200" />
+            </>)}
+
+            {mutKind === 'continue' && (
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-slate-400">Add turns</label>
+                <input type="number" min={1} value={addBudget}
+                  onChange={(e) => setAddBudget(Number(e.target.value))}
+                  className="w-24 rounded border border-matrix-border bg-matrix-bg px-2 py-1 text-xs text-slate-200" />
+              </div>
+            )}
+
+            {mutKind === 'edit_goal' && (<>
+              <select value={editPersona} onChange={(e) => setEditPersona(e.target.value)}
+                className="w-full rounded border border-matrix-border bg-matrix-panel px-2 py-1 text-xs text-slate-200">
+                <option value="">Select persona…</option>
+                {castNames.map((n) => <option key={n} value={n}>{n}</option>)}
+              </select>
+              <textarea placeholder="New goals, one per line" value={editGoals} rows={3}
+                onChange={(e) => setEditGoals(e.target.value)}
+                className="w-full rounded border border-matrix-border bg-matrix-bg px-2 py-1 text-xs text-slate-200" />
+            </>)}
+
+            {mutKind === 'add_persona' && (<>
+              <input placeholder="Name" value={addName} onChange={(e) => setAddName(e.target.value)}
+                className="w-full rounded border border-matrix-border bg-matrix-bg px-2 py-1 text-xs text-slate-200" />
+              <textarea placeholder="Persona description" value={addPersonaText} rows={2}
+                onChange={(e) => setAddPersonaText(e.target.value)}
+                className="w-full rounded border border-matrix-border bg-matrix-bg px-2 py-1 text-xs text-slate-200" />
+              <textarea placeholder="Goals, one per line (optional)" value={addGoals} rows={2}
+                onChange={(e) => setAddGoals(e.target.value)}
+                className="w-full rounded border border-matrix-border bg-matrix-bg px-2 py-1 text-xs text-slate-200" />
+            </>)}
+
+            {mutKind === 'remove_persona' && (
+              <select value={removePersona} onChange={(e) => setRemovePersona(e.target.value)}
+                className="w-full rounded border border-matrix-border bg-matrix-panel px-2 py-1 text-xs text-slate-200">
+                <option value="">Select persona to remove…</option>
+                {castNames.map((n) => <option key={n} value={n}>{n}</option>)}
+              </select>
+            )}
+
+            <div className="flex justify-end">
+              <button onClick={() => handleBranch(true)} disabled={branching}
+                className="rounded bg-matrix-accent px-3 py-1 text-sm font-semibold text-matrix-bg hover:bg-sky-400 disabled:opacity-40">
+                {branching ? 'Branching…' : '⑂ Branch with intervention'}
+              </button>
+            </div>
+          </div>
+        )}
+
         <p className="mt-1 text-[11px] text-slate-500">
-          Viewing state as of turn {turn}. Branching forks a new run resuming from here; this run is
-          never modified.
+          Viewing state as of turn {turn}. Branching forks a new run resuming from here; this run is never modified.
         </p>
       </div>
 
       <div className="grid flex-1 grid-cols-1 gap-4 overflow-hidden p-4 lg:grid-cols-[300px_1fr]">
         <aside className="overflow-y-auto">
-          {loading ? (
-            <p className="text-sm text-slate-500">Loading checkpoints…</p>
-          ) : (
-            <CastBoard state={state} onSelect={() => {}} />
-          )}
+          {loading ? <p className="text-sm text-slate-500">Loading checkpoints…</p>
+            : <CastBoard state={state} onSelect={() => {}} />}
         </aside>
         <main className="overflow-hidden rounded-lg border border-matrix-border bg-matrix-panel">
-          <ConversationFeed
-            feed={state.feed}
-            agents={state.agents}
-            activeSpeaker={null}
-            thinking={false}
-          />
+          <ConversationFeed feed={state.feed} agents={state.agents} activeSpeaker={null} thinking={false} />
         </main>
       </div>
     </div>
