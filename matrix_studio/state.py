@@ -37,6 +37,38 @@ class AgentState(BaseModel):
     portrait: Optional[str] = Field(default=None, description="Base64 encoded avatar image")
 
 
+class CognitionConfig(BaseModel):
+    """Phase 2c cognition flags (per-run, read from ``config['cognition']``).
+
+    All flags default to the pre-2c behavior: when ``enabled`` is False the
+    engine's generation path is byte-for-byte identical to Phase 2b (no
+    structured output, no new events, no extra token cost). ``enabled`` is the
+    master switch; the sub-flags only take effect when it is True.
+    """
+    type: str = Field(default="CognitionConfig", description="Type discriminator")
+    schema_version: str = Field(default="1.0.0", description="Schema version")
+    enabled: bool = Field(default=False, description="Master switch for cognition")
+    reflection_every: int = Field(
+        default=4, ge=0,
+        description="Reflect every N turns (0 disables); ON by default when enabled",
+    )
+    goals_dynamic: bool = Field(default=False, description="Allow agents to update their own goals")
+    relationships: bool = Field(default=False, description="Track per-agent stance toward others")
+    retrieval_k: int = Field(default=5, ge=0, description="Memories injected into each turn's prompt")
+
+    @classmethod
+    def from_config(cls, config: Optional[Dict[str, Any]]) -> "CognitionConfig":
+        """Parse from a run ``config`` dict. Missing/invalid -> all-off default.
+
+        Accepts ``config['cognition']`` as a dict; anything else yields the
+        disabled default so legacy/plain configs behave exactly as before.
+        """
+        raw = (config or {}).get("cognition")
+        if not isinstance(raw, dict):
+            return cls()
+        return cls(**{k: v for k, v in raw.items() if k in cls.model_fields})
+
+
 class SimSnapshot(BaseModel):
     """Complete simulation state snapshot."""
     type: str = Field(default="SimSnapshot", description="Type discriminator")
