@@ -210,3 +210,97 @@ def test_api_run_config_preserves_cognition():
     # And the engine parser accepts that shape.
     c = CognitionConfig.from_config(dumped["config"])
     assert c.enabled is True and c.reflection_every == 4
+
+
+# --------------------------------------------------------------------------- #
+# Step 2: memory stream (form + retrieve + causal memory_refs)
+# --------------------------------------------------------------------------- #
+
+from matrix_studio.engine.simulator import _retrieve_memories
+from matrix_studio.state import AgentState, MemoryItem
+
+
+def test_retrieve_memories_importance_recency_ordering():
+    agent = AgentState(name="A", persona="p", goals=[])
+    agent.memory_stream = [
+        MemoryItem(timestamp=1, content="old low", importance=0.1),
+        MemoryItem(timestamp=2, content="old high", importance=0.9),
+        MemoryItem(timestamp=9, content="new mid", importance=0.5),
+    ]
+    top2 = _retrieve_memories(agent, 2)
+    assert [m.content for m in top2] == ["old high", "new mid"]  # importance then recency
+    assert _retrieve_memories(agent, 0) == []
+    assert _retrieve_memories(AgentState(name="B", persona="p", goals=[]), 5) == []
+
+
+def _mem_fake(mem_per_turn=1):
+    """Always picks Ada; every response forms `mem_per_turn` memories."""
+    calls = {"n": 0}
+
+    def fake(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] % 2 == 1:  # speaker selection
+            return _Resp(json.dumps({"speaker": "Ada", "reason": "Ada leads"}))
+        mems = [{"content": f"learned thing {calls['n']}", "importance": 0.8,
+                 "tags": ["fact"]} for _ in range(mem_per_turn)]
+        return _Resp(json.dumps({
+            "utterance": "A point.",
+            "rationale": "advancing my aim",
+            "goal_served": "seek truth",
+            "memories": mems,
+        }))
+
+    return fake
+
+
+async def test_memory_formed_and_persisted_in_snapshot(db):
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_mem_fake(1)):
+        req = dict(REQUEST)
+        req["config"] = {"max_messages": 3, "generate_avatars": False,
+                         "cognition": {"enabled": True}}
+        await run_simulation(req, db=db, run_id="mem-on")
+
+    formed = await _events(db, "mem-on", "memory.formed")
+    assert len(formed) == 3, formed  # one per turn (Ada speaks all 3)
+    assert all(ev["payload"]["id"] and ev["payload"]["content"] for ev in formed)
+
+    # Memories ride the per-turn snapshot (AgentState.memory_stream serialized).
+    snap = await db.get_snapshot("mem-on", 3)
+    assert snap is not None
+    ada = snap.agents["Ada"]
+    assert len(ada.memory_stream) == 3
+    assert {m.id for m in ada.memory_stream} == {ev["payload"]["id"] for ev in formed}
+
+
+async def test_memory_refs_are_causal_subset(db):
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_mem_fake(1)):
+        req = dict(REQUEST)
+        req["config"] = {"max_messages": 3, "generate_avatars": False,
+                         "cognition": {"enabled": True, "retrieval_k": 5}}
+        await run_simulation(req, db=db, run_id="mem-refs")
+
+    formed = await _events(db, "mem-refs", "memory.formed")
+    formed_ids = {ev["payload"]["id"] for ev in formed}
+    resp = await _events(db, "mem-refs", "agent.response")
+    # Every memory_ref cited on a turn must be a memory formed earlier (causal).
+    any_refs = False
+    for ev in resp:
+        refs = ev["payload"].get("memory_refs", [])
+        for r in refs:
+            any_refs = True
+            assert r in formed_ids, "memory_ref not a real formed memory"
+    assert any_refs, "expected at least one turn to retrieve a prior memory"
+
+
+async def test_memory_off_no_memory_events_or_refs(db):
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_mem_fake(1)):
+        req = dict(REQUEST)
+        req["config"] = {"max_messages": 2, "generate_avatars": False,
+                         "cognition": {"enabled": True, "memory": False}}
+        await run_simulation(req, db=db, run_id="mem-off")
+
+    assert await _events(db, "mem-off", "memory.formed") == []
+    for ev in await _events(db, "mem-off", "agent.response"):
+        assert "memory_refs" not in ev["payload"]
+        # rationale/goal_served still present (cognition on, memory off)
+        assert ev["payload"].get("rationale")

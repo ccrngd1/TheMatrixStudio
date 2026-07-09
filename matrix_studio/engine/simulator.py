@@ -158,6 +158,7 @@ async def _generate_response(
     settings,
     model: Optional[str] = None,
     cognition: Optional[CognitionConfig] = None,
+    retrieved_memories: Optional[List["MemoryItem"]] = None,
 ) -> Dict[str, Any]:
     """
     Generate a response from the selected speaker.
@@ -182,6 +183,7 @@ async def _generate_response(
         when cognition is enabled).
     """
     cognition_on = bool(cognition and cognition.enabled)
+    memory_on = bool(cognition_on and cognition.memory)
 
     # Build context for the agent
     recent_conv = conversation[-20:] if len(conversation) > 20 else conversation
@@ -189,18 +191,44 @@ async def _generate_response(
 
     goals_line = ', '.join(agent.goals) if agent.goals else 'Engage authentically'
 
+    # Phase 2c: surface the retrieved (top-K importance+recency) memories into
+    # the prompt. These exact items are the turn's causal memory_refs.
+    memory_block = ""
+    if memory_on and retrieved_memories:
+        lines = "\n".join(f"- {m.content}" for m in retrieved_memories)
+        memory_block = f"\n\nWhat you remember so far:\n{lines}"
+
     if cognition_on:
+        if memory_on:
+            schema_line = (
+                '{"utterance": "<what you say, in character, 2-4 sentences>", '
+                '"rationale": "<one first-person sentence: why you say this now>", '
+                '"goal_served": "<which of your goals this advances, verbatim, or \'none\'>", '
+                '"memories": [{"content": "<a short thing you just learned or decided this turn>", '
+                '"importance": <0.0-1.0>, "tags": ["<tag>"]}]}'
+            )
+            memories_instr = (
+                " The memories array holds 0-2 items you genuinely formed this turn "
+                "(what you learned/decided); use [] if nothing notable."
+            )
+        else:
+            schema_line = (
+                '{"utterance": "<what you say, in character, 2-4 sentences>", '
+                '"rationale": "<one first-person sentence: why you say this now>", '
+                '"goal_served": "<which of your goals this advances, verbatim, or \'none\'>"}'
+            )
+            memories_instr = ""
         system_message = f"""{agent.persona}
 
 You are participating in a conversation about: {topic}
 
-Your goals: {goals_line}
+Your goals: {goals_line}{memory_block}
 
 Respond naturally as this character. Keep responses conversational (2-4 sentences).
 
 Return ONLY a JSON object of the form:
-{{"utterance": "<what you say, in character, 2-4 sentences>", "rationale": "<one first-person sentence: why you say this now>", "goal_served": "<which of your goals this advances, verbatim, or 'none'>"}}
-The rationale must be your genuine reason for this specific turn; do not invent facts."""
+{schema_line}
+The rationale must be your genuine reason for this specific turn; do not invent facts.{memories_instr}"""
     else:
         system_message = f"""{agent.persona}
 
@@ -244,6 +272,7 @@ Respond naturally as this character. Keep responses conversational (2-4 sentence
         content = raw
         rationale: Optional[str] = None
         goal_served: Optional[str] = None
+        formed_memories: List[Dict[str, Any]] = []
         if cognition_on:
             try:
                 parsed = json.loads(raw)
@@ -252,11 +281,31 @@ Respond naturally as this character. Keep responses conversational (2-4 sentence
                 rationale = str(rat).strip() if rat else None
                 gs = parsed.get("goal_served")
                 goal_served = str(gs).strip() if gs else None
+                if memory_on:
+                    mems = parsed.get("memories")
+                    if isinstance(mems, list):
+                        for m in mems[:2]:
+                            if not isinstance(m, dict):
+                                continue
+                            c = str(m.get("content", "")).strip()
+                            if not c:
+                                continue
+                            imp = m.get("importance")
+                            try:
+                                imp = float(imp) if imp is not None else None
+                            except (TypeError, ValueError):
+                                imp = None
+                            tags = m.get("tags")
+                            tags = [str(t) for t in tags] if isinstance(tags, list) else []
+                            formed_memories.append(
+                                {"content": c, "importance": imp, "tags": tags}
+                            )
             except (json.JSONDecodeError, TypeError, AttributeError):
                 # Graceful degradation: keep the raw text as the utterance.
                 content = raw
                 rationale = None
                 goal_served = None
+                formed_memories = []
 
         # Extract usage info
         usage = response.usage
@@ -279,6 +328,8 @@ Respond naturally as this character. Keep responses conversational (2-4 sentence
         if cognition_on:
             result["rationale"] = rationale
             result["goal_served"] = goal_served
+        if memory_on:
+            result["memories"] = formed_memories
         return result
 
     except Exception as e:
@@ -463,6 +514,28 @@ async def run_simulation(
     )
 
 
+def _retrieve_memories(agent: AgentState, k: int) -> List[MemoryItem]:
+    """Top-K memory retrieval by importance + recency (Phase 2c v1, no embeddings).
+
+    Ranks the agent's ``memory_stream`` by a blend of importance (default 0.5
+    when unscored) and recency (later timestamp ranks higher), returning at most
+    ``k`` items. Pure, deterministic, and fully inspectable — the returned items
+    are exactly the turn's causal ``memory_refs``. ``k <= 0`` or an empty stream
+    returns [].
+    """
+    if k <= 0 or not agent.memory_stream:
+        return []
+    ranked = sorted(
+        agent.memory_stream,
+        key=lambda m: (
+            m.importance if m.importance is not None else 0.5,
+            m.timestamp,
+        ),
+        reverse=True,
+    )
+    return ranked[:k]
+
+
 async def _run_turns(
     *,
     run_id: str,
@@ -530,9 +603,17 @@ async def _run_turns(
 
             # Phase 2: Generate response
             speaker = agents[speaker_name]
+            # Phase 2c: retrieve this speaker's top-K memories (importance +
+            # recency). The retrieved items ARE the turn's causal memory_refs.
+            cognition_on = bool(cognition and cognition.enabled)
+            memory_on = bool(cognition_on and cognition.memory)
+            retrieved = (
+                _retrieve_memories(speaker, cognition.retrieval_k)
+                if memory_on else []
+            )
             response_data = await _generate_response(
                 speaker_name, speaker, topic, conversation, settings,
-                model=model, cognition=cognition,
+                model=model, cognition=cognition, retrieved_memories=retrieved,
             )
 
             # Update conversation
@@ -566,6 +647,10 @@ async def _run_turns(
                 response_payload["rationale"] = response_data["rationale"]
             if response_data.get("goal_served") is not None:
                 response_payload["goal_served"] = response_data["goal_served"]
+            # Phase 2c memory: the retrieved memory ids are the causal refs that
+            # were in-context for this turn (present only when memory is on).
+            if memory_on:
+                response_payload["memory_refs"] = [m.id for m in retrieved]
             await emit(
                 turn=turn,
                 seq=next_seq(),
@@ -573,6 +658,32 @@ async def _run_turns(
                 agent_name=speaker_name,
                 payload=response_payload,
             )
+
+            # Phase 2c: form new memories AFTER the turn and append them to the
+            # speaker's memory_stream (rides the per-turn snapshot). Each formed
+            # memory emits an additive memory.formed event.
+            if memory_on:
+                for m in response_data.get("memories", []) or []:
+                    item = MemoryItem(
+                        timestamp=int(time.time()),
+                        content=m["content"],
+                        importance=m.get("importance"),
+                        tags=m.get("tags", []),
+                    )
+                    speaker.memory_stream.append(item)
+                    await emit(
+                        turn=turn,
+                        seq=next_seq(),
+                        event_type="memory.formed",
+                        agent_name=speaker_name,
+                        payload={
+                            "agent": speaker_name,
+                            "id": item.id,
+                            "content": item.content,
+                            "importance": item.importance,
+                            "tags": item.tags,
+                        },
+                    )
 
             # Phase 2a: per-turn checkpoint — persist a full running snapshot for
             # this turn so state at turn N is reconstructable, then emit an
