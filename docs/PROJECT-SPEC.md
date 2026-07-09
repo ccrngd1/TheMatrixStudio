@@ -111,11 +111,21 @@ the branch model is correct and synchronous live-editing would have been a night
   persona (in-character), to a neutral analyst, or to the whole room — all **read-only**, none
   mutating the canonical run. Introduces the thread/target/mode abstraction that Phase 2 builds on.
   See `docs/PHASE1.5-REQUIREMENTS.md`.
-- **Phase 2 — Event-sourced engine + branching + Contribute mode.** Add serializable state,
-  checkpointing, structured state events, branch-from-checkpoint interventions, timeline/branch UI.
-  **Turns on "Contribute" mode** on the Phase 1.5 thread abstraction: promoting an aside back into
-  the canonical conversation, injecting user input, and restarting/continuing the group discussion
-  are all branch-from-checkpoint operations (see §6a). Same UI contract.
+- **Phase 2 — Event-sourced engine + branching + Contribute mode (split into 2a/2b/2c, 2026-07-09).**
+  Same UI contract throughout. CC-approved three-way split (foundation → interactions → cognition):
+  - **Phase 2a — Event-sourced foundation.** Per-turn checkpointing (full serializable snapshot each
+    turn; `SimSnapshot` already models it, `snapshots` already keys on `UNIQUE(run_id,turn)`), the
+    branch primitive (fork the event log at turn N → resume *forward* as a new run via the existing
+    `parent_run_id`/`branch_turn` columns; original immutable), and a checkpoint scrubber/replay.
+    No user-facing interventions yet beyond raw branch + replay. See `docs/PHASE2A-REQUIREMENTS.md`.
+  - **Phase 2b — Interventions + Contribute mode (FULL set, CC: do not reduce scope).** Activate the
+    disabled "bring into conversation" affordance from Phase 1.5; promote-aside-to-room, continue/
+    restart the discussion, inject a message, edit a goal, add/remove a persona — all as branch-from-
+    checkpoint operations — plus the branch-tree UI. Built on 2a.
+  - **Phase 2c — Introspectable engine + rich dossier.** Engine emits structured per-agent state
+    events (memory stream, reflections/beliefs, goal updates, relationships — `MemoryItem`/`AgentState`
+    scaffolding already present in `state.py`); rich dossier UI + the "why did it say that?" trace.
+    The genuinely novel/hard cognitive-architecture layer; separable, follows 2b.
 - **Phase 3 — Release polish.** Install story, BYO-key config UX, docs, license, examples, cost guards.
 
 ## 6a. Phase 1.5 & Phase 2 interaction design (added 2026-07-08, CC design session)
