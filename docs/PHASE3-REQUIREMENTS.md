@@ -1,6 +1,6 @@
 # Requirements — TheMatrix Simulation Studio, Phase 3
 
-**Status:** DRAFT — for CC approval (2026-07-09)
+**Status:** APPROVED (CC 2026-07-09) — handed to MasterControl to build. Task ID `mss-phase3-*`.
 **Spec:** `docs/PROJECT-SPEC.md` (§6 Phase 3, §7 release-scope multipliers, §8 open questions)
 **Builds on:** Phases 0/1/1.5/2a/2b/2c (feature-complete engine + UI).
 
@@ -134,13 +134,14 @@ Each step: additive, all prior tests green, its own tests + commit + push
 ---
 
 ## Open questions (for CC)
-1. **Release version** — cut `1.0.0` at end of Phase 3, or a conservative
-   `0.2.0`/`0.3.0`? (Leaning 0.3.0 — "feature-complete, pre-1.0 polish"; 1.0
-   implies API stability guarantees we may not want yet.)
-2. **Cost-cap default** — ship off (0) so nothing surprises existing behavior
-   (my lean), or ship a sane non-zero default (e.g. $1.00) to protect new users
-   from runaway spend out of the box?
-3. **Public repo now or later** — is the GitHub repo going public at end of
-   Phase 3, or staying private a while? (Affects how hard we polish docs/screens.)
-4. **Screenshots/gifs** — want me to capture live UI screenshots for the README
-   (requires a running server + a demo run), or leave placeholders for you?
+
+**Working decisions (Main, 2026-07-09 — baked into the build brief so MasterControl
+isn't blocked; CC can override any of these):**
+1. **Release version → `0.3.0`** ("feature-complete, pre-1.0 polish"; avoids implying
+   API-stability guarantees a 1.0 would).
+2. **Cost-cap default → OFF (`max_run_cost_usd = 0`)** — no surprise to existing
+   behavior; the cap is opt-in. Creation-time estimate still shown.
+3. **Repo visibility → assume PRIVATE for now** — polish docs to a solid public
+   standard regardless, but do not block on public-launch assets.
+4. **Screenshots/gifs → leave labeled placeholders** in the README (capturing needs
+   a live server + demo run; CC or a follow-up can drop real images in).
