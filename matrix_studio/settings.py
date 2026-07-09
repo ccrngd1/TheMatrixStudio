@@ -61,6 +61,18 @@ class Settings(BaseSettings):
 
     # Simulation defaults
     max_messages: int = Field(default=20, ge=1, description="Default max turns per simulation")
+    max_run_cost_usd: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Per-run hard cost cap in USD (0 = OFF, no cap). "
+        "Engine checks accumulated real cost after each turn; when cap is reached, "
+        "run ends with status 'capped'. Additive, opt-in feature; 0 = pre-Phase-3 behavior.",
+    )
+    cost_warn_threshold: float = Field(
+        default=1.0,
+        ge=0.0,
+        description="Cost warning threshold in USD (shown in UI cost meter)",
+    )
 
     # Storage
     data_dir: str = Field(default="./data", description="Directory for SQLite database")

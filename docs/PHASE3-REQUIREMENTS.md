@@ -141,7 +141,9 @@ isn't blocked; CC can override any of these):**
    API-stability guarantees a 1.0 would).
 2. **Cost-cap default → OFF (`max_run_cost_usd = 0`)** — no surprise to existing
    behavior; the cap is opt-in. Creation-time estimate still shown.
-3. **Repo visibility → assume PRIVATE for now** — polish docs to a solid public
-   standard regardless, but do not block on public-launch assets.
-4. **Screenshots/gifs → leave labeled placeholders** in the README (capturing needs
-   a live server + demo run; CC or a follow-up can drop real images in).
+3. **Repo visibility → PUBLIC (CC 2026-07-09).** The GitHub repo is ALREADY public
+   and CC will point people to it. Docs must be polished to the highest public
+   standard — treat the README + quickstart as the project's front door.
+4. **Screenshots/gifs → clearly-labeled placeholders** where CC will drop in real
+   screen grabs/recordings. Mark each placeholder with an explicit TODO comment
+   and a caption of what image goes there (CC captures them himself).
