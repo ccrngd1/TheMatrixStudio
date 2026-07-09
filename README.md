@@ -1,75 +1,121 @@
 # TheMatrix Simulation Studio
 
-**Phase 1.5** - Multi-agent conversation simulator with a live "control-room" web UI plus a read-only post-run analysis layer (summaries + aside conversations).
+**Version 0.3.0** — Multi-agent conversation simulator with live control-room UI, checkpointing/branching, cognition system, and non-photorealistic avatars.
 
-TheMatrix Simulation Studio is a standalone tool for running multi-agent conversation simulations. Define a topic and a cast of personas, hit **Run**, and watch the conversation unfold live: a **cast board** of character cards (avatar + persona + goals), a **live-scrolling conversation feed**, a highlight of **who's speaking now**, and a **running token/$ cost meter**. Click a card for that agent's **dossier**; browse and **replay past runs** by their memorable codename. Built on LiteLLM for provider flexibility — bring your own API key for OpenAI, Anthropic, AWS Bedrock, or local models via Ollama.
+TheMatrix Simulation Studio is a standalone tool for running multi-agent conversation simulations. Define a topic and cast of personas, hit **Run**, and watch the conversation unfold live in a web control room. Features checkpointing, timeline branching, optional agent cognition (memory + reflection + goals), and anime-style avatar generation.
+
+![Control Room](docs/screenshots/control-room-placeholder.png)
+<!-- TODO: Replace with actual screenshot showing cast board + live conversation -->
+
+![Cognition Dossier](docs/screenshots/dossier-placeholder.png)
+<!-- TODO: Replace with actual screenshot showing agent dossier with memory stream + why-trace -->
 
 ## Features
 
-- **Control-room web UI** (Phase 1): cast board, live conversation feed, active-speaker highlight, cost meter, per-agent dossier, new-run/cast-builder form, and searchable run history — served from the same process as the API.
-- **Post-run analysis** (Phase 1.5, read-only): an auto-generated structured **summary** (consensus / dissenters / key ideas / open questions / overview; configurable at run creation, on by default) and **aside conversations** — ask the **analyst** (neutral, about the whole run), a **single persona** (in-character, using that agent's real stored persona), or the **room** (all personas react into the thread). Asides are private side-threads that never mutate the canonical run; their token/cost is tracked separately. Summaries and aside replies are model-generated *analysis*, labeled as such.
-- **Live streaming**: runs stream over a WebSocket as they progress (late joiners catch up via replayed events, then continue live).
-- **UI-only playback**: pause / resume / step / reveal-speed operate purely on the buffered client-side stream — they never pause, slow, or gate the engine (it always runs to completion at full speed).
-- **Named runs**: every run gets a memorable, topically-resonant two-word codename (e.g. an AI-ethics topic → `trusted-robot`) via a cheap LLM call, with a random-wordlist fallback so naming never blocks a run.
-- **Provider-agnostic**: Use any LLM supported by LiteLLM (OpenAI, Anthropic, Bedrock, OpenRouter, Ollama)
-- **Event-sourced storage**: SQLite database captures full simulation history for replay and analysis
-- **Avatar generation**: Optional persona portraits via a Stability image model on Bedrock (`stability.sd3-5-large-v1:0`), generated in parallel at run start with a mandatory initials/color placeholder fallback
-- **CLI**: `run` a simulation from a JSON request file, or `serve` the web app
-- **Docker support**: one image serves both the API and the built UI on one port
+- **Live Control Room** — Cast board with character cards (avatar + persona + goals), live-scrolling conversation feed, active-speaker highlight, and running token/$ cost meter
+- **Checkpointing & Branching** — Every turn is checkpointed; branch from any point to create "what-if" timelines with different interventions
+- **Interventions** — Inject messages, edit goals, add/remove personas, continue discussions, or promote aside conversations into the main timeline
+- **Agent Cognition** (Phase 2c, optional) — Agents form memories, reflect periodically, track relationships, and explain their reasoning ("why did they say that?")
+- **Post-Run Analysis** — Auto-generated structured summary (consensus / dissenters / key ideas / open questions) plus aside conversations (ask the analyst, ask a persona, ask the room)
+- **Non-Photorealistic Avatars** — Anime-style character portraits generated via Stability SD3.5 on AWS Bedrock (optional, with graceful fallback to initials)
+- **Cost Visibility** — Live token/$ meter, optional hard spend cap per run, and creation-time cost estimate
+- **Provider-Agnostic** — Bring your own API key for OpenAI, Anthropic, AWS Bedrock, OpenRouter, or local Ollama models via LiteLLM
+- **Event-Sourced Storage** — SQLite database captures full simulation history for replay, branching, and audit
+- **Named Runs** — Every run gets a memorable two-word codename (e.g., `trusted-robot`) for easy browsing
+- **Docker + CLI** — One container serves both API and UI on a single port; or use the CLI to run simulations headlessly
 
 ## Quick Start
 
-### Local Installation
+### 5-Minute Quickstart (pip)
 
-**Requirements**: Python 3.11+
+**Requirements:** Python 3.11+
 
 ```bash
-# Clone the repository
+# 1. Clone and install
+git clone https://github.com/yourusername/matrix-sim-studio.git
+cd matrix-sim-studio
+pip install .
+
+# 2. Configure your API key (choose one provider)
+cp .env.example .env
+# Edit .env and set your key:
+#   - AWS Bedrock: AWS_BEARER_TOKEN_BEDROCK or AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY
+#   - OpenAI: OPENAI_API_KEY
+#   - Anthropic: ANTHROPIC_API_KEY
+#   - Ollama: no key needed (local)
+
+# 3. Start the control room
+matrix-studio serve
+# Open http://127.0.0.1:8000 in your browser
+
+# 4. Load an example and hit Run
+# Try examples/debate.json (AI in creative work) or examples/design-review.json (with cognition)
+```
+
+### 5-Minute Quickstart (Docker)
+
+```bash
+# 1. Clone the repository
 git clone https://github.com/yourusername/matrix-sim-studio.git
 cd matrix-sim-studio
 
-# Install
-pip install .
+# 2. Configure your API key
+cp .env.example .env
+# Edit .env (see above for providers)
 
-# Verify installation
-matrix-studio --version
+# 3. Build and run
+docker build -t matrix-studio .
+docker run --rm -p 8000:8000 --env-file .env -v $(pwd)/data:/app/data matrix-studio
+
+# 4. Open http://localhost:8000 and load an example
 ```
 
-### Configuration (Bring Your Own Key)
+**NOTE:** Docker build has NOT been verified in this environment (unavailable). If it fails, please report an issue.
 
-Copy the example environment file and add your API keys:
+## Configuration
+
+All settings can be configured via environment variables or `.env` file. Settings precedence: **environment variables > .env file > defaults**.
+
+### Model & Provider
 
 ```bash
-cp .env.example .env
-# Edit .env with your preferred editor
+# Model selection (any LiteLLM-supported model string)
+LITELLM_MODEL=bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0
+LITELLM_TEMPERATURE=0.7
+LITELLM_MAX_TOKENS=2048
+
+# Selectable models in the UI dropdown (comma-separated)
+AVAILABLE_MODELS=bedrock/global.anthropic.claude-sonnet-4-6,bedrock/amazon.nova-pro-v1:0
 ```
 
-**Required configuration** depends on your chosen LLM provider:
+### Provider Credentials
 
-#### For AWS Bedrock:
+**Keys stay server-side.** The browser never handles raw credentials; `/api/models` exposes model strings only.
+
+#### AWS Bedrock
 ```bash
 LITELLM_MODEL=bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0
-# Bedrock API key / bearer token (recommended):
-AWS_BEARER_TOKEN_BEDROCK=your_bearer_token
+AWS_BEARER_TOKEN_BEDROCK=your_bearer_token   # Recommended
 # ...or classic IAM keys:
 AWS_ACCESS_KEY_ID=your_access_key
 AWS_SECRET_ACCESS_KEY=your_secret_key
 AWS_REGION=us-east-1
 ```
+Bedrock also respects the boto3 credential chain (env vars, `~/.aws/credentials`, EC2 instance profile).
 
-#### For OpenAI:
+#### OpenAI
 ```bash
 LITELLM_MODEL=openai/gpt-4o
-OPENAI_API_KEY=your_openai_key
+OPENAI_API_KEY=sk-...
 ```
 
-#### For Anthropic:
+#### Anthropic
 ```bash
 LITELLM_MODEL=anthropic/claude-sonnet-4-6
-ANTHROPIC_API_KEY=your_anthropic_key
+ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-#### For local Ollama:
+#### Local Ollama
 ```bash
 LITELLM_MODEL=ollama/llama2
 # No API key required
@@ -77,42 +123,73 @@ LITELLM_MODEL=ollama/llama2
 
 See [LiteLLM provider docs](https://docs.litellm.ai/docs/providers) for all supported models.
 
-### Running the Web UI (Phase 1)
+### Simulation Defaults
 
 ```bash
-# Start the control-room server (defaults to MATRIX_HOST/MATRIX_PORT, i.e. 127.0.0.1:8000)
-matrix-studio serve
+MAX_MESSAGES=20                # Default max turns per simulation
+MAX_RUN_COST_USD=0.0           # Per-run hard spend cap in USD (0 = OFF)
+COST_WARN_THRESHOLD=1.0        # Warning threshold shown in UI cost meter
+```
 
-# Or choose host/port explicitly
+**Cost Cap:** When `MAX_RUN_COST_USD > 0`, the engine checks accumulated real cost after each turn. When the cap is reached, the run ends in a terminal `capped` status. The cap acts on LiteLLM-reported cost only; providers that don't report cost (e.g., local Ollama) are counted as $0.
+
+### Avatar Generation
+
+```bash
+ENABLE_AVATARS=true            # Enable avatar generation
+AVATAR_STYLE=anime             # Style: anime (default), illustration, 3d
+AVATAR_MODEL_ID=stability.sd3-5-large-v1:0
+AVATAR_REGION=us-west-2        # SD3.5 Large is served from us-west-2
+```
+
+**Avatar Style:** Default is `anime` (non-photorealistic stylized art) to avoid synthetic-media concerns. Avatars are optional eye-candy; generation failures fall back to initials/color placeholders and never block a run.
+
+### Server & Storage
+
+```bash
+MATRIX_HOST=127.0.0.1
+MATRIX_PORT=8000
+DATA_DIR=./data                # SQLite database location
+```
+
+## Cognition & Honesty Note
+
+Agent cognition (memory, reflection, relationships) is **model-generated introspection captured in-loop**, not ground truth. Agents self-report their reasoning ("why I said this"), but the model can be mistaken, confabulate, or rationalize. Treat cognition output as the agent's perspective, not fact.
+
+**Cost impact:** Cognition mode uses structured JSON output (1 call per turn instead of plain-text), adds memory retrieval to each prompt, and triggers periodic reflection calls. Expect ~20-40% higher token usage when cognition is enabled.
+
+## Usage
+
+### Web UI (Control Room)
+
+```bash
+matrix-studio serve                    # Start on default host/port
 matrix-studio serve --host 0.0.0.0 --port 8000
 ```
 
-Then open <http://127.0.0.1:8000> in your browser: define a cast and topic (or
-**Load example**), hit **Run**, and watch the conversation stream live. Past runs
-are listed by their memorable codename and can be replayed.
+Open the UI in your browser. The new-run form lets you:
+- Define topic + cast (personas + goals)
+- Choose a model from the allowlist
+- Enable cognition (memory, reflection, dynamic goals, relationships)
+- Set a cost cap (optional hard spend limit)
+- Load an example template
 
-> The server serves the pre-built frontend from `matrix_studio/static/`. When
-> installing from source, build it once with `cd frontend && npm install && npm run build`
-> (the Docker image does this for you). Without a build, the API still runs and
-> `/` returns a small JSON notice.
+Past runs are listed by codename. Click a run to:
+- **Replay** the conversation (scrub through the timeline)
+- **Branch** from any turn (inject a message, edit goals, add/remove personas, continue)
+- **Analyze** (view auto-generated summary or start aside conversations)
+- **View dossier** (click an agent card for memory stream, reflections, relationships, why-trace)
 
-**Frontend dev mode** (hot reload, proxies `/api` to the backend on :8000):
-
-```bash
-matrix-studio serve            # terminal 1: backend
-cd frontend && npm run dev     # terminal 2: Vite dev server
-```
-
-### Running a Simulation from the CLI (Phase 0 behavior, unchanged)
+### CLI (Headless Runs)
 
 ```bash
-# Run an example simulation
-matrix-studio run examples/minimal.json
+# Run a simulation from JSON
+matrix-studio run examples/debate.json
 
-# Run with custom output file
-matrix-studio run examples/debate.json -o results.json
+# Custom output file
+matrix-studio run examples/minimal.json -o results.json
 
-# Run with custom turn limit
+# Custom turn limit
 matrix-studio run examples/coffeeshop.json --max-messages 10
 
 # Skip database (faster for testing)
@@ -121,7 +198,7 @@ matrix-studio run examples/minimal.json --no-db
 
 ### Creating Custom Simulations
 
-Create a JSON file defining your simulation:
+Create a JSON file:
 
 ```json
 {
@@ -129,112 +206,87 @@ Create a JSON file defining your simulation:
   "cast": [
     {
       "name": "PersonaName",
-      "persona": "Description of the persona's personality and background",
+      "persona": "Description of the persona's personality, background, and perspective",
       "goals": ["Goal 1", "Goal 2"]
     }
   ],
   "config": {
     "max_messages": 15,
-    "generate_avatars": true
+    "generate_avatars": true,
+    "cognition": {
+      "enabled": false,
+      "memory": true,
+      "reflection_every": 4,
+      "goals_dynamic": false,
+      "relationships": false,
+      "retrieval_k": 5
+    }
   }
 }
 ```
 
-See `examples/` directory for complete examples.
+**Cognition config** (optional, all default to off):
+- `enabled`: Master switch for cognition
+- `memory`: Form + retrieve agent memories
+- `reflection_every`: Reflect every N turns (0 disables, default 4 when cognition is on)
+- `goals_dynamic`: Allow agents to update their own goals mid-run
+- `relationships`: Track per-agent stance toward others
+- `retrieval_k`: Memories injected into each turn's prompt (default 5)
 
-## Docker Usage
-
-The image is multi-stage: a Node stage builds the React/Vite frontend into
-`matrix_studio/static`, and the Python stage installs the package and serves
-both the API and the built UI on one port.
-
-### Build the Image
-
-```bash
-docker build -t matrix-studio .
-```
-
-### Serve the Web UI (default)
-
-```bash
-docker run --rm -p 8000:8000 \
-  --env-file .env \
-  -v $(pwd)/data:/app/data \
-  matrix-studio
-# open http://localhost:8000
-```
-
-### Run a Simulation from the CLI in the container
-
-```bash
-docker run --rm \
-  --env-file .env \
-  -v $(pwd)/examples:/examples \
-  -v $(pwd)/data:/app/data \
-  matrix-studio \
-  python -m matrix_studio run /examples/minimal.json
-```
+See `examples/` for ready-to-run templates.
 
 ## Project Structure
 
 ```
 matrix-sim-studio/
 ├── matrix_studio/          # Main package
-│   ├── engine/            # Simulation engine (litellm orchestration)
+│   ├── engine/            # Simulation engine (litellm orchestration + cognition)
 │   ├── storage/           # SQLite event-sourced storage
-│   ├── api/               # FastAPI app, WebSocket stream, run manager (Phase 1)
-│   ├── static/            # Built frontend assets (generated by the Vite build)
-│   ├── naming.py          # Memorable run codename generation (Phase 1)
+│   ├── api/               # FastAPI app + WebSocket stream + run manager
+│   ├── static/            # Built frontend assets (from Vite build)
 │   ├── settings.py        # Configuration management
-│   ├── state.py           # Pydantic state models
+│   ├── state.py           # Pydantic state models (AgentState, CognitionConfig, SimSnapshot)
 │   ├── avatar.py          # Avatar generation (Stability SD3.5 on Bedrock)
+│   ├── analysis.py        # Post-run summary + aside conversations (Phase 1.5)
+│   ├── branching.py       # Branch primitive (Phase 2a/2b)
+│   ├── naming.py          # Memorable run codename generation
 │   └── __main__.py        # CLI entrypoint (run / serve subcommands)
-├── frontend/              # React + Vite + TypeScript + Tailwind UI (Phase 1)
+├── frontend/              # React + Vite + TypeScript + Tailwind UI
 ├── examples/              # Example simulation configs
-├── tests/                 # Backend test suite (engine/API/storage/naming)
+├── tests/                 # Backend test suite (194 tests)
 ├── docs/                  # Documentation
 ├── pyproject.toml         # Package configuration
 ├── Dockerfile             # Multi-stage container (frontend build + Python app)
-├── LICENSE                # Apache-2.0 license
+├── LICENSE                # Apache-2.0
 └── README.md             # This file
 ```
 
-## Storage and Data
+## Architecture
 
-Simulations are persisted to a SQLite database at `./data/matrix_studio.db` (configurable via `DATA_DIR` env var).
+### Engine
 
-The database captures:
-- **Runs**: Metadata for each simulation run
-- **Events**: Append-only event log (speaker selections, responses, costs)
-- **Snapshots**: Full state snapshots at completion
+The simulation engine is a **hand-rolled async loop over LiteLLM** (not AutoGen). Each turn:
+1. **Select speaker:** LLM decides who should speak next given personas + conversation history
+2. **Generate response:** Selected agent generates their response given their persona + goals
 
-This event-sourced design enables future features like branching and replay (Phase 2).
+When cognition is enabled, the engine also:
+- Retrieves the speaker's top-K memories (by importance + recency) and injects them into the prompt
+- Parses structured JSON output (utterance + rationale + goal_served + formed_memories + goal_update + relationship_updates)
+- Periodically triggers reflection calls (condense recent memories into higher-level beliefs)
+- Emits structured events for memory formation, goal updates, relationship changes, and reflections
 
-## Avatar Generation
+### Event Sourcing & Checkpointing
 
-Avatar generation uses a Stability text-to-image model on AWS Bedrock
-(`stability.sd3-5-large-v1:0`, served from `AVATAR_REGION=us-west-2`). Portraits
-are generated **in parallel** at run start and stream to the UI via `avatar.ready`
-events as each finishes. Requirements:
-- AWS credentials in environment (bearer token or IAM keys; see Configuration above)
-- `ENABLE_AVATARS=true` in your `.env`
+All simulation state changes are captured as events in an append-only log. After each turn, the engine persists a full `SimSnapshot` (serializable state: agents, conversation, status). Benefits:
+- **Branching:** Fork the event log at turn N, apply a mutation, generate forward as a new run
+- **Replay:** Reconstruct any moment by loading the snapshot at that turn
+- **Auditability:** Full history for debugging, analysis, and compliance
 
-**Graceful fallback (mandatory)**: if avatars are disabled or generation returns
-nothing (no credentials, content filter, or error), the UI shows a deterministic
-**initials/color placeholder** and the run proceeds normally. Avatars are
-eye-candy, never a hard dependency.
+Storage is SQLite (`./data/matrix_studio.db`). Snapshots are full per-turn (not deltas) — runs are short (≤ few dozen turns), so storage cost is negligible and reconstruction is O(1).
 
-To disable avatars entirely:
-```bash
-ENABLE_AVATARS=false
-```
+### Provider Agnosticism
 
-Or per-simulation in the request JSON:
-```json
-"config": {
-  "generate_avatars": false
-}
-```
+The `LITELLM_MODEL` variable accepts any LiteLLM model string. No code changes needed to switch providers. Cost reporting and spend caps work when the provider reports usage; providers that don't (e.g., Ollama) are counted as $0.
 
 ## Development
 
@@ -247,56 +299,47 @@ pip install -e ".[dev]"
 ### Run Tests
 
 ```bash
+# Backend (194 tests, all mocked)
 pytest
+
+# Frontend (18 tests)
+cd frontend
+npm run build
+NODE_ENV=test npx vitest run
 ```
 
-### Project Dependencies
+**Test mocking:** All tests mock litellm + avatar generation to avoid live billable calls (the real environment carries a Bedrock key).
 
-Core dependencies (from `pyproject.toml`):
-- `litellm>=1.40.0` - Multi-provider LLM client
-- `boto3>=1.34.0` - AWS SDK (for Bedrock avatars)
-- `fastapi>=0.110.0` - Web framework (Phase 1)
-- `uvicorn[standard]>=0.29.0` - ASGI server
-- `aiosqlite>=0.20.0` - Async SQLite
-- `pydantic>=2.0.0` - Data validation
-- `pydantic-settings>=2.0.0` - Settings management
-- `python-dotenv>=1.0.0` - Environment loading
+### Frontend Dev Mode
+
+```bash
+# Terminal 1: backend
+matrix-studio serve
+
+# Terminal 2: Vite dev server (hot reload, proxies /api to backend on :8000)
+cd frontend
+npm run dev
+```
 
 ## Roadmap
 
-- **Phase 0**: Standalone CLI, provider-agnostic, event-sourced storage
-- **Phase 1**: Control-room web UI — cast board, live watching, cost meter, scoped dossier, named runs, replay
-- **Phase 1.5** (current): Read-only post-run analysis — structured end-of-run summary + aside conversations (analyst / persona / room). Introduces the thread/target/mode data model; no engine-loop changes, no mutation of the canonical run.
-- **Phase 2**: Contribute mode (promote an aside into the conversation) + branching, checkpoint restore, intervention features; rich dossier (memory streams, reflections, relationships, "why did it say that?")
-- **Phase 3**: Polish, in-browser BYO-key, enforced spend caps, templates
-
-## Architecture Notes
-
-### Engine
-
-The simulation engine is a **hand-rolled async loop over LiteLLM** (not AutoGen). Each turn:
-1. **Select speaker**: LLM decides who should speak next given personas and conversation history
-2. **Generate response**: Selected agent generates their response given their persona and goals
-
-This two-phase approach ensures natural conversation flow without rigid turn-taking.
-
-### Event Sourcing
-
-All simulation state changes are captured as events in an append-only log. Benefits:
-- Full auditability of simulation runs
-- Foundation for branching and "what-if" scenarios (Phase 2)
-- Structured cost and token tracking per agent
-
-### Provider Agnosticism
-
-Configuration precedence: `environment variables` > `.env file` > `config.json defaults`
-
-The `LITELLM_MODEL` variable accepts any LiteLLM model string. No code changes needed to switch providers.
+- ✅ **Phase 0:** Standalone CLI, provider-agnostic, event-sourced storage
+- ✅ **Phase 1:** Control-room web UI — cast board, live watching, cost meter, dossier, named runs, replay
+- ✅ **Phase 1.5:** Post-run analysis — structured summary + aside conversations (analyst / persona / room)
+- ✅ **Phase 2a:** Checkpointing & branching — per-turn snapshots, branch primitive, replay
+- ✅ **Phase 2b:** Interventions — inject message, continue, edit goal, add/remove persona, promote aside
+- ✅ **Phase 2c:** Agent cognition — memory stream, reflection, relationships, dynamic goals, why-trace
+- ✅ **Phase 3:** Release polish — cost guards, BYO-key readiness, examples, docs, hygiene (v0.3.0)
+- **Future:** Embedding-based memory retrieval, multi-modal inputs, hosted deployment
 
 ## Documentation
 
 - `docs/PROJECT-SPEC.md` — Full ideation/architecture spec
-- `docs/PHASE0-REQUIREMENTS.md` — Phase 0 scope + acceptance criteria
+- `docs/PHASE3-REQUIREMENTS.md` — Phase 3 (release polish) acceptance criteria
+- `docs/PHASE2C-REQUIREMENTS.md` — Phase 2c (cognition) spec
+- `docs/PHASE2B-REQUIREMENTS.md` — Phase 2b (interventions) spec
+- `docs/PHASE2A-REQUIREMENTS.md` — Phase 2a (checkpointing/branching) spec
+- `docs/PHASE1.5-REQUIREMENTS.md` — Phase 1.5 (analysis layer) spec
 - `docs/PHASE0-RESEARCH.md` — Technical decisions (web stack, Bedrock, packaging, license, storage)
 
 ## License
@@ -305,8 +348,12 @@ Apache-2.0 - See [LICENSE](LICENSE) file for full text.
 
 ## Contributing
 
-Contributions are welcome. This is an early-phase project - expect active development.
+Contributions welcome. This is an active-development project.
 
 ## Support
 
 For issues and questions, please open an issue on GitHub.
+
+---
+
+**Version 0.3.0** — Built with Claude Code. Phases 0-3 complete. Ready for production use with BYO API keys.
