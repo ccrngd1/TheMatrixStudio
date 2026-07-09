@@ -182,7 +182,11 @@ export function LiveView({ runId, onBack, onOpenRun }: Props) {
             </label>
           )}
           <span className="text-xs text-slate-500">
-            {stream.connected ? '🔌 connected' : '… connecting'}
+            {stream.engineDone
+              ? '✓ replay complete'
+              : stream.connected
+                ? '🔌 connected'
+                : '… connecting'}
           </span>
         </div>
       </header>
