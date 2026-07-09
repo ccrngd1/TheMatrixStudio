@@ -159,6 +159,7 @@ async def create_branch_run(
     name: Optional[str] = None,
     description: Optional[str] = None,
     gen_model: Optional[str] = None,
+    mutation: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Synchronously create the new branch run row (so it is immediately resolvable
@@ -237,6 +238,12 @@ async def create_branch_run(
     if resolved_model:
         cfg["model"] = resolved_model
     cfg["max_messages"] = branch_budget(parent_run, from_turn)
+    # Phase 2b: record the mutation applied at the fork (if any) so the branch is
+    # self-describing and the tree UI can label the edge. Always dropped from a
+    # parent's carried config first (a branch's mutation is its own).
+    cfg.pop("branch_mutation", None)
+    if mutation:
+        cfg["branch_mutation"] = mutation
 
     await db.create_run(
         run_id=branch_run_id,
@@ -263,6 +270,7 @@ async def create_branch_run(
         "status": "running",
         "max_messages": cfg["max_messages"],
         "model": resolved_model,
+        "mutation": mutation,
     }
 
 
@@ -274,6 +282,7 @@ async def execute_branch(
     max_messages: int,
     on_event: Optional[OnEvent] = None,
     model: Optional[str] = None,
+    mutation: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Background half of a branch: reconstruct state at the fork, copy the parent's
@@ -330,6 +339,7 @@ async def execute_branch(
         db=db,
         on_event=on_event,
         model=model,
+        mutation=mutation,
     )
 
 

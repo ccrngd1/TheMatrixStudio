@@ -556,6 +556,120 @@ async def _run_turns(
         }
 
 
+class BranchMutationError(ValueError):
+    """A branch mutation references state that does not exist at the fork, or is
+    otherwise invalid. Surfaced by the API as HTTP 422."""
+
+
+async def _apply_branch_mutation(
+    *,
+    mutation: Dict[str, Any],
+    run_id: str,
+    from_turn: int,
+    topic: str,
+    agents: Dict[str, AgentState],
+    conversation: List[Dict[str, Any]],
+    max_messages: int,
+    db: Optional[Database],
+    emit: Callable[..., Awaitable[None]],
+    next_seq: Callable[[], int],
+) -> tuple[int, int]:
+    """
+    Apply ONE Phase 2b branch mutation to the reconstructed fork state, in place.
+
+    Returns the ``(start_turn, max_messages)`` the forward loop should use.
+
+    Mutation kinds implemented here (Phase 2b step 1):
+      - ``inject_message`` {speaker, content}: append a message turn at
+        ``from_turn + 1`` (persisted as a real branch ``agent.response`` event +
+        running snapshot, flagged ``injected``), so the group sees it going
+        forward. Bumps start_turn and budget by 1 so the injection does not
+        consume a generation slot.
+      - ``continue`` {add_budget}: no state change; extend the turn budget so the
+        group keeps talking.
+
+    State-only mutations (edit_goal / add_persona / remove_persona) and
+    ``promote_aside`` arrive in later 2b steps.
+
+    The parent run is never touched: all writes here target ``run_id`` (the
+    branch). Raises :class:`BranchMutationError` on invalid input.
+    """
+    kind = mutation.get("kind")
+
+    if kind == "continue":
+        add_budget = int(mutation.get("add_budget", 0))
+        if add_budget < 1:
+            raise BranchMutationError("continue.add_budget must be >= 1")
+        # Explicit "continue for exactly add_budget more turns from the fork" —
+        # computed from from_turn directly so it is deterministic and does not
+        # compound branch_budget's dead-branch auto-extension.
+        return from_turn, from_turn + add_budget
+
+    if kind == "inject_message":
+        speaker = str(mutation.get("speaker", "")).strip()
+        content = str(mutation.get("content", "")).strip()
+        if not speaker:
+            raise BranchMutationError("inject_message.speaker is required")
+        if not content:
+            raise BranchMutationError("inject_message.content is required")
+
+        inject_turn = from_turn + 1
+        message = {"speaker": speaker, "content": content, "turn": inject_turn}
+        conversation.append(message)
+
+        # If the injected speaker is an existing persona, thread it into their
+        # own history so their later turns are aware of having "said" it. An
+        # injected narrator/user speaker simply becomes a feed entry.
+        if speaker in agents:
+            agents[speaker].conversation_history.append(message)
+
+        source = str(mutation.get("source", "user"))
+        # Persist as a real branch turn so replay + live-watch render it. Uses
+        # the existing agent.response shape (zero tokens/cost — no LLM call) with
+        # an additive ``injected`` flag the UI can style; no existing consumer
+        # requires the flag.
+        await emit(
+            turn=inject_turn,
+            seq=next_seq(),
+            event_type="agent.response",
+            agent_name=speaker,
+            payload={
+                "speaker": speaker,
+                "message": content,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "cost_usd": 0.0,
+                "injected": True,
+                "source": source,
+            },
+        )
+        if db:
+            await db.save_snapshot(
+                SimSnapshot(
+                    run_id=run_id,
+                    turn=inject_turn,
+                    topic=topic,
+                    agents=agents,
+                    conversation=conversation,
+                    status="running",
+                    created_at=int(time.time()),
+                    total_turns=inject_turn,
+                )
+            )
+        await emit(
+            turn=inject_turn,
+            seq=next_seq(),
+            event_type="checkpoint.saved",
+            payload={"turn": inject_turn},
+        )
+
+        # The injection occupies turn from_turn+1; resume generating after it and
+        # extend the budget by 1 so it does not eat a generation slot.
+        return inject_turn, max_messages + 1
+
+    raise BranchMutationError(f"unknown branch mutation kind: {kind!r}")
+
+
 async def resume_simulation(
     run_id: str,
     topic: str,
@@ -567,6 +681,7 @@ async def resume_simulation(
     db: Optional[Database] = None,
     on_event: Optional[OnEvent] = None,
     model: Optional[str] = None,
+    mutation: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Phase 2a branch primitive — RESUME generating forward from a checkpoint.
@@ -643,11 +758,34 @@ async def resume_simulation(
     # generated turn's speaker selection sees continuity.
     last_speaker = conversation[-1]["speaker"] if conversation else None
 
+    # Phase 2b: apply a single branch mutation at the fork BEFORE generating
+    # forward. This is the only difference between a plain 2a fork and a 2b
+    # intervention. The mutation edits the reconstructed (agents, conversation)
+    # in place and may persist an injected turn (as a real branch event +
+    # snapshot); it returns the effective start_turn + budget for the forward
+    # loop. No-op when mutation is None (unchanged 2a behavior).
+    effective_from_turn = from_turn
+    effective_max = max_messages
+    if mutation:
+        effective_from_turn, effective_max = await _apply_branch_mutation(
+            mutation=mutation,
+            run_id=run_id,
+            from_turn=from_turn,
+            topic=topic,
+            agents=agents,
+            conversation=conversation,
+            max_messages=max_messages,
+            db=db,
+            emit=_emit,
+            next_seq=_next_seq,
+        )
+        last_speaker = conversation[-1]["speaker"] if conversation else last_speaker
+
     logger.info(
         "Resuming simulation %s from turn %d (budget %d turns)",
         run_id,
-        from_turn,
-        max_messages,
+        effective_from_turn,
+        effective_max,
     )
 
     return await _run_turns(
@@ -656,8 +794,8 @@ async def resume_simulation(
         agents=agents,
         conversation=conversation,
         last_speaker=last_speaker,
-        start_turn=from_turn,
-        max_messages=max_messages,
+        start_turn=effective_from_turn,
+        max_messages=effective_max,
         settings=settings,
         db=db,
         emit=_emit,

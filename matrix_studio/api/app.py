@@ -109,8 +109,24 @@ class ThreadMessageModel(BaseModel):
     model: Optional[str] = None
 
 
+class BranchMutationModel(BaseModel):
+    """Phase 2b: a single mutation applied at the fork before the branch
+    generates forward. ``kind`` selects the operation; the other fields are
+    per-kind. Step 1 implements ``inject_message`` and ``continue``; the
+    state-mutation kinds (edit_goal / add_persona / remove_persona) and
+    ``promote_aside`` arrive in later steps."""
+
+    kind: str
+    # inject_message / promote_aside
+    speaker: Optional[str] = None
+    content: Optional[str] = None
+    source: Optional[str] = None
+    # continue
+    add_budget: Optional[int] = Field(default=None, ge=1)
+
+
 class BranchModel(BaseModel):
-    """Body for POST /api/runs/{ref}/branch (Phase 2a branch primitive)."""
+    """Body for POST /api/runs/{ref}/branch (Phase 2a fork; Phase 2b mutation)."""
 
     from_turn: int = Field(ge=0)
     name: Optional[str] = None
@@ -118,6 +134,8 @@ class BranchModel(BaseModel):
     # Optional generation-model override for the branch's forward turns; None ->
     # inherit the parent's model (or the settings default for imported parents).
     model: Optional[str] = None
+    # Phase 2b: optional mutation applied at the fork. None -> a plain 2a fork.
+    mutation: Optional[BranchMutationModel] = None
 
 
 def _run_summary(run: Dict[str, Any]) -> Dict[str, Any]:
@@ -141,6 +159,50 @@ def _run_summary(run: Dict[str, Any]) -> Dict[str, Any]:
         "parent_run_id": run.get("parent_run_id"),
         "branch_turn": run.get("branch_turn"),
     }
+
+
+_STEP1_MUTATION_KINDS = {"inject_message", "continue"}
+
+
+def _validate_branch_mutation(
+    mutation: Optional["BranchMutationModel"],
+) -> Optional[Dict[str, Any]]:
+    """
+    Validate a Phase 2b branch mutation and return it as a plain dict (or None).
+    Raises HTTP 422 on any malformed/unsupported mutation so the caller gets a
+    clean error before a branch run is created.
+
+    Only the fields relevant to the mutation's ``kind`` are forwarded, so an
+    ``inject_message`` never smuggles a ``continue`` field and vice-versa.
+    """
+    if mutation is None:
+        return None
+    kind = (mutation.kind or "").strip()
+    if kind not in _STEP1_MUTATION_KINDS:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"unsupported mutation kind {kind!r}; "
+                f"supported: {sorted(_STEP1_MUTATION_KINDS)}"
+            ),
+        )
+    if kind == "continue":
+        if not mutation.add_budget or mutation.add_budget < 1:
+            raise HTTPException(
+                status_code=422, detail="continue.add_budget must be >= 1"
+            )
+        return {"kind": "continue", "add_budget": int(mutation.add_budget)}
+    # inject_message
+    speaker = (mutation.speaker or "").strip()
+    content = (mutation.content or "").strip()
+    if not speaker:
+        raise HTTPException(status_code=422, detail="inject_message.speaker is required")
+    if not content:
+        raise HTTPException(status_code=422, detail="inject_message.content is required")
+    out: Dict[str, Any] = {"kind": "inject_message", "speaker": speaker, "content": content}
+    if mutation.source:
+        out["source"] = str(mutation.source)
+    return out
 
 
 async def sweep_stale_running_runs(db: Database) -> List[str]:
@@ -390,12 +452,16 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
                 status_code=422,
                 detail=f"from_turn must be between 0 and {max_turn} for this run",
             )
+        # Phase 2b: validate the mutation (if any) up front for a clean 422,
+        # then pass it through as a plain dict.
+        mutation = _validate_branch_mutation(body.mutation)
         meta = await manager.create_branch(
             parent,
             from_turn=body.from_turn,
             name=body.name,
             description=body.description,
             model=body.model,
+            mutation=mutation,
         )
         return meta
 
