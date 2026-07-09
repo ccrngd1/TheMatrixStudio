@@ -19,7 +19,13 @@ export default function App() {
         />
       )
     case 'run':
-      return <LiveView runId={view.runId} onBack={() => setView({ name: 'history' })} />
+      return (
+        <LiveView
+          runId={view.runId}
+          onBack={() => setView({ name: 'history' })}
+          onOpenRun={(runId) => setView({ name: 'run', runId })}
+        />
+      )
     case 'history':
     default:
       return (

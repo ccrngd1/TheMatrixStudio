@@ -4,9 +4,12 @@
 
 import type {
   AsideTarget,
+  BranchResponse,
   RunDetail,
   RunSummary,
   SimEvent,
+  SnapshotInfo,
+  SnapshotState,
   StoredSummary,
   SummaryResponse,
   ThreadDetail,
@@ -115,6 +118,30 @@ export const api = {
       `/api/threads/${encodeURIComponent(threadId)}/messages`,
       { method: 'POST', body: JSON.stringify({ content }) },
     ),
+
+  // -------- Phase 2a: checkpoints + branching -------- //
+
+  listSnapshots: (ref: string) =>
+    jsonFetch<{ run_id: string; snapshots: SnapshotInfo[] }>(
+      `/api/runs/${encodeURIComponent(ref)}/snapshots`,
+    ).then((r) => r.snapshots),
+
+  getSnapshot: (ref: string, turn: number) =>
+    jsonFetch<SnapshotState>(
+      `/api/runs/${encodeURIComponent(ref)}/snapshots/${turn}`,
+    ),
+
+  // Fork a run at `fromTurn` into a new run that resumes forward. The parent is
+  // never modified. Returns immediately with the new run's id + codename.
+  branchRun: (
+    ref: string,
+    fromTurn: number,
+    opts?: { name?: string; description?: string },
+  ) =>
+    jsonFetch<BranchResponse>(`/api/runs/${encodeURIComponent(ref)}/branch`, {
+      method: 'POST',
+      body: JSON.stringify({ from_turn: fromTurn, ...opts }),
+    }),
 }
 
 // Build the WebSocket URL for a run's live stream.

@@ -1,0 +1,310 @@
+# SPDX-License-Identifier: Apache-2.0
+"""
+Branch primitive — the Phase 2a fork-and-resume service.
+
+A branch is a NEW run that copies a parent run's history up to and including a
+fork turn ``from_turn`` and then RESUMES generating forward from
+``from_turn + 1`` as its own timeline. The parent run is NEVER modified or
+re-run (the core immutability invariant).
+
+This module owns the pure, DB-facing pieces of that operation:
+
+  * ``reconstruct_at_turn`` — rebuild the exact engine state (agents +
+    conversation) as of a turn by REPLAYING the parent's event log. Replay is
+    used (rather than trusting a per-turn snapshot) because it is always
+    available and correct — imported runs (e.g. the ``bridge-kibble`` fixture)
+    carry only a completion snapshot, and every run has a full event log. It
+    also tolerates the two historical ``agent.response`` payload shapes
+    (``message`` from the live engine, ``content`` from imports).
+  * ``create_branch_run`` — synchronously create the new run row (with
+    ``parent_run_id`` / ``branch_turn`` and a memorable codename) so it is
+    immediately resolvable, watchable, and visible in history.
+  * ``execute_branch`` — the background half: copy the parent event log up to
+    the fork, seed a snapshot at the fork, then resume generation forward via
+    the additive ``resume_simulation`` engine entry.
+
+NO mutation is applied at the fork in Phase 2a (that is Phase 2b); a branch is a
+clean "continue forward from turn N" fork. Non-determinism forward of the fork
+is expected and correct — we never re-run the original.
+"""
+
+import json
+import logging
+import time
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+
+from matrix_studio.engine import resume_simulation
+from matrix_studio.engine.simulator import OnEvent
+from matrix_studio.naming import generate_run_name
+from matrix_studio.settings import get_settings
+from matrix_studio.state import AgentState, SimSnapshot
+from matrix_studio.storage import Database
+
+logger = logging.getLogger(__name__)
+
+
+def _parse_config(run: Dict[str, Any]) -> Dict[str, Any]:
+    """Best-effort parse of a run row's config_json."""
+    raw = run.get("config_json")
+    if not raw:
+        return {}
+    try:
+        cfg = json.loads(raw)
+        return cfg if isinstance(cfg, dict) else {}
+    except json.JSONDecodeError:
+        return {}
+
+
+def _load_cast(run: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Load a run's cast (persona name + real stored persona text + goals)."""
+    try:
+        cast = json.loads(run["cast_json"])
+        return cast if isinstance(cast, list) else []
+    except (KeyError, json.JSONDecodeError):
+        return []
+
+
+def branch_budget(parent_run: Dict[str, Any], from_turn: int) -> int:
+    """
+    Resolve the branch's turn budget (``max_messages``).
+
+    A branch inherits the parent's configured budget so it plays by the same
+    rules. If the fork point is at or past that budget (which would generate
+    ZERO new turns — a dead branch), we extend the budget by a fresh allotment
+    from ``from_turn`` so the fork always moves forward. This is the only place
+    the branch's budget can differ from the parent's, and it never touches the
+    parent.
+    """
+    settings = get_settings()
+    cfg = _parse_config(parent_run)
+    base = cfg.get("max_messages") or settings.max_messages
+    if from_turn >= base:
+        return from_turn + base
+    return base
+
+
+async def reconstruct_at_turn(
+    db: Database, parent_run: Dict[str, Any], from_turn: int
+) -> Tuple[str, Dict[str, "AgentState"], List[Dict[str, Any]]]:
+    """
+    Reconstruct the exact engine state as of ``from_turn`` for ``parent_run`` by
+    replaying its event log (read-only — the parent is never touched).
+
+    Returns ``(topic, agents, conversation)`` where ``agents`` is a name->
+    :class:`AgentState` dict seeded from the run's cast (real persona/goals) and
+    populated with the per-agent conversation history + accumulated token/cost
+    as of the fork, and ``conversation`` is the transcript up to and including
+    ``from_turn``.
+
+    ``agent.response`` payloads are tolerated in both shapes: the live engine
+    writes ``message`` + token/cost fields; imported runs write ``content`` and
+    may omit tokens/cost (treated as 0).
+    """
+    topic = parent_run.get("topic", "")
+    cast = _load_cast(parent_run)
+
+    agents: Dict[str, AgentState] = {}
+    for persona in cast:
+        agent = AgentState(
+            name=persona["name"],
+            persona=persona.get("persona", ""),
+            goals=persona.get("goals", []),
+        )
+        agents[agent.name] = agent
+
+    conversation: List[Dict[str, Any]] = []
+
+    # Replay only up to and including the fork turn.
+    events = await db.get_events(parent_run["id"], from_turn=0, to_turn=from_turn)
+    for event in events:
+        if event["event_type"] != "agent.response":
+            continue
+        payload = event.get("payload")
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except json.JSONDecodeError:
+                payload = {}
+        payload = payload or {}
+
+        speaker = payload.get("speaker") or event.get("agent_name")
+        if not speaker:
+            continue
+        content = payload.get("message")
+        if content is None:
+            content = payload.get("content", "")
+
+        message = {"speaker": speaker, "content": content, "turn": event["turn"]}
+        conversation.append(message)
+
+        # A speaker may not be in the declared cast for legacy data; add it so
+        # the reconstructed state stays faithful to the transcript.
+        if speaker not in agents:
+            agents[speaker] = AgentState(name=speaker, persona="", goals=[])
+        agent = agents[speaker]
+        agent.conversation_history.append(message)
+        if len(agent.conversation_history) > 50:
+            agent.conversation_history = agent.conversation_history[-50:]
+        agent.total_tokens_in += int(payload.get("tokens_in") or 0)
+        agent.total_tokens_out += int(payload.get("tokens_out") or 0)
+        agent.total_cost_usd += float(payload.get("cost_usd") or 0.0)
+
+    return topic, agents, conversation
+
+
+async def create_branch_run(
+    db: Database,
+    parent_run: Dict[str, Any],
+    from_turn: int,
+    name: Optional[str] = None,
+    description: Optional[str] = None,
+    model: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Synchronously create the new branch run row (so it is immediately resolvable
+    by id/name, watchable over WS, and listed in history) and return its
+    metadata. Resolves a memorable codename (reuse Phase 1 naming; a
+    user-supplied name is honoured and de-duplicated). Sets ``parent_run_id`` /
+    ``branch_turn`` and records the parent config's model so downstream analysis
+    defaults match the parent.
+
+    The heavy work (event copy + resume) is done separately in
+    ``execute_branch`` on a background task — this function does NOT block on
+    generation and does NOT touch the parent.
+    """
+    import uuid
+
+    branch_run_id = str(uuid.uuid4())
+    topic = parent_run.get("topic", "")
+    cast = _load_cast(parent_run)
+    cast_names = [c.get("name", "") for c in cast]
+    parent_label = parent_run.get("name") or parent_run["id"][:8]
+
+    # Resolve a codename. A user-supplied name is honoured (de-duplicated);
+    # otherwise generate one from the topic. Naming never blocks a branch.
+    supplied = (name or "").strip().lower() or None
+    name_source: Optional[str] = "user" if supplied else None
+    if supplied and await db.name_exists(supplied):
+        base = supplied
+        for suffix in range(2, 100):
+            candidate = f"{base}-{suffix}"
+            if not await db.name_exists(candidate):
+                supplied = candidate
+                break
+
+    if supplied:
+        codename = supplied
+        slug = supplied
+    else:
+        naming = await generate_run_name(
+            topic=topic,
+            cast_names=cast_names,
+            model=model,
+            name_exists=db.name_exists,
+        )
+        codename = naming["name"]
+        slug = naming["slug"]
+        name_source = naming["source"]
+
+    # Default description records the lineage; a supplied one wins. Editable
+    # later, same as any run.
+    if not description:
+        description = f"Branch of {parent_label} @ turn {from_turn}"
+
+    # Carry the parent's config forward (so budget/model/summary settings match),
+    # but drop the imported flag — a branch is a freshly generated timeline.
+    cfg = dict(_parse_config(parent_run))
+    cfg.pop("imported", None)
+    cfg.pop("source", None)
+    cfg["max_messages"] = branch_budget(parent_run, from_turn)
+
+    await db.create_run(
+        run_id=branch_run_id,
+        topic=topic,
+        cast=cast,
+        name=codename,
+        description=description,
+        slug=slug,
+        config=cfg,
+        parent_run_id=parent_run["id"],
+        branch_turn=from_turn,
+    )
+
+    return {
+        "run_id": branch_run_id,
+        "name": codename,
+        "slug": slug,
+        "name_source": name_source,
+        "description": description,
+        "topic": topic,
+        "parent_run_id": parent_run["id"],
+        "parent_name": parent_run.get("name"),
+        "branch_turn": from_turn,
+        "status": "running",
+        "max_messages": cfg["max_messages"],
+    }
+
+
+async def execute_branch(
+    db: Database,
+    parent_run: Dict[str, Any],
+    branch_run_id: str,
+    from_turn: int,
+    max_messages: int,
+    on_event: Optional[OnEvent] = None,
+) -> Dict[str, Any]:
+    """
+    Background half of a branch: reconstruct state at the fork, copy the parent's
+    event log up to and including ``from_turn`` into the branch, seed a snapshot
+    at the fork, then RESUME generating forward via the additive engine entry.
+
+    Reads the parent only; all writes go to ``branch_run_id``. The branch emits
+    the normal event stream + per-turn checkpoints under its own id, so
+    live-watch and replay work with zero new machinery.
+    """
+    await db.update_run_status(branch_run_id, "running")
+
+    topic, agents, conversation = await reconstruct_at_turn(
+        db, parent_run, from_turn
+    )
+
+    # Copy the parent's event log up to and including the fork (preserving
+    # turn/seq), so the branch replays byte-for-byte identically up to the fork.
+    copied = await db.copy_events_upto(parent_run["id"], branch_run_id, from_turn)
+    logger.info(
+        "Branch %s: copied %d parent events up to turn %d",
+        branch_run_id,
+        copied,
+        from_turn,
+    )
+
+    # Seed a snapshot at the fork so the branch has a checkpoint at from_turn
+    # (running) even before it generates its first new turn.
+    await db.save_snapshot(
+        SimSnapshot(
+            run_id=branch_run_id,
+            turn=from_turn,
+            topic=topic,
+            agents=agents,
+            conversation=conversation,
+            status="running",
+            created_at=int(time.time()),
+            total_turns=from_turn,
+        )
+    )
+
+    # Continue the per-run seq after the copied events so replay ordering stays
+    # total across the copy/generate boundary.
+    start_seq = await db.max_seq(branch_run_id) + 1
+
+    return await resume_simulation(
+        run_id=branch_run_id,
+        topic=topic,
+        agents=agents,
+        conversation=conversation,
+        from_turn=from_turn,
+        start_seq=start_seq,
+        max_messages=max_messages,
+        db=db,
+        on_event=on_event,
+    )

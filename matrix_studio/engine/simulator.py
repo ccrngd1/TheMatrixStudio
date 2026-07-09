@@ -346,10 +346,57 @@ async def run_simulation(
 
         await asyncio.gather(*[_make_avatar(a) for a in agents.values()])
 
-    # Simulation loop
-    conversation: List[Dict[str, Any]] = []
-    last_speaker: Optional[str] = None
-    turn = 0
+    # Fresh start: no prior turns, no seed conversation.
+    return await _run_turns(
+        run_id=run_id,
+        topic=topic,
+        agents=agents,
+        conversation=[],
+        last_speaker=None,
+        start_turn=0,
+        max_messages=max_messages,
+        settings=settings,
+        db=db,
+        emit=_emit,
+        next_seq=_next_seq,
+    )
+
+
+async def _run_turns(
+    *,
+    run_id: str,
+    topic: str,
+    agents: Dict[str, AgentState],
+    conversation: List[Dict[str, Any]],
+    last_speaker: Optional[str],
+    start_turn: int,
+    max_messages: int,
+    settings,
+    db: Optional[Database],
+    emit: Callable[..., Awaitable[None]],
+    next_seq: Callable[[], int],
+) -> Dict[str, Any]:
+    """
+    Shared turn loop + completion/failure handling for both a fresh run and a
+    resumed branch. Generates turns ``start_turn + 1 .. max_messages``.
+
+    ``start_turn`` is the number of turns already present (0 for a fresh run;
+    the fork's ``from_turn`` for a resumed branch, whose earlier turns were
+    replayed/copied by the branch service). This keeps the fresh-start Phase 0
+    path behaviorally identical — it simply calls this with ``start_turn=0`` and
+    an empty seed conversation.
+
+    Phase 2a additive behavior: after each turn the engine persists a FULL
+    ``SimSnapshot`` (``status="running"``) and emits an additive
+    ``checkpoint.saved`` event so any turn's exact state can be reconstructed.
+
+    Storage note (Phase 2a, CC-approved default): we persist a full snapshot per
+    turn rather than deltas. Runs are short (≤ a few dozen turns), so the storage
+    cost is small and reconstruction is O(1) (load one row) instead of replaying
+    the event log. Delta-encoding is deferred; revisit only if long runs make
+    storage a problem.
+    """
+    turn = start_turn
 
     try:
         while turn < max_messages:
@@ -360,9 +407,9 @@ async def run_simulation(
                 topic, agents, conversation, last_speaker, settings
             )
 
-            await _emit(
+            await emit(
                 turn=turn,
-                seq=_next_seq(),
+                seq=next_seq(),
                 event_type="speaker.selected",
                 agent_name=speaker_name,
                 payload={"speaker": speaker_name, "candidates": list(agents.keys())},
@@ -392,9 +439,9 @@ async def run_simulation(
             speaker.total_cost_usd += response_data["cost_usd"]
 
             # Log event
-            await _emit(
+            await emit(
                 turn=turn,
-                seq=_next_seq(),
+                seq=next_seq(),
                 event_type="agent.response",
                 agent_name=speaker_name,
                 payload={
@@ -406,6 +453,29 @@ async def run_simulation(
                 },
             )
 
+            # Phase 2a: per-turn checkpoint — persist a full running snapshot for
+            # this turn so state at turn N is reconstructable, then emit an
+            # additive checkpoint.saved event (no existing consumer requires it).
+            if db:
+                await db.save_snapshot(
+                    SimSnapshot(
+                        run_id=run_id,
+                        turn=turn,
+                        topic=topic,
+                        agents=agents,
+                        conversation=conversation,
+                        status="running",
+                        created_at=int(time.time()),
+                        total_turns=turn,
+                    )
+                )
+            await emit(
+                turn=turn,
+                seq=next_seq(),
+                event_type="checkpoint.saved",
+                payload={"turn": turn},
+            )
+
             last_speaker = speaker_name
 
             logger.info(f"Turn {turn}/{max_messages}: {speaker_name}: {response_data['content'][:100]}...")
@@ -414,9 +484,9 @@ async def run_simulation(
         completion_time = int(time.time())
         total_cost = sum(a.total_cost_usd for a in agents.values())
 
-        await _emit(
+        await emit(
             turn=turn,
-            seq=_next_seq(),
+            seq=next_seq(),
             event_type="sim.completed",
             payload={
                 "total_turns": turn,
@@ -426,7 +496,8 @@ async def run_simulation(
         )
 
         if db:
-            # Save completion snapshot
+            # Save completion snapshot (retained unchanged from Phase 0; this is
+            # the turn=final, status="complete" snapshot the analysis layer reads).
             snapshot = SimSnapshot(
                 run_id=run_id,
                 turn=turn,
@@ -457,9 +528,9 @@ async def run_simulation(
     except Exception as e:
         logger.error(f"Simulation {run_id} failed: {e}", exc_info=True)
 
-        await _emit(
+        await emit(
             turn=turn,
-            seq=_next_seq(),
+            seq=next_seq(),
             event_type="sim.failed",
             payload={"error": str(e)},
         )
@@ -475,3 +546,111 @@ async def run_simulation(
             "agents": {name: agent.model_dump() for name, agent in agents.items()},
             "total_turns": turn,
         }
+
+
+async def resume_simulation(
+    run_id: str,
+    topic: str,
+    agents: Dict[str, AgentState],
+    conversation: List[Dict[str, Any]],
+    from_turn: int,
+    start_seq: int,
+    max_messages: int,
+    db: Optional[Database] = None,
+    on_event: Optional[OnEvent] = None,
+) -> Dict[str, Any]:
+    """
+    Phase 2a branch primitive — RESUME generating forward from a checkpoint.
+
+    Additive engine entry (the fresh-start ``run_simulation`` path is untouched).
+    The branch service has already: created the new run row (with parent_run_id /
+    branch_turn), copied the parent's event log up to and including ``from_turn``
+    into this ``run_id``, and seeded a snapshot at ``from_turn``. This function
+    seeds the engine state from that checkpoint and generates NEW turns
+    ``from_turn + 1 .. max_messages`` under the new ``run_id``, emitting the
+    normal event stream + per-turn checkpoints (so live-watch and replay work for
+    the branch with zero new machinery).
+
+    It does NOT re-emit ``sim.started`` or regenerate avatars (those events were
+    copied from the parent, so the branch replays identically up to the fork). It
+    does NOT touch the parent run in any way. Non-determinism forward of the fork
+    is expected and correct — we never re-run the original.
+
+    Args:
+        run_id: The NEW branch run id (already created by the service).
+        topic: Conversation topic (copied from the parent).
+        agents: Reconstructed agent states as of ``from_turn`` (with accumulated
+            tokens/cost carried forward so the branch's cost continues, not resets).
+        conversation: Full transcript as of ``from_turn``.
+        from_turn: The fork turn (branch continues from ``from_turn + 1``).
+        start_seq: Next per-run seq to use (continues after the copied events).
+        max_messages: Turn budget for the branch (inherited from the parent).
+        db: Database for event/snapshot persistence.
+        on_event: Optional live-emit callback (same additive seam as a fresh run).
+    """
+    settings = get_settings()
+
+    # Continue the per-run monotonic seq after the copied parent events so replay
+    # ordering stays total across the copy/generate boundary.
+    seq_counter = start_seq
+
+    def _next_seq() -> int:
+        nonlocal seq_counter
+        s = seq_counter
+        seq_counter += 1
+        return s
+
+    async def _emit(
+        turn: int,
+        seq: int,
+        event_type: str,
+        payload: Dict[str, Any],
+        agent_name: Optional[str] = None,
+    ) -> None:
+        if db:
+            await db.append_event(
+                run_id=run_id,
+                turn=turn,
+                seq=seq,
+                event_type=event_type,
+                agent_name=agent_name,
+                payload=payload,
+            )
+        if on_event is not None:
+            event = {
+                "run_id": run_id,
+                "turn": turn,
+                "seq": seq,
+                "event_type": event_type,
+                "agent_name": agent_name,
+                "payload": payload,
+            }
+            try:
+                await on_event(event)
+            except Exception as cb_err:  # noqa: BLE001 - live emit must never break a run
+                logger.warning("on_event callback failed for %s: %s", event_type, cb_err)
+
+    # Seed last_speaker from the tail of the copied transcript so the first
+    # generated turn's speaker selection sees continuity.
+    last_speaker = conversation[-1]["speaker"] if conversation else None
+
+    logger.info(
+        "Resuming simulation %s from turn %d (budget %d turns)",
+        run_id,
+        from_turn,
+        max_messages,
+    )
+
+    return await _run_turns(
+        run_id=run_id,
+        topic=topic,
+        agents=agents,
+        conversation=conversation,
+        last_speaker=last_speaker,
+        start_turn=from_turn,
+        max_messages=max_messages,
+        settings=settings,
+        db=db,
+        emit=_emit,
+        next_seq=_next_seq,
+    )
