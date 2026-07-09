@@ -45,6 +45,18 @@ DEFAULT_SUMMARY_FIELDS = [
 # and its cost predictable (asides cost money — see the honesty gate).
 MAX_ROOM_PERSONAS = 12
 
+# The default analyst-role framing for a summary. This is the ONLY part of the
+# summary system prompt a user may replace via a custom `instructions` — the
+# non-negotiable guardrails in `_summary_system_prompt` (JSON schema block,
+# JSON-only response, no-fabrication line) are always appended regardless, so a
+# custom prompt can never break JSON parsing or the honesty gate. Exposed via
+# GET /api/runs/{ref}/summary as `default_instructions` so the UI can prefill
+# the editor and offer "reset to default."
+DEFAULT_SUMMARY_INSTRUCTIONS = (
+    "You are a neutral analyst summarizing a finished multi-agent "
+    "conversation. Read the transcript and produce a STRUCTURED analysis."
+)
+
 
 # --------------------------------------------------------------------------- #
 # LLM plumbing (single seam — tests patch this).
@@ -131,7 +143,24 @@ def _extract_json(text: str) -> Optional[Dict[str, Any]]:
 # --------------------------------------------------------------------------- #
 # Summary generation.
 # --------------------------------------------------------------------------- #
-def _summary_system_prompt(fields: List[str], focus: Optional[str]) -> str:
+def _summary_system_prompt(
+    fields: List[str],
+    focus: Optional[str],
+    instructions: Optional[str] = None,
+) -> str:
+    """
+    Build the summary system prompt.
+
+    The analyst-role framing (``DEFAULT_SUMMARY_INSTRUCTIONS``) is REPLACED by a
+    user-supplied ``instructions`` when provided; ``focus`` still appends after.
+    The non-negotiable GUARDRAILS are ALWAYS appended regardless of any custom
+    instructions and cannot be dropped by the user:
+      (a) the no-fabrication line (base strictly on the transcript),
+      (b) the JSON schema block derived from ``fields``,
+      (c) the "respond with ONLY a single JSON object" instruction.
+    This keeps structured output parseable and the honesty gate intact even with
+    a fully custom prompt.
+    """
     field_specs = {
         "consensus": '"consensus": [ "point the group converged on", ... ]',
         "dissenters": '"dissenters": [ {"speaker": "name", "position": "what they objected to"}, ... ]',
@@ -146,9 +175,15 @@ def _summary_system_prompt(fields: List[str], focus: Optional[str]) -> str:
         if focus and focus.strip()
         else ""
     )
+    # Custom instructions replace ONLY the analyst-role framing; the default is
+    # used when none provided (or an all-whitespace value is given).
+    role = (
+        instructions.strip()
+        if instructions and instructions.strip()
+        else DEFAULT_SUMMARY_INSTRUCTIONS
+    )
     return (
-        "You are a neutral analyst summarizing a finished multi-agent "
-        "conversation. Read the transcript and produce a STRUCTURED analysis. "
+        role + "\n\n"
         "Base every point strictly on what was actually said — do not invent "
         "content, positions, or speakers. Lists may be empty if nothing "
         "qualifies.\n\n"
@@ -203,18 +238,32 @@ async def generate_summary(
     fields: Optional[List[str]] = None,
     focus: Optional[str] = None,
     model: Optional[str] = None,
+    instructions: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Generate a structured analyst summary of a completed conversation.
 
-    Returns ``{payload, tokens_in, tokens_out, cost_usd, parsed}`` where
-    ``payload`` is the structured (or fallback) summary and ``parsed`` is True
-    when strict JSON was obtained. On a parse failure it retries ONCE, then
-    falls back to a plain-text overview so it never crashes the run/UI.
+    ``instructions`` (optional) REPLACES the default analyst-role framing while
+    the guardrails always remain (see ``_summary_system_prompt``). It is
+    backward-compatible: omitting it uses the default framing.
+
+    Returns ``{payload, tokens_in, tokens_out, cost_usd, parsed, instructions}``
+    where ``payload`` is the structured (or fallback) summary, ``parsed`` is True
+    when strict JSON was obtained, and ``instructions`` is the effective
+    role-framing text that created it (``None`` when the default was used, so
+    callers can persist NULL). On a parse failure it retries ONCE, then falls
+    back to a plain-text overview so it never crashes the run/UI.
     """
     fields = fields or list(DEFAULT_SUMMARY_FIELDS)
     transcript = format_transcript(conversation)
-    system = _summary_system_prompt(fields, focus)
+    system = _summary_system_prompt(fields, focus, instructions)
+    # The effective instructions we persist: NULL (None) when the default was
+    # used so the UI knows to fall back to `default_instructions`.
+    effective_instructions = (
+        instructions.strip()
+        if instructions and instructions.strip()
+        else None
+    )
     user = (
         f'The conversation topic was: "{topic}".\n\n'
         f"Transcript:\n{transcript}\n\n"
@@ -247,6 +296,7 @@ async def generate_summary(
                 "tokens_out": tokens_out,
                 "cost_usd": cost_usd,
                 "parsed": False,
+                "instructions": effective_instructions,
             }
 
         tokens_in += result["tokens_in"]
@@ -262,6 +312,7 @@ async def generate_summary(
                 "tokens_out": tokens_out,
                 "cost_usd": cost_usd,
                 "parsed": True,
+                "instructions": effective_instructions,
             }
 
         if attempt == 0:
@@ -288,6 +339,7 @@ async def generate_summary(
         "tokens_out": tokens_out,
         "cost_usd": cost_usd,
         "parsed": False,
+        "instructions": effective_instructions,
     }
 
 

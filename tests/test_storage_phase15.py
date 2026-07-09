@@ -71,6 +71,33 @@ async def test_regenerate_returns_latest_generated_not_imported(db):
 
 
 @pytest.mark.asyncio
+async def test_summary_instructions_persist_and_round_trip(db):
+    """The effective analyst-role instructions persist and round-trip so the
+    regenerate UI can prefill the prompt that created a summary."""
+    await _seed_completed_run(db)
+    custom = "You are a snarky debate coach. Roast the weakest argument."
+    saved = await db.save_summary(
+        "r1", payload={"overview": "gen"}, kind="generated",
+        tokens_in=10, tokens_out=5, cost_usd=0.003, instructions=custom,
+    )
+    assert saved["instructions"] == custom
+    rows = await db.get_summaries("r1")
+    by_kind = {r["kind"]: r for r in rows}
+    assert by_kind["generated"]["instructions"] == custom
+
+
+@pytest.mark.asyncio
+async def test_summary_default_instructions_persist_as_null(db):
+    """Omitting instructions (the default framing) persists NULL so the UI
+    knows to fall back to default_instructions."""
+    await _seed_completed_run(db)
+    await db.save_summary("r1", payload={"overview": "gen"}, kind="generated")
+    rows = await db.get_summaries("r1")
+    by_kind = {r["kind"]: r for r in rows}
+    assert by_kind["generated"]["instructions"] is None
+
+
+@pytest.mark.asyncio
 async def test_thread_lifecycle_and_messages(db):
     await _seed_completed_run(db)
     thread = await db.create_thread("t1", "r1", target="analyst")

@@ -7,6 +7,9 @@ interface Props {
   runId: string
   generated: StoredSummary | null
   imported: StoredSummary | null
+  // The default analyst-role framing (from GET summary). Prefills the editor and
+  // powers "reset to default" when the current summary used the default (NULL).
+  defaultInstructions: string
   // Only completed runs can (re)generate a summary.
   canGenerate: boolean
   onUpdated: (s: StoredSummary) => void
@@ -16,16 +19,46 @@ interface Props {
 // transcript — labeled as such, visually distinct from the canonical run, and
 // never presented as ground truth (honesty gate). An imported original (from a
 // legacy run) is shown separately and is never overwritten.
-export function SummaryPanel({ runId, generated, imported, canGenerate, onUpdated }: Props) {
+export function SummaryPanel({
+  runId,
+  generated,
+  imported,
+  defaultInstructions,
+  canGenerate,
+  onUpdated,
+}: Props) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // When the editor is open, the user can alter the summarization PROMPT (the
+  // analyst-role framing) before regenerating. The guardrails (JSON structure +
+  // no-fabrication) are enforced server-side and are NOT editable here.
+  const [editing, setEditing] = useState(false)
+  const [prompt, setPrompt] = useState('')
+
+  // The prompt that created the current summary: its stored instructions when a
+  // custom prompt was used, otherwise the default framing.
+  const currentPrompt = generated?.instructions ?? defaultInstructions
+
+  const openEditor = () => {
+    setPrompt(currentPrompt)
+    setError(null)
+    setEditing(true)
+  }
 
   const generate = async () => {
     setBusy(true)
     setError(null)
     try {
-      const res = await api.generateSummary(runId)
+      // Only send custom instructions when the user diverged from the default;
+      // an unchanged/default prompt sends none → server uses the default.
+      const trimmed = prompt.trim()
+      const body =
+        trimmed && trimmed !== defaultInstructions.trim()
+          ? { instructions: trimmed }
+          : undefined
+      const res = await api.generateSummary(runId, body)
       onUpdated(res.generated)
+      setEditing(false)
     } catch (e) {
       setError((e as Error).message)
     } finally {
@@ -46,16 +79,60 @@ export function SummaryPanel({ runId, generated, imported, canGenerate, onUpdate
             Model-generated analysis of the transcript — not the conversation itself.
           </p>
         </div>
-        {canGenerate && (
+        {canGenerate && !editing && (
           <button
-            onClick={generate}
+            onClick={openEditor}
             disabled={busy}
             className="rounded bg-matrix-accent/20 px-3 py-1 text-xs text-matrix-accent hover:bg-matrix-accent/30 disabled:opacity-40"
           >
-            {busy ? 'Analyzing…' : generated ? '↻ Regenerate' : 'Generate summary'}
+            {generated ? '↻ Regenerate' : 'Generate summary'}
           </button>
         )}
       </div>
+
+      {canGenerate && editing && (
+        <div className="mb-3 rounded border border-matrix-border bg-black/20 p-3">
+          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+            Summarization prompt
+          </label>
+          <textarea
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            rows={5}
+            disabled={busy}
+            className="w-full rounded border border-matrix-border bg-matrix-panel p-2 text-xs text-slate-200 focus:border-matrix-accent focus:outline-none disabled:opacity-40"
+            placeholder={defaultInstructions}
+          />
+          <p className="mt-1 text-[11px] text-slate-500">
+            This replaces the analyst-role framing only. The JSON structure and the
+            no-fabrication (base strictly on the transcript) rules are enforced
+            automatically and are not editable.
+          </p>
+          <div className="mt-2 flex items-center gap-3">
+            <button
+              onClick={generate}
+              disabled={busy}
+              className="rounded bg-matrix-accent/20 px-3 py-1 text-xs text-matrix-accent hover:bg-matrix-accent/30 disabled:opacity-40"
+            >
+              {busy ? 'Analyzing…' : 'Regenerate with this prompt'}
+            </button>
+            <button
+              onClick={() => setPrompt(defaultInstructions)}
+              disabled={busy}
+              className="text-[11px] text-slate-400 underline hover:text-slate-200 disabled:opacity-40"
+            >
+              Reset to default
+            </button>
+            <button
+              onClick={() => setEditing(false)}
+              disabled={busy}
+              className="ml-auto text-[11px] text-slate-500 hover:text-slate-300 disabled:opacity-40"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
 
       {error && (
         <p className="mb-2 rounded bg-red-950/50 p-2 text-xs text-red-300">{error}</p>

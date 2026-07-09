@@ -146,3 +146,102 @@ async def test_room_reply_calls_each_persona(monkeypatch):
     assert reply["cost_usd"] == pytest.approx(0.002)
     assert any("ethicist persona text" in s for s in seen)
     assert any("engineer persona text" in s for s in seen)
+
+
+# --------------------------------------------------------------------------- #
+# Editable summarization prompt (custom instructions replace the analyst-role
+# framing while the non-negotiable guardrails always remain).
+# --------------------------------------------------------------------------- #
+CUSTOM_INSTRUCTIONS = (
+    "You are a snarky debate coach. Roast the weakest argument mercilessly."
+)
+
+
+def _guardrails_present(prompt: str, fields) -> None:
+    """Assert the three non-removable guardrails are in a built summary prompt."""
+    # (a) no-fabrication line
+    assert "do not invent" in prompt
+    assert "strictly on what was actually said" in prompt
+    # (b) JSON-only response instruction
+    assert "ONLY a single JSON object" in prompt
+    # (c) the schema block for each requested field
+    for f in fields:
+        assert f'"{f}"' in prompt
+
+
+def test_summary_prompt_uses_default_instructions_by_default():
+    fields = list(analysis.DEFAULT_SUMMARY_FIELDS)
+    prompt = analysis._summary_system_prompt(fields, focus=None)
+    # The default analyst-role framing is present when no custom text is given.
+    assert analysis.DEFAULT_SUMMARY_INSTRUCTIONS in prompt
+    _guardrails_present(prompt, fields)
+
+
+def test_summary_prompt_custom_instructions_replace_role_framing():
+    fields = list(analysis.DEFAULT_SUMMARY_FIELDS)
+    prompt = analysis._summary_system_prompt(
+        fields, focus=None, instructions=CUSTOM_INSTRUCTIONS
+    )
+    # Custom text IS present, and it REPLACES the default role framing.
+    assert CUSTOM_INSTRUCTIONS in prompt
+    assert analysis.DEFAULT_SUMMARY_INSTRUCTIONS not in prompt
+    # Guardrails are STILL present — they cannot be dropped by a custom prompt.
+    _guardrails_present(prompt, fields)
+
+
+def test_summary_prompt_focus_still_appends_with_custom_instructions():
+    fields = list(analysis.DEFAULT_SUMMARY_FIELDS)
+    prompt = analysis._summary_system_prompt(
+        fields, focus="emphasize legal risk", instructions=CUSTOM_INSTRUCTIONS
+    )
+    assert CUSTOM_INSTRUCTIONS in prompt
+    assert "emphasize legal risk" in prompt
+    _guardrails_present(prompt, fields)
+
+
+def test_summary_prompt_blank_instructions_fall_back_to_default():
+    fields = list(analysis.DEFAULT_SUMMARY_FIELDS)
+    prompt = analysis._summary_system_prompt(fields, focus=None, instructions="   ")
+    assert analysis.DEFAULT_SUMMARY_INSTRUCTIONS in prompt
+
+
+@pytest.mark.asyncio
+async def test_generate_summary_threads_custom_instructions_into_prompt(monkeypatch):
+    """The custom instructions text is present in the built system prompt."""
+    captured = {}
+    payload = {"overview": "o", "consensus": [], "dissenters": [],
+               "key_ideas": [], "open_questions": []}
+
+    async def _fake(messages, model=None, temperature=0.4, max_tokens=None):
+        captured["system"] = messages[0]["content"]
+        return {"content": json.dumps(payload), "tokens_in": 1, "tokens_out": 1,
+                "cost_usd": 0.0}
+
+    monkeypatch.setattr(analysis, "_acompletion", _fake)
+    result = await analysis.generate_summary(
+        CONVERSATION, topic="t", instructions=CUSTOM_INSTRUCTIONS
+    )
+    assert CUSTOM_INSTRUCTIONS in captured["system"]
+    assert analysis.DEFAULT_SUMMARY_INSTRUCTIONS not in captured["system"]
+    _guardrails_present(captured["system"], analysis.DEFAULT_SUMMARY_FIELDS)
+    # The effective instructions are echoed back for persistence/prefill.
+    assert result["instructions"] == CUSTOM_INSTRUCTIONS
+
+
+@pytest.mark.asyncio
+async def test_generate_summary_default_instructions_persist_as_none(monkeypatch):
+    """Backward compat: omitting instructions uses the default → persist NULL."""
+    captured = {}
+    payload = {"overview": "o", "consensus": [], "dissenters": [],
+               "key_ideas": [], "open_questions": []}
+
+    async def _fake(messages, model=None, temperature=0.4, max_tokens=None):
+        captured["system"] = messages[0]["content"]
+        return {"content": json.dumps(payload), "tokens_in": 1, "tokens_out": 1,
+                "cost_usd": 0.0}
+
+    monkeypatch.setattr(analysis, "_acompletion", _fake)
+    result = await analysis.generate_summary(CONVERSATION, topic="t")
+    assert analysis.DEFAULT_SUMMARY_INSTRUCTIONS in captured["system"]
+    # None (NULL) signals "the default framing was used" so the UI falls back.
+    assert result["instructions"] is None

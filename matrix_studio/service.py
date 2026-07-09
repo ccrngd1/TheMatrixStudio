@@ -77,6 +77,7 @@ def summary_config(run: Dict[str, Any]) -> Dict[str, Any]:
         "enabled": bool(enabled),
         "fields": fields,
         "focus": sc.get("focus"),
+        "instructions": sc.get("instructions"),
     }
 
 
@@ -105,12 +106,18 @@ async def generate_and_store_summary(
     fields: Optional[List[str]] = None,
     focus: Optional[str] = None,
     model: Optional[str] = None,
+    instructions: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Generate a structured summary for a completed run and persist it as a
     'generated' summary (never overwriting an imported original). Returns the
     stored summary dict (with `parsed` flag). Never raises for LLM issues —
     ``analysis.generate_summary`` degrades gracefully.
+
+    ``instructions`` (optional) REPLACES the default analyst-role framing; the
+    non-negotiable guardrails always remain. The effective instructions (NULL
+    when the default was used) are persisted so the regenerate UI can prefill
+    the prompt that created the summary. Backward-compatible: omit → default.
     """
     conversation = await _load_conversation(db, run)
     topic = run.get("topic", "")
@@ -120,6 +127,7 @@ async def generate_and_store_summary(
         fields=fields,
         focus=focus,
         model=resolve_model(run, model),
+        instructions=instructions,
     )
     saved = await db.save_summary(
         run_id=run["id"],
@@ -128,6 +136,7 @@ async def generate_and_store_summary(
         tokens_in=result["tokens_in"],
         tokens_out=result["tokens_out"],
         cost_usd=result["cost_usd"],
+        instructions=result["instructions"],
     )
     saved["parsed"] = result["parsed"]
     return saved
@@ -151,7 +160,11 @@ async def maybe_autogenerate_summary(db: Database, run_id: str) -> None:
             logger.info("Auto-summary disabled for run %s", run_id)
             return
         await generate_and_store_summary(
-            db, run, fields=cfg["fields"], focus=cfg["focus"]
+            db,
+            run,
+            fields=cfg["fields"],
+            focus=cfg["focus"],
+            instructions=cfg.get("instructions"),
         )
         logger.info("Auto-generated summary for run %s", run_id)
     except Exception:  # noqa: BLE001 - analysis must never break completion
