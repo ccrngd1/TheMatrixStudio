@@ -82,7 +82,7 @@ export const api = {
     ),
 
   getModels: () =>
-    jsonFetch<{ default: string; models: string[] }>('/api/models'),
+    jsonFetch<{ default: string; models: { id: string; label: string }[] }>('/api/models'),
 
   // -------- Phase 1.5: post-run analysis (read-only) -------- //
 

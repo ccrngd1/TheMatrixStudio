@@ -134,6 +134,9 @@ def test_api_models_exposes_allowlist(monkeypatch, tmp_path):
     with TestClient(app) as c:
         body = c.get("/api/models").json()
     assert body["default"] == "bedrock/default-x"
-    # Default first, de-duplicated, extras preserved in order.
-    assert body["models"] == ["bedrock/default-x", "bedrock/opus-y", "bedrock/sonnet-z"]
+    # Each model is {id, label}; default first, de-duplicated, order preserved.
+    ids = [m["id"] for m in body["models"]]
+    assert ids == ["bedrock/default-x", "bedrock/opus-y", "bedrock/sonnet-z"]
+    # Unknown ids fall back to the id tail as the label.
+    assert all(m["label"] for m in body["models"])
     settings_mod._settings = None

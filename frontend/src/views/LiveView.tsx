@@ -38,7 +38,7 @@ export function LiveView({ runId, onBack, onOpenRun }: Props) {
   const [resumeError, setResumeError] = useState<string | null>(null)
   // In-thread model picker: the models allowlist + the currently selected model
   // for analysis (summary/asides) and forward branching from this thread.
-  const [models, setModels] = useState<string[]>([])
+  const [models, setModels] = useState<{ id: string; label: string }[]>([])
   const [analysisModel, setAnalysisModel] = useState<string>('')
   // Bumped after a resume to force the run detail refetch + stream reconnect.
   const [reloadKey, setReloadKey] = useState(0)
@@ -173,8 +173,8 @@ export function LiveView({ runId, onBack, onOpenRun }: Props) {
                 className="max-w-[14rem] rounded border border-matrix-border bg-matrix-panel px-2 py-1 text-xs text-slate-200"
               >
                 {models.map((m) => (
-                  <option key={m} value={m}>
-                    {m.split('/').pop()}
+                  <option key={m.id} value={m.id}>
+                    {m.label}
                   </option>
                 ))}
               </select>
