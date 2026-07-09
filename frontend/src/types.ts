@@ -18,6 +18,7 @@ export interface SimEvent {
     | 'agent.response'
     | 'sim.completed'
     | 'sim.failed'
+    | 'sim.interrupted'
     | 'error'
   agent_name: string | null
   payload: Record<string, any>
@@ -34,6 +35,9 @@ export interface RunSummary {
   total_cost_usd: number
   created_at: number | null
   completed_at: number | null
+  // Wall-clock (epoch seconds) of this run's most recent event; used to flag a
+  // run still marked "running" that has gone quiet (stalled/orphaned).
+  last_event_at?: number | null
   // Phase 2a: set on branch runs so history can flag lineage (both null on a
   // fresh/root run).
   parent_run_id?: string | null

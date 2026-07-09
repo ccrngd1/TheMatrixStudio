@@ -26,7 +26,7 @@ from matrix_studio.storage import Database
 logger = logging.getLogger(__name__)
 
 # Terminal event types that tell a subscriber the stream is finished.
-TERMINAL_EVENTS = {"sim.completed", "sim.failed"}
+TERMINAL_EVENTS = {"sim.completed", "sim.failed", "sim.interrupted"}
 
 
 class RunBroker:

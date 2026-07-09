@@ -32,6 +32,11 @@ export function useRunStream({ runId, cast, autoConnect = true }: Options) {
   const [speedMs, setSpeedMs] = useState(700) // reveal pace during auto-play
   const [connected, setConnected] = useState(false)
   const [engineDone, setEngineDone] = useState(false)
+  // Wall-clock (ms) when the most recent event was received; used to detect a
+  // run that is still "running" server-side but has gone quiet (stalled).
+  const [lastEventAt, setLastEventAt] = useState<number | null>(null)
+  // A ticking clock so the stalled flag re-evaluates without a new event.
+  const [nowMs, setNowMs] = useState<number>(Date.now())
 
   const seenSeqs = useRef<Set<number>>(new Set())
   const wsRef = useRef<WebSocket | null>(null)
@@ -42,23 +47,31 @@ export function useRunStream({ runId, cast, autoConnect = true }: Options) {
     setCursor(0)
     setMode('live')
     setEngineDone(false)
+    setLastEventAt(null)
     seenSeqs.current = new Set()
   }, [runId])
 
   const pushEvents = useCallback((incoming: SimEvent[]) => {
+    let added = false
     setBuffer((prev) => {
       const next = [...prev]
       for (const e of incoming) {
         if (seenSeqs.current.has(e.seq)) continue
         seenSeqs.current.add(e.seq)
         next.push(e)
-        if (e.event_type === 'sim.completed' || e.event_type === 'sim.failed') {
+        added = true
+        if (
+          e.event_type === 'sim.completed' ||
+          e.event_type === 'sim.failed' ||
+          e.event_type === 'sim.interrupted'
+        ) {
           setEngineDone(true)
         }
       }
       next.sort((a, b) => a.seq - b.seq)
       return next
     })
+    if (added) setLastEventAt(Date.now())
   }, [])
 
   // Open the WebSocket. The backend replays persisted events on connect, then
@@ -122,10 +135,27 @@ export function useRunStream({ runId, cast, autoConnect = true }: Options) {
 
   const behind = buffer.length - cursor // buffered-but-unrevealed events
 
+  // Stalled detection (item 2): the socket is connected and the engine has NOT
+  // reported a terminal event, yet no new event has arrived for a while. A
+  // healthy live run streams events steadily; prolonged silence means the run
+  // is orphaned/stalled. Only meaningful once at least one event has landed.
+  useEffect(() => {
+    if (engineDone) return
+    const id = setInterval(() => setNowMs(Date.now()), 5000)
+    return () => clearInterval(id)
+  }, [engineDone])
+  const STALL_MS = 120_000
+  const stalled =
+    !engineDone &&
+    connected &&
+    lastEventAt != null &&
+    nowMs - lastEventAt > STALL_MS
+
   return {
     state,
     connected,
     engineDone,
+    stalled,
     mode,
     speedMs,
     setSpeedMs,
