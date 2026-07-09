@@ -196,3 +196,132 @@ def test_invalid_mutations_rejected_422(client, mutation, expected_detail):
     body = r.json()
     detail = body.get("detail")
     assert expected_detail in str(detail).lower()
+
+
+# ---------------------------------------------------------------------------
+# Step 2: state-mutation kinds  (edit_goal / add_persona / remove_persona)
+# ---------------------------------------------------------------------------
+
+def test_edit_goal_changes_forward_agent_state(client):
+    run_id = _make_run(client)
+    before = _fingerprint(client, run_id)
+
+    with patch(
+        "matrix_studio.engine.simulator.litellm.acompletion",
+        side_effect=_always(["Ada", "Ben"]),
+    ):
+        meta = client.post(
+            f"/api/runs/{run_id}/branch",
+            json={
+                "from_turn": 2,
+                "mutation": {
+                    "kind": "edit_goal",
+                    "persona_name": "Ada",
+                    "goals": ["Maximise safety", "Challenge assumptions"],
+                },
+            },
+        ).json()
+        branch_id = meta["run_id"]
+        detail = _wait_status(client, branch_id)
+
+    assert detail["status"] == "complete"
+    # Branch config records the mutation.
+    assert detail["config"]["branch_mutation"]["kind"] == "edit_goal"
+    assert "Maximise safety" in detail["config"]["branch_mutation"]["goals"]
+    # The branch's snapshot at turn 2 reflects the new goals.
+    snap = client.get(f"/api/runs/{branch_id}/snapshots/2").json()
+    assert snap["agents"]["Ada"]["goals"] == ["Maximise safety", "Challenge assumptions"]
+    # Immutability: parent Ada goals unchanged.
+    parent_snap = client.get(f"/api/runs/{run_id}/snapshots/2").json()
+    assert "Maximise safety" not in parent_snap["agents"]["Ada"]["goals"]
+    # Parent event/snapshot/cost fingerprint unmodified.
+    after = _fingerprint(client, run_id)
+    assert after["events"] == before["events"]
+
+
+def test_add_persona_appears_in_forward_speakers(client):
+    run_id = _make_run(client)
+    before = _fingerprint(client, run_id)
+
+    with patch(
+        "matrix_studio.engine.simulator.litellm.acompletion",
+        side_effect=_always(["Carol", "Ada", "Ben"]),
+    ):
+        meta = client.post(
+            f"/api/runs/{run_id}/branch",
+            json={
+                "from_turn": 2,
+                "mutation": {
+                    "kind": "add_persona",
+                    "name": "Carol",
+                    "persona": "A sociologist studying AI impact",
+                    "goals": ["Understand systemic effects"],
+                },
+            },
+        ).json()
+        branch_id = meta["run_id"]
+        detail = _wait_status(client, branch_id)
+
+    assert detail["status"] == "complete"
+    assert detail["config"]["branch_mutation"]["kind"] == "add_persona"
+    # Carol exists in the branch's cast snapshot.
+    snap = client.get(f"/api/runs/{branch_id}/snapshots/2").json()
+    assert "Carol" in snap["agents"]
+    # Parent unchanged.
+    parent_snap = client.get(f"/api/runs/{run_id}/snapshots/2").json()
+    assert "Carol" not in parent_snap["agents"]
+    after = _fingerprint(client, run_id)
+    assert after["events"] == before["events"]
+
+
+def test_remove_persona_absent_from_forward_state(client):
+    run_id = _make_run(client)
+    before = _fingerprint(client, run_id)
+
+    with patch(
+        "matrix_studio.engine.simulator.litellm.acompletion",
+        side_effect=_always(["Ada"]),
+    ):
+        meta = client.post(
+            f"/api/runs/{run_id}/branch",
+            json={
+                "from_turn": 2,
+                "mutation": {"kind": "remove_persona", "persona_name": "Ben"},
+            },
+        ).json()
+        branch_id = meta["run_id"]
+        detail = _wait_status(client, branch_id)
+
+    assert detail["status"] == "complete"
+    assert detail["config"]["branch_mutation"]["kind"] == "remove_persona"
+    snap = client.get(f"/api/runs/{branch_id}/snapshots/2").json()
+    assert "Ben" not in snap["agents"]
+    assert "Ada" in snap["agents"]
+    # Ben still in parent's snapshot.
+    parent_snap = client.get(f"/api/runs/{run_id}/snapshots/2").json()
+    assert "Ben" in parent_snap["agents"]
+    after = _fingerprint(client, run_id)
+    assert after["events"] == before["events"]
+
+
+@pytest.mark.parametrize(
+    "mutation,expected_status",
+    [
+        # Schema/field errors -> 422
+        ({"kind": "edit_goal", "goals": ["x"]}, 422),
+        ({"kind": "edit_goal", "persona_name": "Ada"}, 422),
+        ({"kind": "add_persona", "persona": "x"}, 422),
+        ({"kind": "add_persona", "name": "Carol"}, 422),
+        ({"kind": "remove_persona"}, 422),
+        # Run-time errors (unknown persona at fork) -> 201 but branch fails
+        ({"kind": "edit_goal", "persona_name": "NoOne", "goals": []}, 201),
+        ({"kind": "add_persona", "name": "Ada", "persona": "x"}, 201),  # already exists
+        ({"kind": "remove_persona", "persona_name": "NoOne"}, 201),
+    ],
+)
+def test_step2_invalid_mutations_rejected_or_fail(client, mutation, expected_status):
+    run_id = _make_run(client)
+    r = client.post(
+        f"/api/runs/{run_id}/branch", json={"from_turn": 2, "mutation": mutation}
+    )
+    assert r.status_code == expected_status

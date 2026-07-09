@@ -667,7 +667,88 @@ async def _apply_branch_mutation(
         # extend the budget by 1 so it does not eat a generation slot.
         return inject_turn, max_messages + 1
 
+    if kind == "edit_goal":
+        persona_name = str(mutation.get("persona_name", "")).strip()
+        goals = mutation.get("goals")
+        if not persona_name:
+            raise BranchMutationError("edit_goal.persona_name is required")
+        if not isinstance(goals, list):
+            raise BranchMutationError("edit_goal.goals must be a list")
+        if persona_name not in agents:
+            raise BranchMutationError(
+                f"edit_goal: persona {persona_name!r} not in the cast at turn {from_turn}"
+            )
+        agents[persona_name] = agents[persona_name].model_copy(
+            update={"goals": [str(g) for g in goals]}
+        )
+        await _save_mutation_snapshot(db, run_id, from_turn, topic, agents, conversation)
+        return from_turn, max_messages
+
+    if kind == "add_persona":
+        name = str(mutation.get("name", "")).strip()
+        persona_text = str(mutation.get("persona", "")).strip()
+        goals = mutation.get("goals", [])
+        if not name:
+            raise BranchMutationError("add_persona.name is required")
+        if not persona_text:
+            raise BranchMutationError("add_persona.persona is required")
+        if name in agents:
+            raise BranchMutationError(
+                f"add_persona: {name!r} already in the cast at turn {from_turn}"
+            )
+        agents[name] = AgentState(
+            name=name,
+            persona=persona_text,
+            goals=[str(g) for g in goals],
+        )
+        await _save_mutation_snapshot(db, run_id, from_turn, topic, agents, conversation)
+        return from_turn, max_messages
+
+    if kind == "remove_persona":
+        name = str(mutation.get("name", "")).strip()
+        if not name:
+            raise BranchMutationError("remove_persona.name is required")
+        if name not in agents:
+            raise BranchMutationError(
+                f"remove_persona: {name!r} not in the cast at turn {from_turn}"
+            )
+        if len(agents) <= 1:
+            raise BranchMutationError(
+                "remove_persona: cannot remove the last persona (\u22651 required)"
+            )
+        del agents[name]
+        await _save_mutation_snapshot(db, run_id, from_turn, topic, agents, conversation)
+        return from_turn, max_messages
+
     raise BranchMutationError(f"unknown branch mutation kind: {kind!r}")
+
+
+async def _save_mutation_snapshot(
+    db: Optional["Database"],
+    run_id: str,
+    turn: int,
+    topic: str,
+    agents: Dict[str, Any],
+    conversation: List[Dict[str, Any]],
+) -> None:
+    """Re-persist the fork snapshot after a state-only mutation so the stored
+    snapshot at ``turn`` reflects the mutation (not the pre-mutation state copied
+    from the parent). ``db.save_snapshot`` is INSERT OR REPLACE, so this is an
+    in-place overwrite. No-op when db is None."""
+    if db is None:
+        return
+    await db.save_snapshot(
+        SimSnapshot(
+            run_id=run_id,
+            turn=turn,
+            topic=topic,
+            agents=agents,  # type: ignore[arg-type]
+            conversation=conversation,
+            status="running",
+            created_at=int(time.time()),
+            total_turns=turn,
+        )
+    )
 
 
 async def resume_simulation(
