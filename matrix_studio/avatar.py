@@ -29,13 +29,21 @@ def _deterministic_seed(persona_name: str) -> int:
     return int(digest, 16) % _SEED_MODULUS
 
 
-async def generate_avatar(persona_name: str, persona_description: str) -> Optional[str]:
+async def generate_avatar(
+    persona_name: str,
+    persona_description: str,
+    seed: Optional[int] = None,
+) -> Optional[str]:
     """
     Generate an avatar portrait using a Stability image model on Bedrock.
 
     Args:
         persona_name: Name of the persona
         persona_description: Description of the persona for image generation
+        seed: Optional explicit seed. When None (default) a stable per-persona
+            seed is used so a given persona reproduces the same portrait. Pass
+            an explicit (e.g. random) seed to intentionally regenerate a
+            *different* portrait for the same persona.
 
     Returns:
         Base64-encoded PNG image string, or None if generation fails/unavailable
@@ -71,7 +79,7 @@ async def generate_avatar(persona_name: str, persona_description: str) -> Option
             "mode": "text-to-image",
             "aspect_ratio": settings.avatar_aspect_ratio,
             "output_format": "png",
-            "seed": _deterministic_seed(persona_name),
+            "seed": seed if seed is not None else _deterministic_seed(persona_name),
         })
 
         response = client.invoke_model(
