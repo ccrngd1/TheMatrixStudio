@@ -439,6 +439,41 @@ class Database:
             row = await cursor.fetchone()
             return int(row[0]) if row and row[0] is not None else 0
 
+    async def last_checkpoint_turn(self, run_id: str) -> Optional[int]:
+        """Highest per-turn snapshot (checkpoint) turn for a run, or None."""
+        async with self._conn.execute(
+            "SELECT MAX(turn) FROM snapshots WHERE run_id = ?", (run_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return int(row[0]) if row and row[0] is not None else None
+
+    async def truncate_after_turn(self, run_id: str, turn: int) -> int:
+        """
+        Delete this run's events and snapshots with ``turn > turn``.
+
+        Used only when resuming an ``interrupted``/``failed`` run in place: the
+        tail past the last complete checkpoint is a partial/dangling turn (e.g. a
+        ``speaker.selected`` with no response) plus the ``sim.interrupted``
+        marker — never a completed canonical turn. Trimming it lets the run
+        continue cleanly from the checkpoint and keeps the event log replayable
+        (no phantom mid-stream terminal event). Returns the number of events
+        removed. Never called on a ``complete`` run.
+        """
+        async with self._conn.execute(
+            "SELECT COUNT(*) FROM events WHERE run_id = ? AND turn > ?",
+            (run_id, turn),
+        ) as cursor:
+            row = await cursor.fetchone()
+            removed = int(row[0]) if row else 0
+        await self._conn.execute(
+            "DELETE FROM events WHERE run_id = ? AND turn > ?", (run_id, turn)
+        )
+        await self._conn.execute(
+            "DELETE FROM snapshots WHERE run_id = ? AND turn > ?", (run_id, turn)
+        )
+        await self._conn.commit()
+        return removed
+
     async def get_run_stats(self, run_id: str) -> Dict[str, Any]:
         """Aggregate turn count and total cost from the event log for a run."""
         async with self._conn.execute(

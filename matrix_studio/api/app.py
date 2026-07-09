@@ -391,6 +391,22 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         )
         return meta
 
+    @app.post("/api/runs/{ref}/resume")
+    async def resume_run(ref: str) -> Dict[str, Any]:
+        """
+        Error-recovery: resume an interrupted/failed run forward IN PLACE (same
+        run id/codename), continuing from its last checkpoint. Non-blocking —
+        returns immediately; generation runs in the background and streams over
+        the existing WS. A completed run cannot be resumed (branch it instead).
+        """
+        run = await db.get_run_by_ref(ref)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        try:
+            return await manager.resume_run(run)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
     # ------------------- Phase 1.5: summary + aside threads ---------------- #
     # All routes below are ADDITIVE and READ-ONLY over the canonical run: they
     # read the run's transcript/cast and write only to the new summaries /

@@ -142,6 +142,13 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ from_turn: fromTurn, ...opts }),
     }),
+
+  // Error-recovery: resume an interrupted/failed run forward in place.
+  resumeRun: (ref: string) =>
+    jsonFetch<{ run_id: string; name: string | null; status: string }>(
+      `/api/runs/${encodeURIComponent(ref)}/resume`,
+      { method: 'POST' },
+    ),
 }
 
 // Build the WebSocket URL for a run's live stream.

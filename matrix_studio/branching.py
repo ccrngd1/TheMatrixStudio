@@ -308,3 +308,89 @@ async def execute_branch(
         db=db,
         on_event=on_event,
     )
+
+
+RESUMABLE_STATUSES = {"interrupted", "failed"}
+
+
+async def resume_run_in_place(
+    db: Database,
+    run: Dict[str, Any],
+    on_event: Optional[OnEvent] = None,
+) -> Dict[str, Any]:
+    """
+    Error-recovery: RESUME an ``interrupted``/``failed`` run forward IN PLACE.
+
+    Unlike a branch (which forks into a NEW run to protect a *completed*,
+    canonical timeline), this keeps the run's identity/codename and continues
+    generating on the same run id. It is legitimate precisely because a
+    resumable run never completed — it is a broken in-progress run, so finishing
+    it forward is not rewriting canonical history.
+
+    Steps:
+      1. Resolve the last complete checkpoint turn (max per-turn snapshot).
+      2. Trim the dangling tail past that turn (partial next turn + the
+         ``sim.interrupted`` marker) so the log stays clean/replayable.
+      3. Reconstruct engine state at the checkpoint by replaying the log.
+      4. Flip status to ``running`` and resume generation forward from the
+         checkpoint under the SAME run id.
+
+    A ``complete`` run is never resumed here (guarded by the caller); use a
+    branch for that.
+    """
+    run_id = run["id"]
+
+    # 1. Last complete checkpoint. Absent any checkpoint (interrupted before the
+    #    first turn landed), resume from turn 0 (fresh state, empty transcript).
+    resume_turn = await db.last_checkpoint_turn(run_id)
+    if resume_turn is None:
+        resume_turn = 0
+
+    # 2. Trim the incomplete tail past the checkpoint (dangling partial turn +
+    #    the interrupt marker) so the run continues cleanly and replay has no
+    #    phantom mid-stream terminal event.
+    removed = await db.truncate_after_turn(run_id, resume_turn)
+    logger.info(
+        "Resume %s: trimmed %d dangling event(s) past checkpoint turn %d",
+        run_id,
+        removed,
+        resume_turn,
+    )
+
+    # 3. Reconstruct state at the checkpoint (read-only replay of the log).
+    topic, agents, conversation = await reconstruct_at_turn(db, run, resume_turn)
+
+    # Ensure a snapshot exists at the resume point so the run has a checkpoint
+    # there even if we resumed from turn 0 (no prior checkpoint).
+    if await db.get_snapshot(run_id, turn=resume_turn) is None:
+        await db.save_snapshot(
+            SimSnapshot(
+                run_id=run_id,
+                turn=resume_turn,
+                topic=topic,
+                agents=agents,
+                conversation=conversation,
+                status="running",
+                created_at=int(time.time()),
+                total_turns=resume_turn,
+            )
+        )
+
+    # 4. Flip to running and continue forward. Budget is the run's own
+    #    configured budget, extended (via the shared branch_budget helper) if the
+    #    checkpoint is already at/over it so a resume always moves forward.
+    await db.update_run_status(run_id, "running")
+    max_messages = branch_budget(run, resume_turn)
+    start_seq = await db.max_seq(run_id) + 1
+
+    return await resume_simulation(
+        run_id=run_id,
+        topic=topic,
+        agents=agents,
+        conversation=conversation,
+        from_turn=resume_turn,
+        start_seq=start_seq,
+        max_messages=max_messages,
+        db=db,
+        on_event=on_event,
+    )
