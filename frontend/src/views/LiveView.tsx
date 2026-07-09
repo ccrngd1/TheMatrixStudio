@@ -33,6 +33,10 @@ export function LiveView({ runId, onBack, onOpenRun }: Props) {
   const [scrubbing, setScrubbing] = useState(false)
   const [branching, setBranching] = useState(false)
   const [branchError, setBranchError] = useState<string | null>(null)
+  const [resuming, setResuming] = useState(false)
+  const [resumeError, setResumeError] = useState<string | null>(null)
+  // Bumped after a resume to force the run detail refetch + stream reconnect.
+  const [reloadKey, setReloadKey] = useState(0)
 
   useEffect(() => {
     api.getRun(runId).then((d) => {
@@ -44,15 +48,33 @@ export function LiveView({ runId, onBack, onOpenRun }: Props) {
     // Fetch the editable default analyst-role framing so the regenerate editor
     // can prefill / reset-to-default even before any generation.
     api.getSummary(runId).then((s) => setDefaultInstructions(s.default_instructions))
-  }, [runId])
+  }, [runId, reloadKey])
 
-  const stream = useRunStream({ runId, cast })
+  const stream = useRunStream({ runId, cast, reloadKey })
   const { state } = stream
 
   // A run is analyzable once it has completed (live or on reload).
   const completed = detail?.status === 'complete' || state.status === 'complete'
+  // Error-recovery: an interrupted/failed run can be resumed forward in place.
+  const resumable = detail?.status === 'interrupted' || detail?.status === 'failed'
   const lineage = detail?.lineage
   const maxTurn = detail?.result?.total_turns ?? detail?.turn_count ?? 0
+
+  // Resume an interrupted/failed run in place, then reconnect the stream so the
+  // newly-generated turns stream in live (the prior socket closed on the
+  // terminal event). The run keeps its id/codename.
+  const resume = async () => {
+    setResuming(true)
+    setResumeError(null)
+    try {
+      await api.resumeRun(runId)
+      setReloadKey((k) => k + 1)
+    } catch (e) {
+      setResumeError((e as Error).message)
+    } finally {
+      setResuming(false)
+    }
+  }
 
   // Fork this run at the given turn into a NEW run, then navigate to its live
   // view. The parent (this run) is never modified.
@@ -92,6 +114,16 @@ export function LiveView({ runId, onBack, onOpenRun }: Props) {
           </div>
         </div>
         <div className="flex items-center gap-3">
+          {resumable && (
+            <button
+              onClick={resume}
+              disabled={resuming}
+              className="rounded border border-amber-500/60 px-3 py-1 text-sm text-amber-300 hover:border-amber-400 disabled:opacity-50"
+              title="Continue this interrupted/failed run forward from its last checkpoint (same run)"
+            >
+              {resuming ? '↻ Resuming…' : '↻ Resume'}
+            </button>
+          )}
           {completed && (
             <button
               onClick={() => setScrubbing((s) => !s)}
@@ -119,6 +151,12 @@ export function LiveView({ runId, onBack, onOpenRun }: Props) {
           </span>
         </div>
       </header>
+
+      {resumeError && (
+        <div className="border-b border-red-900/50 bg-red-950/40 px-4 py-2 text-xs text-red-300">
+          Resume failed: {resumeError}
+        </div>
+      )}
 
       {/* Phase 2a branch lineage — this run's parent and/or its child branches. */}
       {(lineage?.parent || (lineage?.branches?.length ?? 0) > 0) && (

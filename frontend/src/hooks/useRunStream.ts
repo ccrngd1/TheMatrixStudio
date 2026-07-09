@@ -21,9 +21,12 @@ interface Options {
   // When true (history/replay), we do not need a live socket if the run is done;
   // but we still open one — the backend replays then closes, which is harmless.
   autoConnect?: boolean
+  // Bump to force a full reset + WebSocket reconnect (e.g. after resuming an
+  // interrupted run, whose prior socket already closed on the terminal event).
+  reloadKey?: number
 }
 
-export function useRunStream({ runId, cast, autoConnect = true }: Options) {
+export function useRunStream({ runId, cast, autoConnect = true, reloadKey = 0 }: Options) {
   // The full ordered event buffer (everything received — the engine's truth).
   const [buffer, setBuffer] = useState<SimEvent[]>([])
   // How many buffered events are currently *revealed* to the view.
@@ -41,7 +44,7 @@ export function useRunStream({ runId, cast, autoConnect = true }: Options) {
   const seenSeqs = useRef<Set<number>>(new Set())
   const wsRef = useRef<WebSocket | null>(null)
 
-  // Reset when the run changes.
+  // Reset when the run changes OR a reload is requested (resume reconnect).
   useEffect(() => {
     setBuffer([])
     setCursor(0)
@@ -49,7 +52,7 @@ export function useRunStream({ runId, cast, autoConnect = true }: Options) {
     setEngineDone(false)
     setLastEventAt(null)
     seenSeqs.current = new Set()
-  }, [runId])
+  }, [runId, reloadKey])
 
   const pushEvents = useCallback((incoming: SimEvent[]) => {
     let added = false
@@ -104,7 +107,7 @@ export function useRunStream({ runId, cast, autoConnect = true }: Options) {
       ws.close()
       wsRef.current = null
     }
-  }, [runId, autoConnect, pushEvents])
+  }, [runId, autoConnect, reloadKey, pushEvents])
 
   // Auto-play: while live and not caught up, advance the cursor on a timer.
   useEffect(() => {

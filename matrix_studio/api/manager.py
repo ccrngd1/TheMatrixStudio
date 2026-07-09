@@ -245,6 +245,64 @@ class RunManager:
 
         return meta
 
+    async def resume_run(self, run: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Error-recovery: resume an ``interrupted``/``failed`` run forward IN
+        PLACE (same run id/codename) from its last checkpoint. Flips the run to
+        ``running`` synchronously and runs generation as a background task, so
+        this returns immediately — never blocks on generation.
+
+        Refuses a run that is not resumable (only interrupted/failed) or one that
+        already has a live task. On a crash mid-resume the run is set back to
+        ``failed`` so it can be resumed again.
+        """
+        run_id = run["id"]
+        status = run.get("status")
+        if status not in branching.RESUMABLE_STATUSES:
+            raise ValueError(
+                f"Run is '{status}'; only interrupted/failed runs can be resumed "
+                "(use a branch to continue a completed run)."
+            )
+        if run_id in self._tasks:
+            raise ValueError("Run already has a live generation task.")
+
+        # Flip synchronously so an immediate re-read reflects the resume and a
+        # duplicate resume is rejected by the live-task guard above.
+        await self.db.update_run_status(run_id, "running")
+
+        broker = RunBroker()
+        self._brokers[run_id] = broker
+
+        async def _on_event(event: Dict[str, Any]) -> None:
+            await broker.publish(event)
+
+        async def _runner() -> None:
+            try:
+                result = await branching.resume_run_in_place(
+                    self.db, run, on_event=_on_event
+                )
+                if result.get("status") == "complete":
+                    await maybe_autogenerate_summary(self.db, run_id)
+            except Exception:  # noqa: BLE001
+                logger.exception("Background resume %s crashed", run_id)
+                # Leave it resumable again rather than stuck in "running".
+                try:
+                    await self.db.update_run_status(run_id, "failed")
+                except Exception:  # noqa: BLE001
+                    logger.exception("Failed to reset status after resume crash")
+            finally:
+                await broker.close()
+
+        task = asyncio.create_task(_runner())
+        self._tasks[run_id] = task
+        task.add_done_callback(lambda _t: self._tasks.pop(run_id, None))
+
+        return {
+            "run_id": run_id,
+            "name": run.get("name"),
+            "status": "running",
+        }
+
     async def shutdown(self) -> None:
         """Cancel any in-flight background runs (used on app shutdown)."""
         for task in list(self._tasks.values()):
