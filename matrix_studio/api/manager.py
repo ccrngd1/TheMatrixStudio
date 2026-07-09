@@ -17,6 +17,7 @@ import logging
 import uuid
 from typing import Any, Dict, List, Optional, Set
 
+from matrix_studio import branching
 from matrix_studio.engine import run_simulation
 from matrix_studio.naming import generate_run_name
 from matrix_studio.service import maybe_autogenerate_summary
@@ -179,6 +180,70 @@ class RunManager:
             "topic": topic,
             "status": "running",
         }
+
+    async def create_branch(
+        self,
+        parent_run: Dict[str, Any],
+        from_turn: int,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Fork ``parent_run`` at ``from_turn`` into a NEW run that resumes
+        generating forward. Creates the branch run row synchronously (so it is
+        immediately resolvable + watchable), then runs the copy+resume half as a
+        background task. Returns immediately with the branch's metadata — NEVER
+        blocks on generation.
+
+        The parent run is only READ; it is never modified or re-run
+        (immutability invariant, enforced by construction here: the background
+        task's DB writes all target the new branch run id).
+        """
+        cfg = branching._parse_config(parent_run)
+        model = cfg.get("model")
+
+        meta = await branching.create_branch_run(
+            self.db,
+            parent_run,
+            from_turn=from_turn,
+            name=name,
+            description=description,
+            model=model,
+        )
+        branch_run_id = meta["run_id"]
+        max_messages = meta["max_messages"]
+
+        broker = RunBroker()
+        self._brokers[branch_run_id] = broker
+
+        async def _on_event(event: Dict[str, Any]) -> None:
+            await broker.publish(event)
+
+        async def _runner() -> None:
+            try:
+                result = await branching.execute_branch(
+                    self.db,
+                    parent_run,
+                    branch_run_id=branch_run_id,
+                    from_turn=from_turn,
+                    max_messages=max_messages,
+                    on_event=_on_event,
+                )
+                # Auto-summarize a completed branch, same as a fresh run. Purely
+                # additive (writes only the summaries table); never touches the
+                # canonical event log/snapshot/cost of the branch OR the parent.
+                if result.get("status") == "complete":
+                    await maybe_autogenerate_summary(self.db, branch_run_id)
+            except Exception:  # noqa: BLE001
+                logger.exception("Background branch %s crashed", branch_run_id)
+            finally:
+                await broker.close()
+
+        task = asyncio.create_task(_runner())
+        self._tasks[branch_run_id] = task
+        task.add_done_callback(lambda _t: self._tasks.pop(branch_run_id, None))
+
+        return meta
 
     async def shutdown(self) -> None:
         """Cancel any in-flight background runs (used on app shutdown)."""

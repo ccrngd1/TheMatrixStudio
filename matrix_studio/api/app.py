@@ -105,6 +105,14 @@ class ThreadMessageModel(BaseModel):
     content: str
 
 
+class BranchModel(BaseModel):
+    """Body for POST /api/runs/{ref}/branch (Phase 2a branch primitive)."""
+
+    from_turn: int = Field(ge=0)
+    name: Optional[str] = None
+    description: Optional[str] = None
+
+
 def _run_summary(run: Dict[str, Any]) -> Dict[str, Any]:
     """Shape a runs-table row (+ derived stats) for list/detail responses."""
     return {
@@ -118,6 +126,10 @@ def _run_summary(run: Dict[str, Any]) -> Dict[str, Any]:
         "total_cost_usd": run.get("total_cost_usd", 0.0),
         "created_at": run.get("created_at"),
         "completed_at": run.get("completed_at"),
+        # Phase 2a lineage: set on branch runs so history/run views can show
+        # "branched from <parent> @ turn N". Both null for a fresh (root) run.
+        "parent_run_id": run.get("parent_run_id"),
+        "branch_turn": run.get("branch_turn"),
     }
 
 
@@ -232,12 +244,26 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         generated = next((r for r in summary_rows if r["kind"] == "generated"), None)
         imported = next((r for r in summary_rows if r["kind"] == "imported"), None)
 
+        # Phase 2a lineage: the parent (if this is a branch) and any child
+        # branches forked from this run, so the run view can thread relationships.
+        parent = None
+        if run.get("parent_run_id"):
+            parent_row = await db.get_run(run["parent_run_id"])
+            if parent_row:
+                parent = {
+                    "run_id": parent_row["id"],
+                    "name": parent_row.get("name"),
+                    "branch_turn": run.get("branch_turn"),
+                }
+        branches = await db.list_branches(run["id"])
+
         return {
             **summary,
             "cast": cast,
             "config": config,
             "result": result,
             "summary": {"generated": generated, "imported": imported},
+            "lineage": {"parent": parent, "branches": branches},
         }
 
     @app.get("/api/runs/{ref}/events")
@@ -252,6 +278,65 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         rows = await db.get_events_after(run["id"], after_seq=after_seq, limit=limit)
         events = [event_row_to_wire(r) for r in rows]
         return {"run_id": run["id"], "events": events}
+
+    # ------------------- Phase 2a: checkpoints + branching ----------------- #
+    # State reconstruction/replay: list the per-turn checkpoints and fetch the
+    # full SimSnapshot at a given turn (read-only). The branch route forks a new
+    # run that resumes forward — the parent is never modified.
+
+    @app.get("/api/runs/{ref}/snapshots")
+    async def list_snapshots(ref: str) -> Dict[str, Any]:
+        run = await db.get_run_by_ref(ref)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        snapshots = await db.list_snapshots(run["id"])
+        return {"run_id": run["id"], "snapshots": snapshots}
+
+    @app.get("/api/runs/{ref}/snapshots/{turn}")
+    async def get_snapshot(ref: str, turn: int) -> Dict[str, Any]:
+        run = await db.get_run_by_ref(ref)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        snapshot = await db.get_snapshot(run["id"], turn=turn)
+        if snapshot is None:
+            raise HTTPException(
+                status_code=404, detail=f"No checkpoint at turn {turn}"
+            )
+        return {
+            "run_id": run["id"],
+            "turn": snapshot.turn,
+            "status": snapshot.status,
+            "topic": snapshot.topic,
+            "total_turns": snapshot.total_turns,
+            "conversation": snapshot.conversation,
+            "agents": {
+                name: agent.model_dump()
+                for name, agent in snapshot.agents.items()
+            },
+        }
+
+    @app.post("/api/runs/{ref}/branch", status_code=201)
+    async def branch_run(ref: str, body: BranchModel) -> Dict[str, Any]:
+        parent = await db.get_run_by_ref(ref)
+        if not parent:
+            raise HTTPException(status_code=404, detail="Run not found")
+        # The fork turn must exist in the parent's history. We validate against
+        # the parent's turn count (agent.response events) so a caller can only
+        # branch from a turn that actually happened.
+        stats = await db.get_run_stats(parent["id"])
+        max_turn = stats["turn_count"]
+        if body.from_turn < 0 or body.from_turn > max_turn:
+            raise HTTPException(
+                status_code=422,
+                detail=f"from_turn must be between 0 and {max_turn} for this run",
+            )
+        meta = await manager.create_branch(
+            parent,
+            from_turn=body.from_turn,
+            name=body.name,
+            description=body.description,
+        )
+        return meta
 
     # ------------------- Phase 1.5: summary + aside threads ---------------- #
     # All routes below are ADDITIVE and READ-ONLY over the canonical run: they

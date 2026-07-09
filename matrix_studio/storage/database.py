@@ -503,6 +503,119 @@ class Database:
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
 
+    async def list_snapshots(self, run_id: str) -> List[Dict[str, Any]]:
+        """
+        List available checkpoint turns for a run (Phase 2a).
+
+        Returns a list of ``{turn, status, created_at}`` dicts ordered by turn.
+        ``status`` is read from the stored snapshot JSON so the client can tell a
+        running per-turn checkpoint from the completion snapshot. Cheap: it only
+        parses the small status field, not the full agent state.
+        """
+        async with self._conn.execute(
+            """
+            SELECT turn, state_json, created_at FROM snapshots
+            WHERE run_id = ?
+            ORDER BY turn ASC
+            """,
+            (run_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            status = None
+            try:
+                status = json.loads(row[1]).get("status")
+            except (json.JSONDecodeError, TypeError):
+                status = None
+            out.append(
+                {"turn": row[0], "status": status, "created_at": row[2]}
+            )
+        return out
+
+    async def list_branches(self, run_id: str) -> List[Dict[str, Any]]:
+        """
+        List child branches forked from ``run_id`` (Phase 2a lineage).
+
+        Returns ``{run_id, name, branch_turn, status, created_at}`` for each run
+        whose ``parent_run_id`` is this run, newest first. Read-only; used by the
+        run detail view to show "this run's branches".
+        """
+        async with self._conn.execute(
+            """
+            SELECT id, name, branch_turn, status, created_at FROM runs
+            WHERE parent_run_id = ?
+            ORDER BY created_at DESC
+            """,
+            (run_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [
+            {
+                "run_id": row[0],
+                "name": row[1],
+                "branch_turn": row[2],
+                "status": row[3],
+                "created_at": row[4],
+            }
+            for row in rows
+        ]
+
+    async def copy_events_upto(
+        self, source_run_id: str, dest_run_id: str, upto_turn: int
+    ) -> int:
+        """
+        Copy the source run's event log UP TO AND INCLUDING ``upto_turn`` into
+        ``dest_run_id``, preserving (turn, seq, event_type, agent_name, payload)
+        so the branch replays byte-for-byte identically to the parent up to the
+        fork. Phase 2a branch primitive.
+
+        The source run is only READ here — it is never modified (immutability
+        invariant). Returns the number of events copied.
+
+        NOTE: this reads the source and writes the destination in the SAME
+        database/connection. The destination run row must already exist (FK).
+        """
+        async with self._conn.execute(
+            """
+            SELECT turn, seq, event_type, agent_name, payload, created_at
+            FROM events
+            WHERE run_id = ? AND turn <= ?
+            ORDER BY turn, seq
+            """,
+            (source_run_id, upto_turn),
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        for row in rows:
+            await self._conn.execute(
+                """
+                INSERT INTO events (run_id, turn, seq, event_type, agent_name,
+                                    payload, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    dest_run_id,
+                    row["turn"],
+                    row["seq"],
+                    row["event_type"],
+                    row["agent_name"],
+                    row["payload"],
+                    row["created_at"],
+                ),
+            )
+        await self._conn.commit()
+        return len(rows)
+
+    async def max_seq(self, run_id: str) -> int:
+        """Highest per-run event ``seq`` for a run, or -1 if it has no events."""
+        async with self._conn.execute(
+            "SELECT MAX(seq) FROM events WHERE run_id = ?", (run_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return int(row[0]) if row and row[0] is not None else -1
+
     async def get_snapshot(
         self, run_id: str, turn: Optional[int] = None
     ) -> Optional[SimSnapshot]:

@@ -10,16 +10,19 @@ import { PlaybackControls } from '../components/PlaybackControls'
 import { Dossier } from '../components/Dossier'
 import { SummaryPanel } from '../components/SummaryPanel'
 import { AsidesDrawer } from '../components/AsidesDrawer'
+import { Scrubber } from '../components/Scrubber'
 import type { StoredSummary } from '../types'
 
 interface Props {
   runId: string
   onBack: () => void
+  // Navigate to another run (used when a branch is created / lineage is clicked).
+  onOpenRun?: (runId: string) => void
 }
 
 // The control room: cast board + live feed + cost meter + playback + dossier.
 // Works identically for a live run and a replayed completed run.
-export function LiveView({ runId, onBack }: Props) {
+export function LiveView({ runId, onBack, onOpenRun }: Props) {
   const [detail, setDetail] = useState<RunDetail | null>(null)
   const [cast, setCast] = useState<Persona[]>([])
   const [selected, setSelected] = useState<string | null>(null)
@@ -27,6 +30,9 @@ export function LiveView({ runId, onBack }: Props) {
   const [generated, setGenerated] = useState<StoredSummary | null>(null)
   const [imported, setImported] = useState<StoredSummary | null>(null)
   const [defaultInstructions, setDefaultInstructions] = useState<string>('')
+  const [scrubbing, setScrubbing] = useState(false)
+  const [branching, setBranching] = useState(false)
+  const [branchError, setBranchError] = useState<string | null>(null)
 
   useEffect(() => {
     api.getRun(runId).then((d) => {
@@ -45,6 +51,24 @@ export function LiveView({ runId, onBack }: Props) {
 
   // A run is analyzable once it has completed (live or on reload).
   const completed = detail?.status === 'complete' || state.status === 'complete'
+  const lineage = detail?.lineage
+  const maxTurn = detail?.result?.total_turns ?? detail?.turn_count ?? 0
+
+  // Fork this run at the given turn into a NEW run, then navigate to its live
+  // view. The parent (this run) is never modified.
+  const branchFrom = async (fromTurn: number) => {
+    setBranching(true)
+    setBranchError(null)
+    try {
+      const res = await api.branchRun(runId, fromTurn)
+      setScrubbing(false)
+      if (onOpenRun) onOpenRun(res.run_id)
+    } catch (e) {
+      setBranchError((e as Error).message)
+    } finally {
+      setBranching(false)
+    }
+  }
 
   return (
     <div className="flex h-screen flex-col">
@@ -66,6 +90,19 @@ export function LiveView({ runId, onBack }: Props) {
         <div className="flex items-center gap-3">
           {completed && (
             <button
+              onClick={() => setScrubbing((s) => !s)}
+              className={`rounded border px-3 py-1 text-sm hover:border-matrix-accent ${
+                scrubbing
+                  ? 'border-matrix-accent text-matrix-accent'
+                  : 'border-matrix-border text-slate-300'
+              }`}
+              title="Scrub to any turn and view state as of that point; branch from there"
+            >
+              ⏱ Scrubber
+            </button>
+          )}
+          {completed && (
+            <button
               onClick={() => setAsidesOpen(true)}
               className="rounded border border-matrix-border px-3 py-1 text-sm text-slate-300 hover:border-matrix-accent"
               title="Ask read-only questions about the finished run"
@@ -79,6 +116,54 @@ export function LiveView({ runId, onBack }: Props) {
         </div>
       </header>
 
+      {/* Phase 2a branch lineage — this run's parent and/or its child branches. */}
+      {(lineage?.parent || (lineage?.branches?.length ?? 0) > 0) && (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-matrix-border bg-matrix-panel/60 px-4 py-2 text-xs text-slate-400">
+          {lineage?.parent && (
+            <span>
+              ⑂ Branched from{' '}
+              <button
+                onClick={() => onOpenRun && onOpenRun(lineage.parent!.run_id)}
+                className="font-semibold text-matrix-accent hover:underline"
+              >
+                {lineage.parent.name ?? lineage.parent.run_id.slice(0, 8)}
+              </button>{' '}
+              @ turn {lineage.parent.branch_turn}
+            </span>
+          )}
+          {(lineage?.branches?.length ?? 0) > 0 && (
+            <span className="flex flex-wrap items-center gap-1">
+              Branches:
+              {lineage!.branches.map((b) => (
+                <button
+                  key={b.run_id}
+                  onClick={() => onOpenRun && onOpenRun(b.run_id)}
+                  className="rounded border border-matrix-border px-2 py-0.5 text-matrix-accent hover:border-matrix-accent"
+                >
+                  {b.name ?? b.run_id.slice(0, 8)} @ {b.branch_turn}
+                </button>
+              ))}
+            </span>
+          )}
+        </div>
+      )}
+
+      {branchError && (
+        <div className="border-b border-red-900 bg-red-950/40 px-4 py-2 text-sm text-red-300">
+          Branch failed: {branchError}
+        </div>
+      )}
+
+      {scrubbing && completed ? (
+        <Scrubber
+          runId={runId}
+          maxTurn={maxTurn}
+          cast={cast}
+          onBranch={branchFrom}
+          branching={branching}
+        />
+      ) : (
+        <>
       <div className="border-b border-matrix-border px-4 py-2">
         <PlaybackControls
           mode={stream.mode}
@@ -127,6 +212,8 @@ export function LiveView({ runId, onBack }: Props) {
           />
         </main>
       </div>
+        </>
+      )}
 
       {selected && state.agents[selected] && (
         <Dossier

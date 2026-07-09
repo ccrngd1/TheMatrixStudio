@@ -34,6 +34,10 @@ export interface RunSummary {
   total_cost_usd: number
   created_at: number | null
   completed_at: number | null
+  // Phase 2a: set on branch runs so history can flag lineage (both null on a
+  // fresh/root run).
+  parent_run_id?: string | null
+  branch_turn?: number | null
 }
 
 export interface AgentResult {
@@ -57,6 +61,55 @@ export interface RunDetail extends RunSummary {
   } | null
   // Phase 1.5: model-generated / imported analysis summaries (may be null).
   summary?: { generated: StoredSummary | null; imported: StoredSummary | null }
+  // Phase 2a: branch lineage — this run's parent (if it is a branch) and any
+  // child branches forked from it.
+  lineage?: RunLineage
+}
+
+// -------- Phase 2a: branch lineage + checkpoints --------- //
+
+export interface RunLineage {
+  parent: { run_id: string; name: string | null; branch_turn: number | null } | null
+  branches: {
+    run_id: string
+    name: string | null
+    branch_turn: number | null
+    status: string
+    created_at: number | null
+  }[]
+}
+
+// A per-turn checkpoint descriptor (from GET .../snapshots).
+export interface SnapshotInfo {
+  turn: number
+  status: string | null
+  created_at: number | null
+}
+
+// The full reconstructed state at a turn (from GET .../snapshots/{turn}).
+export interface SnapshotState {
+  run_id: string
+  turn: number
+  status: string
+  topic: string
+  total_turns: number
+  conversation: { speaker: string; content: string; turn: number }[]
+  agents: Record<string, AgentResult>
+}
+
+// Response from POST .../branch — the new run resuming forward.
+export interface BranchResponse {
+  run_id: string
+  name: string
+  slug: string
+  name_source: string | null
+  description: string
+  topic: string
+  parent_run_id: string
+  parent_name: string | null
+  branch_turn: number
+  status: string
+  max_messages: number
 }
 
 // -------- Phase 1.5: post-run analysis (summary + aside threads) --------- //

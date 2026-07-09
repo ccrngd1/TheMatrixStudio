@@ -67,6 +67,14 @@ export function History({ onOpen, onNew }: Props) {
                 <div className="flex items-center gap-2">
                   <span className="font-semibold text-matrix-accent">{r.name ?? r.run_id.slice(0, 8)}</span>
                   <StatusPill status={r.status} />
+                  {r.parent_run_id && (
+                    <span
+                      title={`Branched @ turn ${r.branch_turn}`}
+                      className="rounded bg-matrix-border px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-300"
+                    >
+                      ⑂ branch @ {r.branch_turn}
+                    </span>
+                  )}
                 </div>
                 <p className="truncate text-sm text-slate-300">{r.description ?? r.topic}</p>
                 <p className="truncate text-xs text-slate-500">{r.topic}</p>
