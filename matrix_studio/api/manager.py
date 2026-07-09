@@ -187,6 +187,7 @@ class RunManager:
         from_turn: int,
         name: Optional[str] = None,
         description: Optional[str] = None,
+        model: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Fork ``parent_run`` at ``from_turn`` into a NEW run that resumes
@@ -195,23 +196,23 @@ class RunManager:
         background task. Returns immediately with the branch's metadata — NEVER
         blocks on generation.
 
-        The parent run is only READ; it is never modified or re-run
-        (immutability invariant, enforced by construction here: the background
-        task's DB writes all target the new branch run id).
+        ``model`` optionally overrides the branch's generation model; otherwise
+        the branch inherits the parent's model (or the settings default when the
+        parent was imported). The parent run is only READ; it is never modified
+        or re-run (immutability invariant, enforced by construction here: the
+        background task's DB writes all target the new branch run id).
         """
-        cfg = branching._parse_config(parent_run)
-        model = cfg.get("model")
-
         meta = await branching.create_branch_run(
             self.db,
             parent_run,
             from_turn=from_turn,
             name=name,
             description=description,
-            model=model,
+            gen_model=model,
         )
         branch_run_id = meta["run_id"]
         max_messages = meta["max_messages"]
+        branch_model = meta.get("model")
 
         broker = RunBroker()
         self._brokers[branch_run_id] = broker
@@ -228,6 +229,7 @@ class RunManager:
                     from_turn=from_turn,
                     max_messages=max_messages,
                     on_event=_on_event,
+                    model=branch_model,
                 )
                 # Auto-summarize a completed branch, same as a fresh run. Purely
                 # additive (writes only the summaries table); never touches the

@@ -158,7 +158,7 @@ async def create_branch_run(
     from_turn: int,
     name: Optional[str] = None,
     description: Optional[str] = None,
-    model: Optional[str] = None,
+    gen_model: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Synchronously create the new branch run row (so it is immediately resolvable
@@ -180,8 +180,23 @@ async def create_branch_run(
     cast_names = [c.get("name", "") for c in cast]
     parent_label = parent_run.get("name") or parent_run["id"][:8]
 
+    # Resolve the branch's GENERATION model:
+    #   1. an explicit user override (gen_model) wins;
+    #   2. else inherit the parent's own configured model — BUT only if the
+    #      parent was not imported (an imported run's stored model is a legacy,
+    #      possibly-EOL string, so we drop it and use the settings default);
+    #   3. else None -> the engine's current settings default.
+    parent_cfg = _parse_config(parent_run)
+    parent_imported = bool(parent_cfg.get("imported"))
+    resolved_model: Optional[str] = (gen_model or "").strip() or None
+    if resolved_model is None and not parent_imported:
+        resolved_model = parent_cfg.get("model") or None
+
     # Resolve a codename. A user-supplied name is honoured (de-duplicated);
-    # otherwise generate one from the topic. Naming never blocks a branch.
+    # otherwise generate one from the topic. Naming uses the resolved (valid)
+    # generation model — never the parent's possibly-EOL model — so branches of
+    # imported runs get proper LLM codenames instead of a wordlist fallback.
+    # Naming never blocks a branch.
     supplied = (name or "").strip().lower() or None
     name_source: Optional[str] = "user" if supplied else None
     if supplied and await db.name_exists(supplied):
@@ -199,7 +214,7 @@ async def create_branch_run(
         naming = await generate_run_name(
             topic=topic,
             cast_names=cast_names,
-            model=model,
+            model=resolved_model,
             name_exists=db.name_exists,
         )
         codename = naming["name"]
@@ -211,11 +226,16 @@ async def create_branch_run(
     if not description:
         description = f"Branch of {parent_label} @ turn {from_turn}"
 
-    # Carry the parent's config forward (so budget/model/summary settings match),
-    # but drop the imported flag — a branch is a freshly generated timeline.
-    cfg = dict(_parse_config(parent_run))
+    # Carry the parent's config forward (so budget/summary settings match), but
+    # drop the imported flag (a branch is a freshly generated timeline) and
+    # replace the model with the resolved one (dropped entirely when None, so
+    # analysis + generation fall back to the current settings default).
+    cfg = dict(parent_cfg)
     cfg.pop("imported", None)
     cfg.pop("source", None)
+    cfg.pop("model", None)
+    if resolved_model:
+        cfg["model"] = resolved_model
     cfg["max_messages"] = branch_budget(parent_run, from_turn)
 
     await db.create_run(
@@ -242,6 +262,7 @@ async def create_branch_run(
         "branch_turn": from_turn,
         "status": "running",
         "max_messages": cfg["max_messages"],
+        "model": resolved_model,
     }
 
 
@@ -252,6 +273,7 @@ async def execute_branch(
     from_turn: int,
     max_messages: int,
     on_event: Optional[OnEvent] = None,
+    model: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Background half of a branch: reconstruct state at the fork, copy the parent's
@@ -307,6 +329,7 @@ async def execute_branch(
         max_messages=max_messages,
         db=db,
         on_event=on_event,
+        model=model,
     )
 
 
@@ -378,10 +401,12 @@ async def resume_run_in_place(
 
     # 4. Flip to running and continue forward. Budget is the run's own
     #    configured budget, extended (via the shared branch_budget helper) if the
-    #    checkpoint is already at/over it so a resume always moves forward.
+    #    checkpoint is already at/over it so a resume always moves forward. The
+    #    run continues with its own configured model (None -> settings default).
     await db.update_run_status(run_id, "running")
     max_messages = branch_budget(run, resume_turn)
     start_seq = await db.max_seq(run_id) + 1
+    resume_model = _parse_config(run).get("model") or None
 
     return await resume_simulation(
         run_id=run_id,
@@ -393,4 +418,5 @@ async def resume_run_in_place(
         max_messages=max_messages,
         db=db,
         on_event=on_event,
+        model=resume_model,
     )

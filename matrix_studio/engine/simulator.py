@@ -40,6 +40,7 @@ async def _select_next_speaker(
     conversation: List[Dict[str, Any]],
     last_speaker: Optional[str],
     settings,
+    model: Optional[str] = None,
 ) -> str:
     """
     Use LLM to select the next speaker.
@@ -50,6 +51,8 @@ async def _select_next_speaker(
         conversation: Conversation history
         last_speaker: Last speaker name or None
         settings: Global settings
+        model: Effective model override (per-run); falls back to the settings
+            default when None.
 
     Returns:
         Selected agent name
@@ -82,7 +85,7 @@ Respond with ONLY the name of the persona who should speak next. Choose naturall
 
     try:
         response = await litellm.acompletion(
-            model=settings.litellm_model,
+            model=model or settings.litellm_model,
             messages=messages,
             temperature=0.3,  # Lower temperature for more consistent selection
             max_tokens=50,
@@ -112,6 +115,7 @@ async def _generate_response(
     topic: str,
     conversation: List[Dict[str, Any]],
     settings,
+    model: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Generate a response from the selected speaker.
@@ -122,6 +126,8 @@ async def _generate_response(
         topic: Conversation topic
         conversation: Full conversation history
         settings: Global settings
+        model: Effective model override (per-run); falls back to the settings
+            default when None.
 
     Returns:
         Dict with response, tokens, and cost info
@@ -158,7 +164,7 @@ Respond naturally as this character. Keep responses conversational (2-4 sentence
 
     try:
         response = await litellm.acompletion(
-            model=settings.litellm_model,
+            model=model or settings.litellm_model,
             messages=messages,
             temperature=settings.litellm_temperature,
             max_tokens=settings.litellm_max_tokens,
@@ -359,6 +365,7 @@ async def run_simulation(
         db=db,
         emit=_emit,
         next_seq=_next_seq,
+        model=config.get("model") or None,
     )
 
 
@@ -375,6 +382,7 @@ async def _run_turns(
     db: Optional[Database],
     emit: Callable[..., Awaitable[None]],
     next_seq: Callable[[], int],
+    model: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Shared turn loop + completion/failure handling for both a fresh run and a
@@ -404,7 +412,7 @@ async def _run_turns(
 
             # Phase 1: Select next speaker
             speaker_name = await _select_next_speaker(
-                topic, agents, conversation, last_speaker, settings
+                topic, agents, conversation, last_speaker, settings, model=model
             )
 
             await emit(
@@ -418,7 +426,7 @@ async def _run_turns(
             # Phase 2: Generate response
             speaker = agents[speaker_name]
             response_data = await _generate_response(
-                speaker_name, speaker, topic, conversation, settings
+                speaker_name, speaker, topic, conversation, settings, model=model
             )
 
             # Update conversation
@@ -558,6 +566,7 @@ async def resume_simulation(
     max_messages: int,
     db: Optional[Database] = None,
     on_event: Optional[OnEvent] = None,
+    model: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Phase 2a branch primitive — RESUME generating forward from a checkpoint.
@@ -653,4 +662,5 @@ async def resume_simulation(
         db=db,
         emit=_emit,
         next_seq=_next_seq,
+        model=model,
     )
