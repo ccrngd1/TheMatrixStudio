@@ -12,6 +12,9 @@ interface Props {
   defaultInstructions: string
   // Only completed runs can (re)generate a summary.
   canGenerate: boolean
+  // Optional analysis-model override (from the in-thread model picker); when set
+  // it is sent with regeneration so the summary uses the chosen model.
+  model?: string
   onUpdated: (s: StoredSummary) => void
 }
 
@@ -25,6 +28,7 @@ export function SummaryPanel({
   imported,
   defaultInstructions,
   canGenerate,
+  model,
   onUpdated,
 }: Props) {
   const [busy, setBusy] = useState(false)
@@ -52,9 +56,11 @@ export function SummaryPanel({
       // Only send custom instructions when the user diverged from the default;
       // an unchanged/default prompt sends none → server uses the default.
       const trimmed = prompt.trim()
+      const custom =
+        trimmed && trimmed !== defaultInstructions.trim() ? trimmed : undefined
       const body =
-        trimmed && trimmed !== defaultInstructions.trim()
-          ? { instructions: trimmed }
+        custom || model
+          ? { ...(custom ? { instructions: custom } : {}), ...(model ? { model } : {}) }
           : undefined
       const res = await api.generateSummary(runId, body)
       onUpdated(res.generated)

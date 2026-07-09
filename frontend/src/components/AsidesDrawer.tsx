@@ -6,6 +6,9 @@ import type { AsideTarget, Persona, ThreadDetail, ThreadSummary } from '../types
 interface Props {
   runId: string
   cast: Persona[]
+  // Optional analysis-model override (from the in-thread model picker); sent
+  // with each aside message so replies use the chosen model.
+  model?: string
   onClose: () => void
 }
 
@@ -14,7 +17,7 @@ interface Props {
 // the canonical conversation, does not change the run, and other asides don't
 // see it. The UI states this plainly (canon boundary) and shows a disabled
 // "bring into conversation" affordance reserved for a later version (Phase 2).
-export function AsidesDrawer({ runId, cast, onClose }: Props) {
+export function AsidesDrawer({ runId, cast, model, onClose }: Props) {
   const [threads, setThreads] = useState<ThreadSummary[]>([])
   const [active, setActive] = useState<ThreadDetail | null>(null)
   const [target, setTarget] = useState<AsideTarget>('analyst')
@@ -59,7 +62,7 @@ export function AsidesDrawer({ runId, cast, onClose }: Props) {
     const content = draft.trim()
     setDraft('')
     try {
-      await api.postThreadMessage(active.id, content)
+      await api.postThreadMessage(active.id, content, model)
       await openThread(active.id)
       await loadThreads()
     } catch (e) {

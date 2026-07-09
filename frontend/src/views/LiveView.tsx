@@ -35,6 +35,10 @@ export function LiveView({ runId, onBack, onOpenRun }: Props) {
   const [branchError, setBranchError] = useState<string | null>(null)
   const [resuming, setResuming] = useState(false)
   const [resumeError, setResumeError] = useState<string | null>(null)
+  // In-thread model picker: the models allowlist + the currently selected model
+  // for analysis (summary/asides) and forward branching from this thread.
+  const [models, setModels] = useState<string[]>([])
+  const [analysisModel, setAnalysisModel] = useState<string>('')
   // Bumped after a resume to force the run detail refetch + stream reconnect.
   const [reloadKey, setReloadKey] = useState(0)
 
@@ -49,6 +53,16 @@ export function LiveView({ runId, onBack, onOpenRun }: Props) {
     // can prefill / reset-to-default even before any generation.
     api.getSummary(runId).then((s) => setDefaultInstructions(s.default_instructions))
   }, [runId, reloadKey])
+
+  // Load the selectable-models allowlist once; default the in-thread picker to
+  // the run's own model when set, else the server default.
+  useEffect(() => {
+    api.getModels().then((m) => {
+      setModels(m.models)
+      setAnalysisModel((cur) => cur || (detail?.config?.model as string) || m.default)
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detail?.config?.model])
 
   const stream = useRunStream({ runId, cast, reloadKey })
   const { state } = stream
@@ -82,7 +96,7 @@ export function LiveView({ runId, onBack, onOpenRun }: Props) {
     setBranching(true)
     setBranchError(null)
     try {
-      const res = await api.branchRun(runId, fromTurn)
+      const res = await api.branchRun(runId, fromTurn, analysisModel ? { model: analysisModel } : undefined)
       setScrubbing(false)
       if (onOpenRun) onOpenRun(res.run_id)
     } catch (e) {
@@ -145,6 +159,22 @@ export function LiveView({ runId, onBack, onOpenRun }: Props) {
             >
               💬 Asides
             </button>
+          )}
+          {models.length > 0 && (
+            <label className="flex items-center gap-1 text-xs text-slate-400" title="Model used for analysis (summary/asides) and forward branching from this thread">
+              Model
+              <select
+                value={analysisModel}
+                onChange={(e) => setAnalysisModel(e.target.value)}
+                className="max-w-[14rem] rounded border border-matrix-border bg-matrix-panel px-2 py-1 text-xs text-slate-200"
+              >
+                {models.map((m) => (
+                  <option key={m} value={m}>
+                    {m.split('/').pop()}
+                  </option>
+                ))}
+              </select>
+            </label>
           )}
           <span className="text-xs text-slate-500">
             {stream.connected ? '🔌 connected' : '… connecting'}
@@ -235,6 +265,7 @@ export function LiveView({ runId, onBack, onOpenRun }: Props) {
               imported={imported}
               defaultInstructions={defaultInstructions}
               canGenerate={completed}
+              model={analysisModel || undefined}
               onUpdated={setGenerated}
             />
           )}
@@ -266,7 +297,7 @@ export function LiveView({ runId, onBack, onOpenRun }: Props) {
       )}
 
       {asidesOpen && (
-        <AsidesDrawer runId={runId} cast={cast} onClose={() => setAsidesOpen(false)} />
+        <AsidesDrawer runId={runId} cast={cast} model={analysisModel || undefined} onClose={() => setAsidesOpen(false)} />
       )}
     </div>
   )

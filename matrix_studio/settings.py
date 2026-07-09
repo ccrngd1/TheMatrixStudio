@@ -28,6 +28,26 @@ class Settings(BaseSettings):
     litellm_temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     litellm_max_tokens: int = Field(default=2048, ge=1)
 
+    # Selectable models offered in the UI (new-run form + in-thread analysis /
+    # branch pickers). Comma-separated model strings; env AVAILABLE_MODELS. The
+    # current ``litellm_model`` default is always included by ``/api/models``
+    # even if omitted here. Keys stay server-side; this is just the allowlist of
+    # model strings a user may pick.
+    available_models: str = Field(
+        default="",
+        description="Comma-separated selectable model strings (AVAILABLE_MODELS).",
+    )
+
+    @property
+    def available_model_list(self) -> list[str]:
+        """Parsed, de-duplicated selectable models with the default first."""
+        out: list[str] = [self.litellm_model]
+        for m in self.available_models.split(","):
+            m = m.strip()
+            if m and m not in out:
+                out.append(m)
+        return out
+
     # AWS credentials (for Bedrock and Nova Canvas)
     aws_access_key_id: Optional[str] = Field(default=None)
     aws_secret_access_key: Optional[str] = Field(default=None)

@@ -92,7 +92,7 @@ export const api = {
   // remain, enforced server-side). Omit → default framing.
   generateSummary: (
     ref: string,
-    body?: { fields?: string[]; focus?: string; instructions?: string },
+    body?: { fields?: string[]; focus?: string; instructions?: string; model?: string },
   ) =>
     jsonFetch<SummaryResponse & { generated: StoredSummary }>(
       `/api/runs/${encodeURIComponent(ref)}/summary`,
@@ -113,10 +113,10 @@ export const api = {
   getThread: (threadId: string) =>
     jsonFetch<ThreadDetail>(`/api/threads/${encodeURIComponent(threadId)}`),
 
-  postThreadMessage: (threadId: string, content: string) =>
+  postThreadMessage: (threadId: string, content: string, model?: string) =>
     jsonFetch<{ thread_id: string; reply: ThreadMessage; total_cost_usd: number }>(
       `/api/threads/${encodeURIComponent(threadId)}/messages`,
-      { method: 'POST', body: JSON.stringify({ content }) },
+      { method: 'POST', body: JSON.stringify({ content, model }) },
     ),
 
   // -------- Phase 2a: checkpoints + branching -------- //
@@ -136,7 +136,7 @@ export const api = {
   branchRun: (
     ref: string,
     fromTurn: number,
-    opts?: { name?: string; description?: string },
+    opts?: { name?: string; description?: string; model?: string },
   ) =>
     jsonFetch<BranchResponse>(`/api/runs/${encodeURIComponent(ref)}/branch`, {
       method: 'POST',

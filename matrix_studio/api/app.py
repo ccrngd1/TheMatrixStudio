@@ -104,6 +104,9 @@ class ThreadMessageModel(BaseModel):
     """Post a user message into an aside thread."""
 
     content: str
+    # Optional per-message model override for the analysis reply; None -> the
+    # run's resolved analysis model (settings default for imported/branch runs).
+    model: Optional[str] = None
 
 
 class BranchModel(BaseModel):
@@ -112,6 +115,9 @@ class BranchModel(BaseModel):
     from_turn: int = Field(ge=0)
     name: Optional[str] = None
     description: Optional[str] = None
+    # Optional generation-model override for the branch's forward turns; None ->
+    # inherit the parent's model (or the settings default for imported parents).
+    model: Optional[str] = None
 
 
 def _run_summary(run: Dict[str, Any]) -> Dict[str, Any]:
@@ -222,10 +228,11 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
 
     @app.get("/api/models")
     async def models() -> Dict[str, Any]:
-        """Model string(s) selectable in the new-run form. Keys stay server-side."""
+        """Model string(s) selectable in the new-run form + in-thread pickers.
+        Keys stay server-side; this only exposes the allowlist of model strings."""
         return {
             "default": settings.litellm_model,
-            "models": [settings.litellm_model],
+            "models": settings.available_model_list,
         }
 
     @app.get("/api/name/suggest")
@@ -388,6 +395,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             from_turn=body.from_turn,
             name=body.name,
             description=body.description,
+            model=body.model,
         )
         return meta
 
@@ -515,7 +523,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
         reply = await service.post_aside_message(
-            db, run, thread, user_message=body.content.strip()
+            db, run, thread, user_message=body.content.strip(), model=body.model
         )
         cost = await db.thread_cost(thread_id)
         return {"thread_id": thread_id, "reply": reply, "total_cost_usd": cost}
