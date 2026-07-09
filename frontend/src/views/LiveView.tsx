@@ -235,6 +235,7 @@ export function LiveView({ runId, onBack, onOpenRun }: Props) {
           runId={runId}
           maxTurn={maxTurn}
           cast={cast}
+          defaultBudget={(detail?.config?.max_messages as number) ?? maxTurn}
           onBranch={branchFrom}
           branching={branching}
         />

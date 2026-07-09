@@ -211,6 +211,10 @@ def _validate_branch_mutation(
         out: Dict[str, Any] = {"kind": "inject_message", "speaker": speaker, "content": content}
         if mutation.source:
             out["source"] = str(mutation.source)
+        # Optional: configurable length of the new discussion round (number of
+        # generated turns after the injection). Omitted -> the original budget.
+        if mutation.add_budget is not None:
+            out["add_budget"] = int(mutation.add_budget)
         return out
     if kind == "edit_goal":
         persona_name = (mutation.persona_name or "").strip()

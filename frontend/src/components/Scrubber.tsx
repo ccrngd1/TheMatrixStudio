@@ -10,13 +10,16 @@ interface Props {
   runId: string
   maxTurn: number
   cast: Persona[]
+  // The run's original turn budget — the default length of a new discussion
+  // round after an injected message.
+  defaultBudget?: number
   // Phase 2b: optional mutation forwarded to the branch; no mutation = plain fork
   onBranch: (fromTurn: number, mutation?: Record<string, unknown>) => void
   branching?: boolean
 }
 
 // Checkpoint scrubber (Phase 2a+2b): read-only turn slider + Phase 2b intervention panel.
-export function Scrubber({ runId, maxTurn, cast, onBranch, branching = false }: Props) {
+export function Scrubber({ runId, maxTurn, cast, defaultBudget, onBranch, branching = false }: Props) {
   const [events, setEvents] = useState<SimEvent[]>([])
   const [turn, setTurn] = useState(maxTurn)
   const [loading, setLoading] = useState(true)
@@ -24,6 +27,9 @@ export function Scrubber({ runId, maxTurn, cast, onBranch, branching = false }: 
   const [mutKind, setMutKind] = useState<string>('inject_message')
   const [injectSpeaker, setInjectSpeaker] = useState('')
   const [injectContent, setInjectContent] = useState('')
+  // Length of the new discussion round after an injected message; defaults to
+  // the run's original budget.
+  const [injectTurns, setInjectTurns] = useState<number>(defaultBudget ?? maxTurn ?? 20)
   const [addBudget, setAddBudget] = useState(5)
   const [editPersona, setEditPersona] = useState('')
   const [editGoals, setEditGoals] = useState('')
@@ -47,7 +53,12 @@ export function Scrubber({ runId, maxTurn, cast, onBranch, branching = false }: 
 
   const buildMutation = (): Record<string, unknown> | undefined => {
     if (mutKind === 'inject_message')
-      return { kind: 'inject_message', speaker: injectSpeaker.trim(), content: injectContent.trim() }
+      return {
+        kind: 'inject_message',
+        speaker: injectSpeaker.trim(),
+        content: injectContent.trim(),
+        add_budget: injectTurns,
+      }
     if (mutKind === 'continue') return { kind: 'continue', add_budget: addBudget }
     if (mutKind === 'edit_goal')
       return { kind: 'edit_goal', persona_name: editPersona,
@@ -109,6 +120,14 @@ export function Scrubber({ runId, maxTurn, cast, onBranch, branching = false }: 
               <textarea placeholder="Message content…" value={injectContent} rows={3}
                 onChange={(e) => setInjectContent(e.target.value)}
                 className="w-full rounded border border-matrix-border bg-matrix-bg px-2 py-1 text-xs text-slate-200" />
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-slate-400">New discussion turns</label>
+                <input type="number" min={1} value={injectTurns}
+                  onChange={(e) => setInjectTurns(Number(e.target.value))}
+                  title="How many turns the group talks after your injected message (defaults to the original run's budget)"
+                  className="w-24 rounded border border-matrix-border bg-matrix-bg px-2 py-1 text-xs text-slate-200" />
+                <span className="text-[10px] text-slate-500">default = original budget</span>
+              </div>
             </>)}
 
             {mutKind === 'continue' && (

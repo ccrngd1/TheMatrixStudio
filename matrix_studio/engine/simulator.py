@@ -663,9 +663,17 @@ async def _apply_branch_mutation(
             payload={"turn": inject_turn},
         )
 
-        # The injection occupies turn from_turn+1; resume generating after it and
-        # extend the budget by 1 so it does not eat a generation slot.
-        return inject_turn, max_messages + 1
+        # The injection occupies turn from_turn+1; resume generating after it.
+        # The new round's length is configurable via add_budget (number of
+        # LLM-generated discussion turns after the injection); when omitted it
+        # defaults to the branch's inherited budget (the original run's budget).
+        add_budget = mutation.get("add_budget")
+        if add_budget is not None:
+            effective_max = inject_turn + int(add_budget)
+        else:
+            # +1 so the injected (non-generated) turn does not eat a gen slot.
+            effective_max = max_messages + 1
+        return inject_turn, effective_max
 
     if kind == "edit_goal":
         persona_name = str(mutation.get("persona_name", "")).strip()
