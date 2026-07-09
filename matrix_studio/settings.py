@@ -5,6 +5,7 @@ Configuration settings for TheMatrix Simulation Studio.
 Settings precedence: environment variables > .env file > config.json defaults
 """
 
+import os
 from typing import Optional
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -14,7 +15,7 @@ class Settings(BaseSettings):
     """Global settings for the simulation engine."""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=".env" if not os.getenv("_MSS_TEST_MODE") else None,
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False

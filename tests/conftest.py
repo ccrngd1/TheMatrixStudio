@@ -24,6 +24,10 @@ def reset_settings_singleton():
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch):
     """Clean environment variables that might affect tests."""
+    # Disable .env file loading in Settings to avoid permission errors
+    # (the .env file is owned by root in this environment)
+    monkeypatch.setenv("_MSS_TEST_MODE", "1")
+
     # Remove any API keys from environment
     env_vars_to_remove = [
         "LITELLM_MODEL",
