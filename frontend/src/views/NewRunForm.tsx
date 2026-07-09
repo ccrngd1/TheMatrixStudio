@@ -42,6 +42,13 @@ export function NewRunForm({ onStarted, onCancel }: Props) {
   const [summaryOpen, setSummaryOpen] = useState(false)
   const [summaryEnabled, setSummaryEnabled] = useState(true)
   const [summaryFocus, setSummaryFocus] = useState('')
+  // Phase 2c cognition options (collapsed; off by default = classic behavior).
+  const [cognitionOpen, setCognitionOpen] = useState(false)
+  const [cognitionEnabled, setCognitionEnabled] = useState(false)
+  const [cogMemory, setCogMemory] = useState(true)
+  const [cogReflect, setCogReflect] = useState(true)
+  const [cogGoals, setCogGoals] = useState(false)
+  const [cogRelationships, setCogRelationships] = useState(false)
   const [model, setModel] = useState('')
   const [models, setModels] = useState<{ id: string; label: string }[]>([])
   const [suggesting, setSuggesting] = useState(false)
@@ -99,7 +106,19 @@ export function NewRunForm({ onStarted, onCancel }: Props) {
       const res = await api.createRun({
         topic: topic.trim(),
         cast: validCast,
-        config: { max_messages: maxMessages, generate_avatars: avatars },
+        config: {
+          max_messages: maxMessages,
+          generate_avatars: avatars,
+          cognition: cognitionEnabled
+            ? {
+                enabled: true,
+                memory: cogMemory,
+                reflection_every: cogReflect ? 4 : 0,
+                goals_dynamic: cogGoals,
+                relationships: cogRelationships,
+              }
+            : undefined,
+        },
         model: model || undefined,
         name: name.trim() || undefined,
         description: description.trim() || undefined,
@@ -237,6 +256,59 @@ export function NewRunForm({ onStarted, onCancel }: Props) {
               placeholder="Optional focus (e.g. emphasize legal and ethical risk)"
               className="w-full rounded border border-matrix-border bg-matrix-bg p-2 text-sm disabled:opacity-40"
             />
+          </div>
+        )}
+      </div>
+
+      <div className="mt-4 rounded-lg border border-matrix-border p-3">
+        <button
+          type="button"
+          onClick={() => setCognitionOpen((o) => !o)}
+          className="flex w-full items-center justify-between text-left text-sm font-semibold text-slate-300"
+        >
+          <span>Cognition (introspectable engine)</span>
+          <span className="text-xs text-slate-500">
+            {cognitionEnabled ? 'on' : 'off'} {cognitionOpen ? '▲' : '▼'}
+          </span>
+        </button>
+        {cognitionOpen && (
+          <div className="mt-3 space-y-2">
+            <p className="text-[11px] text-slate-500">
+              When on, each agent produces a genuine per-turn rationale, forms a memory
+              stream, and (optionally) reflects, evolves goals, and tracks relationships —
+              enabling the per-agent dossier and the “why did it say that?” trace. This adds
+              tokens/cost per turn. Model-generated introspection, not ground truth.
+            </p>
+            <label className="flex items-center gap-2 text-sm text-slate-300">
+              <input
+                type="checkbox"
+                checked={cognitionEnabled}
+                onChange={(e) => setCognitionEnabled(e.target.checked)}
+              />
+              Enable cognition
+            </label>
+            <div className="grid grid-cols-2 gap-2 pl-6">
+              <label className="flex items-center gap-2 text-sm text-slate-300">
+                <input type="checkbox" checked={cogMemory} disabled={!cognitionEnabled}
+                  onChange={(e) => setCogMemory(e.target.checked)} />
+                Memory stream
+              </label>
+              <label className="flex items-center gap-2 text-sm text-slate-300">
+                <input type="checkbox" checked={cogReflect} disabled={!cognitionEnabled}
+                  onChange={(e) => setCogReflect(e.target.checked)} />
+                Reflection (every 4 turns)
+              </label>
+              <label className="flex items-center gap-2 text-sm text-slate-300">
+                <input type="checkbox" checked={cogGoals} disabled={!cognitionEnabled}
+                  onChange={(e) => setCogGoals(e.target.checked)} />
+                Dynamic goals
+              </label>
+              <label className="flex items-center gap-2 text-sm text-slate-300">
+                <input type="checkbox" checked={cogRelationships} disabled={!cognitionEnabled}
+                  onChange={(e) => setCogRelationships(e.target.checked)} />
+                Relationships
+              </label>
+            </div>
           </div>
         )}
       </div>
