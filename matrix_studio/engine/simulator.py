@@ -184,6 +184,8 @@ async def _generate_response(
     """
     cognition_on = bool(cognition and cognition.enabled)
     memory_on = bool(cognition_on and cognition.memory)
+    goals_dynamic = bool(cognition_on and cognition.goals_dynamic)
+    relationships_on = bool(cognition_on and cognition.relationships)
 
     # Build context for the agent
     recent_conv = conversation[-20:] if len(conversation) > 20 else conversation
@@ -199,25 +201,38 @@ async def _generate_response(
         memory_block = f"\n\nWhat you remember so far:\n{lines}"
 
     if cognition_on:
+        # Compose the JSON schema from the enabled cognition sub-features so the
+        # single structured call carries exactly what's turned on.
+        fields = [
+            '"utterance": "<what you say, in character, 2-4 sentences>"',
+            '"rationale": "<one first-person sentence: why you say this now>"',
+            '"goal_served": "<which of your goals this advances, verbatim, or \'none\'>"',
+        ]
+        extra_instr = ""
         if memory_on:
-            schema_line = (
-                '{"utterance": "<what you say, in character, 2-4 sentences>", '
-                '"rationale": "<one first-person sentence: why you say this now>", '
-                '"goal_served": "<which of your goals this advances, verbatim, or \'none\'>", '
+            fields.append(
                 '"memories": [{"content": "<a short thing you just learned or decided this turn>", '
-                '"importance": <0.0-1.0>, "tags": ["<tag>"]}]}'
+                '"importance": <0.0-1.0>, "tags": ["<tag>"]}]'
             )
-            memories_instr = (
+            extra_instr += (
                 " The memories array holds 0-2 items you genuinely formed this turn "
                 "(what you learned/decided); use [] if nothing notable."
             )
-        else:
-            schema_line = (
-                '{"utterance": "<what you say, in character, 2-4 sentences>", '
-                '"rationale": "<one first-person sentence: why you say this now>", '
-                '"goal_served": "<which of your goals this advances, verbatim, or \'none\'>"}'
+        if goals_dynamic:
+            fields.append('"goal_update": ["<your full updated goal list>"]')
+            extra_instr += (
+                " Set goal_update to your FULL new goal list ONLY if this turn "
+                "genuinely changed your goals; otherwise omit it or use null."
             )
-            memories_instr = ""
+        if relationships_on:
+            fields.append(
+                '"relationship_updates": {"<other participant name>": "<your one-line stance toward them>"}'
+            )
+            extra_instr += (
+                " relationship_updates maps other participants to your updated stance "
+                "toward them; use {} if nothing changed."
+            )
+        schema_line = "{" + ", ".join(fields) + "}"
         system_message = f"""{agent.persona}
 
 You are participating in a conversation about: {topic}
@@ -228,7 +243,7 @@ Respond naturally as this character. Keep responses conversational (2-4 sentence
 
 Return ONLY a JSON object of the form:
 {schema_line}
-The rationale must be your genuine reason for this specific turn; do not invent facts.{memories_instr}"""
+The rationale must be your genuine reason for this specific turn; do not invent facts.{extra_instr}"""
     else:
         system_message = f"""{agent.persona}
 
@@ -273,6 +288,8 @@ Respond naturally as this character. Keep responses conversational (2-4 sentence
         rationale: Optional[str] = None
         goal_served: Optional[str] = None
         formed_memories: List[Dict[str, Any]] = []
+        goal_update: Optional[List[str]] = None
+        relationship_updates: Dict[str, str] = {}
         if cognition_on:
             try:
                 parsed = json.loads(raw)
@@ -300,12 +317,28 @@ Respond naturally as this character. Keep responses conversational (2-4 sentence
                             formed_memories.append(
                                 {"content": c, "importance": imp, "tags": tags}
                             )
+                if goals_dynamic:
+                    gu = parsed.get("goal_update")
+                    if isinstance(gu, list) and gu:
+                        cleaned = [str(g).strip() for g in gu if str(g).strip()]
+                        if cleaned:
+                            goal_update = cleaned
+                if relationships_on:
+                    ru = parsed.get("relationship_updates")
+                    if isinstance(ru, dict):
+                        for other, stance in ru.items():
+                            o = str(other).strip()
+                            s = str(stance).strip()
+                            if o and s:
+                                relationship_updates[o] = s
             except (json.JSONDecodeError, TypeError, AttributeError):
                 # Graceful degradation: keep the raw text as the utterance.
                 content = raw
                 rationale = None
                 goal_served = None
                 formed_memories = []
+                goal_update = None
+                relationship_updates = {}
 
         # Extract usage info
         usage = response.usage
@@ -330,6 +363,10 @@ Respond naturally as this character. Keep responses conversational (2-4 sentence
             result["goal_served"] = goal_served
         if memory_on:
             result["memories"] = formed_memories
+        if goals_dynamic:
+            result["goal_update"] = goal_update
+        if relationships_on:
+            result["relationship_updates"] = relationship_updates
         return result
 
     except Exception as e:
@@ -536,6 +573,52 @@ def _retrieve_memories(agent: AgentState, k: int) -> List[MemoryItem]:
     return ranked[:k]
 
 
+async def _reflect(
+    agent: AgentState,
+    topic: str,
+    settings,
+    model: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Phase 2c reflection: condense the agent's recent memories into ONE
+    higher-level belief (first person, one sentence). Returns a dict with the
+    belief ``content`` + token/cost usage, or None if there is nothing to
+    reflect on / the call fails (reflection must never break a run).
+    """
+    recent = agent.memory_stream[-8:]
+    if not recent:
+        return None
+    mem_text = "\n".join(f"- {m.content}" for m in recent)
+    prompt = (
+        f"You are {agent.name}. Based ONLY on these recent memories, state ONE "
+        f"higher-level belief or conclusion you now hold about the discussion on "
+        f'"{topic}". One sentence, first person. Do not invent facts beyond the memories.\n\n'
+        f"Memories:\n{mem_text}\n\nYour belief:"
+    )
+    try:
+        response = await litellm.acompletion(
+            model=model or settings.litellm_model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=settings.litellm_temperature,
+            max_tokens=120,
+        )
+        content = response.choices[0].message.content.strip()
+        usage = response.usage
+        tokens_in = usage.prompt_tokens if usage else 0
+        tokens_out = usage.completion_tokens if usage else 0
+        cost_usd = 0.0
+        if hasattr(response, "_hidden_params") and "response_cost" in response._hidden_params:
+            cost_usd = response._hidden_params["response_cost"]
+        return {
+            "content": content,
+            "tokens_in": tokens_in,
+            "tokens_out": tokens_out,
+            "cost_usd": cost_usd,
+        }
+    except Exception as e:  # noqa: BLE001 - reflection must never break a run
+        logger.error(f"Error during reflection for {agent.name}: {e}", exc_info=True)
+        return None
+
+
 async def _run_turns(
     *,
     run_id: str,
@@ -607,6 +690,9 @@ async def _run_turns(
             # recency). The retrieved items ARE the turn's causal memory_refs.
             cognition_on = bool(cognition and cognition.enabled)
             memory_on = bool(cognition_on and cognition.memory)
+            goals_dynamic = bool(cognition_on and cognition.goals_dynamic)
+            relationships_on = bool(cognition_on and cognition.relationships)
+            reflect_every = cognition.reflection_every if cognition_on else 0
             retrieved = (
                 _retrieve_memories(speaker, cognition.retrieval_k)
                 if memory_on else []
@@ -682,6 +768,75 @@ async def _run_turns(
                             "content": item.content,
                             "importance": item.importance,
                             "tags": item.tags,
+                        },
+                    )
+
+            # Phase 2c: dynamic goals — apply the speaker's self goal update.
+            if goals_dynamic:
+                new_goals = response_data.get("goal_update")
+                if new_goals and new_goals != speaker.goals:
+                    before = list(speaker.goals)
+                    speaker.goals = list(new_goals)
+                    await emit(
+                        turn=turn,
+                        seq=next_seq(),
+                        event_type="goal.updated",
+                        agent_name=speaker_name,
+                        payload={
+                            "agent": speaker_name,
+                            "before": before,
+                            "after": speaker.goals,
+                        },
+                    )
+
+            # Phase 2c: relationships — apply the speaker's stance updates toward
+            # OTHER real participants (never itself, never a non-member).
+            if relationships_on:
+                for other, stance in (response_data.get("relationship_updates") or {}).items():
+                    if other == speaker_name or other not in agents:
+                        continue
+                    speaker.relationships[other] = stance
+                    await emit(
+                        turn=turn,
+                        seq=next_seq(),
+                        event_type="relationship.updated",
+                        agent_name=speaker_name,
+                        payload={
+                            "agent": speaker_name,
+                            "other": other,
+                            "stance": stance,
+                        },
+                    )
+
+            # Phase 2c: reflection — every N turns the speaker condenses recent
+            # memories into a higher-level belief (a MemoryItem tagged
+            # 'reflection'), emitted as agent.reflected. Only fires when
+            # reflection_every > 0 (ON by default when cognition is enabled).
+            if reflect_every and turn % reflect_every == 0:
+                belief = await _reflect(speaker, topic, settings, model=model)
+                if belief and belief.get("content"):
+                    speaker.total_tokens_in += belief.get("tokens_in", 0)
+                    speaker.total_tokens_out += belief.get("tokens_out", 0)
+                    speaker.total_cost_usd += belief.get("cost_usd", 0.0)
+                    item = MemoryItem(
+                        timestamp=int(time.time()),
+                        content=belief["content"],
+                        importance=0.9,
+                        tags=["reflection", "belief"],
+                    )
+                    speaker.memory_stream.append(item)
+                    await emit(
+                        turn=turn,
+                        seq=next_seq(),
+                        event_type="agent.reflected",
+                        agent_name=speaker_name,
+                        payload={
+                            "agent": speaker_name,
+                            "id": item.id,
+                            "belief": item.content,
+                            "tokens_in": belief.get("tokens_in", 0),
+                            "tokens_out": belief.get("tokens_out", 0),
+                            "cost_usd": belief.get("cost_usd", 0.0),
                         },
                     )
 

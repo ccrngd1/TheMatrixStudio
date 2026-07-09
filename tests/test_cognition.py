@@ -304,3 +304,94 @@ async def test_memory_off_no_memory_events_or_refs(db):
         assert "memory_refs" not in ev["payload"]
         # rationale/goal_served still present (cognition on, memory off)
         assert ev["payload"].get("rationale")
+
+
+# --------------------------------------------------------------------------- #
+# Step 3: reflection + dynamic goals + relationships
+# --------------------------------------------------------------------------- #
+
+def _route(response_obj):
+    """Content-routing fake: selection / reflection / response by prompt text.
+    Robust to reflection inserting an extra (non-parity) LLM call."""
+    def fake(*args, **kwargs):
+        text = " ".join(m["content"] for m in kwargs["messages"])
+        if "conversation moderator" in text:
+            return _Resp(json.dumps({"speaker": "Ada", "reason": "Ada leads"}))
+        if "Your belief:" in text:
+            return _Resp("I now believe consent is the crux.")
+        return _Resp(json.dumps(response_obj))
+    return fake
+
+
+async def test_goal_update_applied_and_emitted(db):
+    resp = {"utterance": "Rethinking.", "rationale": "shifting", "goal_served": "none",
+            "memories": [], "goal_update": ["seek truth", "protect users"]}
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_route(resp)):
+        req = dict(REQUEST)
+        req["config"] = {"max_messages": 1, "generate_avatars": False,
+                         "cognition": {"enabled": True, "goals_dynamic": True,
+                                       "reflection_every": 0}}
+        await run_simulation(req, db=db, run_id="goals")
+
+    updated = await _events(db, "goals", "goal.updated")
+    assert len(updated) == 1
+    assert updated[0]["payload"]["before"] == ["seek truth"]
+    assert updated[0]["payload"]["after"] == ["seek truth", "protect users"]
+    snap = await db.get_snapshot("goals", 1)
+    assert snap.agents["Ada"].goals == ["seek truth", "protect users"]
+
+
+async def test_relationship_update_rejects_self_and_nonmember(db):
+    resp = {"utterance": "Hi Ben.", "rationale": "engaging", "goal_served": "none",
+            "memories": [],
+            "relationship_updates": {"Ben": "trusted ally", "Ada": "self!!", "Zoe": "ghost"}}
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_route(resp)):
+        req = dict(REQUEST)
+        req["config"] = {"max_messages": 1, "generate_avatars": False,
+                         "cognition": {"enabled": True, "relationships": True,
+                                       "reflection_every": 0}}
+        await run_simulation(req, db=db, run_id="rel")
+
+    rels = await _events(db, "rel", "relationship.updated")
+    # only Ben (real other member) applied; self + non-member dropped
+    assert len(rels) == 1
+    assert rels[0]["payload"]["other"] == "Ben"
+    snap = await db.get_snapshot("rel", 1)
+    assert snap.agents["Ada"].relationships == {"Ben": "trusted ally"}
+
+
+async def test_reflection_fires_every_n_and_forms_belief(db):
+    resp = {"utterance": "A claim.", "rationale": "why", "goal_served": "seek truth",
+            "memories": [{"content": "noted a point", "importance": 0.7, "tags": ["fact"]}]}
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_route(resp)):
+        req = dict(REQUEST)
+        req["config"] = {"max_messages": 4, "generate_avatars": False,
+                         "cognition": {"enabled": True, "reflection_every": 2}}
+        await run_simulation(req, db=db, run_id="reflect")
+
+    reflected = await _events(db, "reflect", "agent.reflected")
+    assert len(reflected) == 2  # turns 2 and 4
+    assert all(ev["payload"]["belief"] for ev in reflected)
+    # belief lives in the memory stream tagged as a reflection
+    snap = await db.get_snapshot("reflect", 4)
+    beliefs = [m for m in snap.agents["Ada"].memory_stream if "reflection" in m.tags]
+    assert len(beliefs) == 2
+
+
+async def test_step3_flags_off_no_events(db):
+    # cognition on, but goals/relationships/reflection all OFF
+    resp = {"utterance": "x", "rationale": "y", "goal_served": "none", "memories": [],
+            "goal_update": ["should be ignored"],
+            "relationship_updates": {"Ben": "ignored"}}
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_route(resp)):
+        req = dict(REQUEST)
+        req["config"] = {"max_messages": 3, "generate_avatars": False,
+                         "cognition": {"enabled": True, "goals_dynamic": False,
+                                       "relationships": False, "reflection_every": 0}}
+        await run_simulation(req, db=db, run_id="s3off")
+
+    assert await _events(db, "s3off", "goal.updated") == []
+    assert await _events(db, "s3off", "relationship.updated") == []
+    assert await _events(db, "s3off", "agent.reflected") == []
+    snap = await db.get_snapshot("s3off", 3)
+    assert snap.agents["Ada"].goals == ["seek truth"]  # unchanged
