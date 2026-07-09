@@ -112,9 +112,12 @@ class ThreadMessageModel(BaseModel):
 class BranchMutationModel(BaseModel):
     """Phase 2b: a single mutation applied at the fork before the branch
     generates forward. ``kind`` selects the operation; the other fields are
-    per-kind. Step 1 implements ``inject_message`` and ``continue``; the
-    state-mutation kinds (edit_goal / add_persona / remove_persona) and
-    ``promote_aside`` arrive in later steps."""
+    per-kind.
+
+    Step 1: inject_message, continue
+    Step 2: edit_goal, add_persona, remove_persona
+    Step 3: promote_aside
+    """
 
     kind: str
     # inject_message / promote_aside
@@ -123,6 +126,12 @@ class BranchMutationModel(BaseModel):
     source: Optional[str] = None
     # continue
     add_budget: Optional[int] = Field(default=None, ge=1)
+    # edit_goal / remove_persona — the persona's name in the cast
+    persona_name: Optional[str] = None
+    goals: Optional[List[str]] = None
+    # add_persona — name is the cast entry name; persona is the description text
+    name: Optional[str] = None
+    persona: Optional[str] = None
 
 
 class BranchModel(BaseModel):
@@ -161,7 +170,7 @@ def _run_summary(run: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-_STEP1_MUTATION_KINDS = {"inject_message", "continue"}
+_SUPPORTED_MUTATION_KINDS = {"inject_message", "continue", "edit_goal", "add_persona", "remove_persona"}
 
 
 def _validate_branch_mutation(
@@ -171,19 +180,16 @@ def _validate_branch_mutation(
     Validate a Phase 2b branch mutation and return it as a plain dict (or None).
     Raises HTTP 422 on any malformed/unsupported mutation so the caller gets a
     clean error before a branch run is created.
-
-    Only the fields relevant to the mutation's ``kind`` are forwarded, so an
-    ``inject_message`` never smuggles a ``continue`` field and vice-versa.
     """
     if mutation is None:
         return None
     kind = (mutation.kind or "").strip()
-    if kind not in _STEP1_MUTATION_KINDS:
+    if kind not in _SUPPORTED_MUTATION_KINDS:
         raise HTTPException(
             status_code=422,
             detail=(
                 f"unsupported mutation kind {kind!r}; "
-                f"supported: {sorted(_STEP1_MUTATION_KINDS)}"
+                f"supported: {sorted(_SUPPORTED_MUTATION_KINDS)}"
             ),
         )
     if kind == "continue":
@@ -192,17 +198,40 @@ def _validate_branch_mutation(
                 status_code=422, detail="continue.add_budget must be >= 1"
             )
         return {"kind": "continue", "add_budget": int(mutation.add_budget)}
-    # inject_message
-    speaker = (mutation.speaker or "").strip()
-    content = (mutation.content or "").strip()
-    if not speaker:
-        raise HTTPException(status_code=422, detail="inject_message.speaker is required")
-    if not content:
-        raise HTTPException(status_code=422, detail="inject_message.content is required")
-    out: Dict[str, Any] = {"kind": "inject_message", "speaker": speaker, "content": content}
-    if mutation.source:
-        out["source"] = str(mutation.source)
-    return out
+    if kind == "inject_message":
+        speaker = (mutation.speaker or "").strip()
+        content = (mutation.content or "").strip()
+        if not speaker:
+            raise HTTPException(status_code=422, detail="inject_message.speaker is required")
+        if not content:
+            raise HTTPException(status_code=422, detail="inject_message.content is required")
+        out: Dict[str, Any] = {"kind": "inject_message", "speaker": speaker, "content": content}
+        if mutation.source:
+            out["source"] = str(mutation.source)
+        return out
+    if kind == "edit_goal":
+        persona_name = (mutation.persona_name or "").strip()
+        goals = mutation.goals
+        if not persona_name:
+            raise HTTPException(status_code=422, detail="edit_goal.persona_name is required")
+        if goals is None:
+            raise HTTPException(status_code=422, detail="edit_goal.goals is required")
+        return {"kind": "edit_goal", "persona_name": persona_name, "goals": [str(g) for g in goals]}
+    if kind == "add_persona":
+        name = (mutation.name or "").strip()
+        persona_text = (mutation.persona or "").strip()
+        goals = mutation.goals or []
+        if not name:
+            raise HTTPException(status_code=422, detail="add_persona.name is required")
+        if not persona_text:
+            raise HTTPException(status_code=422, detail="add_persona.persona is required")
+        return {"kind": "add_persona", "name": name, "persona": persona_text,
+                "goals": [str(g) for g in goals]}
+    # remove_persona
+    name = (mutation.persona_name or mutation.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="remove_persona.name is required")
+    return {"kind": "remove_persona", "name": name}
 
 
 async def sweep_stale_running_runs(db: Database) -> List[str]:
