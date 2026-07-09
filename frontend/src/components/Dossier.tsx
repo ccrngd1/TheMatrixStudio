@@ -15,6 +15,8 @@ export function Dossier({ agent, feed, runId, onClose }: Props) {
   const messages = feed.filter((m) => m.speaker === agent.name)
   const [dossier, setDossier] = useState<AgentDossier | null>(null)
   const [loaded, setLoaded] = useState(false)
+  const [regeneratingAvatar, setRegeneratingAvatar] = useState(false)
+  const [currentPortrait, setCurrentPortrait] = useState(agent.portrait)
 
   useEffect(() => {
     let alive = true
@@ -27,6 +29,21 @@ export function Dossier({ agent, feed, runId, onClose }: Props) {
       alive = false
     }
   }, [runId, agent.name])
+
+  const handleRegenerateAvatar = async () => {
+    setRegeneratingAvatar(true)
+    try {
+      const result = await api.regenerateAvatar(runId, agent.name)
+      setCurrentPortrait(result.portrait_b64)
+      // Also update the agent object if possible
+      agent.portrait = result.portrait_b64
+    } catch (error) {
+      console.error('Failed to regenerate avatar:', error)
+      alert('Failed to regenerate avatar. Please try again.')
+    } finally {
+      setRegeneratingAvatar(false)
+    }
+  }
 
   // Cognition is "captured" only if the engine actually produced any of it.
   const hasCognition =
@@ -43,16 +60,24 @@ export function Dossier({ agent, feed, runId, onClose }: Props) {
       >
         <div className="flex items-start justify-between">
           <div className="flex items-center gap-3">
-            <AvatarBadge name={agent.name} portrait={agent.portrait} size={64} />
+            <AvatarBadge name={agent.name} portrait={currentPortrait} size={64} />
             <div>
               <h2 className="text-xl font-bold text-slate-100">{agent.name}</h2>
               <p className="text-xs text-slate-500">
                 {agent.avatarResolved
-                  ? agent.portrait
+                  ? currentPortrait
                     ? 'portrait generated'
                     : 'placeholder (avatar unavailable)'
                   : 'avatar pending…'}
               </p>
+              <button
+                onClick={handleRegenerateAvatar}
+                disabled={regeneratingAvatar}
+                className="mt-1 rounded bg-matrix-accent/15 px-2 py-1 text-[11px] text-matrix-accent hover:bg-matrix-accent/25 disabled:opacity-50 disabled:cursor-not-allowed"
+                title="Generate a new AI avatar"
+              >
+                {regeneratingAvatar ? 'Generating...' : '🔄 Regenerate Avatar'}
+              </button>
             </div>
           </div>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-200">

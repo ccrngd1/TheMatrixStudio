@@ -168,6 +168,13 @@ export const api = {
       `/api/runs/${encodeURIComponent(ref)}/resume`,
       { method: 'POST' },
     ),
+
+  // Regenerate avatar for a specific agent
+  regenerateAvatar: (ref: string, name: string) =>
+    jsonFetch<{ run_id: string; agent: string; portrait_b64: string }>(
+      `/api/runs/${encodeURIComponent(ref)}/agents/${encodeURIComponent(name)}/regenerate-avatar`,
+      { method: 'POST' },
+    ),
 }
 
 // Build the WebSocket URL for a run's live stream.

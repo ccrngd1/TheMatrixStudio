@@ -562,6 +562,50 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             "portrait_b64": agent.portrait,
         }
 
+    @app.post("/api/runs/{ref}/agents/{name}/regenerate-avatar")
+    async def regenerate_avatar(ref: str, name: str) -> Dict[str, Any]:
+        """Regenerate the avatar for a specific agent in a run.
+
+        Produces a NEW portrait (random seed) for the same persona, persists it
+        onto the latest snapshot, and returns it. Avatar generation is optional:
+        a generation failure surfaces as 502 (upstream image model), not 500.
+        """
+        import random
+        from matrix_studio.avatar import generate_avatar
+
+        run = await db.get_run_by_ref(ref)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+
+        snapshot = await db.get_snapshot(run["id"], turn=None)  # latest
+        if snapshot is None or name not in snapshot.agents:
+            raise HTTPException(status_code=404, detail="Agent not found for this run")
+
+        agent = snapshot.agents[name]
+
+        # Random seed forces a different image for the SAME persona (the point of
+        # "regenerate"). The real name is kept in the prompt — do NOT bake a
+        # timestamp into persona_name or it leaks into the portrait prompt.
+        portrait = await generate_avatar(
+            agent.name, agent.persona, seed=random.randint(0, 2**32 - 1)
+        )
+        if portrait is None:
+            raise HTTPException(
+                status_code=502,
+                detail="Avatar generation is unavailable or was filtered; try again.",
+            )
+
+        # Persist the new portrait onto the latest snapshot (save_snapshot takes
+        # the snapshot only; run_id lives on the snapshot).
+        agent.portrait = portrait
+        await db.save_snapshot(snapshot)
+
+        return {
+            "run_id": run["id"],
+            "agent": name,
+            "portrait_b64": portrait,
+        }
+
     @app.get("/api/runs/{ref}/turns/{turn}/trace")
     async def turn_trace(ref: str, turn: int) -> Dict[str, Any]:
         run = await db.get_run_by_ref(ref)

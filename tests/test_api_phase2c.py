@@ -144,3 +144,52 @@ def test_trace_not_available_for_cognition_off_run(client):
 
     # nonexistent turn -> 404
     assert client.get(f"/api/runs/{run_id}/turns/99/trace").status_code == 404
+
+
+# --------------------------------------------------------------------------- #
+# Regenerate-avatar endpoint (fixes the save_snapshot() TypeError from the
+# direct ClaudeCode addition; avatar model call mocked).
+# --------------------------------------------------------------------------- #
+
+def _mk_plain_run(client):
+    with patch("matrix_studio.engine.simulator.litellm.acompletion",
+               side_effect=_plain_fake()):
+        run_id = client.post("/api/runs", json=PLAIN_REQUEST).json()["run_id"]
+        _wait(client, run_id)
+    return run_id
+
+
+def test_regenerate_avatar_persists_and_returns_new_portrait(client):
+    run_id = _mk_plain_run(client)
+
+    async def fake_avatar(name, persona, seed=None):
+        # real name must reach the prompt (no timestamp leak); seed varies
+        assert "_17" not in name, "persona name/prompt must not carry a timestamp"
+        assert seed is not None
+        return "NEWFAKEB64"
+
+    with patch("matrix_studio.avatar.generate_avatar", side_effect=fake_avatar):
+        r = client.post(f"/api/runs/{run_id}/agents/Ada/regenerate-avatar")
+    assert r.status_code == 200, r.text
+    assert r.json()["portrait_b64"] == "NEWFAKEB64"
+
+    # Persisted onto the latest snapshot -> dossier reflects it.
+    d = client.get(f"/api/runs/{run_id}/agents/Ada/dossier").json()
+    assert d["portrait_b64"] == "NEWFAKEB64"
+
+
+def test_regenerate_avatar_unknown_agent_404(client):
+    run_id = _mk_plain_run(client)
+    r = client.post(f"/api/runs/{run_id}/agents/Nobody/regenerate-avatar")
+    assert r.status_code == 404
+
+
+def test_regenerate_avatar_generation_unavailable_502(client):
+    run_id = _mk_plain_run(client)
+
+    async def none_avatar(name, persona, seed=None):
+        return None
+
+    with patch("matrix_studio.avatar.generate_avatar", side_effect=none_avatar):
+        r = client.post(f"/api/runs/{run_id}/agents/Ada/regenerate-avatar")
+    assert r.status_code == 502
