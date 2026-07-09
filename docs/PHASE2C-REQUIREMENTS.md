@@ -36,10 +36,10 @@ There are two ways to produce a "why," and only one is honest:
   then **fed forward** into subsequent turns (retrieved into the next prompt), so it is causally real
   — the memory the dossier shows is the memory the next turn actually consumed. This is the
   event-sourced, cognition-in-the-loop model §6 calls for.
-- **(B) Post-hoc reconstruction — REJECTED as ground truth.** A separate pass that "explains" a
-  finished turn is a rationalization, not a cause, and violates the honesty gate. We permit a *narrow*
-  post-hoc variant ONLY as an explicitly-labeled **aside** (Phase 1.5 machinery, "ask why did X say
-  that") — model interpretation, never persisted as the agent's actual state.
+- **(B) Post-hoc reconstruction — REJECTED.** A separate pass that "explains" a finished turn is a
+  rationalization, not a cause, and violates the honesty gate. **Dropped from 2c entirely (CC
+  2026-07-09):** runs without captured cognition simply report the trace as **not available** — we do
+  not synthesize a plausible-sounding motive after the fact. No option-B aside ships in 2c.
 
 Everything below is option A: cognition is produced *during* the run and persisted as events +
 snapshot state, exactly like `agent.response` is today.
@@ -59,8 +59,8 @@ snapshot state, exactly like `agent.response` is today.
   them automatically).
 - `_select_next_speaker` returns only the chosen name; the selector's reasoning is discarded.
 - `_generate_response` returns `{content, tokens_in, tokens_out, cost_usd}` — no rationale field.
-- `analysis.py` already has the honest "post-hoc reflection" aside framing — reused for the labeled
-  option-B "why" aside, NOT for canonical state.
+- `analysis.py` already has honest post-hoc "reflection" aside framing (Phase 1.5). Not used by 2c
+  cognition — kept as-is for its existing aside purpose; 2c produces its own in-loop state.
 
 ---
 
@@ -114,9 +114,9 @@ snapshot state, exactly like `agent.response` is today.
   chosen speaker + selection `reason`, the utterance, its `rationale`, `goal_served`, and the
   `memory_refs` (resolved to their `MemoryItem`s) that were in-context for that turn. All real
   captured data; if a run had cognition off, returns `{available: false}` (no invented trace).
-- Optional labeled aside: `POST /api/runs/{ref}/turns/{turn}/why` — reuses Phase 1.5 aside machinery
-  to produce a **post-hoc, explicitly-labeled** interpretation for runs that predate cognition.
-  Clearly marked "model interpretation, not the agent's recorded state." (Option B, quarantined.)
+- Optional labeled aside: **DROPPED from 2c (CC 2026-07-09).** Legacy / cognition-off runs return
+  `{available: false}` from the trace endpoint; no post-hoc "why" is generated. (Could be revisited
+  as a clearly-labeled convenience later, but not in 2c.)
 
 ### 4. Frontend
 - **Per-agent dossier panel.** From a run/agent, open a dossier: goals, memory stream (scrollable,
@@ -124,12 +124,12 @@ snapshot state, exactly like `agent.response` is today.
   stream during a running sim (reuses the existing SSE/event wiring).
 - **"Why did it say that?" on a turn.** On any `agent.response` in the transcript/scrubber, a control
   opens the trace: selection reason → rationale → goal served → the memories that were in context
-  (each linking into the dossier). Clearly labeled ground-truth (captured) vs. the option-B aside
-  (interpretation) when the run had cognition off.
+  (each linking into the dossier). For cognition-off runs the control shows a plain **"trace not
+  available for this run"** state — no synthesized explanation.
 - **Memory/relationship visualization.** A compact relationship view (who-regards-whom) and a memory
   timeline per agent. Keep it legible for small casts; no spatial map (explicitly cut, §9).
 - All 2c UI is **additive and gated**: runs without cognition show the existing views unchanged, with
-  the dossier/trace offering the labeled post-hoc aside instead of a fabricated trace.
+  the dossier/trace showing a "not available for this run" state (no fabricated trace).
 
 ### 5. Determinism / honesty invariants
 - Cognition state is only ever **produced forward during generation** and persisted with the turn it
@@ -152,8 +152,8 @@ snapshot state, exactly like `agent.response` is today.
 - **Spatial map / sprites / movement.** Cut (§9), stays cut.
 - **Live cost caps / BYO-key UX / docs site / packaging.** Phase 3. 2c only *surfaces* per-turn token
   deltas so the added cost is honest and visible.
-- **Retro-fabricated traces.** A run that ran with cognition off gets `{available:false}` + the
-  labeled option-B aside — never an invented ground-truth trace.
+- **Post-hoc "why" for legacy runs.** DROPPED (CC 2026-07-09). Cognition-off runs report the trace as
+  not available; we never synthesize a motive after the fact.
 
 ---
 
@@ -170,7 +170,8 @@ snapshot state, exactly like `agent.response` is today.
   `{available:false}` for cognition-off runs (no fabrication).
 - Cognitive state survives branch reconstruction (fork a cognition-on run → dossier at the fork
   matches the parent's snapshot at that turn; forward turns extend it).
-- The option-B "why" aside is clearly labeled model-interpretation and never persisted as AgentState.
+- The trace endpoint returns `{available:false}` for cognition-off runs and the UI shows a plain
+  "not available" state — no synthesized/post-hoc explanation exists anywhere in 2c.
 - Full backend + frontend suites pass; new tests cover each event type, the off=unchanged invariant,
   the causal memory linkage, and the dossier/trace endpoints.
 
@@ -184,7 +185,8 @@ snapshot state, exactly like `agent.response` is today.
    prompt, `memory_refs` linkage. Verify causal subset property.
 3. **Reflection + dynamic goals + relationships** — `agent.reflected`, `goal.updated`,
    `relationship.updated`; each behind its own flag.
-4. **Read APIs** — `/dossier` and `/turns/{turn}/trace` (+ the quarantined option-B `/why` aside).
+4. **Read APIs** — `/dossier` and `/turns/{turn}/trace` (trace returns `{available:false}` for
+   cognition-off runs; no post-hoc generation).
 5. **Frontend** — dossier panel, "why did it say that?" trace on a turn, relationship/memory views;
    all gated so cognition-off runs are visually unchanged.
 
@@ -196,9 +198,9 @@ Each step: additive, all prior tests green, its own tests + commit + push (same 
 1. **Reflection: ON by default** (`reflection_every=4`) whenever cognition is enabled; 0 disables.
 2. **Structured-output transport: single litellm JSON-mode call** (assistant's call) — cheaper and
    keeps the rationale causally tied to the utterance it explains (one generation, one record).
-3. **Legacy-run "why" trace: SHIP the labeled option-B aside in 2c** — reuse Phase 1.5 aside
-   machinery; unmistakably labeled "model interpretation, not the agent's recorded reasoning";
-   delivered as a read-only aside, never persisted as `AgentState`.
+3. **Legacy-run "why" trace: NOT available (CC 2026-07-09, revised).** Cognition-off runs report the
+   trace as "not available" — no post-hoc/option-B aside ships in 2c. We never synthesize a motive
+   after the fact; only genuinely-captured cognition produces a trace.
 4. **Retrieval ranking: importance+recency heuristic for v1** — no embeddings / vector store
    (single-node install, §7); embedding-based semantic relevance is a documented later option.
 
