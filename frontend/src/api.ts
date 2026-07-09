@@ -8,6 +8,7 @@ import type {
   RunSummary,
   SimEvent,
   StoredSummary,
+  SummaryResponse,
   ThreadDetail,
   ThreadMessage,
   ThreadSummary,
@@ -82,12 +83,15 @@ export const api = {
   // -------- Phase 1.5: post-run analysis (read-only) -------- //
 
   getSummary: (ref: string) =>
-    jsonFetch<{ run_id: string; generated: StoredSummary | null; imported: StoredSummary | null }>(
-      `/api/runs/${encodeURIComponent(ref)}/summary`,
-    ),
+    jsonFetch<SummaryResponse>(`/api/runs/${encodeURIComponent(ref)}/summary`),
 
-  generateSummary: (ref: string, body?: { fields?: string[]; focus?: string }) =>
-    jsonFetch<{ run_id: string; generated: StoredSummary; imported: StoredSummary | null }>(
+  // `instructions` REPLACES the default analyst-role framing (guardrails always
+  // remain, enforced server-side). Omit → default framing.
+  generateSummary: (
+    ref: string,
+    body?: { fields?: string[]; focus?: string; instructions?: string },
+  ) =>
+    jsonFetch<SummaryResponse & { generated: StoredSummary }>(
       `/api/runs/${encodeURIComponent(ref)}/summary`,
       { method: 'POST', body: JSON.stringify(body || {}) },
     ),

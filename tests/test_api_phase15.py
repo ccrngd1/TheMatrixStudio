@@ -125,6 +125,66 @@ def test_summary_focus_is_passed(client):
     assert "emphasize legal and ethical risk" in captured["system"]
 
 
+def test_get_summary_exposes_default_instructions(client):
+    """GET summary returns default_instructions so the client can prefill the
+    editor / offer reset-to-default even before any generation."""
+    from matrix_studio import analysis
+
+    with patch("matrix_studio.api.manager.run_simulation", make_fake_run(turns=1)):
+        run_id = _start(client, {"summary": {"enabled": False}})["run_id"]
+        _wait_complete(client, run_id)
+
+    summ = client.get(f"/api/runs/{run_id}/summary").json()
+    assert summ["default_instructions"] == analysis.DEFAULT_SUMMARY_INSTRUCTIONS
+
+
+def test_custom_instructions_thread_persist_and_prefill(client):
+    """A custom prompt reaches the analysis call, replaces the default framing,
+    persists to summaries.instructions, and round-trips for the prefill."""
+    from matrix_studio import analysis
+
+    captured = {}
+    custom = "You are a snarky debate coach. Roast the weakest argument."
+
+    async def _capture(messages, model=None, temperature=0.4, max_tokens=None):
+        captured["system"] = messages[0]["content"]
+        import json as _json
+        return {"content": _json.dumps({"overview": "o", "consensus": [], "dissenters": [],
+                                        "key_ideas": [], "open_questions": []}),
+                "tokens_in": 1, "tokens_out": 1, "cost_usd": 0.0}
+
+    with patch("matrix_studio.api.manager.run_simulation", make_fake_run(turns=1)):
+        run_id = _start(client, {"summary": {"enabled": False}})["run_id"]
+        _wait_complete(client, run_id)
+
+    with patch("matrix_studio.analysis._acompletion", _capture):
+        res = client.post(f"/api/runs/{run_id}/summary",
+                          json={"instructions": custom}).json()
+
+    # Custom text present in the built prompt; default role framing replaced;
+    # guardrails still present (cannot be dropped).
+    assert custom in captured["system"]
+    assert analysis.DEFAULT_SUMMARY_INSTRUCTIONS not in captured["system"]
+    assert "ONLY a single JSON object" in captured["system"]
+    assert "do not invent" in captured["system"]
+    # Persisted + returned so the regenerate editor can prefill it.
+    assert res["generated"]["instructions"] == custom
+    summ = client.get(f"/api/runs/{run_id}/summary").json()
+    assert summ["generated"]["instructions"] == custom
+
+
+def test_default_instructions_persist_as_null_via_api(client):
+    """Backward compat: omitting instructions uses the default → NULL persisted
+    so the client falls back to default_instructions for the prefill."""
+    with patch("matrix_studio.api.manager.run_simulation", make_fake_run(turns=1)):
+        run_id = _start(client, {"summary": {"enabled": False}})["run_id"]
+        _wait_complete(client, run_id)
+
+    client.post(f"/api/runs/{run_id}/summary")  # no instructions
+    summ = client.get(f"/api/runs/{run_id}/summary").json()
+    assert summ["generated"]["instructions"] is None
+
+
 def test_summary_on_incomplete_run_rejected(client):
     with patch("matrix_studio.api.manager.run_simulation", make_fake_run(turns=3, delay=0.5)):
         run_id = _start(client)["run_id"]

@@ -79,8 +79,21 @@ export interface StoredSummary {
   tokens_in: number
   tokens_out: number
   cost_usd: number
+  // The effective analyst-role instructions that created this summary; null
+  // means the default framing was used (UI prefills default_instructions).
+  instructions?: string | null
   created_at: number
   parsed?: boolean
+}
+
+// Response shape for the summary endpoints. `default_instructions` is the
+// editable analyst-role framing; the guardrails (JSON schema, JSON-only,
+// no-fabrication) are enforced automatically and are NOT part of it.
+export interface SummaryResponse {
+  run_id: string
+  generated: StoredSummary | null
+  imported: StoredSummary | null
+  default_instructions: string
 }
 
 export type AsideTarget = 'analyst' | 'persona' | 'room'

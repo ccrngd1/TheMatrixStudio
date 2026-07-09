@@ -31,7 +31,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from matrix_studio import service
+from matrix_studio import analysis, service
 from matrix_studio.api.manager import RunManager, TERMINAL_EVENTS, event_row_to_wire
 from matrix_studio.naming import generate_run_name
 from matrix_studio.settings import get_settings
@@ -64,6 +64,9 @@ class SummaryConfigModel(BaseModel):
     enabled: bool = True
     fields: Optional[List[str]] = None
     focus: Optional[str] = None
+    # Optional custom analyst-role framing; REPLACES the default role text while
+    # the non-negotiable guardrails always remain. None → default framing.
+    instructions: Optional[str] = None
 
 
 class CreateRunModel(BaseModel):
@@ -83,6 +86,10 @@ class SummaryRequestModel(BaseModel):
     fields: Optional[List[str]] = None
     focus: Optional[str] = None
     model: Optional[str] = None
+    # Optional custom analyst-role framing that REPLACES the default role text.
+    # The guardrails (JSON schema, JSON-only, no-fabrication) always remain and
+    # cannot be dropped by the user. None → default framing.
+    instructions: Optional[str] = None
 
 
 class CreateThreadModel(BaseModel):
@@ -269,7 +276,14 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
     async def get_summary(ref: str) -> Dict[str, Any]:
         run = await _require_run(ref)
         rows = await db.get_summaries(run["id"])
-        return {"run_id": run["id"], **_shape_summaries(rows)}
+        # `default_instructions` is the default analyst-role framing so the client
+        # can prefill the regenerate editor / offer "reset to default" even before
+        # any generation. The guardrails are enforced separately and not editable.
+        return {
+            "run_id": run["id"],
+            "default_instructions": analysis.DEFAULT_SUMMARY_INSTRUCTIONS,
+            **_shape_summaries(rows),
+        }
 
     @app.post("/api/runs/{ref}/summary")
     async def post_summary(
@@ -284,11 +298,29 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         cfg = service.summary_config(run)
         fields = body.fields or cfg["fields"]
         focus = body.focus if body.focus is not None else cfg["focus"]
+        # `instructions` REPLACES the default analyst-role framing (guardrails
+        # always remain). Fall back to the run's configured instructions when the
+        # request omits it entirely.
+        instructions = (
+            body.instructions
+            if body.instructions is not None
+            else cfg.get("instructions")
+        )
         saved = await service.generate_and_store_summary(
-            db, run, fields=fields, focus=focus, model=body.model
+            db,
+            run,
+            fields=fields,
+            focus=focus,
+            model=body.model,
+            instructions=instructions,
         )
         rows = await db.get_summaries(run["id"])
-        return {"run_id": run["id"], "generated": saved, **_shape_summaries(rows)}
+        return {
+            "run_id": run["id"],
+            "generated": saved,
+            "default_instructions": analysis.DEFAULT_SUMMARY_INSTRUCTIONS,
+            **_shape_summaries(rows),
+        }
 
     @app.get("/api/runs/{ref}/threads")
     async def list_threads(ref: str) -> Dict[str, Any]:

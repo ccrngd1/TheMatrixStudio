@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 import { describe, expect, it } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { SummaryPanel } from './SummaryPanel'
 import type { StoredSummary } from '../types'
+
+const DEFAULT_INSTRUCTIONS =
+  'You are a neutral analyst summarizing a finished multi-agent conversation. ' +
+  'Read the transcript and produce a STRUCTURED analysis.'
 
 const generated: StoredSummary = {
   id: 1,
@@ -40,6 +44,7 @@ describe('SummaryPanel', () => {
         runId="r1"
         generated={generated}
         imported={null}
+        defaultInstructions={DEFAULT_INSTRUCTIONS}
         canGenerate
         onUpdated={() => {}}
       />,
@@ -60,6 +65,7 @@ describe('SummaryPanel', () => {
         runId="r1"
         generated={generated}
         imported={imported}
+        defaultInstructions={DEFAULT_INSTRUCTIONS}
         canGenerate
         onUpdated={() => {}}
       />,
@@ -68,5 +74,47 @@ describe('SummaryPanel', () => {
     expect(screen.getByText('Original legacy summary text.')).toBeInTheDocument()
     // Both coexist — the generated overview is still present.
     expect(screen.getByText(/pet-food reauthorization/i)).toBeInTheDocument()
+  })
+
+  it('regenerate reveals an editable prompt prefilled with the current/default instructions', () => {
+    // No custom instructions on the current summary → editor prefills default.
+    render(
+      <SummaryPanel
+        runId="r1"
+        generated={generated}
+        imported={null}
+        defaultInstructions={DEFAULT_INSTRUCTIONS}
+        canGenerate
+        onUpdated={() => {}}
+      />,
+    )
+    // No textarea until the user opens the regenerate editor.
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /regenerate/i }))
+    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement
+    expect(textarea.value).toBe(DEFAULT_INSTRUCTIONS)
+    // Helper text makes clear the guardrails are enforced and not editable.
+    expect(screen.getByText(/not editable/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /reset to default/i })).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: /regenerate with this prompt/i }),
+    ).toBeInTheDocument()
+  })
+
+  it('prefills the editor with the custom prompt that created the summary', () => {
+    const custom = 'You are a snarky debate coach.'
+    render(
+      <SummaryPanel
+        runId="r1"
+        generated={{ ...generated, instructions: custom }}
+        imported={null}
+        defaultInstructions={DEFAULT_INSTRUCTIONS}
+        canGenerate
+        onUpdated={() => {}}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /regenerate/i }))
+    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement
+    expect(textarea.value).toBe(custom)
   })
 })

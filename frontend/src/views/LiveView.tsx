@@ -26,6 +26,7 @@ export function LiveView({ runId, onBack }: Props) {
   const [asidesOpen, setAsidesOpen] = useState(false)
   const [generated, setGenerated] = useState<StoredSummary | null>(null)
   const [imported, setImported] = useState<StoredSummary | null>(null)
+  const [defaultInstructions, setDefaultInstructions] = useState<string>('')
 
   useEffect(() => {
     api.getRun(runId).then((d) => {
@@ -34,6 +35,9 @@ export function LiveView({ runId, onBack }: Props) {
       setGenerated(d.summary?.generated ?? null)
       setImported(d.summary?.imported ?? null)
     })
+    // Fetch the editable default analyst-role framing so the regenerate editor
+    // can prefill / reset-to-default even before any generation.
+    api.getSummary(runId).then((s) => setDefaultInstructions(s.default_instructions))
   }, [runId])
 
   const stream = useRunStream({ runId, cast })
@@ -102,6 +106,7 @@ export function LiveView({ runId, onBack }: Props) {
               runId={runId}
               generated={generated}
               imported={imported}
+              defaultInstructions={defaultInstructions}
               canGenerate={completed}
               onUpdated={setGenerated}
             />

@@ -137,6 +137,9 @@ class Database:
         # `kind` distinguishes a freshly generated summary from an imported
         # source summary carried in by the importer — the generated one never
         # overwrites the imported original.
+        # `instructions` holds the effective analyst-role framing that created a
+        # summary (NULL = the default framing was used); it lets the regenerate
+        # UI prefill "the prompt that created this summary." Additive/nullable.
         await self._conn.execute("""
             CREATE TABLE IF NOT EXISTS summaries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -146,6 +149,7 @@ class Database:
                 tokens_in INTEGER NOT NULL DEFAULT 0,
                 tokens_out INTEGER NOT NULL DEFAULT 0,
                 cost_usd REAL NOT NULL DEFAULT 0.0,
+                instructions TEXT,
                 created_at INTEGER NOT NULL
             )
         """)
@@ -153,6 +157,16 @@ class Database:
             CREATE INDEX IF NOT EXISTS summaries_run
             ON summaries(run_id, kind, created_at)
         """)
+
+        # Additive migration: existing databases created before the editable
+        # summary prompt have a `summaries` table without `instructions`. Add it
+        # if missing so older rows/queries keep working (nullable = default).
+        async with self._conn.execute("PRAGMA table_info(summaries)") as cursor:
+            summary_cols = {row[1] for row in await cursor.fetchall()}
+        if "instructions" not in summary_cols:
+            await self._conn.execute(
+                "ALTER TABLE summaries ADD COLUMN instructions TEXT"
+            )
 
         # A scoped aside thread over a run. `mode` is always 'aside' in Phase
         # 1.5; the column exists now so Phase 2 can add 'contribute' without a
@@ -539,19 +553,24 @@ class Database:
         tokens_in: int = 0,
         tokens_out: int = 0,
         cost_usd: float = 0.0,
+        instructions: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Persist a summary for a run. Appends a new row (versioned by created_at)
         rather than replacing, so history is retained; the getters return the
         latest per kind. A generated summary NEVER overwrites an imported one
         (they are distinct ``kind`` values).
+
+        ``instructions`` is the effective analyst-role framing that created the
+        summary (NULL when the default framing was used), so the regenerate UI
+        can prefill the prompt that produced it.
         """
         created_at = int(time.time())
         cursor = await self._conn.execute(
             """
             INSERT INTO summaries (run_id, kind, payload_json, tokens_in,
-                                   tokens_out, cost_usd, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                                   tokens_out, cost_usd, instructions, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
@@ -560,6 +579,7 @@ class Database:
                 tokens_in,
                 tokens_out,
                 cost_usd,
+                instructions,
                 created_at,
             ),
         )
@@ -572,6 +592,7 @@ class Database:
             "tokens_in": tokens_in,
             "tokens_out": tokens_out,
             "cost_usd": cost_usd,
+            "instructions": instructions,
             "created_at": created_at,
         }
 
@@ -607,6 +628,7 @@ class Database:
                 "tokens_in": row["tokens_in"],
                 "tokens_out": row["tokens_out"],
                 "cost_usd": row["cost_usd"],
+                "instructions": row["instructions"],
                 "created_at": row["created_at"],
             }
         return list(latest_by_kind.values())
