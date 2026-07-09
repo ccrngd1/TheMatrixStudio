@@ -525,6 +525,94 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             },
         }
 
+    # -------------------- Phase 2c: introspection (read-only) -------------- #
+    # Rich per-agent dossier + the "why did it say that?" turn trace. Both are
+    # assembled ONLY from genuinely-captured state (latest snapshot + the turn's
+    # events). Runs that ran with cognition off have no captured cognition, so
+    # the trace reports {available: false} rather than synthesizing a motive.
+
+    @app.get("/api/runs/{ref}/agents/{name}/dossier")
+    async def agent_dossier(ref: str, name: str) -> Dict[str, Any]:
+        run = await db.get_run_by_ref(ref)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        snapshot = await db.get_snapshot(run["id"], turn=None)  # latest
+        if snapshot is None or name not in snapshot.agents:
+            raise HTTPException(status_code=404, detail="Agent not found for this run")
+        agent = snapshot.agents[name]
+        memories = [
+            {
+                "id": m.id, "content": m.content, "importance": m.importance,
+                "tags": m.tags, "timestamp": m.timestamp,
+            }
+            for m in agent.memory_stream
+        ]
+        beliefs = [m for m in memories if "reflection" in (m["tags"] or [])]
+        return {
+            "run_id": run["id"],
+            "agent": agent.name,
+            "persona": agent.persona,
+            "goals": agent.goals,
+            "memory_stream": memories,
+            "beliefs": beliefs,
+            "relationships": agent.relationships,
+            "tokens_in": agent.total_tokens_in,
+            "tokens_out": agent.total_tokens_out,
+            "cost_usd": agent.total_cost_usd,
+            "portrait_b64": agent.portrait,
+        }
+
+    @app.get("/api/runs/{ref}/turns/{turn}/trace")
+    async def turn_trace(ref: str, turn: int) -> Dict[str, Any]:
+        run = await db.get_run_by_ref(ref)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        rows = await db.get_events_after(run["id"], after_seq=-1, limit=None)
+        events = [event_row_to_wire(r) for r in rows]
+        turn_events = [e for e in events if e["turn"] == turn]
+        selected = next((e for e in turn_events if e["event_type"] == "speaker.selected"), None)
+        response = next((e for e in turn_events if e["event_type"] == "agent.response"), None)
+        if response is None:
+            raise HTTPException(status_code=404, detail=f"No turn {turn} in this run")
+
+        payload = response["payload"]
+        # A trace only exists if cognition genuinely captured a rationale for the
+        # turn. No rationale -> cognition was off; we do NOT fabricate one.
+        if payload.get("rationale") is None:
+            return {"run_id": run["id"], "turn": turn, "available": False}
+
+        # Resolve memory_refs (ids surfaced into the prompt for this turn) to the
+        # actual memory items from the turn's snapshot.
+        refs = payload.get("memory_refs") or []
+        resolved: List[Dict[str, Any]] = []
+        if refs:
+            snap = await db.get_snapshot(run["id"], turn=turn)
+            if snap is not None:
+                by_id = {
+                    m.id: m
+                    for a in snap.agents.values()
+                    for m in a.memory_stream
+                }
+                for rid in refs:
+                    m = by_id.get(rid)
+                    if m is not None:
+                        resolved.append({
+                            "id": m.id, "content": m.content,
+                            "importance": m.importance, "tags": m.tags,
+                        })
+        return {
+            "run_id": run["id"],
+            "turn": turn,
+            "available": True,
+            "speaker": payload.get("speaker"),
+            "selection_reason": (selected or {}).get("payload", {}).get("reason"),
+            "utterance": payload.get("message"),
+            "rationale": payload.get("rationale"),
+            "goal_served": payload.get("goal_served"),
+            "memory_refs": refs,
+            "memories": resolved,
+        }
+
     @app.post("/api/runs/{ref}/branch", status_code=201)
     async def branch_run(ref: str, body: BranchModel) -> Dict[str, Any]:
         parent = await db.get_run_by_ref(ref)
