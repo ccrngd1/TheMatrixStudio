@@ -506,6 +506,40 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         )
         return meta
 
+    @app.get("/api/runs/{ref}/tree")
+    async def run_tree(ref: str) -> Dict[str, Any]:
+        """Phase 2b branch-tree. Returns the full lineage rooted at the ancestor
+        of ``ref``, with each node's mutation kind (for edge labels) and status.
+        Nodes are ordered oldest-first; edges are inferred from parent_run_id.
+        """
+        run = await db.get_run_by_ref(ref)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        tree = await db.get_run_tree(run["id"])
+        # Enrich nodes with the mutation kind from config_json for UI edge labels.
+        import json as _json
+        enriched: Dict[str, Any] = {}
+        for nid, node in tree["nodes"].items():
+            cfg = {}
+            try:
+                cfg = _json.loads(node["config_json"] or "{}")
+            except Exception:  # noqa: BLE001
+                pass
+            mutation_kind = cfg.get("branch_mutation", {}).get("kind") if cfg.get("branch_mutation") else None
+            enriched[nid] = {
+                "id": node["id"],
+                "name": node["name"],
+                "slug": node["slug"],
+                "status": node["status"],
+                "branch_turn": node["branch_turn"],
+                "parent_run_id": node["parent_run_id"],
+                "created_at": node["created_at"],
+                "turn_count": node["turn_count"],
+                "total_cost_usd": node["total_cost_usd"],
+                "mutation_kind": mutation_kind,
+            }
+        return {"root_id": tree["root_id"], "nodes": enriched}
+
     @app.post("/api/runs/{ref}/resume")
     async def resume_run(ref: str) -> Dict[str, Any]:
         """
