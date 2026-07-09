@@ -91,14 +91,39 @@ export function History({ onOpen, onNew }: Props) {
   )
 }
 
-function StatusPill({ status }: { status: string }) {
+// A run marked "running" whose most recent event is older than this is treated
+// as stalled/orphaned (server up, but no live stream and no recent activity).
+// Generous so a slow multi-agent turn is never mislabelled.
+const STALL_SECONDS = 120
+
+function StatusPill({ status, lastEventAt }: { status: string; lastEventAt?: number | null }) {
+  // Item 2: a "running" row in history has no live stream by definition; if it
+  // also has no recent events, show it as stalled rather than falsely live.
+  const nowSec = Date.now() / 1000
+  const stalled =
+    status === 'running' &&
+    lastEventAt != null &&
+    nowSec - lastEventAt > STALL_SECONDS
+  const shown = stalled ? 'stalled' : status
   const color =
-    status === 'complete'
+    shown === 'complete'
       ? 'bg-matrix-live/20 text-matrix-live'
-      : status === 'running'
+      : shown === 'running'
         ? 'bg-matrix-accent/20 text-matrix-accent'
-        : status === 'failed'
+        : shown === 'failed'
           ? 'bg-red-900/40 text-red-300'
-          : 'bg-matrix-border text-slate-400'
-  return <span className={`rounded px-2 py-0.5 text-[10px] uppercase tracking-wide ${color}`}>{status}</span>
+          : shown === 'stalled' || shown === 'interrupted'
+            ? 'bg-amber-900/40 text-amber-300'
+            : 'bg-matrix-border text-slate-400'
+  const title = stalled
+    ? 'Marked running but no recent events — likely orphaned by a server restart mid-run'
+    : undefined
+  return (
+    <span
+      title={title}
+      className={`rounded px-2 py-0.5 text-[10px] uppercase tracking-wide ${color}`}
+    >
+      {shown}
+    </span>
+  )
 }

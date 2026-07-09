@@ -22,6 +22,7 @@ from server-side settings/env (Phase 0 .env). Full BYO-key browser UX is Phase 3
 
 import json
 import logging
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -126,11 +127,51 @@ def _run_summary(run: Dict[str, Any]) -> Dict[str, Any]:
         "total_cost_usd": run.get("total_cost_usd", 0.0),
         "created_at": run.get("created_at"),
         "completed_at": run.get("completed_at"),
+        # Wall-clock of the most recent event; lets the UI flag a run still
+        # marked "running" that has gone quiet (stalled/orphaned).
+        "last_event_at": run.get("last_event_at"),
         # Phase 2a lineage: set on branch runs so history/run views can show
         # "branched from <parent> @ turn N". Both null for a fresh (root) run.
         "parent_run_id": run.get("parent_run_id"),
         "branch_turn": run.get("branch_turn"),
     }
+
+
+async def sweep_stale_running_runs(db: Database) -> List[str]:
+    """
+    Mark orphaned "running" runs as "interrupted".
+
+    Called once at server startup. Because a fresh process holds no live
+    background tasks, any run still in ``running`` status was cut off by a
+    crash/restart mid-generation (the runner never reached its terminal
+    status update). Each such run is transitioned to the terminal
+    ``interrupted`` status and gets an appended ``sim.interrupted`` event so
+    its log records why it stopped and the UI no longer shows it as live.
+
+    This never re-runs or mutates simulation content; it only closes out a
+    dangling lifecycle status. Returns the list of affected run ids.
+    """
+    stale = await db.list_runs_by_status("running")
+    swept: List[str] = []
+    for run in stale:
+        run_id = run["id"]
+        last_turn = await db.last_event_turn(run_id)
+        next_seq = await db.max_seq(run_id) + 1
+        await db.append_event(
+            run_id=run_id,
+            turn=last_turn,
+            seq=next_seq,
+            event_type="sim.interrupted",
+            payload={
+                "reason": "server restarted while the run was still generating",
+                "at_turn": last_turn,
+            },
+        )
+        await db.update_run_status(
+            run_id, "interrupted", completed_at=int(time.time())
+        )
+        swept.append(run_id)
+    return swept
 
 
 def create_app(db_path: Optional[str] = None) -> FastAPI:
@@ -148,6 +189,18 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
     async def lifespan(_app: FastAPI):
         await db.connect()
         logger.info("Database ready at %s", resolved_db_path)
+        # Startup stale-run sweep: on a fresh process, no run can have a live
+        # background task, so any row still marked "running" was orphaned by a
+        # crash/restart mid-generation. Mark them "interrupted" (a terminal
+        # state) and record a sim.interrupted event so the UI stops showing them
+        # as live forever. Read-only w.r.t. simulation content; never re-runs.
+        swept = await sweep_stale_running_runs(db)
+        if swept:
+            logger.warning(
+                "Startup sweep: marked %d orphaned running run(s) as interrupted: %s",
+                len(swept),
+                ", ".join(swept),
+            )
         yield
         await manager.shutdown()
         await db.close()

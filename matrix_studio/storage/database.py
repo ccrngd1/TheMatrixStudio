@@ -415,6 +415,30 @@ class Database:
             run.update(stats)
         return rows
 
+    async def list_runs_by_status(self, status: str) -> List[Dict[str, Any]]:
+        """
+        Return raw run rows in a given lifecycle status (newest first).
+
+        Used by the startup stale-run sweep: on a fresh process no run can have a
+        live background task, so any row still marked ``running`` was orphaned by
+        a crash/restart mid-generation. Rows are returned unenriched (no event
+        aggregates) since the sweep only needs id + last recorded turn, which it
+        derives from the event log directly.
+        """
+        async with self._conn.execute(
+            "SELECT * FROM runs WHERE status = ? ORDER BY created_at DESC",
+            (status,),
+        ) as cursor:
+            return [dict(r) for r in await cursor.fetchall()]
+
+    async def last_event_turn(self, run_id: str) -> int:
+        """Highest turn number recorded in the event log, or 0 if none."""
+        async with self._conn.execute(
+            "SELECT MAX(turn) FROM events WHERE run_id = ?", (run_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return int(row[0]) if row and row[0] is not None else 0
+
     async def get_run_stats(self, run_id: str) -> Dict[str, Any]:
         """Aggregate turn count and total cost from the event log for a run."""
         async with self._conn.execute(
@@ -442,9 +466,19 @@ class Database:
             except (ValueError, TypeError, json.JSONDecodeError):
                 continue
 
+        # Wall-clock time of the most recent event (any type), so the client can
+        # detect a run that is still marked "running" but has gone quiet — a
+        # stalled/orphaned run with a live server but no live stream.
+        async with self._conn.execute(
+            "SELECT MAX(created_at) FROM events WHERE run_id = ?", (run_id,)
+        ) as cursor:
+            last_row = await cursor.fetchone()
+        last_event_at = int(last_row[0]) if last_row and last_row[0] is not None else None
+
         return {
             "turn_count": turn_row[0] if turn_row else 0,
             "total_cost_usd": total_cost,
+            "last_event_at": last_event_at,
         }
 
     async def get_events_after(

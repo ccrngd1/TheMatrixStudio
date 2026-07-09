@@ -81,7 +81,11 @@ export function LiveView({ runId, onBack, onOpenRun }: Props) {
             <h1 className="text-lg font-bold text-slate-100">
               {detail?.name ?? 'Run'}{' '}
               <span className="text-sm font-normal text-slate-500">
-                {state.status === 'running' && !stream.engineDone ? '· running' : `· ${state.status}`}
+                {state.status === 'running' && stream.stalled
+                  ? '· stalled'
+                  : state.status === 'running' && !stream.engineDone
+                    ? '· running'
+                    : `· ${state.status}`}
               </span>
             </h1>
             <p className="text-xs text-slate-500">{detail?.description ?? detail?.topic}</p>
