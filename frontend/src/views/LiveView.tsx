@@ -10,6 +10,7 @@ import { PlaybackControls } from '../components/PlaybackControls'
 import { Dossier } from '../components/Dossier'
 import { SummaryPanel } from '../components/SummaryPanel'
 import { AsidesDrawer } from '../components/AsidesDrawer'
+import { BranchTree } from '../components/BranchTree'
 import { Scrubber } from '../components/Scrubber'
 import type { StoredSummary } from '../types'
 
@@ -259,15 +260,18 @@ export function LiveView({ runId, onBack, onOpenRun }: Props) {
           />
           <CastBoard state={state} onSelect={setSelected} />
           {completed && (
-            <SummaryPanel
-              runId={runId}
-              generated={generated}
-              imported={imported}
-              defaultInstructions={defaultInstructions}
-              canGenerate={completed}
-              model={analysisModel || undefined}
-              onUpdated={setGenerated}
-            />
+            <>
+              <SummaryPanel
+                runId={runId}
+                generated={generated}
+                imported={imported}
+                defaultInstructions={defaultInstructions}
+                canGenerate={completed}
+                model={analysisModel || undefined}
+                onUpdated={setGenerated}
+              />
+              <BranchTree runId={runId} onOpenRun={onOpenRun} />
+            </>
           )}
         </aside>
 

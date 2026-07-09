@@ -114,6 +114,26 @@ export interface BranchResponse {
   branch_turn: number
   status: string
   max_messages: number
+  model: string | null
+  mutation: Record<string, unknown> | null
+}
+
+export interface BranchTreeNode {
+  id: string
+  name: string | null
+  slug: string | null
+  status: string
+  branch_turn: number | null
+  parent_run_id: string | null
+  created_at: number
+  turn_count: number
+  total_cost_usd: number
+  mutation_kind: string | null
+}
+
+export interface BranchTreeResponse {
+  root_id: string
+  nodes: Record<string, BranchTreeNode>
 }
 
 // -------- Phase 1.5: post-run analysis (summary + aside threads) --------- //

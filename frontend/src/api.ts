@@ -5,6 +5,7 @@
 import type {
   AsideTarget,
   BranchResponse,
+  BranchTreeResponse,
   RunDetail,
   RunSummary,
   SimEvent,
@@ -142,6 +143,9 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ from_turn: fromTurn, ...opts }),
     }),
+
+  getRunTree: (ref: string) =>
+    jsonFetch<BranchTreeResponse>(`/api/runs/${encodeURIComponent(ref)}/tree`),
 
   // Error-recovery: resume an interrupted/failed run forward in place.
   resumeRun: (ref: string) =>

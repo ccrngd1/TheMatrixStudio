@@ -603,6 +603,77 @@ class Database:
             )
         return out
 
+    async def get_run_tree(
+        self, run_id: str
+    ) -> Dict[str, Any]:
+        """
+        Return the full lineage tree rooted at the **ancestor** of ``run_id``
+        (i.e. the original run that was forked to eventually produce this run).
+
+        The result is a dict-of-dicts keyed by ``run_id``. Each entry has:
+          id, name, slug, status, branch_turn, parent_run_id, config_json,
+          created_at, turn_count, total_cost_usd
+
+        The config_json is included so the caller can extract
+        ``config.branch_mutation`` for edge labels without a round-trip.
+        """
+        # Walk up to the root (the run whose parent_run_id IS NULL).
+        root_id = run_id
+        async with self._conn.execute(
+            """
+            WITH RECURSIVE ancestors(id, parent_run_id) AS (
+                SELECT id, parent_run_id FROM runs WHERE id = ?
+                UNION ALL
+                SELECT r.id, r.parent_run_id
+                FROM runs r
+                JOIN ancestors a ON r.id = a.parent_run_id
+            )
+            SELECT id FROM ancestors WHERE parent_run_id IS NULL
+            """,
+            (run_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row:
+            root_id = row[0]
+
+        # Fetch the full subtree starting from the root.
+        async with self._conn.execute(
+            """
+            WITH RECURSIVE tree(id) AS (
+                SELECT id FROM runs WHERE id = ?
+                UNION ALL
+                SELECT r.id FROM runs r JOIN tree t ON r.parent_run_id = t.id
+            )
+            SELECT r.id, r.name, r.slug, r.status, r.branch_turn, r.parent_run_id,
+                   r.config_json, r.created_at,
+                   COALESCE((SELECT COUNT(*) FROM events e
+                             WHERE e.run_id = r.id AND e.event_type = 'agent.response'), 0),
+                   COALESCE((SELECT SUM(CAST(json_extract(e.payload, '$.cost_usd') AS REAL))
+                             FROM events e
+                             WHERE e.run_id = r.id AND e.event_type = 'agent.response'), 0.0)
+            FROM runs r JOIN tree t ON r.id = t.id
+            ORDER BY r.created_at ASC
+            """,
+            (root_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        nodes: Dict[str, Any] = {}
+        for row in rows:
+            nodes[row[0]] = {
+                "id": row[0],
+                "name": row[1],
+                "slug": row[2],
+                "status": row[3],
+                "branch_turn": row[4],
+                "parent_run_id": row[5],
+                "config_json": row[6],
+                "created_at": row[7],
+                "turn_count": row[8],
+                "total_cost_usd": row[9],
+            }
+        return {"root_id": root_id, "nodes": nodes}
+
     async def list_branches(self, run_id: str) -> List[Dict[str, Any]]:
         """
         List child branches forked from ``run_id`` (Phase 2a lineage).
