@@ -22,6 +22,20 @@ logger = logging.getLogger(__name__)
 # Stability seed must fit in an unsigned 32-bit range.
 _SEED_MODULUS = 2**32 - 1
 
+# Non-photorealistic art styles. Each maps to a positive style clause; all share
+# a strong anti-photorealism negative so avatars never read as photos of real
+# people (misrepresentation / synthetic-media / accidental-likeness mitigation).
+_STYLE_CLAUSES = {
+    "illustration": "Flat vector illustration avatar, clean simple digital art, bold shapes",
+    "anime": "Anime-style character portrait, cel-shaded digital art",
+    "3d": "Stylized 3D cartoon character render, Pixar-like, soft shading",
+}
+_DEFAULT_STYLE = "illustration"
+_ANTI_PHOTO_NEGATIVE = (
+    "photorealistic, photograph, photo, realistic skin, real person, lifelike, "
+    "deformed, distorted, disfigured, poor quality, low resolution"
+)
+
 
 def _deterministic_seed(persona_name: str) -> int:
     """Stable per-persona seed (independent of Python hash randomization)."""
@@ -66,16 +80,19 @@ async def generate_avatar(
         # role). Do NOT force explicit keys — that blocked bearer-token auth.
         client = boto3.client("bedrock-runtime", region_name=settings.avatar_region)
 
+        style_key = (getattr(settings, "avatar_style", _DEFAULT_STYLE) or _DEFAULT_STYLE).lower()
+        style_clause = _STYLE_CLAUSES.get(style_key, _STYLE_CLAUSES[_DEFAULT_STYLE])
+
         prompt = (
-            f"Professional portrait photograph of {persona_name}. "
-            f"{persona_description}. High quality, photorealistic, neutral "
-            f"background, centered composition."
+            f"{style_clause} of a fictional character named {persona_name}. "
+            f"{persona_description}. Clearly non-photorealistic stylized avatar, "
+            f"neutral background, centered head-and-shoulders composition."
         )
 
         # Stability SD3.x request shape (differs from the retired Nova Canvas API).
         body = json.dumps({
             "prompt": prompt,
-            "negative_prompt": "deformed, distorted, disfigured, poor quality, low resolution",
+            "negative_prompt": _ANTI_PHOTO_NEGATIVE,
             "mode": "text-to-image",
             "aspect_ratio": settings.avatar_aspect_ratio,
             "output_format": "png",

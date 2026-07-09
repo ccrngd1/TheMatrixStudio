@@ -76,6 +76,12 @@ class Settings(BaseSettings):
     # SD3.5 Large is served from us-west-2.
     avatar_region: str = Field(default="us-west-2")
     avatar_aspect_ratio: str = Field(default="1:1")
+    # Avatar art style. Default is a NON-photorealistic illustration so avatars
+    # read as clearly-synthetic characters, not photos of real people (avoids
+    # misrepresentation / synthetic-media-labeling / accidental-likeness risk).
+    # Options: 'illustration' (flat vector), 'anime', '3d' (stylized cartoon
+    # render). Unknown values fall back to 'illustration'.
+    avatar_style: str = Field(default="illustration", description="Avatar art style (env AVATAR_STYLE)")
 
 
 # Global settings instance
