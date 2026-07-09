@@ -228,3 +228,49 @@ export interface FeedMessage {
   speaker: string
   content: string
 }
+
+// -------- Phase 2c: cognition / introspection -------- //
+
+export interface CognitionSettings {
+  enabled: boolean
+  memory?: boolean
+  reflection_every?: number
+  goals_dynamic?: boolean
+  relationships?: boolean
+  retrieval_k?: number
+}
+
+export interface DossierMemory {
+  id: string
+  content: string
+  importance: number | null
+  tags: string[]
+  timestamp: number
+}
+
+export interface AgentDossier {
+  run_id: string
+  agent: string
+  persona: string
+  goals: string[]
+  memory_stream: DossierMemory[]
+  beliefs: DossierMemory[]
+  relationships: Record<string, string>
+  tokens_in: number
+  tokens_out: number
+  cost_usd: number
+  portrait_b64: string | null
+}
+
+export interface TurnTrace {
+  run_id: string
+  turn: number
+  available: boolean
+  speaker?: string
+  selection_reason?: string | null
+  utterance?: string
+  rationale?: string
+  goal_served?: string
+  memory_refs?: string[]
+  memories?: { id: string; content: string; importance: number | null; tags: string[] }[]
+}

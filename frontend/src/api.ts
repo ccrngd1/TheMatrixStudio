@@ -3,9 +3,11 @@
 // live server-side; these endpoints only exchange run metadata and events.
 
 import type {
+  AgentDossier,
   AsideTarget,
   BranchResponse,
   BranchTreeResponse,
+  CognitionSettings,
   RunDetail,
   RunSummary,
   SimEvent,
@@ -16,6 +18,7 @@ import type {
   ThreadDetail,
   ThreadMessage,
   ThreadSummary,
+  TurnTrace,
 } from './types'
 
 async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
@@ -39,7 +42,7 @@ async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
 export interface CreateRunBody {
   topic: string
   cast: { name: string; persona: string; goals: string[] }[]
-  config: { max_messages?: number; generate_avatars?: boolean }
+  config: { max_messages?: number; generate_avatars?: boolean; cognition?: CognitionSettings }
   model?: string
   name?: string
   description?: string
@@ -146,6 +149,18 @@ export const api = {
 
   getRunTree: (ref: string) =>
     jsonFetch<BranchTreeResponse>(`/api/runs/${encodeURIComponent(ref)}/tree`),
+
+  // -------- Phase 2c: introspection (read-only) -------- //
+
+  getDossier: (ref: string, name: string) =>
+    jsonFetch<AgentDossier>(
+      `/api/runs/${encodeURIComponent(ref)}/agents/${encodeURIComponent(name)}/dossier`,
+    ),
+
+  getTurnTrace: (ref: string, turn: number) =>
+    jsonFetch<TurnTrace>(
+      `/api/runs/${encodeURIComponent(ref)}/turns/${turn}/trace`,
+    ),
 
   // Error-recovery: resume an interrupted/failed run forward in place.
   resumeRun: (ref: string) =>

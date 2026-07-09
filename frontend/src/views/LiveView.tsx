@@ -303,6 +303,7 @@ export function LiveView({ runId, onBack, onOpenRun }: Props) {
         <Dossier
           agent={state.agents[selected]}
           feed={state.feed}
+          runId={runId}
           onClose={() => setSelected(null)}
         />
       )}
