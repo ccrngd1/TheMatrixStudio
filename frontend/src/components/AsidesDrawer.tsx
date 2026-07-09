@@ -9,9 +9,11 @@ interface Props {
   // The run's current turn count — used as the fork point when promoting an
   // aside into the canonical conversation (branches from the last turn).
   turnCount: number
-  // Optional analysis-model override (from the in-thread model picker); sent
-  // with each aside message so replies use the chosen model.
+  // Optional analysis-model override (from the in-thread model picker); the
+  // default for this drawer's own picker.
   model?: string
+  // Selectable models for the drawer's own picker.
+  models?: { id: string; label: string }[]
   // Called with the new branch run_id after a successful promote-aside branch.
   onBranch?: (branchRunId: string) => void
   onClose: () => void
@@ -22,13 +24,15 @@ interface Props {
 // the canonical conversation, does not change the run, and other asides don't
 // see it. The UI states this plainly (canon boundary) and shows a disabled
 // "bring into conversation" affordance reserved for a later version (Phase 2).
-export function AsidesDrawer({ runId, cast, turnCount, model, onBranch, onClose }: Props) {
+export function AsidesDrawer({ runId, cast, turnCount, model, models = [], onBranch, onClose }: Props) {
   const [threads, setThreads] = useState<ThreadSummary[]>([])
   const [active, setActive] = useState<ThreadDetail | null>(null)
   const [target, setTarget] = useState<AsideTarget>('analyst')
   const [personaName, setPersonaName] = useState<string>(cast[0]?.name ?? '')
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
+  // This drawer's own model picker; defaults to the page-level model.
+  const [asideModel, setAsideModel] = useState<string>(model ?? '')
   const [promoting, setPromoting] = useState<number | null>(null) // message id being promoted
   const [promoteError, setPromoteError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -69,7 +73,7 @@ export function AsidesDrawer({ runId, cast, turnCount, model, onBranch, onClose 
     const content = draft.trim()
     setDraft('')
     try {
-      await api.postThreadMessage(active.id, content, model)
+      await api.postThreadMessage(active.id, content, asideModel || model)
       await openThread(active.id)
       await loadThreads()
     } catch (e) {
@@ -88,7 +92,7 @@ export function AsidesDrawer({ runId, cast, turnCount, model, onBranch, onClose 
     setPromoteError(null)
     try {
       const res = await api.branchRun(runId, turnCount, {
-        model: model || undefined,
+        model: asideModel || model || undefined,
         mutation: {
           kind: 'promote_aside',
           thread_id: active.id,
@@ -258,6 +262,19 @@ export function AsidesDrawer({ runId, cast, turnCount, model, onBranch, onClose 
                 <p className="mb-2 rounded bg-red-900/30 px-2 py-1 text-[11px] text-red-400">
                   Branch failed: {promoteError}
                 </p>
+              )}
+              {models.length > 0 && (
+                <div className="mb-2 flex items-center gap-2">
+                  <label className="text-[11px] text-slate-400">Model</label>
+                  <select
+                    value={asideModel}
+                    onChange={(e) => setAsideModel(e.target.value)}
+                    title="Model used for aside replies and promote-into-conversation (defaults to the page's model)"
+                    className="max-w-[12rem] rounded border border-matrix-border bg-matrix-panel px-2 py-1 text-[11px] text-slate-200"
+                  >
+                    {models.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+                  </select>
+                </div>
               )}
               <div className="flex gap-2">
                 <input

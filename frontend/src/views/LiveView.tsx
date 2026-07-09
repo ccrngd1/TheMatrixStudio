@@ -93,12 +93,13 @@ export function LiveView({ runId, onBack, onOpenRun }: Props) {
 
   // Fork this run at the given turn into a NEW run, then navigate to its live
   // view. The parent (this run) is never modified.
-  const branchFrom = async (fromTurn: number, mutation?: Record<string, unknown>) => {
+  const branchFrom = async (fromTurn: number, mutation?: Record<string, unknown>, modelOverride?: string) => {
     setBranching(true)
     setBranchError(null)
     try {
       const opts: Record<string, unknown> = {}
-      if (analysisModel) opts.model = analysisModel
+      const chosenModel = modelOverride || analysisModel
+      if (chosenModel) opts.model = chosenModel
       if (mutation) opts.mutation = mutation
       const res = await api.branchRun(runId, fromTurn, Object.keys(opts).length ? opts : undefined)
       setScrubbing(false)
@@ -236,6 +237,8 @@ export function LiveView({ runId, onBack, onOpenRun }: Props) {
           maxTurn={maxTurn}
           cast={cast}
           defaultBudget={(detail?.config?.max_messages as number) ?? maxTurn}
+          models={models}
+          defaultModel={analysisModel}
           onBranch={branchFrom}
           branching={branching}
         />
@@ -310,6 +313,7 @@ export function LiveView({ runId, onBack, onOpenRun }: Props) {
           cast={cast}
           turnCount={maxTurn}
           model={analysisModel || undefined}
+          models={models}
           onBranch={(branchRunId) => {
             setAsidesOpen(false)
             if (onOpenRun) onOpenRun(branchRunId)
