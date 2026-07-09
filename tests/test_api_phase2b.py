@@ -406,3 +406,30 @@ def test_promote_aside_validation_422(client):
     r = client.post(f"/api/runs/{run_id}/branch",
                     json={"from_turn": 2, "mutation": {"kind": "promote_aside", "thread_id": "t1"}})
     assert r.status_code == 422
+
+
+def test_inject_message_configurable_round_length(client):
+    """inject_message with add_budget controls the new-round length: exactly N
+    generated discussion turns after the injected turn."""
+    run_id = _make_run(client)  # completes at turn 4
+    with patch(
+        "matrix_studio.engine.simulator.litellm.acompletion",
+        side_effect=_always(["Ada", "Ben"]),
+    ):
+        meta = client.post(
+            f"/api/runs/{run_id}/branch",
+            json={
+                "from_turn": 4,
+                "mutation": {
+                    "kind": "inject_message",
+                    "speaker": "Moderator",
+                    "content": "New topic.",
+                    "add_budget": 2,
+                },
+            },
+        ).json()
+        detail = _wait_status(client, meta["run_id"])
+
+    # Fork at 4, inject at turn 5, +2 generated turns => completes at turn 7.
+    assert detail["status"] == "complete"
+    assert detail["turn_count"] == 7
