@@ -297,7 +297,17 @@ export function LiveView({ runId, onBack, onOpenRun }: Props) {
       )}
 
       {asidesOpen && (
-        <AsidesDrawer runId={runId} cast={cast} model={analysisModel || undefined} onClose={() => setAsidesOpen(false)} />
+        <AsidesDrawer
+          runId={runId}
+          cast={cast}
+          turnCount={maxTurn}
+          model={analysisModel || undefined}
+          onBranch={(branchRunId) => {
+            setAsidesOpen(false)
+            if (onOpenRun) onOpenRun(branchRunId)
+          }}
+          onClose={() => setAsidesOpen(false)}
+        />
       )}
     </div>
   )

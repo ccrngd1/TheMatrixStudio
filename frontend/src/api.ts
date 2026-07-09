@@ -136,7 +136,7 @@ export const api = {
   branchRun: (
     ref: string,
     fromTurn: number,
-    opts?: { name?: string; description?: string; model?: string },
+    opts?: { name?: string; description?: string; model?: string; mutation?: Record<string, unknown> },
   ) =>
     jsonFetch<BranchResponse>(`/api/runs/${encodeURIComponent(ref)}/branch`, {
       method: 'POST',
