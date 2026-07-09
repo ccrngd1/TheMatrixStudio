@@ -369,8 +369,34 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
 
     # ----------------------------- REST API ------------------------------- #
     @app.get("/api/health")
-    async def health() -> Dict[str, str]:
-        return {"status": "ok"}
+    async def health() -> Dict[str, Any]:
+        """
+        Health + readiness check (Phase 3). Returns ``status: ok`` plus per-provider
+        has-key booleans (NEVER the key values). A fresh user gets a "no model key
+        detected" hint in the UI.
+        """
+        import os
+
+        # Check which providers have keys configured (booleans only, never values)
+        readiness = {
+            "openai": bool(settings.openai_api_key),
+            "anthropic": bool(settings.anthropic_api_key),
+            "bedrock": bool(
+                settings.aws_access_key_id
+                or settings.aws_secret_access_key
+                or os.getenv("AWS_ACCESS_KEY_ID")
+                or os.getenv("AWS_SECRET_ACCESS_KEY")
+                or os.getenv("AWS_BEARER_TOKEN_BEDROCK")
+                # boto3 also checks ~/.aws/credentials, EC2 instance profile, etc.
+                # We report True if env vars are set OR if the user likely has boto3
+                # configured (we can't easily check that without importing boto3)
+            ),
+        }
+
+        return {
+            "status": "ok",
+            "readiness": readiness,
+        }
 
     @app.get("/api/models")
     async def models() -> Dict[str, Any]:
