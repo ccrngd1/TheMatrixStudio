@@ -325,3 +325,84 @@ def test_step2_invalid_mutations_rejected_or_fail(client, mutation, expected_sta
         f"/api/runs/{run_id}/branch", json={"from_turn": 2, "mutation": mutation}
     )
     assert r.status_code == expected_status
+
+
+# ---------------------------------------------------------------------------
+# Step 3: promote_aside
+# ---------------------------------------------------------------------------
+
+def test_promote_aside_injects_reply_and_branches(client):
+    """A completed run's aside reply, when promoted, appears as an injected turn
+    in the branch and the branch generates forward from there."""
+    import matrix_studio.service as svc
+    import matrix_studio.storage.database as dbmod
+
+    # 1. Make the parent run.
+    run_id = _make_run(client)
+    parent_turn_count = client.get(f"/api/runs/{run_id}").json()["turn_count"]
+
+    # 2. Create an aside thread and post a message (no LLM needed — mock it).
+    thread_r = client.post(f"/api/runs/{run_id}/threads", json={"target": "analyst"})
+    assert thread_r.status_code == 201
+    thread_id = thread_r.json()["id"]
+
+    with patch("matrix_studio.analysis._acompletion") as mock_llm:
+        mock_llm.return_value = {
+            "content": "Inject this thought.",
+            "tokens_in": 10,
+            "tokens_out": 5,
+            "cost_usd": 0.001,
+        }
+        msg_r = client.post(f"/api/threads/{thread_id}/messages", json={"content": "What should the group discuss next?"})
+    assert msg_r.status_code == 201
+    aside_reply = msg_r.json()["reply"]
+    message_id = aside_reply["id"]
+
+    # 3. Promote the aside reply into the conversation via a branch mutation.
+    with patch(
+        "matrix_studio.engine.simulator.litellm.acompletion",
+        side_effect=_always(["Ada", "Ben"]),
+    ):
+        meta = client.post(
+            f"/api/runs/{run_id}/branch",
+            json={
+                "from_turn": parent_turn_count,
+                "mutation": {
+                    "kind": "promote_aside",
+                    "thread_id": thread_id,
+                    "message_id": message_id,
+                },
+            },
+        ).json()
+        branch_id = meta["run_id"]
+        detail = _wait_status(client, branch_id)
+
+    assert detail["status"] == "complete"
+
+    # The promoted text is an injected agent.response in the branch.
+    branch_events = client.get(f"/api/runs/{branch_id}/events").json()["events"]
+    injected = [
+        e for e in branch_events
+        if e["event_type"] == "agent.response" and e["payload"].get("injected")
+    ]
+    assert len(injected) == 1
+    assert injected[0]["payload"]["message"] == "Inject this thought."
+    assert injected[0]["payload"]["source"] == "aside"
+
+    # The branch config references the original thread + message.
+    cfg = detail["config"]["branch_mutation"]
+    assert cfg["kind"] == "promote_aside"
+    assert cfg["thread_id"] == thread_id
+    assert cfg["message_id"] == message_id
+
+
+def test_promote_aside_validation_422(client):
+    run_id = _make_run(client)
+    # Missing thread_id
+    r = client.post(f"/api/runs/{run_id}/branch",
+                    json={"from_turn": 2, "mutation": {"kind": "promote_aside", "message_id": 1}})
+    assert r.status_code == 422
+    # Missing message_id
+    r = client.post(f"/api/runs/{run_id}/branch",
+                    json={"from_turn": 2, "mutation": {"kind": "promote_aside", "thread_id": "t1"}})
+    assert r.status_code == 422

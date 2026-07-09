@@ -132,6 +132,9 @@ class BranchMutationModel(BaseModel):
     # add_persona — name is the cast entry name; persona is the description text
     name: Optional[str] = None
     persona: Optional[str] = None
+    # promote_aside
+    thread_id: Optional[str] = None
+    message_id: Optional[int] = None
 
 
 class BranchModel(BaseModel):
@@ -170,7 +173,7 @@ def _run_summary(run: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-_SUPPORTED_MUTATION_KINDS = {"inject_message", "continue", "edit_goal", "add_persona", "remove_persona"}
+_SUPPORTED_MUTATION_KINDS = {"inject_message", "continue", "edit_goal", "add_persona", "remove_persona", "promote_aside"}
 
 
 def _validate_branch_mutation(
@@ -227,6 +230,15 @@ def _validate_branch_mutation(
             raise HTTPException(status_code=422, detail="add_persona.persona is required")
         return {"kind": "add_persona", "name": name, "persona": persona_text,
                 "goals": [str(g) for g in goals]}
+    # promote_aside — resolved in execute_branch (needs DB); validate fields only
+    if kind == "promote_aside":
+        thread_id = (mutation.thread_id or "").strip()
+        message_id = mutation.message_id
+        if not thread_id:
+            raise HTTPException(status_code=422, detail="promote_aside.thread_id is required")
+        if message_id is None:
+            raise HTTPException(status_code=422, detail="promote_aside.message_id is required")
+        return {"kind": "promote_aside", "thread_id": thread_id, "message_id": int(message_id)}
     # remove_persona
     name = (mutation.persona_name or mutation.name or "").strip()
     if not name:

@@ -6,9 +6,14 @@ import type { AsideTarget, Persona, ThreadDetail, ThreadSummary } from '../types
 interface Props {
   runId: string
   cast: Persona[]
+  // The run's current turn count — used as the fork point when promoting an
+  // aside into the canonical conversation (branches from the last turn).
+  turnCount: number
   // Optional analysis-model override (from the in-thread model picker); sent
   // with each aside message so replies use the chosen model.
   model?: string
+  // Called with the new branch run_id after a successful promote-aside branch.
+  onBranch?: (branchRunId: string) => void
   onClose: () => void
 }
 
@@ -17,13 +22,15 @@ interface Props {
 // the canonical conversation, does not change the run, and other asides don't
 // see it. The UI states this plainly (canon boundary) and shows a disabled
 // "bring into conversation" affordance reserved for a later version (Phase 2).
-export function AsidesDrawer({ runId, cast, model, onClose }: Props) {
+export function AsidesDrawer({ runId, cast, turnCount, model, onBranch, onClose }: Props) {
   const [threads, setThreads] = useState<ThreadSummary[]>([])
   const [active, setActive] = useState<ThreadDetail | null>(null)
   const [target, setTarget] = useState<AsideTarget>('analyst')
   const [personaName, setPersonaName] = useState<string>(cast[0]?.name ?? '')
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
+  const [promoting, setPromoting] = useState<number | null>(null) // message id being promoted
+  const [promoteError, setPromoteError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const loadThreads = () =>
@@ -69,6 +76,30 @@ export function AsidesDrawer({ runId, cast, model, onClose }: Props) {
       setError((e as Error).message)
     } finally {
       setSending(false)
+    }
+  }
+
+  // Phase 2b: promote a specific aside reply into the canonical conversation as
+  // a branch mutation. Branches from the run's last turn (full context) and
+  // injects the reply as a new turn before the group continues.
+  const promoteMessage = async (message: { id: number; content: string }) => {
+    if (!active) return
+    setPromoting(message.id)
+    setPromoteError(null)
+    try {
+      const res = await api.branchRun(runId, turnCount, {
+        model: model || undefined,
+        mutation: {
+          kind: 'promote_aside',
+          thread_id: active.id,
+          message_id: message.id,
+        },
+      })
+      onBranch?.(res.run_id)
+    } catch (e) {
+      setPromoteError((e as Error).message)
+    } finally {
+      setPromoting(null)
     }
   }
 
@@ -204,23 +235,30 @@ export function AsidesDrawer({ runId, cast, model, onClose }: Props) {
                       </div>
                     )}
                     <p className="whitespace-pre-wrap">{m.content}</p>
+                    {/* Phase 2b: promote-aside affordance on every target (AI) reply */}
+                    {m.role === 'target' && onBranch && (
+                      <div className="mt-1 flex items-center justify-end gap-1">
+                        <button
+                          onClick={() => promoteMessage(m)}
+                          disabled={promoting === m.id}
+                          title="Bring this reply into the conversation as a new branch"
+                          className="rounded border border-matrix-border px-2 py-0.5 text-[10px] text-slate-400 hover:border-sky-500 hover:text-sky-400 disabled:opacity-40"
+                        >
+                          {promoting === m.id ? '…branching' : '⤴ bring into conversation'}
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </div>
               ))}
             </div>
 
             <div className="border-t border-matrix-border p-3">
-              {/* Phase 2 hook — non-functional in this version. */}
-              <div className="mb-2 flex items-center justify-between">
-                <button
-                  disabled
-                  title="Available in a later version"
-                  className="cursor-not-allowed rounded border border-matrix-border px-2 py-1 text-[11px] text-slate-600"
-                >
-                  ⤴ Bring into conversation
-                </button>
-                <span className="text-[10px] text-slate-600">available in a later version</span>
-              </div>
+              {promoteError && (
+                <p className="mb-2 rounded bg-red-900/30 px-2 py-1 text-[11px] text-red-400">
+                  Branch failed: {promoteError}
+                </p>
+              )}
               <div className="flex gap-2">
                 <input
                   value={draft}

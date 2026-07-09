@@ -328,6 +328,14 @@ async def execute_branch(
     # total across the copy/generate boundary.
     start_seq = await db.max_seq(branch_run_id) + 1
 
+    # Phase 2b: resolve promote_aside -> inject_message before the engine sees
+    # it. Aside resolution needs the DB; doing it here keeps the engine handler
+    # DB-agnostic. The resolved mutation is a plain inject_message dict and
+    # carries the original thread/message ids for the config record.
+    resolved_mutation = mutation
+    if mutation and mutation.get("kind") == "promote_aside":
+        resolved_mutation = await _resolve_promote_aside(db, mutation, branch_run_id)
+
     return await resume_simulation(
         run_id=branch_run_id,
         topic=topic,
@@ -339,8 +347,54 @@ async def execute_branch(
         db=db,
         on_event=on_event,
         model=model,
-        mutation=mutation,
+        mutation=resolved_mutation,
     )
+
+
+async def _resolve_promote_aside(
+    db: Database,
+    mutation: Dict[str, Any],
+    branch_run_id: str,
+) -> Dict[str, Any]:
+    """
+    Resolve a ``promote_aside`` mutation: look up the aside thread + target
+    message and return a plain ``inject_message`` dict the engine can apply.
+
+    Raises :class:`BranchMutationError` if the thread or message is not found
+    or does not belong to the same run as the branch.
+    """
+    thread_id = str(mutation.get("thread_id", "")).strip()
+    message_id = mutation.get("message_id")  # integer row id
+    if not thread_id:
+        raise BranchMutationError("promote_aside.thread_id is required")
+    if message_id is None:
+        raise BranchMutationError("promote_aside.message_id is required")
+
+    thread = await db.get_thread(thread_id)
+    if not thread:
+        raise BranchMutationError(f"promote_aside: thread {thread_id!r} not found")
+
+    messages = await db.get_thread_messages(thread_id)
+    target = next((m for m in messages if m["id"] == int(message_id)), None)
+    if target is None:
+        raise BranchMutationError(
+            f"promote_aside: message {message_id} not found in thread {thread_id!r}"
+        )
+
+    # Use the aside's attributed speaker (the target in the aside) or fall back
+    # to a generic attributed label. The injected message is the aside reply text.
+    speaker = target.get("speaker") or thread.get("persona_name") or "Aside"
+    content = target["content"]
+
+    return {
+        "kind": "inject_message",
+        "speaker": speaker,
+        "content": content,
+        "source": "aside",
+        # Keep original ids so config.branch_mutation is self-describing.
+        "thread_id": thread_id,
+        "message_id": int(message_id),
+    }
 
 
 RESUMABLE_STATUSES = {"interrupted", "failed"}

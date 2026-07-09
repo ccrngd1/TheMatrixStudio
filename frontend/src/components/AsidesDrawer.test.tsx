@@ -11,6 +11,7 @@ vi.mock('../api', () => ({
     getThread: vi.fn(),
     createThread: vi.fn(),
     postThreadMessage: vi.fn(),
+    branchRun: vi.fn().mockResolvedValue({ run_id: 'branch-1' }),
   },
 }))
 
@@ -23,7 +24,7 @@ describe('AsidesDrawer', () => {
   beforeEach(() => vi.clearAllMocks())
 
   it('states the canon boundary and offers analyst/persona/room targets', async () => {
-    render(<AsidesDrawer runId="r1" cast={cast} onClose={() => {}} />)
+    render(<AsidesDrawer runId="r1" cast={cast} turnCount={4} onClose={() => {}} />)
 
     // Canon boundary is explicit — asides are never part of the conversation.
     expect(
@@ -57,16 +58,19 @@ describe('AsidesDrawer', () => {
       persona_name: null,
       mode: 'aside',
       created_at: 0,
-      messages: [],
+      messages: [
+        { id: 1, thread_id: 't1', role: 'target' as const, speaker: 'Analyst',
+          content: 'Great insight.', tokens_in: 0, tokens_out: 0, cost_usd: 0, created_at: 0 },
+      ],
       total_cost_usd: 0,
     })
 
-    render(<AsidesDrawer runId="r1" cast={cast} onClose={() => {}} />)
+    render(<AsidesDrawer runId="r1" cast={cast} turnCount={4} onBranch={() => {}} onClose={() => {}} />)
     screen.getByText('Start').click()
 
     await waitFor(() => {
-      const btn = screen.getByTitle(/available in a later version/i)
-      expect(btn).toBeDisabled()
+      const btn = screen.getByTitle(/bring this reply into the conversation/i)
+      expect(btn).not.toBeDisabled()
       expect(btn).toHaveTextContent(/bring into conversation/i)
     })
   })
