@@ -25,7 +25,7 @@ OnEvent = Callable[[Dict[str, Any]], Awaitable[None]]
 
 from matrix_studio.avatar import generate_avatar
 from matrix_studio.settings import get_settings
-from matrix_studio.state import AgentState, MemoryItem, SimSnapshot
+from matrix_studio.state import AgentState, CognitionConfig, MemoryItem, SimSnapshot
 from matrix_studio.storage import Database
 
 logger = logging.getLogger(__name__)
@@ -41,7 +41,8 @@ async def _select_next_speaker(
     last_speaker: Optional[str],
     settings,
     model: Optional[str] = None,
-) -> str:
+    cognition: Optional[CognitionConfig] = None,
+) -> tuple[str, Optional[str]]:
     """
     Use LLM to select the next speaker.
 
@@ -53,9 +54,13 @@ async def _select_next_speaker(
         settings: Global settings
         model: Effective model override (per-run); falls back to the settings
             default when None.
+        cognition: Phase 2c cognition config. When disabled (default) the
+            selection prompt/call is byte-for-byte the pre-2c behavior and the
+            returned reason is None. When enabled the moderator also returns a
+            one-line reason (captured into the speaker.selected event).
 
     Returns:
-        Selected agent name
+        ``(selected_agent_name, reason_or_None)``
     """
     agent_names = list(agents.keys())
 
@@ -69,7 +74,22 @@ async def _select_next_speaker(
         [f"{msg['speaker']}: {msg['content']}" for msg in recent_conv]
     )
 
-    selection_prompt = f"""You are a conversation moderator. Given the following personas and recent conversation about "{topic}", select who should speak next.
+    cognition_on = bool(cognition and cognition.enabled)
+
+    if cognition_on:
+        selection_prompt = f"""You are a conversation moderator. Given the following personas and recent conversation about "{topic}", select who should speak next.
+
+Personas:
+{personas_desc}
+
+Recent conversation:
+{conv_summary}
+
+Last speaker: {last_speaker or 'None (start of conversation)'}
+
+Respond with ONLY a JSON object of the form {{"speaker": "<persona name>", "reason": "<one short sentence on why they should speak next>"}}. Choose naturally based on conversation flow."""
+    else:
+        selection_prompt = f"""You are a conversation moderator. Given the following personas and recent conversation about "{topic}", select who should speak next.
 
 Personas:
 {personas_desc}
@@ -83,30 +103,51 @@ Respond with ONLY the name of the persona who should speak next. Choose naturall
 
     messages = [{"role": "user", "content": selection_prompt}]
 
+    def _match(text: str) -> Optional[str]:
+        for name in agent_names:
+            if name.lower() in text.lower():
+                return name
+        return None
+
     try:
-        response = await litellm.acompletion(
+        kwargs: Dict[str, Any] = dict(
             model=model or settings.litellm_model,
             messages=messages,
             temperature=0.3,  # Lower temperature for more consistent selection
-            max_tokens=50,
+            max_tokens=120 if cognition_on else 50,
         )
+        if cognition_on:
+            kwargs["response_format"] = {"type": "json_object"}
+        response = await litellm.acompletion(**kwargs)
 
-        selected = response.choices[0].message.content.strip()
+        raw = response.choices[0].message.content.strip()
+
+        reason: Optional[str] = None
+        selected = raw
+        if cognition_on:
+            try:
+                parsed = json.loads(raw)
+                selected = str(parsed.get("speaker", "")).strip() or raw
+                r = parsed.get("reason")
+                reason = str(r).strip() if r else None
+            except (json.JSONDecodeError, TypeError, AttributeError):
+                selected = raw
+                reason = None
 
         # Validate selection
-        for name in agent_names:
-            if name.lower() in selected.lower():
-                return name
+        matched = _match(selected)
+        if matched is not None:
+            return matched, reason
 
         # Fallback: if unclear, pick someone other than last speaker
         candidates = [n for n in agent_names if n != last_speaker]
-        return candidates[0] if candidates else agent_names[0]
+        return (candidates[0] if candidates else agent_names[0]), reason
 
     except Exception as e:
         logger.error(f"Error selecting speaker: {e}", exc_info=True)
         # Fallback
         candidates = [n for n in agent_names if n != last_speaker]
-        return candidates[0] if candidates else agent_names[0]
+        return (candidates[0] if candidates else agent_names[0]), None
 
 
 async def _generate_response(
@@ -116,6 +157,7 @@ async def _generate_response(
     conversation: List[Dict[str, Any]],
     settings,
     model: Optional[str] = None,
+    cognition: Optional[CognitionConfig] = None,
 ) -> Dict[str, Any]:
     """
     Generate a response from the selected speaker.
@@ -128,19 +170,43 @@ async def _generate_response(
         settings: Global settings
         model: Effective model override (per-run); falls back to the settings
             default when None.
+        cognition: Phase 2c cognition config. When disabled (default) this is
+            byte-for-byte the pre-2c plain-text path and the returned dict has
+            no rationale/goal_served. When enabled the speaker returns its
+            utterance plus a structured first-person rationale + the goal it
+            serves (single JSON-mode call); a parse failure degrades gracefully
+            to the plain utterance so a bad response never stalls a run.
 
     Returns:
-        Dict with response, tokens, and cost info
+        Dict with response, tokens, and cost info (plus rationale/goal_served
+        when cognition is enabled).
     """
+    cognition_on = bool(cognition and cognition.enabled)
+
     # Build context for the agent
     recent_conv = conversation[-20:] if len(conversation) > 20 else conversation
     conv_text = "\n".join([f"{msg['speaker']}: {msg['content']}" for msg in recent_conv])
 
-    system_message = f"""{agent.persona}
+    goals_line = ', '.join(agent.goals) if agent.goals else 'Engage authentically'
+
+    if cognition_on:
+        system_message = f"""{agent.persona}
 
 You are participating in a conversation about: {topic}
 
-Your goals: {', '.join(agent.goals) if agent.goals else 'Engage authentically'}
+Your goals: {goals_line}
+
+Respond naturally as this character. Keep responses conversational (2-4 sentences).
+
+Return ONLY a JSON object of the form:
+{{"utterance": "<what you say, in character, 2-4 sentences>", "rationale": "<one first-person sentence: why you say this now>", "goal_served": "<which of your goals this advances, verbatim, or 'none'>"}}
+The rationale must be your genuine reason for this specific turn; do not invent facts."""
+    else:
+        system_message = f"""{agent.persona}
+
+You are participating in a conversation about: {topic}
+
+Your goals: {goals_line}
 
 Respond naturally as this character. Keep responses conversational (2-4 sentences)."""
 
@@ -163,14 +229,34 @@ Respond naturally as this character. Keep responses conversational (2-4 sentence
     ]
 
     try:
-        response = await litellm.acompletion(
+        kwargs: Dict[str, Any] = dict(
             model=model or settings.litellm_model,
             messages=messages,
             temperature=settings.litellm_temperature,
             max_tokens=settings.litellm_max_tokens,
         )
+        if cognition_on:
+            kwargs["response_format"] = {"type": "json_object"}
+        response = await litellm.acompletion(**kwargs)
 
-        content = response.choices[0].message.content.strip()
+        raw = response.choices[0].message.content.strip()
+
+        content = raw
+        rationale: Optional[str] = None
+        goal_served: Optional[str] = None
+        if cognition_on:
+            try:
+                parsed = json.loads(raw)
+                content = str(parsed.get("utterance", "")).strip() or raw
+                rat = parsed.get("rationale")
+                rationale = str(rat).strip() if rat else None
+                gs = parsed.get("goal_served")
+                goal_served = str(gs).strip() if gs else None
+            except (json.JSONDecodeError, TypeError, AttributeError):
+                # Graceful degradation: keep the raw text as the utterance.
+                content = raw
+                rationale = None
+                goal_served = None
 
         # Extract usage info
         usage = response.usage
@@ -182,12 +268,18 @@ Respond naturally as this character. Keep responses conversational (2-4 sentence
         if hasattr(response, "_hidden_params") and "response_cost" in response._hidden_params:
             cost_usd = response._hidden_params["response_cost"]
 
-        return {
+        result: Dict[str, Any] = {
             "content": content,
             "tokens_in": tokens_in,
             "tokens_out": tokens_out,
             "cost_usd": cost_usd,
         }
+        # Additive only when cognition is on, so the cognition-off event/result
+        # payloads stay byte-for-byte identical to pre-2c.
+        if cognition_on:
+            result["rationale"] = rationale
+            result["goal_served"] = goal_served
+        return result
 
     except Exception as e:
         logger.error(f"Error generating response for {speaker_name}: {e}", exc_info=True)
@@ -245,6 +337,7 @@ async def run_simulation(
     config = request.get("config", {})
     max_messages = config.get("max_messages", settings.max_messages)
     generate_avatars_flag = config.get("generate_avatars", settings.enable_avatars)
+    cognition = CognitionConfig.from_config(config)
     run_name = request.get("name")
     run_description = request.get("description")
 
@@ -366,6 +459,7 @@ async def run_simulation(
         emit=_emit,
         next_seq=_next_seq,
         model=config.get("model") or None,
+        cognition=cognition,
     )
 
 
@@ -383,6 +477,7 @@ async def _run_turns(
     emit: Callable[..., Awaitable[None]],
     next_seq: Callable[[], int],
     model: Optional[str] = None,
+    cognition: Optional[CognitionConfig] = None,
 ) -> Dict[str, Any]:
     """
     Shared turn loop + completion/failure handling for both a fresh run and a
@@ -411,22 +506,33 @@ async def _run_turns(
             turn += 1
 
             # Phase 1: Select next speaker
-            speaker_name = await _select_next_speaker(
-                topic, agents, conversation, last_speaker, settings, model=model
+            speaker_name, selection_reason = await _select_next_speaker(
+                topic, agents, conversation, last_speaker, settings,
+                model=model, cognition=cognition,
             )
 
+            # speaker.selected payload is additive-only: the reason key appears
+            # only when cognition produced one, so cognition-off runs stay
+            # byte-for-byte identical to pre-2c.
+            speaker_payload: Dict[str, Any] = {
+                "speaker": speaker_name,
+                "candidates": list(agents.keys()),
+            }
+            if selection_reason:
+                speaker_payload["reason"] = selection_reason
             await emit(
                 turn=turn,
                 seq=next_seq(),
                 event_type="speaker.selected",
                 agent_name=speaker_name,
-                payload={"speaker": speaker_name, "candidates": list(agents.keys())},
+                payload=speaker_payload,
             )
 
             # Phase 2: Generate response
             speaker = agents[speaker_name]
             response_data = await _generate_response(
-                speaker_name, speaker, topic, conversation, settings, model=model
+                speaker_name, speaker, topic, conversation, settings,
+                model=model, cognition=cognition,
             )
 
             # Update conversation
@@ -447,18 +553,25 @@ async def _run_turns(
             speaker.total_cost_usd += response_data["cost_usd"]
 
             # Log event
+            response_payload: Dict[str, Any] = {
+                "speaker": speaker_name,
+                "message": response_data["content"],
+                "tokens_in": response_data["tokens_in"],
+                "tokens_out": response_data["tokens_out"],
+                "cost_usd": response_data["cost_usd"],
+            }
+            # Additive cognition fields only when present, so cognition-off
+            # agent.response payloads stay byte-for-byte identical to pre-2c.
+            if response_data.get("rationale") is not None:
+                response_payload["rationale"] = response_data["rationale"]
+            if response_data.get("goal_served") is not None:
+                response_payload["goal_served"] = response_data["goal_served"]
             await emit(
                 turn=turn,
                 seq=next_seq(),
                 event_type="agent.response",
                 agent_name=speaker_name,
-                payload={
-                    "speaker": speaker_name,
-                    "message": response_data["content"],
-                    "tokens_in": response_data["tokens_in"],
-                    "tokens_out": response_data["tokens_out"],
-                    "cost_usd": response_data["cost_usd"],
-                },
+                payload=response_payload,
             )
 
             # Phase 2a: per-turn checkpoint — persist a full running snapshot for
@@ -771,6 +884,7 @@ async def resume_simulation(
     on_event: Optional[OnEvent] = None,
     model: Optional[str] = None,
     mutation: Optional[Dict[str, Any]] = None,
+    cognition: Optional[CognitionConfig] = None,
 ) -> Dict[str, Any]:
     """
     Phase 2a branch primitive — RESUME generating forward from a checkpoint.
@@ -890,4 +1004,5 @@ async def resume_simulation(
         emit=_emit,
         next_seq=_next_seq,
         model=model,
+        cognition=cognition,
     )

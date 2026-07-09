@@ -53,9 +53,23 @@ class PersonaModel(BaseModel):
     goals: List[str] = Field(default_factory=list)
 
 
+class CognitionConfigModel(BaseModel):
+    """Phase 2c per-run cognition flags. All default to pre-2c behavior; when
+    ``enabled`` is False the engine path is byte-for-byte identical to Phase 2b.
+    ``reflection_every`` is ON by default (4) but only takes effect when enabled."""
+    enabled: bool = False
+    reflection_every: int = Field(default=4, ge=0)
+    goals_dynamic: bool = False
+    relationships: bool = False
+    retrieval_k: int = Field(default=5, ge=0)
+
+
 class RunConfigModel(BaseModel):
     max_messages: Optional[int] = None
     generate_avatars: Optional[bool] = None
+    # Phase 2c: optional cognition config. Omitted -> cognition disabled
+    # (engine behaves exactly as Phase 2b).
+    cognition: Optional[CognitionConfigModel] = None
 
 
 class SummaryConfigModel(BaseModel):
