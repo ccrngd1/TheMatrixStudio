@@ -45,7 +45,9 @@ def test_settings_precedence_env_over_dotenv(monkeypatch, tmp_path):
     monkeypatch.setenv("LITELLM_MODEL", "openai/gpt-4o")
     monkeypatch.chdir(tmp_path)
 
-    settings = Settings()
+    # Explicitly pass _env_file to enable .env loading for this test
+    # (test mode disables it globally)
+    settings = Settings(_env_file=".env")
     # Env var should win
     assert settings.litellm_model == "openai/gpt-4o"
     # .env value should be used for non-overridden keys
