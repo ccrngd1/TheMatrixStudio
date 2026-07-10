@@ -10,6 +10,12 @@ TheMatrix Simulation Studio is a standalone tool for running multi-agent convers
 ![Cognition Dossier](docs/screenshots/dossier-placeholder.png)
 <!-- TODO: Replace with actual screenshot showing agent dossier with memory stream + why-trace -->
 
+![Branch Tree View](docs/screenshots/branch-tree-placeholder.png)
+<!-- TODO: Replace with actual screenshot showing visual branch tree with parent/child relationships and timeline scrubber -->
+
+![Cost Meter](docs/screenshots/cost-meter-placeholder.png)
+<!-- TODO: Replace with actual screenshot showing live token/$ cost meter with optional spend cap and warning threshold -->
+
 ## Features
 
 - **Live Control Room** — Cast board with character cards (avatar + persona + goals), live-scrolling conversation feed, active-speaker highlight, and running token/$ cost meter

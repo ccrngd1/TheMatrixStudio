@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "matrix-sim-studio"
-version = "0.1.0"
+version = "0.3.0"
 description = "TheMatrix Simulation Studio - Multi-agent conversation simulator"
 readme = "README.md"
 requires-python = ">=3.11"
