@@ -76,6 +76,14 @@ class Settings(BaseSettings):
         description="How many times a validation-rejected turn is regenerated before "
         "being emitted with a validation.flagged event (never rewritten in place).",
     )
+    # Phase 4d: optional structured output view (Narrative/Consequences/State/
+    # Possibilities). OFF by default; a derived read-only projection over the
+    # canonical events — enabling it changes nothing about events/snapshots.
+    structured_output: bool = Field(
+        default=False,
+        description="Serve the 4-section structured turn view endpoint "
+        "(STRUCTURED_OUTPUT). Derived view only; canonical events unchanged.",
+    )
     max_run_cost_usd: float = Field(
         default=0.0,
         ge=0.0,
