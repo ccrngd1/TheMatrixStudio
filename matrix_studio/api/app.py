@@ -669,6 +669,37 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             "portrait_b64": portrait,
         }
 
+    @app.get("/api/runs/{ref}/turns/{turn}/structured")
+    async def structured_turn_view(
+        ref: str, turn: int, opt_in: bool = Query(default=False)
+    ) -> Dict[str, Any]:
+        """Phase 4d: the OPTIONAL structured (Narrative / Consequences /
+        Updated State / Possibilities) projection of one turn. A derived
+        read-only view over the turn's canonical events + snapshot — never the
+        canonical record, never invented content (every consequence/state line
+        carries the seq of its backing event). Default OFF: enable globally via
+        settings.structured_output or per-request with ?opt_in=true."""
+        if not get_settings().structured_output and not opt_in:
+            raise HTTPException(
+                status_code=403,
+                detail="Structured output view is disabled "
+                "(set STRUCTURED_OUTPUT=true or pass ?opt_in=true).",
+            )
+        run = await db.get_run_by_ref(ref)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        rows = await db.get_events_after(run["id"], after_seq=-1, limit=None)
+        events = [event_row_to_wire(r) for r in rows]
+        turn_events = [e for e in events if e["turn"] == turn]
+        if not any(e["event_type"] == "agent.response" for e in turn_events):
+            raise HTTPException(status_code=404, detail=f"No turn {turn} in this run")
+        snapshot = await db.get_snapshot(run["id"], turn=turn)
+        from matrix_studio.structured_view import build_structured_view
+
+        view = build_structured_view(turn, turn_events, snapshot)
+        view["run_id"] = run["id"]
+        return view
+
     @app.get("/api/runs/{ref}/pending-threads")
     async def pending_threads(ref: str) -> Dict[str, Any]:
         """Phase 4b: the run's pending-thread ledger (setups & payoffs), read

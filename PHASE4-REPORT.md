@@ -186,6 +186,32 @@ abandon + fabricated-resolution-ignored + open-cap + type-degradation, branch re
 losslessness at two fork points, branch-continues-ledger-forward (prompt-level proof on the
 branch), old-snapshot-parses, staleness API + dossier.
 
+### 2.3 — 4d: Structured output view (optional, derived)
+
+**New module `matrix_studio/structured_view.py`** (`build_structured_view` — pure function, no
+LLM/DB/mutation) + endpoint `GET /api/runs/{ref}/turns/{turn}/structured`.
+
+- **Four sections, all sourced from canonical data only:**
+  - *Narrative* — the turn's `agent.response` utterance(s), **verbatim** (never paraphrased),
+    each with the `source_seq` of its backing event;
+  - *Consequences* — immediate (goal/relationship changes, thread resolutions/abandonments,
+    validation flags, cost-cap) and deferred (threads opened this turn); **every line carries
+    `source_seq`** — a line without a backing canonical event cannot be constructed;
+  - *Updated State* — goal/relationship/memory/belief deltas from real state events;
+  - *Possibilities* — the OPEN pending threads as of the turn's snapshot (4b ledger),
+    explicitly `non_limiting: true`; never generated suggestions.
+- **Absent data is stated, not filled:** each section has an honest `note` ("No state deltas were
+  recorded for this turn.") instead of invented content.
+- **Default OFF:** `settings.structured_output` (env `STRUCTURED_OUTPUT`) gates the endpoint
+  globally; a per-request `?opt_in=true` enables it per call. Enabling it performs zero writes —
+  a test snapshots the canonical event stream before/after a view request and asserts equality.
+- Not the canonical record: no engine change at all in 4d — it is entirely a read-side projection.
+
+**Tests:** 8 new — default-off 403, opt-in leaves canonical events untouched, global-setting
+enable, every-line-backed-by-real-event + verbatim-narrative (per-turn, resolved against the real
+event log), possibilities-from-ledger + honest empty notes, unknown-turn 404, formatter unit fold
+over all event kinds, empty-turn honesty.
+
 ## 3. Test counts
 
 - Baseline (pre-Phase 4): 207 backend + 18 frontend, all passing.
