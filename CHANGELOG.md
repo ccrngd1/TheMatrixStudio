@@ -5,6 +5,18 @@ All notable changes to TheMatrix Simulation Studio are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-07-19
+
+### Added - Phase 4 (Deeper Cognition & Steering)
+- **4a — Priority-hierarchy validation gate:** An enforced pre-emit consistency pass over each generated turn, keyed on the hierarchy (world coherence > causality > continuity > agent agency > character consistency > dramatic impact > novelty). Heuristic-first; a small LLM confirmation call is made only on suspected violations (cost control), fail-open on checker errors. A violating turn is regenerated once (`validation_retry_budget`, default 1), then emitted **verbatim** with a `validation.flagged` event — model output is never rewritten in place. New events: `validation.checked` (per attempt), `validation.flagged`. New settings: `validation_enabled` (default ON; OFF is byte-for-byte pre-4a, regression-locked by test), `validation_retry_budget`. The turn trace API now surfaces the validation trail.
+- **4b — Pending-thread ledger (setups & payoffs):** First-class `pending_threads` state (`PendingThread` on `SimSnapshot`), opt-in via `config.cognition.threads`. Agents plant/resolve/abandon threads through the same single structured generation call (`thread_updates`); open threads are fed into subsequent turn prompts (causally real) and recorded as the turn's `thread_refs`. Resolutions are accepted only for threads genuinely in-context (no fabricated payoffs). New events: `thread.opened` / `thread.resolved` / `thread.abandoned` (lossless replay). The ledger rides every snapshot and survives branch/scrub/resume reconstruction. New API: `GET /api/runs/{ref}/pending-threads` with staleness flags (`thread_stale_after`, default 5 turns); dossier lists the agent's planted threads.
+- **4d — Structured output view (optional):** `GET /api/runs/{ref}/turns/{turn}/structured` projects a turn's canonical events into Narrative / Consequences / Updated State / Possibilities. Narrative is verbatim utterances; every consequence/state line carries the `source_seq` of its backing canonical event; Possibilities are the open 4b threads (non-limiting); absent data is stated, never invented. Default OFF (`structured_output` setting or `?opt_in=true` per request); a derived read-only view — canonical events unchanged.
+- **4c — Adaptive-pressure intervention (EXPERIMENTAL, opt-in):** New `adaptive_pressure` branch-mutation kind. Observes run-level signals at the fork (repetition, stale threads, remaining budget — real state only) and injects ONE narrator-voiced world event as a branch turn, preceded by a `pressure.applied` audit event. Hard agency guard (shared with 4a): pressure modulates the world only; generated text negating participant choice is regenerated once, then the whole intervention is rejected (HTTP 422) — nothing emitted, nothing rewritten. Default OFF (`adaptive_pressure_enabled`), refused at both API and engine layers while disabled. Marked experimental in README and UI.
+
+### Changed
+- Version bumped 0.3.0 -> 0.4.0 (new simulation capability).
+- Branches / in-place resumes now carry the run's cognition config (and 4b thread ledger) forward; runs without a cognition config behave exactly as before.
+
 ## [0.3.0] - 2026-07-09
 
 ### Added - Phase 3 (Release Polish)

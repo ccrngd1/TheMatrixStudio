@@ -247,10 +247,59 @@ green including the new Scrubber option; `tsc -b` clean.
 
 ## 3. Test counts
 
-- Baseline (pre-Phase 4): 207 backend + 18 frontend, all passing.
+| Stage | Backend tests | Delta | Frontend tests |
+|---|---|---|---|
+| Baseline (v0.3.0, pre-Phase 4) | 207 | — | 18 |
+| After 4a (validation gate) | 219 | +12 | 18 |
+| After 4b (pending threads) | 226 | +7 | 18 |
+| After 4d (structured view) | 234 | +8 | 18 |
+| After 4c (adaptive pressure) | 242 | +8 | 18 |
+
+Final full-suite run at v0.4.0: **242 backend passed, 18 frontend passed, 0 failures** —
+all 207 pre-existing tests still pass unmodified. `tsc -b` clean.
+
+Note on running the suite in this environment: the repo `.env` is unreadable by the test user, so
+the suite must be invoked as `_MSS_TEST_MODE=1 python3 -m pytest tests/` (env exported before
+pytest starts; the conftest sets it too, but too late for import-time settings loads here).
 
 ---
 
 ## 4. Honest limitations
 
-_(filled in at the end; includes the real-LLM benchmark statement)_
+- **Real-LLM behavior: not benchmarked.** All Phase 4 tests run against mocked litellm responses
+  (the established suite pattern; no billable calls). How often the 4a heuristics fire on real
+  model output, how often the selective LLM confirmation is triggered, how well real models use
+  the 4b `thread_updates` schema, and the quality of 4c pressure events have NOT been measured
+  against a live model. No real-LLM percentages are claimed anywhere in this report or the docs.
+- **4a heuristics are deliberately narrow.** They catch four concrete, high-precision failure
+  shapes (speaking-as-another, verbatim repeats, explicit choice-negation phrases, first-person
+  identity claims) plus one fuzzy near-duplicate signal. They have no semantic world-model: subtle
+  coherence/causality violations pass undetected, and the agency phrase list is English-only and
+  literal (a paraphrased negation slips through; a quoted phrase can false-positive — absorbed by
+  the bounded regenerate-then-flag design, never by rewriting).
+- **Validation of the top two principles is thin.** "World coherence" and "causality" are only
+  guarded by the frame-break and near-duplicate checks respectively; the full hierarchy semantics
+  remain a design principle enforced where cheap, honest signals exist.
+- **4b thread quality depends on the model.** The engine guarantees mechanics (causal feed-forward,
+  honest resolution, snapshot/branch survival), not that a model plants good threads or pays them
+  off sensibly. Thread retrieval is "all open threads" (runs are short); no recency/importance
+  ranking and no embedding retrieval (still deferred, as per spec).
+- **4c is experimental for a reason.** The agency guard is the same literal phrase check as 4a —
+  necessary, not sufficient; a pressure event can still be dramaturgically heavy-handed without
+  tripping it. Signals are simple (token-overlap repetition, thread age); there is no automatic
+  trigger — pressure is operator-initiated per branch, by design.
+- **Pre-existing limitation, unchanged:** branch reconstruction replays transcript/cost and (new)
+  thread events, but NOT memory streams/goals/relationships — a branch's agents keep their cast
+  persona/goals plus the transcript, as in 2c/3. Phase 4 did not extend cognition-state replay.
+- **Install:** source-only (`git clone` + `pip install -e .`); this package is not published to
+  PyPI/npm.
+
+---
+
+## 5. Push status
+
+All four sub-phase commits (+ this release commit) are on local `master`. `git push origin master`
+fails in this environment: the remote is HTTPS GitHub, no usable credential is available to this
+user (`gh` CLI absent for this user; root's `gh` credential store is not readable), so pushes
+error with "could not read Username for 'https://github.com'". Commits are ready to push as soon
+as a credential is available; nothing else is blocked on it.
