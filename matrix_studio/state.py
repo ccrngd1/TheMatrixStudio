@@ -23,6 +23,27 @@ class MemoryItem(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
 
 
+THREAD_TYPES = ("setup", "promise", "faction-action", "deferred-consequence")
+
+
+class PendingThread(BaseModel):
+    """Phase 4b: one unresolved setup / promise / deferred consequence — the
+    engine analogue of a Setups & Payoffs ledger entry. Lives in global sim
+    state (``SimSnapshot.pending_threads``); open threads are retrieved into
+    subsequent turn prompts so they causally influence generation (never a
+    post-hoc annotation)."""
+    type: str = Field(default="PendingThread", description="Type discriminator")
+    schema_version: str = Field(default="1.0.0", description="Schema version for migration")
+    # Short id so the generating model can reference it verbatim in prompts.
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12], description="Stable thread id")
+    description: str = Field(description="What was planted / promised / deferred")
+    thread_type: str = Field(default="setup", description="setup|promise|faction-action|deferred-consequence")
+    origin_turn: int = Field(description="Turn the thread was opened")
+    origin_agent: Optional[str] = Field(default=None, description="Agent that planted it")
+    status: str = Field(default="open", description="open|resolved|abandoned")
+    resolved_turn: Optional[int] = Field(default=None, description="Turn it was resolved/abandoned")
+
+
 class AgentState(BaseModel):
     """Complete state for a single agent."""
     type: str = Field(default="AgentState", description="Type discriminator")
@@ -58,6 +79,14 @@ class CognitionConfig(BaseModel):
     goals_dynamic: bool = Field(default=False, description="Allow agents to update their own goals")
     relationships: bool = Field(default=False, description="Track per-agent stance toward others")
     retrieval_k: int = Field(default=5, ge=0, description="Memories injected into each turn's prompt")
+    # Phase 4b: pending-thread ledger (setups & payoffs). OFF by default so
+    # cognition-enabled runs keep their pre-4b structured schema byte-for-byte
+    # unless threads are explicitly turned on.
+    threads: bool = Field(default=False, description="Track pending threads (setups/payoffs ledger)")
+    thread_stale_after: int = Field(
+        default=5, ge=1,
+        description="Open threads older than this many turns are surfaced as dangling",
+    )
 
     @classmethod
     def from_config(cls, config: Optional[Dict[str, Any]]) -> "CognitionConfig":
@@ -81,6 +110,11 @@ class SimSnapshot(BaseModel):
     topic: str = Field(description="Simulation topic")
     agents: Dict[str, AgentState] = Field(description="Agent states keyed by name")
     conversation: List[Dict[str, Any]] = Field(default_factory=list, description="Full conversation transcript")
+    # Phase 4b: global pending-thread ledger. Default [] so pre-4b stored
+    # snapshots still parse; rides every snapshot automatically (2c pattern).
+    pending_threads: List[PendingThread] = Field(
+        default_factory=list, description="Global pending-thread ledger (Phase 4b)"
+    )
     status: str = Field(description="Simulation status: pending|running|complete|failed")
     created_at: int = Field(description="Unix timestamp of snapshot creation")
     completed_at: Optional[int] = Field(default=None, description="Unix timestamp of completion")

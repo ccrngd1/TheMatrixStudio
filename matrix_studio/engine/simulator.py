@@ -25,7 +25,14 @@ OnEvent = Callable[[Dict[str, Any]], Awaitable[None]]
 
 from matrix_studio.avatar import generate_avatar
 from matrix_studio.settings import get_settings
-from matrix_studio.state import AgentState, CognitionConfig, MemoryItem, SimSnapshot
+from matrix_studio.state import (
+    THREAD_TYPES,
+    AgentState,
+    CognitionConfig,
+    MemoryItem,
+    PendingThread,
+    SimSnapshot,
+)
 from matrix_studio.storage import Database
 from matrix_studio.validation import validate_utterance
 
@@ -160,6 +167,7 @@ async def _generate_response(
     model: Optional[str] = None,
     cognition: Optional[CognitionConfig] = None,
     retrieved_memories: Optional[List["MemoryItem"]] = None,
+    open_threads: Optional[List["PendingThread"]] = None,
 ) -> Dict[str, Any]:
     """
     Generate a response from the selected speaker.
@@ -187,6 +195,7 @@ async def _generate_response(
     memory_on = bool(cognition_on and cognition.memory)
     goals_dynamic = bool(cognition_on and cognition.goals_dynamic)
     relationships_on = bool(cognition_on and cognition.relationships)
+    threads_on = bool(cognition_on and cognition.threads)
 
     # Build context for the agent
     recent_conv = conversation[-20:] if len(conversation) > 20 else conversation
@@ -200,6 +209,23 @@ async def _generate_response(
     if memory_on and retrieved_memories:
         lines = "\n".join(f"- {m.content}" for m in retrieved_memories)
         memory_block = f"\n\nWhat you remember so far:\n{lines}"
+
+    # Phase 4b: surface the OPEN pending threads into the prompt so unresolved
+    # setups causally influence this turn (the world's memory of its own
+    # unfinished business). The exact ids shown here are what the model must
+    # cite in thread_updates — the same causal-refs discipline as memory.
+    threads_block = ""
+    if threads_on and open_threads:
+        lines = "\n".join(
+            f"- [{t.id}] ({t.thread_type}, opened turn {t.origin_turn}"
+            + (f" by {t.origin_agent}" if t.origin_agent else "")
+            + f"): {t.description}"
+            for t in open_threads
+        )
+        threads_block = (
+            f"\n\nUnresolved threads in this conversation (setups, promises, "
+            f"deferred consequences — weave them in or pay them off when natural):\n{lines}"
+        )
 
     if cognition_on:
         # Compose the JSON schema from the enabled cognition sub-features so the
@@ -233,12 +259,24 @@ async def _generate_response(
                 " relationship_updates maps other participants to your updated stance "
                 "toward them; use {} if nothing changed."
             )
+        if threads_on:
+            fields.append(
+                '"thread_updates": {"open": [{"description": "<a setup/promise/deferred consequence '
+                'you genuinely planted THIS turn>", "thread_type": "setup|promise|faction-action|deferred-consequence"}], '
+                '"resolved": ["<id of a listed unresolved thread your utterance genuinely pays off>"], '
+                '"abandoned": ["<id of a listed thread that is now genuinely moot>"]}'
+            )
+            extra_instr += (
+                " thread_updates records unfinished business: open holds 0-2 threads you truly "
+                "planted this turn (use [] if none); resolved/abandoned hold ids ONLY from the "
+                "unresolved-threads list above and ONLY if this turn genuinely closes them."
+            )
         schema_line = "{" + ", ".join(fields) + "}"
         system_message = f"""{agent.persona}
 
 You are participating in a conversation about: {topic}
 
-Your goals: {goals_line}{memory_block}
+Your goals: {goals_line}{memory_block}{threads_block}
 
 Respond naturally as this character. Keep responses conversational (2-4 sentences).
 
@@ -291,6 +329,7 @@ Respond naturally as this character. Keep responses conversational (2-4 sentence
         formed_memories: List[Dict[str, Any]] = []
         goal_update: Optional[List[str]] = None
         relationship_updates: Dict[str, str] = {}
+        thread_updates: Dict[str, Any] = {"open": [], "resolved": [], "abandoned": []}
         if cognition_on:
             try:
                 parsed = json.loads(raw)
@@ -332,6 +371,29 @@ Respond naturally as this character. Keep responses conversational (2-4 sentence
                             s = str(stance).strip()
                             if o and s:
                                 relationship_updates[o] = s
+                if threads_on:
+                    tu = parsed.get("thread_updates")
+                    if isinstance(tu, dict):
+                        opened = tu.get("open")
+                        if isinstance(opened, list):
+                            for t in opened[:2]:
+                                if not isinstance(t, dict):
+                                    continue
+                                desc = str(t.get("description", "")).strip()
+                                if not desc:
+                                    continue
+                                ttype = str(t.get("thread_type", "setup")).strip()
+                                if ttype not in THREAD_TYPES:
+                                    ttype = "setup"
+                                thread_updates["open"].append(
+                                    {"description": desc, "thread_type": ttype}
+                                )
+                        for key in ("resolved", "abandoned"):
+                            ids = tu.get(key)
+                            if isinstance(ids, list):
+                                thread_updates[key] = [
+                                    str(i).strip() for i in ids if str(i).strip()
+                                ]
             except (json.JSONDecodeError, TypeError, AttributeError):
                 # Graceful degradation: keep the raw text as the utterance.
                 content = raw
@@ -340,6 +402,7 @@ Respond naturally as this character. Keep responses conversational (2-4 sentence
                 formed_memories = []
                 goal_update = None
                 relationship_updates = {}
+                thread_updates = {"open": [], "resolved": [], "abandoned": []}
 
         # Extract usage info
         usage = response.usage
@@ -368,6 +431,8 @@ Respond naturally as this character. Keep responses conversational (2-4 sentence
             result["goal_update"] = goal_update
         if relationships_on:
             result["relationship_updates"] = relationship_updates
+        if threads_on:
+            result["thread_updates"] = thread_updates
         return result
 
     except Exception as e:
@@ -635,10 +700,18 @@ async def _run_turns(
     next_seq: Callable[[], int],
     model: Optional[str] = None,
     cognition: Optional[CognitionConfig] = None,
+    pending_threads: Optional[List[PendingThread]] = None,
 ) -> Dict[str, Any]:
     """
     Shared turn loop + completion/failure handling for both a fresh run and a
     resumed branch. Generates turns ``start_turn + 1 .. max_messages``.
+
+    Phase 4b: ``pending_threads`` is the global setups-&-payoffs ledger ([] for
+    a fresh run; the replayed ledger for a branch/resume). Open threads are fed
+    into each turn's generation prompt (causally real), updated from the
+    speaker's structured ``thread_updates``, emitted as ``thread.opened`` /
+    ``thread.resolved`` / ``thread.abandoned`` events, and carried on every
+    snapshot.
 
     ``start_turn`` is the number of turns already present (0 for a fresh run;
     the fork's ``from_turn`` for a resumed branch, whose earlier turns were
@@ -657,6 +730,8 @@ async def _run_turns(
     storage a problem.
     """
     turn = start_turn
+    if pending_threads is None:
+        pending_threads = []
 
     try:
         while turn < max_messages:
@@ -693,14 +768,22 @@ async def _run_turns(
             memory_on = bool(cognition_on and cognition.memory)
             goals_dynamic = bool(cognition_on and cognition.goals_dynamic)
             relationships_on = bool(cognition_on and cognition.relationships)
+            threads_on = bool(cognition_on and cognition.threads)
             reflect_every = cognition.reflection_every if cognition_on else 0
             retrieved = (
                 _retrieve_memories(speaker, cognition.retrieval_k)
                 if memory_on else []
             )
+            # Phase 4b: the OPEN threads fed into this turn's prompt are the
+            # turn's causal thread context (mirrors memory_refs).
+            open_threads = (
+                [t for t in pending_threads if t.status == "open"]
+                if threads_on else []
+            )
             response_data = await _generate_response(
                 speaker_name, speaker, topic, conversation, settings,
                 model=model, cognition=cognition, retrieved_memories=retrieved,
+                open_threads=open_threads,
             )
 
             # Phase 4a: pre-emit priority-hierarchy validation gate. The
@@ -778,6 +861,7 @@ async def _run_turns(
                         speaker_name, speaker, topic, conversation, settings,
                         model=model, cognition=cognition,
                         retrieved_memories=retrieved,
+                        open_threads=open_threads,
                     )
 
             # Update conversation
@@ -815,6 +899,10 @@ async def _run_turns(
             # were in-context for this turn (present only when memory is on).
             if memory_on:
                 response_payload["memory_refs"] = [m.id for m in retrieved]
+            # Phase 4b: the open-thread ids that were in-context for this turn
+            # (the causal analogue of memory_refs; present only when threads on).
+            if threads_on:
+                response_payload["thread_refs"] = [t.id for t in open_threads]
             await emit(
                 turn=turn,
                 seq=next_seq(),
@@ -886,6 +974,64 @@ async def _run_turns(
                         },
                     )
 
+            # Phase 4b: pending threads — apply the speaker's thread updates.
+            # Opens append new PendingThread entries; resolves/abandons only
+            # accept ids of threads that were genuinely OPEN and IN-CONTEXT
+            # this turn (never a fabricated payoff of an unseen thread).
+            if threads_on:
+                updates = response_data.get("thread_updates") or {}
+                in_context_ids = {t.id for t in open_threads}
+                for spec in updates.get("open", []):
+                    thread = PendingThread(
+                        description=spec["description"],
+                        thread_type=spec["thread_type"],
+                        origin_turn=turn,
+                        origin_agent=speaker_name,
+                    )
+                    pending_threads.append(thread)
+                    await emit(
+                        turn=turn,
+                        seq=next_seq(),
+                        event_type="thread.opened",
+                        agent_name=speaker_name,
+                        payload={
+                            "id": thread.id,
+                            "description": thread.description,
+                            "thread_type": thread.thread_type,
+                            "origin_turn": thread.origin_turn,
+                            "origin_agent": thread.origin_agent,
+                        },
+                    )
+                for status, key, event_type in (
+                    ("resolved", "resolved", "thread.resolved"),
+                    ("abandoned", "abandoned", "thread.abandoned"),
+                ):
+                    for tid in updates.get(key, []):
+                        if tid not in in_context_ids:
+                            continue
+                        thread = next(
+                            (t for t in pending_threads
+                             if t.id == tid and t.status == "open"),
+                            None,
+                        )
+                        if thread is None:
+                            continue
+                        thread.status = status
+                        thread.resolved_turn = turn
+                        await emit(
+                            turn=turn,
+                            seq=next_seq(),
+                            event_type=event_type,
+                            agent_name=speaker_name,
+                            payload={
+                                "id": thread.id,
+                                "description": thread.description,
+                                "thread_type": thread.thread_type,
+                                "origin_turn": thread.origin_turn,
+                                "resolved_turn": turn,
+                            },
+                        )
+
             # Phase 2c: reflection — every N turns the speaker condenses recent
             # memories into a higher-level belief (a MemoryItem tagged
             # 'reflection'), emitted as agent.reflected. Only fires when
@@ -929,6 +1075,7 @@ async def _run_turns(
                         topic=topic,
                         agents=agents,
                         conversation=conversation,
+                        pending_threads=pending_threads,
                         status="running",
                         created_at=int(time.time()),
                         total_turns=turn,
@@ -973,6 +1120,7 @@ async def _run_turns(
                             topic=topic,
                             agents=agents,
                             conversation=conversation,
+                            pending_threads=pending_threads,
                             status="capped",
                             created_at=completion_time,
                             completed_at=completion_time,
@@ -1016,6 +1164,7 @@ async def _run_turns(
                 topic=topic,
                 agents=agents,
                 conversation=conversation,
+                pending_threads=pending_threads,
                 status="complete",
                 created_at=completion_time,
                 completed_at=completion_time,
@@ -1077,6 +1226,7 @@ async def _apply_branch_mutation(
     db: Optional[Database],
     emit: Callable[..., Awaitable[None]],
     next_seq: Callable[[], int],
+    pending_threads: Optional[List[PendingThread]] = None,
 ) -> tuple[int, int]:
     """
     Apply ONE Phase 2b branch mutation to the reconstructed fork state, in place.
@@ -1155,6 +1305,7 @@ async def _apply_branch_mutation(
                     topic=topic,
                     agents=agents,
                     conversation=conversation,
+                    pending_threads=pending_threads or [],
                     status="running",
                     created_at=int(time.time()),
                     total_turns=inject_turn,
@@ -1193,7 +1344,7 @@ async def _apply_branch_mutation(
         agents[persona_name] = agents[persona_name].model_copy(
             update={"goals": [str(g) for g in goals]}
         )
-        await _save_mutation_snapshot(db, run_id, from_turn, topic, agents, conversation)
+        await _save_mutation_snapshot(db, run_id, from_turn, topic, agents, conversation, pending_threads)
         return from_turn, max_messages
 
     if kind == "add_persona":
@@ -1213,7 +1364,7 @@ async def _apply_branch_mutation(
             persona=persona_text,
             goals=[str(g) for g in goals],
         )
-        await _save_mutation_snapshot(db, run_id, from_turn, topic, agents, conversation)
+        await _save_mutation_snapshot(db, run_id, from_turn, topic, agents, conversation, pending_threads)
         return from_turn, max_messages
 
     if kind == "remove_persona":
@@ -1229,7 +1380,7 @@ async def _apply_branch_mutation(
                 "remove_persona: cannot remove the last persona (\u22651 required)"
             )
         del agents[name]
-        await _save_mutation_snapshot(db, run_id, from_turn, topic, agents, conversation)
+        await _save_mutation_snapshot(db, run_id, from_turn, topic, agents, conversation, pending_threads)
         return from_turn, max_messages
 
     raise BranchMutationError(f"unknown branch mutation kind: {kind!r}")
@@ -1242,6 +1393,7 @@ async def _save_mutation_snapshot(
     topic: str,
     agents: Dict[str, Any],
     conversation: List[Dict[str, Any]],
+    pending_threads: Optional[List[PendingThread]] = None,
 ) -> None:
     """Re-persist the fork snapshot after a state-only mutation so the stored
     snapshot at ``turn`` reflects the mutation (not the pre-mutation state copied
@@ -1256,6 +1408,7 @@ async def _save_mutation_snapshot(
             topic=topic,
             agents=agents,  # type: ignore[arg-type]
             conversation=conversation,
+            pending_threads=pending_threads or [],
             status="running",
             created_at=int(time.time()),
             total_turns=turn,
@@ -1276,9 +1429,14 @@ async def resume_simulation(
     model: Optional[str] = None,
     mutation: Optional[Dict[str, Any]] = None,
     cognition: Optional[CognitionConfig] = None,
+    pending_threads: Optional[List[PendingThread]] = None,
 ) -> Dict[str, Any]:
     """
     Phase 2a branch primitive — RESUME generating forward from a checkpoint.
+
+    Phase 4b: ``pending_threads`` is the ledger reconstructed as of the fork
+    (replayed from thread.* events by the branch service); it continues forward
+    on the branch exactly like agent state does.
 
     Additive engine entry (the fresh-start ``run_simulation`` path is untouched).
     The branch service has already: created the new run row (with parent_run_id /
@@ -1396,4 +1554,5 @@ async def resume_simulation(
         next_seq=_next_seq,
         model=model,
         cognition=cognition,
+        pending_threads=pending_threads,
     )

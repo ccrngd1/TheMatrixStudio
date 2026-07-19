@@ -37,7 +37,7 @@ from matrix_studio.engine import resume_simulation
 from matrix_studio.engine.simulator import OnEvent
 from matrix_studio.naming import generate_run_name
 from matrix_studio.settings import get_settings
-from matrix_studio.state import AgentState, SimSnapshot
+from matrix_studio.state import AgentState, CognitionConfig, PendingThread, SimSnapshot
 from matrix_studio.storage import Database
 
 logger = logging.getLogger(__name__)
@@ -85,16 +85,19 @@ def branch_budget(parent_run: Dict[str, Any], from_turn: int) -> int:
 
 async def reconstruct_at_turn(
     db: Database, parent_run: Dict[str, Any], from_turn: int
-) -> Tuple[str, Dict[str, "AgentState"], List[Dict[str, Any]]]:
+) -> Tuple[str, Dict[str, "AgentState"], List[Dict[str, Any]], List["PendingThread"]]:
     """
     Reconstruct the exact engine state as of ``from_turn`` for ``parent_run`` by
     replaying its event log (read-only — the parent is never touched).
 
-    Returns ``(topic, agents, conversation)`` where ``agents`` is a name->
-    :class:`AgentState` dict seeded from the run's cast (real persona/goals) and
-    populated with the per-agent conversation history + accumulated token/cost
-    as of the fork, and ``conversation`` is the transcript up to and including
-    ``from_turn``.
+    Returns ``(topic, agents, conversation, pending_threads)`` where ``agents``
+    is a name-> :class:`AgentState` dict seeded from the run's cast (real
+    persona/goals) and populated with the per-agent conversation history +
+    accumulated token/cost as of the fork, ``conversation`` is the transcript up
+    to and including ``from_turn``, and ``pending_threads`` is the Phase 4b
+    ledger replayed from ``thread.opened/resolved/abandoned`` events (each
+    event payload carries the full thread entry, so replay is lossless; [] for
+    runs that never used threads).
 
     ``agent.response`` payloads are tolerated in both shapes: the live engine
     writes ``message`` + token/cost fields; imported runs write ``content`` and
@@ -113,11 +116,16 @@ async def reconstruct_at_turn(
         agents[agent.name] = agent
 
     conversation: List[Dict[str, Any]] = []
+    pending_threads: List[PendingThread] = []
+    threads_by_id: Dict[str, PendingThread] = {}
 
     # Replay only up to and including the fork turn.
     events = await db.get_events(parent_run["id"], from_turn=0, to_turn=from_turn)
     for event in events:
-        if event["event_type"] != "agent.response":
+        etype = event["event_type"]
+        if etype not in (
+            "agent.response", "thread.opened", "thread.resolved", "thread.abandoned"
+        ):
             continue
         payload = event.get("payload")
         if isinstance(payload, str):
@@ -126,6 +134,27 @@ async def reconstruct_at_turn(
             except json.JSONDecodeError:
                 payload = {}
         payload = payload or {}
+
+        # Phase 4b: fold thread events into the ledger.
+        if etype == "thread.opened":
+            fields: Dict[str, Any] = {
+                "description": payload.get("description", ""),
+                "thread_type": payload.get("thread_type", "setup"),
+                "origin_turn": int(payload.get("origin_turn") or event["turn"]),
+                "origin_agent": payload.get("origin_agent"),
+            }
+            if payload.get("id"):
+                fields["id"] = payload["id"]
+            thread = PendingThread(**fields)
+            pending_threads.append(thread)
+            threads_by_id[thread.id] = thread
+            continue
+        if etype in ("thread.resolved", "thread.abandoned"):
+            thread = threads_by_id.get(payload.get("id", ""))
+            if thread is not None:
+                thread.status = "resolved" if etype == "thread.resolved" else "abandoned"
+                thread.resolved_turn = int(payload.get("resolved_turn") or event["turn"])
+            continue
 
         speaker = payload.get("speaker") or event.get("agent_name")
         if not speaker:
@@ -149,7 +178,7 @@ async def reconstruct_at_turn(
         agent.total_tokens_out += int(payload.get("tokens_out") or 0)
         agent.total_cost_usd += float(payload.get("cost_usd") or 0.0)
 
-    return topic, agents, conversation
+    return topic, agents, conversation, pending_threads
 
 
 async def create_branch_run(
@@ -295,7 +324,7 @@ async def execute_branch(
     """
     await db.update_run_status(branch_run_id, "running")
 
-    topic, agents, conversation = await reconstruct_at_turn(
+    topic, agents, conversation, pending_threads = await reconstruct_at_turn(
         db, parent_run, from_turn
     )
 
@@ -318,6 +347,7 @@ async def execute_branch(
             topic=topic,
             agents=agents,
             conversation=conversation,
+            pending_threads=pending_threads,
             status="running",
             created_at=int(time.time()),
             total_turns=from_turn,
@@ -336,6 +366,14 @@ async def execute_branch(
     if mutation and mutation.get("kind") == "promote_aside":
         resolved_mutation = await _resolve_promote_aside(db, mutation, branch_run_id)
 
+    # Phase 4b: a branch continues with the parent's cognition config (carried
+    # into the branch's own config by create_branch_run), so cognition state —
+    # including the pending-thread ledger reconstructed above — keeps evolving
+    # forward. Runs without a cognition config get the disabled default
+    # (unchanged pre-4b branch behavior).
+    branch_run = await db.get_run(branch_run_id)
+    cognition = CognitionConfig.from_config(_parse_config(branch_run or {}))
+
     return await resume_simulation(
         run_id=branch_run_id,
         topic=topic,
@@ -348,6 +386,8 @@ async def execute_branch(
         on_event=on_event,
         model=model,
         mutation=resolved_mutation,
+        cognition=cognition,
+        pending_threads=pending_threads,
     )
 
 
@@ -445,7 +485,9 @@ async def resume_run_in_place(
     )
 
     # 3. Reconstruct state at the checkpoint (read-only replay of the log).
-    topic, agents, conversation = await reconstruct_at_turn(db, run, resume_turn)
+    topic, agents, conversation, pending_threads = await reconstruct_at_turn(
+        db, run, resume_turn
+    )
 
     # Ensure a snapshot exists at the resume point so the run has a checkpoint
     # there even if we resumed from turn 0 (no prior checkpoint).
@@ -457,6 +499,7 @@ async def resume_run_in_place(
                 topic=topic,
                 agents=agents,
                 conversation=conversation,
+                pending_threads=pending_threads,
                 status="running",
                 created_at=int(time.time()),
                 total_turns=resume_turn,
@@ -470,7 +513,8 @@ async def resume_run_in_place(
     await db.update_run_status(run_id, "running")
     max_messages = branch_budget(run, resume_turn)
     start_seq = await db.max_seq(run_id) + 1
-    resume_model = _parse_config(run).get("model") or None
+    resume_cfg = _parse_config(run)
+    resume_model = resume_cfg.get("model") or None
 
     return await resume_simulation(
         run_id=run_id,
@@ -483,4 +527,8 @@ async def resume_run_in_place(
         db=db,
         on_event=on_event,
         model=resume_model,
+        # Phase 4b: an in-place resume continues with the run's OWN cognition
+        # config + replayed thread ledger (a run that used threads keeps them).
+        cognition=CognitionConfig.from_config(resume_cfg),
+        pending_threads=pending_threads,
     )

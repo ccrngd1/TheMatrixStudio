@@ -63,6 +63,9 @@ class CognitionConfigModel(BaseModel):
     goals_dynamic: bool = False
     relationships: bool = False
     retrieval_k: int = Field(default=5, ge=0)
+    # Phase 4b: pending-thread ledger (opt-in; needs enabled=True too).
+    threads: bool = False
+    thread_stale_after: int = Field(default=5, ge=1)
 
 
 class RunConfigModel(BaseModel):
@@ -574,6 +577,25 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             for m in agent.memory_stream
         ]
         beliefs = [m for m in memories if "reflection" in (m["tags"] or [])]
+        # Phase 4b: this agent's pending threads (planted by them), with the
+        # staleness flag so the dossier can show "dangling" setups. Sourced
+        # from the same snapshot — real ledger state only.
+        try:
+            _cfg = json.loads(run["config_json"]) if run.get("config_json") else {}
+        except json.JSONDecodeError:
+            _cfg = {}
+        _cog = _cfg.get("cognition") if isinstance(_cfg.get("cognition"), dict) else {}
+        _stale_after = int(_cog.get("thread_stale_after", 5) or 5)
+        agent_threads = []
+        for t in snapshot.pending_threads:
+            if t.origin_agent != name:
+                continue
+            entry = t.model_dump()
+            entry["stale"] = (
+                t.status == "open"
+                and (snapshot.total_turns - t.origin_turn) >= _stale_after
+            )
+            agent_threads.append(entry)
         return {
             "run_id": run["id"],
             "agent": agent.name,
@@ -581,6 +603,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             "goals": agent.goals,
             "memory_stream": memories,
             "beliefs": beliefs,
+            "pending_threads": agent_threads,
             "relationships": agent.relationships,
             "tokens_in": agent.total_tokens_in,
             "tokens_out": agent.total_tokens_out,
@@ -644,6 +667,41 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             "run_id": run["id"],
             "agent": name,
             "portrait_b64": portrait,
+        }
+
+    @app.get("/api/runs/{ref}/pending-threads")
+    async def pending_threads(ref: str) -> Dict[str, Any]:
+        """Phase 4b: the run's pending-thread ledger (setups & payoffs), read
+        from the latest snapshot. Open threads older than the run's configured
+        staleness age (cognition.thread_stale_after, default 5 turns) are
+        flagged ``stale`` ("dangling" in the dossier UI). Distinct from the
+        Phase 1.5 aside ``/threads`` routes. Empty ledger -> empty list, never
+        a synthesized thread."""
+        run = await db.get_run_by_ref(ref)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        snapshot = await db.get_snapshot(run["id"], turn=None)  # latest
+        if snapshot is None:
+            return {"run_id": run["id"], "threads": [], "stale_after": None}
+        try:
+            cfg = json.loads(run["config_json"]) if run.get("config_json") else {}
+        except json.JSONDecodeError:
+            cfg = {}
+        cog = cfg.get("cognition") if isinstance(cfg.get("cognition"), dict) else {}
+        stale_after = int(cog.get("thread_stale_after", 5) or 5)
+        current_turn = snapshot.total_turns
+        out = []
+        for t in snapshot.pending_threads:
+            entry = t.model_dump()
+            entry["stale"] = (
+                t.status == "open" and (current_turn - t.origin_turn) >= stale_after
+            )
+            out.append(entry)
+        return {
+            "run_id": run["id"],
+            "threads": out,
+            "stale_after": stale_after,
+            "as_of_turn": current_turn,
         }
 
     @app.get("/api/runs/{ref}/turns/{turn}/trace")
