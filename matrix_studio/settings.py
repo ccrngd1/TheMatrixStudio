@@ -62,6 +62,20 @@ class Settings(BaseSettings):
 
     # Simulation defaults
     max_messages: int = Field(default=20, ge=1, description="Default max turns per simulation")
+    # Phase 4a: priority-hierarchy validation gate (pre-emit). ON by default;
+    # OFF reproduces pre-4a behavior byte-for-byte (no validation events, no
+    # extra calls, identical outputs) — regression-locked by test.
+    validation_enabled: bool = Field(
+        default=True,
+        description="Pre-emit priority-hierarchy validation gate (VALIDATION_ENABLED). "
+        "OFF = byte-for-byte pre-4a behavior.",
+    )
+    validation_retry_budget: int = Field(
+        default=1,
+        ge=0,
+        description="How many times a validation-rejected turn is regenerated before "
+        "being emitted with a validation.flagged event (never rewritten in place).",
+    )
     max_run_cost_usd: float = Field(
         default=0.0,
         ge=0.0,

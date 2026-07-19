@@ -684,6 +684,20 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
                             "id": m.id, "content": m.content,
                             "importance": m.importance, "tags": m.tags,
                         })
+        # Phase 4a: surface the turn's validation trail (checked attempts +
+        # flag, if any) so the why-trace can show "validated / regenerated once
+        # for a causality violation". Empty when validation was off — we never
+        # synthesize a validation record.
+        validation_checks = [
+            e["payload"] for e in turn_events
+            if e["event_type"] == "validation.checked"
+        ]
+        validation_flag = next(
+            (e["payload"] for e in turn_events
+             if e["event_type"] == "validation.flagged"),
+            None,
+        )
+
         return {
             "run_id": run["id"],
             "turn": turn,
@@ -695,6 +709,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             "goal_served": payload.get("goal_served"),
             "memory_refs": refs,
             "memories": resolved,
+            "validation": {"checks": validation_checks, "flagged": validation_flag},
         }
 
     @app.post("/api/runs/{ref}/branch", status_code=201)

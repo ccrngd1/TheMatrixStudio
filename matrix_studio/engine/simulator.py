@@ -27,6 +27,7 @@ from matrix_studio.avatar import generate_avatar
 from matrix_studio.settings import get_settings
 from matrix_studio.state import AgentState, CognitionConfig, MemoryItem, SimSnapshot
 from matrix_studio.storage import Database
+from matrix_studio.validation import validate_utterance
 
 logger = logging.getLogger(__name__)
 
@@ -701,6 +702,83 @@ async def _run_turns(
                 speaker_name, speaker, topic, conversation, settings,
                 model=model, cognition=cognition, retrieved_memories=retrieved,
             )
+
+            # Phase 4a: pre-emit priority-hierarchy validation gate. The
+            # candidate utterance is CHECKED (never edited) before it is
+            # committed as agent.response. On a violation the whole turn is
+            # regenerated (retry budget, default 1); a still-violating final
+            # attempt is emitted as-is with a validation.flagged event. With
+            # validation_enabled=False this block is skipped entirely —
+            # byte-for-byte pre-4a behavior (regression-locked by test).
+            if settings.validation_enabled:
+                attempt = 0
+                while True:
+                    candidate = response_data["content"]
+                    # The engine's own error marker is not model output; there
+                    # is nothing to validate (and nothing to regenerate from).
+                    if candidate.startswith("[Error generating response"):
+                        break
+                    verdict = await validate_utterance(
+                        candidate,
+                        speaker_name,
+                        list(agents.keys()),
+                        conversation,
+                        settings,
+                        model=model,
+                    )
+                    # A selective LLM confirmation is a real cost — attribute
+                    # it to the speaker like every other call this turn.
+                    speaker.total_tokens_in += verdict["llm_tokens_in"]
+                    speaker.total_tokens_out += verdict["llm_tokens_out"]
+                    speaker.total_cost_usd += verdict["llm_cost_usd"]
+                    checked_payload: Dict[str, Any] = {
+                        "speaker": speaker_name,
+                        "attempt": attempt,
+                        "passed": verdict["ok"],
+                    }
+                    if verdict["method"] is not None:
+                        checked_payload["method"] = verdict["method"]
+                    if not verdict["ok"]:
+                        checked_payload["principle"] = verdict["principle"]
+                        checked_payload["reason"] = verdict["reason"]
+                    await emit(
+                        turn=turn,
+                        seq=next_seq(),
+                        event_type="validation.checked",
+                        agent_name=speaker_name,
+                        payload=checked_payload,
+                    )
+                    if verdict["ok"]:
+                        break
+                    if attempt >= settings.validation_retry_budget:
+                        # Budget exhausted: emit the last attempt as-is,
+                        # flagged. NEVER rewritten — that would fabricate
+                        # cognition.
+                        await emit(
+                            turn=turn,
+                            seq=next_seq(),
+                            event_type="validation.flagged",
+                            agent_name=speaker_name,
+                            payload={
+                                "speaker": speaker_name,
+                                "principle": verdict["principle"],
+                                "reason": verdict["reason"],
+                                "attempts": attempt + 1,
+                            },
+                        )
+                        break
+                    # Reject-and-regenerate: the rejected attempt's real cost
+                    # still counts (it happened); its cognition is discarded
+                    # wholesale with the utterance (nothing from it is kept).
+                    speaker.total_tokens_in += response_data["tokens_in"]
+                    speaker.total_tokens_out += response_data["tokens_out"]
+                    speaker.total_cost_usd += response_data["cost_usd"]
+                    attempt += 1
+                    response_data = await _generate_response(
+                        speaker_name, speaker, topic, conversation, settings,
+                        model=model, cognition=cognition,
+                        retrieved_memories=retrieved,
+                    )
 
             # Update conversation
             message = {
