@@ -79,6 +79,23 @@ Corollary — the engine must be **introspectable**: it emits *structured per-ag
 between engine and UI, and it's the genuinely novel/hard part. The old generative-agents code does
 not provide this cleanly.
 
+## 4a. Cognition fidelity & the priority hierarchy (added 2026-07-19)
+
+_Origin: external validation. A Portuguese emergent-narrative prompt ("Mestre Daedalus v2.0 — Arquiteto de Narrativas Emergentes," r/PromptEngineering) independently arrives at the same core design principle this engine already enforces — worth citing as convergent-design evidence for the "publishable" case._
+
+**Cognition fidelity (the honesty gate, restated).** Agents must act from their own psychology — goals, beliefs, fears, memory — **never as tools bent to drive a narrative**. This is exactly the Phase 2c honesty-gate principle ("all cognition produced IN the generation loop, causally real, never post-hoc"). The external prompt states it as *"as decisões dos NPCs devem refletir sua psicologia, nunca as necessidades do roteiro"* — same rule, different domain. It is a design invariant, not a feature toggle.
+
+**Priority hierarchy (conflict resolution in the generation loop).** When simulation goals conflict, resolve in this fixed order — **never violate a higher principle to serve a lower one**:
+1. **World coherence** (the sim respects its own established rules)
+2. **Causality** (events follow from prior state; no unearned coincidence)
+3. **Continuity** (state persists correctly across turns/branches)
+4. **Agent agency** (participant/intervention influence is real, not illusory)
+5. **Character consistency** (see cognition fidelity above)
+6. **Dramatic/emotional impact**
+7. **Novelty**
+
+_Enforcement status: **design principle, not yet a code gate.** The generation loop should add an explicit pre-emit validation pass keyed on this order (coherence → causality → continuity → agency → consistency). Verify against the actual loop code (`_generate_response()` / validation path) before claiming it exists. MasterControl follow-up, tracked with the deferred items (latent-event/pending-thread state; adaptive-pressure mutation; structured output contract)._
+
 ### Determinism note (pre-empt the trap)
 LLM calls are non-deterministic, so re-running from a checkpoint will NOT reproduce the original
 future — and that's fine, because **we never re-run the original.** The original branch is already
