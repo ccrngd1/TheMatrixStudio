@@ -144,6 +144,48 @@ helper, selective-LLM-confirm (exactly one extra call), confirm-failure fail-ope
 
 ---
 
+### 2.2 — 4b: Latent/pending-thread state (setups & payoffs ledger)
+
+**New state:** `PendingThread` (`matrix_studio/state.py`) — `{id (12-hex), description,
+thread_type (setup|promise|faction-action|deferred-consequence), origin_turn, origin_agent,
+status (open|resolved|abandoned), resolved_turn}`. Global ledger `SimSnapshot.pending_threads`
+(default `[]` — old stored snapshots still parse).
+
+- **Opt-in via cognition config:** `cognition.threads` (default OFF — cognition-enabled runs keep
+  their pre-4b structured schema byte-for-byte unless threads are turned on) +
+  `cognition.thread_stale_after` (default 5 turns).
+- **Causally real, both directions:**
+  - *In:* every turn's generation prompt lists the OPEN threads with their ids ("Unresolved
+    threads..."); the listed ids are recorded as the turn's `thread_refs` on `agent.response`
+    (the exact analogue of 2c `memory_refs`). Proven by a test that reads the actual prompts:
+    an open thread appears in the next turn's prompt; a resolved thread stops appearing.
+  - *Out:* the 2c structured output schema is extended (only when threads are ON) with
+    `thread_updates: {open: [{description, thread_type}], resolved: [ids], abandoned: [ids]}` —
+    same single JSON-mode call, no separate pass.
+- **Honesty guards:** `resolved`/`abandoned` ids are accepted ONLY if that thread was genuinely
+  open and in-context this turn (no fabricated payoffs of unseen threads); opens are capped at 2
+  per turn; unknown `thread_type` degrades to `setup`; parse failure discards thread updates with
+  the rest of the structured fields (graceful, run never stalls).
+- **Events:** `thread.opened` / `thread.resolved` / `thread.abandoned` (payload carries the full
+  entry, making event replay lossless). Generic table, no migration.
+- **Snapshot/branch/scrub survival:** the ledger rides every per-turn/mutation/capped/final
+  snapshot. `branching.reconstruct_at_turn` now returns `(topic, agents, conversation,
+  pending_threads)` — the ledger is replayed from thread events (honouring the fork point), the
+  fork snapshot is seeded with it, and `execute_branch`/`resume_run_in_place` pass the run's own
+  cognition config + ledger into `resume_simulation` so the branch keeps evolving them forward.
+  (Pre-4b, branches passed `cognition=None`; for runs without a cognition config the parsed
+  default is identical, so pre-existing branch behavior is unchanged — full suite confirms.)
+- **Staleness surfacing:** new read-only API `GET /api/runs/{ref}/pending-threads` (ledger +
+  per-thread `stale` flag, `stale_after`, `as_of_turn`), and the agent dossier gains
+  `pending_threads` (threads planted by that agent, with `stale`). Sourced only from real snapshot
+  state; an empty ledger returns `[]`, never a synthesized thread.
+
+**Tests:** 7 new — threads-off (no schema/events/refs + empty ledger), full
+open→feed-forward→resolve lifecycle (prompt-level proof of causality + `thread_refs`),
+abandon + fabricated-resolution-ignored + open-cap + type-degradation, branch reconstruction
+losslessness at two fork points, branch-continues-ledger-forward (prompt-level proof on the
+branch), old-snapshot-parses, staleness API + dossier.
+
 ## 3. Test counts
 
 - Baseline (pre-Phase 4): 207 backend + 18 frontend, all passing.
