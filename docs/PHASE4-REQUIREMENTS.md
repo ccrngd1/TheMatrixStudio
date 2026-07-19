@@ -1,6 +1,14 @@
 # Requirements — TheMatrix Simulation Studio, Phase 4
 
-**Status:** DRAFT — staged by Main 2026-07-19; NOT approved, NOT handed off. Gated on Phase 3 shipping first.
+**Status:** APPROVED (CC 2026-07-19) — handed to MasterControl to build. Phase 3 verified complete (v0.3.0), gate satisfied.
+
+**Working decisions (Main, 2026-07-19 — defaults baked in so MasterControl isn't blocked; CC can override any):**
+1. Validation retry budget = **1** (regenerate once, then flag-and-emit).
+2. Validation mechanism = **heuristic-first**, selective LLM check only on suspected violations (cost control).
+3. Pending-thread staleness age = **5 turns**.
+4. **4c (adaptive pressure) IS in scope**, built last, opt-in/experimental, gated behind the 4a agency check.
+5. Version target = **0.4.0**.
+6. Sequencing = **Phase 3 first (done)** → Phase 4 now. Build order 4a → 4b → 4d → 4c.
 **Spec:** `docs/PROJECT-SPEC.md` (§4a cognition fidelity + priority hierarchy; §6 phase plan)
 **Builds on:** Phases 0/1/1.5/2a/2b/2c (feature-complete engine + UI) and Phase 3 (release polish).
 **Origin:** Convergent-design pass against an external emergent-narrative prompt ("Mestre Daedalus v2.0", r/PromptEngineering) — see §4a. Four items graduated from that review: a priority-hierarchy validation gate, latent/pending-thread state, an adaptive-pressure intervention, and a structured output contract.
