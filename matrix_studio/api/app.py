@@ -135,6 +135,8 @@ class BranchMutationModel(BaseModel):
     Step 1: inject_message, continue
     Step 2: edit_goal, add_persona, remove_persona
     Step 3: promote_aside
+    Phase 4c: adaptive_pressure (EXPERIMENTAL, opt-in via
+    ADAPTIVE_PRESSURE_ENABLED)
     """
 
     kind: str
@@ -142,6 +144,9 @@ class BranchMutationModel(BaseModel):
     speaker: Optional[str] = None
     content: Optional[str] = None
     source: Optional[str] = None
+    # adaptive_pressure (Phase 4c, experimental): optional operator direction
+    # for the pressure event (e.g. "escalate the audit dilemma").
+    focus: Optional[str] = None
     # continue
     add_budget: Optional[int] = Field(default=None, ge=1)
     # edit_goal / remove_persona — the persona's name in the cast
@@ -191,7 +196,7 @@ def _run_summary(run: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-_SUPPORTED_MUTATION_KINDS = {"inject_message", "continue", "edit_goal", "add_persona", "remove_persona", "promote_aside"}
+_SUPPORTED_MUTATION_KINDS = {"inject_message", "continue", "edit_goal", "add_persona", "remove_persona", "promote_aside", "adaptive_pressure"}
 
 
 # Friendly labels for the model dropdown. Exact known ids map to clean names;
@@ -243,6 +248,21 @@ def _validate_branch_mutation(
                 status_code=422, detail="continue.add_budget must be >= 1"
             )
         return {"kind": "continue", "add_budget": int(mutation.add_budget)}
+    # Phase 4c (EXPERIMENTAL): refuse up front while the feature is disabled so
+    # no branch run row is ever created for it.
+    if kind == "adaptive_pressure":
+        if not get_settings().adaptive_pressure_enabled:
+            raise HTTPException(
+                status_code=422,
+                detail="adaptive_pressure is experimental and disabled "
+                "(set ADAPTIVE_PRESSURE_ENABLED=true to opt in)",
+            )
+        out = {"kind": "adaptive_pressure"}
+        if mutation.focus:
+            out["focus"] = str(mutation.focus)
+        if mutation.add_budget is not None:
+            out["add_budget"] = int(mutation.add_budget)
+        return out
     if kind == "inject_message":
         speaker = (mutation.speaker or "").strip()
         content = (mutation.content or "").strip()

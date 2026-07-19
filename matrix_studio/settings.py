@@ -76,6 +76,14 @@ class Settings(BaseSettings):
         description="How many times a validation-rejected turn is regenerated before "
         "being emitted with a validation.flagged event (never rewritten in place).",
     )
+    # Phase 4c (EXPERIMENTAL): adaptive-pressure intervention. OFF by default;
+    # while off the adaptive_pressure branch-mutation kind is refused entirely.
+    adaptive_pressure_enabled: bool = Field(
+        default=False,
+        description="Enable the experimental adaptive_pressure branch mutation "
+        "(ADAPTIVE_PRESSURE_ENABLED). Pressure modulates the world only; the "
+        "agency guard rejects any output that negates participant choice.",
+    )
     # Phase 4d: optional structured output view (Narrative/Consequences/State/
     # Possibilities). OFF by default; a derived read-only projection over the
     # canonical events — enabling it changes nothing about events/snapshots.
