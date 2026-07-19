@@ -43,6 +43,8 @@ export function Scrubber({ runId, maxTurn, cast, defaultBudget, models = [], def
   const [addPersonaText, setAddPersonaText] = useState('')
   const [addGoals, setAddGoals] = useState('')
   const [removePersona, setRemovePersona] = useState('')
+  // Phase 4c (experimental): optional operator direction for adaptive pressure.
+  const [pressureFocus, setPressureFocus] = useState('')
 
   useEffect(() => {
     setLoading(true)
@@ -73,6 +75,11 @@ export function Scrubber({ runId, maxTurn, cast, defaultBudget, models = [], def
       return { kind: 'add_persona', name: addName.trim(), persona: addPersonaText.trim(),
                goals: addGoals.split('\n').map((g) => g.trim()).filter(Boolean) }
     if (mutKind === 'remove_persona') return { kind: 'remove_persona', persona_name: removePersona }
+    if (mutKind === 'adaptive_pressure') {
+      const m: Record<string, unknown> = { kind: 'adaptive_pressure' }
+      if (pressureFocus.trim()) m.focus = pressureFocus.trim()
+      return m
+    }
     return undefined
   }
 
@@ -116,6 +123,7 @@ export function Scrubber({ runId, maxTurn, cast, defaultBudget, models = [], def
                 <option value="edit_goal">🎯 Edit goal</option>
                 <option value="add_persona">➕ Add persona</option>
                 <option value="remove_persona">➖ Remove persona</option>
+                <option value="adaptive_pressure">🌩 Adaptive pressure (experimental)</option>
               </select>
               {models.length > 0 && (
                 <>
@@ -184,6 +192,17 @@ export function Scrubber({ runId, maxTurn, cast, defaultBudget, models = [], def
                 {castNames.map((n) => <option key={n} value={n}>{n}</option>)}
               </select>
             )}
+
+            {mutKind === 'adaptive_pressure' && (<>
+              <p className="text-[11px] text-amber-400">
+                ⚠ Experimental — must be enabled server-side (ADAPTIVE_PRESSURE_ENABLED=true).
+                Injects ONE narrator world event that raises the stakes. Pressure only ever
+                modulates the world; output that would negate a participant's choices is rejected.
+              </p>
+              <input placeholder="Optional focus, e.g. “escalate the audit dilemma”"
+                value={pressureFocus} onChange={(e) => setPressureFocus(e.target.value)}
+                className="w-full rounded border border-matrix-border bg-matrix-bg px-2 py-1 text-xs text-slate-200" />
+            </>)}
 
             <div className="flex justify-end">
               <button onClick={() => handleBranch(true)} disabled={branching}

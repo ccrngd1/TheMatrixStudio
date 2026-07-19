@@ -1227,6 +1227,8 @@ async def _apply_branch_mutation(
     emit: Callable[..., Awaitable[None]],
     next_seq: Callable[[], int],
     pending_threads: Optional[List[PendingThread]] = None,
+    settings=None,
+    model: Optional[str] = None,
 ) -> tuple[int, int]:
     """
     Apply ONE Phase 2b branch mutation to the reconstructed fork state, in place.
@@ -1245,10 +1247,96 @@ async def _apply_branch_mutation(
     State-only mutations (edit_goal / add_persona / remove_persona) and
     ``promote_aside`` arrive in later 2b steps.
 
+    Phase 4c adds ``adaptive_pressure`` (EXPERIMENTAL, opt-in via
+    settings.adaptive_pressure_enabled): observe run-level signals at the fork,
+    generate ONE narrator-voiced world event under the hard agency guard, and
+    inject it as a branch turn (same mechanics as inject_message, source
+    "pressure") after emitting a ``pressure.applied`` audit event. A pressure
+    text the guard rejects (after 1 retry) rejects the WHOLE intervention.
+
     The parent run is never touched: all writes here target ``run_id`` (the
     branch). Raises :class:`BranchMutationError` on invalid input.
     """
     kind = mutation.get("kind")
+
+    if kind == "adaptive_pressure":
+        from matrix_studio.pressure import (
+            PressureRejectedError,
+            generate_pressure,
+            observe_signals,
+        )
+
+        if settings is None:
+            settings = get_settings()
+        if not settings.adaptive_pressure_enabled:
+            raise BranchMutationError(
+                "adaptive_pressure is experimental and disabled "
+                "(set ADAPTIVE_PRESSURE_ENABLED=true to opt in)"
+            )
+
+        signals = observe_signals(
+            conversation=conversation,
+            pending_threads=pending_threads or [],
+            from_turn=from_turn,
+            max_messages=max_messages,
+        )
+        focus = str(mutation.get("focus", "")).strip() or None
+        try:
+            pressure = await generate_pressure(
+                topic=topic,
+                conversation=conversation,
+                signals=signals,
+                participants=list(agents.keys()),
+                settings=settings,
+                model=model,
+                focus=focus,
+            )
+        except PressureRejectedError as e:
+            # Rejected outright — nothing was emitted, nothing rewritten.
+            raise BranchMutationError(str(e)) from e
+
+        inject_turn = from_turn + 1
+        # Audit event first: the observed signals + attempts, verbatim, so the
+        # intervention is fully explainable in the event log.
+        await emit(
+            turn=inject_turn,
+            seq=next_seq(),
+            event_type="pressure.applied",
+            agent_name="Narrator",
+            payload={
+                "signals": signals,
+                "focus": focus,
+                "attempts": pressure["attempts"],
+                "tokens_in": pressure["tokens_in"],
+                "tokens_out": pressure["tokens_out"],
+                "cost_usd": pressure["cost_usd"],
+            },
+        )
+        # Then the world event itself, as a real injected narrator turn (same
+        # shape/mechanics as inject_message, so replay/UI need zero new logic).
+        resolved = {
+            "kind": "inject_message",
+            "speaker": "Narrator",
+            "content": pressure["content"],
+            "source": "pressure",
+        }
+        if mutation.get("add_budget") is not None:
+            resolved["add_budget"] = mutation["add_budget"]
+        return await _apply_branch_mutation(
+            mutation=resolved,
+            run_id=run_id,
+            from_turn=from_turn,
+            topic=topic,
+            agents=agents,
+            conversation=conversation,
+            max_messages=max_messages,
+            db=db,
+            emit=emit,
+            next_seq=next_seq,
+            pending_threads=pending_threads,
+            settings=settings,
+            model=model,
+        )
 
     if kind == "continue":
         add_budget = int(mutation.get("add_budget", 0))
@@ -1530,6 +1618,9 @@ async def resume_simulation(
             db=db,
             emit=_emit,
             next_seq=_next_seq,
+            pending_threads=pending_threads,
+            settings=settings,
+            model=model,
         )
         last_speaker = conversation[-1]["speaker"] if conversation else last_speaker
 

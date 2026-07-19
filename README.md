@@ -20,8 +20,11 @@ TheMatrix Simulation Studio is a standalone tool for running multi-agent convers
 
 - **Live Control Room** — Cast board with character cards (avatar + persona + goals), live-scrolling conversation feed, active-speaker highlight, and running token/$ cost meter
 - **Checkpointing & Branching** — Every turn is checkpointed; branch from any point to create "what-if" timelines with different interventions
-- **Interventions** — Inject messages, edit goals, add/remove personas, continue discussions, or promote aside conversations into the main timeline
+- **Interventions** — Inject messages, edit goals, add/remove personas, continue discussions, promote aside conversations into the main timeline, or apply adaptive pressure (experimental, opt-in)
 - **Agent Cognition** (Phase 2c, optional) — Agents form memories, reflect periodically, track relationships, and explain their reasoning ("why did they say that?")
+- **Consistency Validation** (Phase 4a) — A pre-emit gate checks each turn against the priority hierarchy (coherence / causality / continuity / agency / character consistency) and regenerates violations; model output is never rewritten in place
+- **Pending Threads** (Phase 4b, optional) — A setups-&-payoffs ledger: agents plant threads that causally feed into later turns, with dangling-thread surfacing in the dossier
+- **Structured Turn View** (Phase 4d, optional) — Narrative / Consequences / Updated State / Possibilities projection of any turn, sourced only from real events
 - **Post-Run Analysis** — Auto-generated structured summary (consensus / dissenters / key ideas / open questions) plus aside conversations (ask the analyst, ask a persona, ask the room)
 - **Non-Photorealistic Avatars** — Anime-style character portraits generated via Stability SD3.5 on AWS Bedrock (optional, with graceful fallback to initials)
 - **Cost Visibility** — Live token/$ meter, optional hard spend cap per run, and creation-time cost estimate
@@ -138,6 +141,23 @@ COST_WARN_THRESHOLD=1.0        # Warning threshold shown in UI cost meter
 ```
 
 **Cost Cap:** When `MAX_RUN_COST_USD > 0`, the engine checks accumulated real cost after each turn. When the cap is reached, the run ends in a terminal `capped` status. The cap acts on LiteLLM-reported cost only; providers that don't report cost (e.g., local Ollama) are counted as $0.
+
+### Phase 4: Validation, Threads, Structured View & Adaptive Pressure
+
+```bash
+VALIDATION_ENABLED=true          # Pre-emit priority-hierarchy validation gate (default ON)
+VALIDATION_RETRY_BUDGET=1        # Regenerations before flag-and-emit
+STRUCTURED_OUTPUT=false          # 4-section structured turn view endpoint (default OFF)
+ADAPTIVE_PRESSURE_ENABLED=false  # EXPERIMENTAL adaptive-pressure intervention (default OFF)
+```
+
+**Validation gate (4a):** Each generated turn is checked against the priority hierarchy (world coherence > causality > continuity > agency > character consistency > dramatic impact > novelty) before it is committed. A violating turn is regenerated once, then emitted as-is with a `validation.flagged` event — model output is never rewritten in place. Heuristic checks run on every turn; a small LLM confirmation call is made only on suspected violations. `VALIDATION_ENABLED=false` reproduces pre-4a behavior exactly.
+
+**Pending threads (4b):** Opt-in per run via `config.cognition.threads: true` (requires cognition enabled). Agents can plant setups/promises and pay them off later; open threads are fed into subsequent turn prompts, ride every snapshot/branch, and surface as "dangling" in the dossier after `thread_stale_after` turns (default 5).
+
+**Structured view (4d):** `GET /api/runs/{ref}/turns/{turn}/structured` returns a Narrative / Consequences / Updated State / Possibilities projection of a turn, sourced only from canonical events (every line cites its backing event). Off by default; enable globally with `STRUCTURED_OUTPUT=true` or per request with `?opt_in=true`.
+
+**⚠ Adaptive pressure (4c, EXPERIMENTAL):** A branch intervention that observes run-level signals (repetition, stale threads, remaining budget) and injects ONE narrator-voiced world event to raise the stakes. Hard agency guard: pressure modulates the world only — generated text that negates a participant's freedom of choice is rejected outright (never emitted, never rewritten). Off by default; opt in with `ADAPTIVE_PRESSURE_ENABLED=true`.
 
 ### Avatar Generation
 
@@ -336,6 +356,7 @@ npm run dev
 - ✅ **Phase 2b:** Interventions — inject message, continue, edit goal, add/remove persona, promote aside
 - ✅ **Phase 2c:** Agent cognition — memory stream, reflection, relationships, dynamic goals, why-trace
 - ✅ **Phase 3:** Release polish — cost guards, BYO-key readiness, examples, docs, hygiene (v0.3.0)
+- ✅ **Phase 4:** Deeper cognition & steering — priority-hierarchy validation gate, pending-thread ledger, structured output view, adaptive pressure (experimental) (v0.4.0)
 - **Future:** Embedding-based memory retrieval, multi-modal inputs, hosted deployment
 
 ## Documentation

@@ -212,6 +212,39 @@ enable, every-line-backed-by-real-event + verbatim-narrative (per-turn, resolved
 event log), possibilities-from-ledger + honest empty notes, unknown-turn 404, formatter unit fold
 over all event kinds, empty-turn honesty.
 
+### 2.4 — 4c: Adaptive-pressure intervention (EXPERIMENTAL, opt-in, built last)
+
+**New module `matrix_studio/pressure.py`** + a new `adaptive_pressure` kind in the 2b
+branch-mutation family (`_apply_branch_mutation` dispatch + `BranchMutationModel` /
+`_validate_branch_mutation` at the API).
+
+- **Branch-from-checkpoint only** (2b family): observe signals at the fork → generate ONE
+  narrator-voiced world event → inject it as a real branch turn (reuses the `inject_message`
+  mechanics with `source: "pressure"`), preceded by a `pressure.applied` audit event carrying the
+  observed signals + attempts + real token/cost verbatim. History is never edited in place; the
+  parent run is untouched (asserted by test).
+- **Signals from real state only** (`observe_signals`, pure): repetition (max pairwise token
+  Jaccard over the last 6 messages), stale open threads (4b ledger, default age 5), open-thread
+  count, remaining turn budget.
+- **HARD agency guard:** every generated pressure text is checked with the same
+  `validation.check_agency` the 4a gate uses. Violating text is regenerated once; if the retry
+  still violates, the WHOLE intervention is rejected (`PressureRejectedError` →
+  `BranchMutationError` → HTTP 422). Nothing is emitted and nothing rewritten on rejection
+  (asserted end-to-end: no `pressure.applied`, no injected turn). A generation failure also
+  rejects — no fabricated fallback event.
+- **Off by default, double-gated:** `settings.adaptive_pressure_enabled=False` → the API refuses
+  the mutation kind with 422 BEFORE any branch run row is created, and the engine dispatch
+  refuses it independently (defense in depth).
+- **Experimental labeling:** README section marked "⚠ EXPERIMENTAL"; the Scrubber intervention
+  picker labels the option "Adaptive pressure (experimental)" with an inline warning; the engine
+  refusal message says "experimental and disabled".
+
+**Tests:** 8 new — API refusal when disabled (+ no orphan run row), engine refusal when disabled,
+`observe_signals` pure unit (repetition/stale/budget/empty), full ON branch (audit event + injected
+narrator turn + parent untouched), guard regenerate-then-accept, guard reject-after-budget,
+end-to-end rejected-pressure-emits-nothing, generation-failure rejects. Frontend suite (18) still
+green including the new Scrubber option; `tsc -b` clean.
+
 ## 3. Test counts
 
 - Baseline (pre-Phase 4): 207 backend + 18 frontend, all passing.
