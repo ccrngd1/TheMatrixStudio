@@ -206,6 +206,21 @@ passages — so what a persona drew on is auditable, not asserted.
 **Recovery:** the FTS5 index is external-content, so it holds no text of its own
 and is always rebuildable from the `doc_chunks` table with a single statement.
 
+**API.** Documents can also be managed per run:
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /api/runs/{ref}/documents` | Attach by inline `text` or server-readable `path`; `persona_name` null = cast-wide |
+| `GET /api/runs/{ref}/documents` | List, optionally `?persona=Name` (own + cast-wide) |
+| `DELETE /api/runs/{ref}/documents/{id}` | Remove a document and its index entries |
+| `POST /api/runs/{ref}/documents/reindex` | Rebuild the index from `doc_chunks` (recovery path) |
+| `GET /api/runs/{ref}/documents/search?q=…` | **Inspect what a query retrieves** — sanitised query, passages, BM25 scores |
+
+The search endpoint is the measurement instrument: it makes retrieval quality
+checkable without running a simulation. It shows the limitation plainly — on a
+real corpus, `q=how much money will this burn` returns **nothing**, while
+`q=measured token delta cost` returns the right passage.
+
 **Honest limitation:** BM25 is lexical — it matches words, not meaning. A query
 about "cost" will not retrieve a passage that only says "spend". See
 `docs/PHASE5-RETRIEVAL-DESIGN.md` for why FTS5 was chosen over FAISS or a vector

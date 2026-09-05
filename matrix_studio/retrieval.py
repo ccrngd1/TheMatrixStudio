@@ -184,10 +184,18 @@ def apply_budget(
             if passages:
                 break
             # First passage over budget: truncate rather than return nothing.
-            clipped = content[:max_chars].rsplit(" ", 1)[0].rstrip()
-            if not clipped:
-                clipped = content[:max_chars]
-            content = clipped + " …"
+            # The ellipsis is charged against the budget, because max_chars is
+            # documented as a HARD ceiling — returning max_chars + 2 would make
+            # the one guarantee this function offers untrue.
+            ellipsis = " …"
+            if max_chars <= len(ellipsis):
+                content = content[:max_chars]
+            else:
+                room = max_chars - len(ellipsis)
+                clipped = content[:room].rsplit(" ", 1)[0].rstrip()
+                if not clipped:
+                    clipped = content[:room]
+                content = clipped + ellipsis
         passages.append(
             RetrievedPassage(
                 chunk_id=int(row["chunk_id"]),
