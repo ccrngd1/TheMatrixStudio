@@ -248,6 +248,31 @@ export interface DossierMemory {
   timestamp: number
 }
 
+/** Phase 5: a document attached to this persona (or to the whole cast). */
+export interface DossierDocument {
+  document_id: string
+  title: string
+  media_type: string | null
+  char_count: number
+  chunk_count: number
+  cast_wide: boolean
+}
+
+/** Phase 5: one turn's retrieval, straight from the document.retrieved event. */
+export interface DossierRetrieval {
+  turn: number
+  query: string | null
+  total_chars: number | null
+  passages: {
+    chunk_id: number
+    document_id: string
+    title: string
+    ordinal: number
+    score: number
+    chars: number
+  }[]
+}
+
 export interface AgentDossier {
   run_id: string
   agent: string
@@ -256,6 +281,9 @@ export interface AgentDossier {
   memory_stream: DossierMemory[]
   beliefs: DossierMemory[]
   relationships: Record<string, string>
+  // Phase 5. Optional so a dossier from an older backend still parses.
+  documents?: DossierDocument[]
+  document_retrievals?: DossierRetrieval[]
   tokens_in: number
   tokens_out: number
   cost_usd: number

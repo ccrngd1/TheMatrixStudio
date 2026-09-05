@@ -52,6 +52,12 @@ export function Dossier({ agent, feed, runId, onClose }: Props) {
       dossier.beliefs.length > 0 ||
       Object.keys(dossier.relationships).length > 0)
 
+  // Phase 5. Defaulted because an older backend omits these fields entirely,
+  // and retrieval is opt-in, so absent is the normal case rather than an error.
+  const docs = dossier?.documents ?? []
+  const retrievals = dossier?.document_retrievals ?? []
+  const retrievedChars = retrievals.reduce((sum, r) => sum + (r.total_chars ?? 0), 0)
+
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-black/50" onClick={onClose}>
       <div
@@ -123,6 +129,62 @@ export function Dossier({ agent, feed, runId, onClose }: Props) {
             <p className="text-sm text-slate-500">This agent hasn't spoken yet.</p>
           )}
         </Section>
+
+        {/* Phase 5: background documents this persona can draw on, and the
+            passages it actually did draw on. Both come straight from stored
+            state and the document.retrieved audit events — a run without
+            retrieval renders nothing here rather than an empty promise. */}
+        {docs.length > 0 && (
+          <Section title={`Background documents (${docs.length})`}>
+            <div className="space-y-1">
+              {docs.map((doc) => (
+                <div
+                  key={doc.document_id}
+                  className="rounded border border-matrix-border p-2 text-sm text-slate-300"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-slate-200">{doc.title}</span>
+                    {doc.cast_wide && (
+                      <span className="text-[11px] uppercase tracking-wide text-slate-500">
+                        whole cast
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-[11px] text-slate-500">
+                    {doc.chunk_count} chunk{doc.chunk_count === 1 ? '' : 's'} ·{' '}
+                    {doc.char_count.toLocaleString()} chars
+                    {doc.media_type ? ` · ${doc.media_type}` : ''}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Section>
+        )}
+
+        {retrievals.length > 0 && (
+          <Section title={`Passages drawn on (${retrievedChars.toLocaleString()} chars)`}>
+            <div className="space-y-1">
+              {retrievals.map((r) => (
+                <div
+                  key={r.turn}
+                  className="rounded border border-matrix-border p-2 text-sm text-slate-300"
+                >
+                  <div className="text-[11px] text-slate-500">
+                    turn {r.turn} · {r.total_chars?.toLocaleString() ?? 0} chars
+                  </div>
+                  <ul className="mt-1 list-inside list-disc text-xs text-slate-400">
+                    {r.passages.map((p) => (
+                      <li key={p.chunk_id}>
+                        {p.title} #{p.ordinal}{' '}
+                        <span className="text-slate-600">score {p.score.toFixed(2)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          </Section>
+        )}
 
         {/* Phase 2c: real captured cognition when present; an honest
             "not captured for this run" state otherwise — never fabricated. */}
