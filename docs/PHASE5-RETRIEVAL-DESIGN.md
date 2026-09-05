@@ -269,5 +269,17 @@ Both were fixed, and neither was visible in the mocked tests:
    The changes are additive and guarded (optional fields defaulted with `??`,
    sections rendered only when non-empty), but they need `tsc -b` and vitest on
    a machine with Node before being trusted.
-4. **5b-4** — Measure FTS5 recall on a real corpus. Publish the number. Decide
-   vectors on evidence.
+4. **5b-4** ✅ DONE — see `docs/PHASE5-RETRIEVAL-MEASUREMENT.md`.
+
+   Measured on this project's own docs (369 chunks, 220k chars): recall@5 is
+   **0.967** when the query shares the document's vocabulary and **0.300** when
+   it does not. Real turn-queries measured 0.394 mean lexical overlap, between
+   the two arms, implying roughly **45-65% recall@5 in actual use**.
+
+   **The trigger stated above has therefore been met** — but the measurement
+   also shows the dominant variable is the QUERY, not the index, so the order of
+   work is: improve query construction (free), add a score threshold so weak
+   matches return nothing instead of a confidently wrong passage, and only then
+   add embeddings via `sqlite-vec`. The storage decision is unaffected: it was
+   made on operational grounds (atomicity, no embedding provider, one file),
+   and this result speaks only to retrieval quality.
