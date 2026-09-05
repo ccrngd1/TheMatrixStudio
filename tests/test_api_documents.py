@@ -383,3 +383,104 @@ def test_search_is_read_only(client, run_ref):
 
 def test_search_unknown_run_is_404(client):
     assert client.get("/api/runs/nope/documents/search?q=egress").status_code == 404
+
+
+# --------------------------------------------------------------------------- #
+# Dossier surface — what the persona has, and what it actually drew on
+# --------------------------------------------------------------------------- #
+
+
+RETRIEVAL_REQUEST = {
+    "topic": "egress inspection and token accounting",
+    "cast": [
+        {"name": "Dana", "persona": "distribution lead", "goals": ["protect install"]},
+        {"name": "Marcus", "persona": "cost analyst", "goals": ["measure spend"]},
+    ],
+    "config": {
+        "max_messages": 2,
+        "generate_avatars": False,
+        "retrieval": {"enabled": True, "k": 2, "max_chars": 900},
+    },
+}
+
+
+def test_dossier_lists_attached_documents_and_retrievals(client, tmp_path):
+    dana_doc = tmp_path / "dana.md"
+    dana_doc.write_text(DANA_TEXT)
+    request = json.loads(json.dumps(RETRIEVAL_REQUEST))
+    request["cast"][0]["documents"] = [str(dana_doc)]
+
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake):
+        ref = client.post("/api/runs", json=request).json()["run_id"]
+        _wait(client, ref)
+
+    body = client.get(f"/api/runs/{ref}/agents/Dana/dossier").json()
+    assert [d["title"] for d in body["documents"]] == ["dana.md"]
+    assert body["documents"][0]["cast_wide"] is False
+    assert body["documents"][0]["chunk_count"] >= 1
+
+    assert body["document_retrievals"], "dossier did not surface what Dana drew on"
+    first = body["document_retrievals"][0]
+    assert first["query"]
+    assert first["passages"] and first["passages"][0]["title"] == "dana.md"
+    assert first["total_chars"] <= 900
+
+
+def test_dossier_does_not_leak_another_personas_documents(client, tmp_path):
+    dana_doc = tmp_path / "dana.md"
+    dana_doc.write_text(DANA_TEXT)
+    request = json.loads(json.dumps(RETRIEVAL_REQUEST))
+    request["cast"][0]["documents"] = [str(dana_doc)]
+
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake):
+        ref = client.post("/api/runs", json=request).json()["run_id"]
+        _wait(client, ref)
+
+    marcus = client.get(f"/api/runs/{ref}/agents/Marcus/dossier").json()
+    assert [d["title"] for d in marcus["documents"]] == []
+    assert marcus["document_retrievals"] == []
+
+
+def test_dossier_is_empty_not_synthesized_when_retrieval_off(client, run_ref):
+    """A run without retrieval must report nothing rather than invent material."""
+    body = client.get(f"/api/runs/{run_ref}/agents/Dana/dossier").json()
+    assert body["documents"] == []
+    assert body["document_retrievals"] == []
+
+
+def test_dossier_shows_cast_wide_documents_to_every_persona(client, run_ref):
+    client.post(f"/api/runs/{run_ref}/documents",
+                json={"title": "shared.md", "text": "Shared briefing material."})
+    for who in ("Dana", "Marcus"):
+        body = client.get(f"/api/runs/{run_ref}/agents/{who}/dossier").json()
+        assert [d["title"] for d in body["documents"]] == ["shared.md"]
+        assert body["documents"][0]["cast_wide"] is True
+
+
+def test_api_request_contract_carries_documents_and_retrieval(client, tmp_path):
+    """Regression: PersonaModel/RunConfigModel must DECLARE the Phase 5 fields.
+
+    Pydantic drops undeclared fields, so an omission here makes cast-level
+    attachment and the retrieval config work from the CLI but silently vanish
+    through the API. This asserts the round-trip end to end.
+    """
+    doc = tmp_path / "dana.md"
+    doc.write_text(DANA_TEXT)
+    request = json.loads(json.dumps(RETRIEVAL_REQUEST))
+    request["cast"][0]["documents"] = [str(doc)]
+
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake):
+        ref = client.post("/api/runs", json=request).json()["run_id"]
+        _wait(client, ref)
+
+    # The retrieval config survived onto the stored run...
+    stored = client.get(f"/api/runs/{ref}").json()
+    assert stored["config"]["retrieval"]["enabled"] is True
+    assert stored["config"]["retrieval"]["max_chars"] == 900
+    # ...the cast document was ingested...
+    assert [d["title"] for d in client.get(f"/api/runs/{ref}/documents").json()["documents"]] == ["dana.md"]
+    # ...and it was actually retrieved during the run.
+    events = client.get(f"/api/runs/{ref}/events").json()
+    kinds = {e["event_type"] for e in events["events"]}
+    assert "document.ingested" in kinds
+    assert "document.retrieved" in kinds

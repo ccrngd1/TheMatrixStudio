@@ -149,6 +149,109 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         return 1
 
 
+async def _docs_action(args: argparse.Namespace) -> int:
+    """Phase 5: attach / list / search / reindex documents for a run.
+
+    Talks to the database directly rather than over HTTP so it works without a
+    running server — the same reason the ``run`` subcommand exists.
+    """
+    from matrix_studio.documents import ExtractionError, ingest_file
+    from matrix_studio.retrieval import apply_budget, build_fts_query, extract_terms
+    from matrix_studio.settings import get_settings
+    from matrix_studio.storage import Database
+
+    settings = get_settings()
+    db = Database(str(Path(settings.data_dir) / "matrix_studio.db"))
+    await db.connect()
+    try:
+        run = await db.get_run_by_ref(args.run)
+        if not run:
+            print(f"Error: run not found: {args.run}", file=sys.stderr)
+            return 1
+        run_id = run["id"]
+
+        if args.docs_action == "attach":
+            try:
+                doc = ingest_file(args.path, title=args.title)
+            except ExtractionError as exc:
+                print(f"Error: {exc}", file=sys.stderr)
+                return 1
+            doc_id = await db.add_document(
+                run_id=run_id,
+                title=doc.title,
+                chunks=[c.content for c in doc.chunks],
+                persona_name=args.persona,
+                source_path=doc.source_path,
+                media_type=doc.media_type,
+                char_count=doc.char_count,
+            )
+            scope = args.persona or "(whole cast)"
+            print(
+                f"Attached {doc.title} to {scope}: "
+                f"{len(doc.chunks)} chunks, {doc.char_count} chars  [{doc_id}]"
+            )
+            return 0
+
+        if args.docs_action == "list":
+            docs = await db.list_documents(run_id, persona_name=args.persona)
+            if not docs:
+                print("No documents attached to this run.")
+                return 0
+            print(f"{'id':14s} {'persona':14s} {'chunks':>6s} {'chars':>8s}  title")
+            for d in docs:
+                print(
+                    f"{d['id']:14s} {(d['persona_name'] or '(all)'):14s} "
+                    f"{d['chunk_count']:6d} {d['char_count']:8d}  {d['title']}"
+                )
+            return 0
+
+        if args.docs_action == "search":
+            query = " ".join(args.query)
+            fts = build_fts_query(query)
+            if not fts:
+                print("No searchable terms after removing stopwords.")
+                return 0
+            print(f"terms : {', '.join(extract_terms(query))}")
+            print(f"query : {fts}")
+            rows = await db.search_documents(
+                run_id=run_id, query=fts, persona_name=args.persona, k=args.k
+            )
+            passages = apply_budget(rows, max_chars=args.max_chars)
+            if not passages:
+                # An honest empty result is the useful signal here: it is how the
+                # lexical limitation shows itself.
+                print(f"\nNo passages matched (searched {len(rows)} candidates).")
+                return 0
+            print(f"\n{len(passages)} passage(s), "
+                  f"{sum(len(p.content) for p in passages)} chars:")
+            for p in passages:
+                print(f"\n  [{p.citation}] score={p.score:.4f}")
+                print(f"  {p.content}")
+            return 0
+
+        if args.docs_action == "reindex":
+            count = await db.reindex_documents()
+            print(f"Rebuilt the document index from doc_chunks: {count} chunks.")
+            return 0
+
+        print(f"Error: unknown docs action: {args.docs_action}", file=sys.stderr)
+        return 2
+    finally:
+        await db.close()
+
+
+def _cmd_docs(args: argparse.Namespace) -> int:
+    """Handle the ``docs`` subcommand (Phase 5 document management)."""
+    setup_logging(getattr(args, "verbose", False))
+    try:
+        return asyncio.run(_docs_action(args))
+    except KeyboardInterrupt:
+        return 130
+    except Exception as e:
+        logging.getLogger(__name__).error(f"Fatal error: {e}", exc_info=True)
+        return 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the subcommand-based argument parser."""
     parser = argparse.ArgumentParser(
@@ -191,6 +294,43 @@ Examples:
     serve_p.add_argument("--port", type=int, default=None, help="Bind port (default: MATRIX_PORT)")
     serve_p.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
     serve_p.set_defaults(func=_cmd_serve)
+
+    # ----- docs subcommand (Phase 5 per-persona documents) -----
+    docs_p = subparsers.add_parser(
+        "docs", help="Attach, list, search or reindex a run's background documents"
+    )
+    docs_p.add_argument("run", help="Run id, name or slug")
+    docs_p.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
+    docs_sub = docs_p.add_subparsers(dest="docs_action", required=True)
+
+    attach_p = docs_sub.add_parser("attach", help="Attach a document to a persona")
+    attach_p.add_argument("path", help="Path to a .pdf/.docx/.txt/.md file")
+    attach_p.add_argument(
+        "-p", "--persona", default=None,
+        help="Persona that may retrieve it (default: the whole cast)",
+    )
+    attach_p.add_argument("-t", "--title", default=None, help="Override the title")
+
+    list_p = docs_sub.add_parser("list", help="List a run's documents")
+    list_p.add_argument(
+        "-p", "--persona", default=None,
+        help="Restrict to what this persona can see (its own + cast-wide)",
+    )
+
+    search_p = docs_sub.add_parser(
+        "search", help="Inspect what a query retrieves (measures retrieval quality)"
+    )
+    search_p.add_argument("query", nargs="+", help="Free text; sanitised automatically")
+    search_p.add_argument("-p", "--persona", default=None, help="Search one persona's slice")
+    search_p.add_argument("-k", type=int, default=5, help="Max passages (default 5)")
+    search_p.add_argument(
+        "--max-chars", type=int, default=2000,
+        help="Hard ceiling on returned characters (default 2000)",
+    )
+
+    docs_sub.add_parser("reindex", help="Rebuild the index from doc_chunks")
+
+    docs_p.set_defaults(func=_cmd_docs)
 
     return parser
 
