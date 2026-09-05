@@ -34,7 +34,9 @@ from pydantic import BaseModel, Field
 
 from matrix_studio import analysis, service
 from matrix_studio.api.manager import RunManager, TERMINAL_EVENTS, event_row_to_wire
+from matrix_studio.documents import ExtractionError, ingest_file, ingest_text
 from matrix_studio.naming import generate_run_name
+from matrix_studio.retrieval import apply_budget, build_fts_query, extract_terms
 from matrix_studio.settings import get_settings
 from matrix_studio.storage import Database
 
@@ -171,6 +173,33 @@ class BranchModel(BaseModel):
     model: Optional[str] = None
     # Phase 2b: optional mutation applied at the fork. None -> a plain 2a fork.
     mutation: Optional[BranchMutationModel] = None
+
+
+class AttachDocumentModel(BaseModel):
+    """Body for POST /api/runs/{ref}/documents (Phase 5).
+
+    Exactly one of ``text`` or ``path`` must be supplied. ``persona_name`` scopes
+    the document to a single persona; omitted/null makes it cast-wide.
+    """
+
+    persona_name: Optional[str] = None
+    title: Optional[str] = None
+    # Inline content (paste / upload body).
+    text: Optional[str] = None
+    # Server-readable path (CLI-adjacent workflows and local files).
+    path: Optional[str] = None
+
+
+def _parse_cast(run: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Best-effort parse of a run row's cast_json (mirrors _parse_config)."""
+    raw = run.get("cast_json")
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    return parsed if isinstance(parsed, list) else []
 
 
 def _run_summary(run: Dict[str, Any]) -> Dict[str, Any]:
@@ -1011,6 +1040,179 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         )
         cost = await db.thread_cost(thread_id)
         return {"thread_id": thread_id, "reply": reply, "total_cost_usd": cost}
+
+    # ------------------- Phase 5: per-persona documents -------------------- #
+    # Attach background material to a SPECIFIC persona, list/delete it, rebuild
+    # the search index, and — most importantly — INSPECT what a query actually
+    # retrieves. BM25 is lexical, so retrieval quality has to be measurable
+    # rather than trusted; /documents/search exists to produce that evidence.
+
+    @app.get("/api/runs/{ref}/documents")
+    async def list_documents(
+        ref: str,
+        persona: Optional[str] = Query(
+            default=None,
+            description="Restrict to what this persona can see (its own + cast-wide)",
+        ),
+    ) -> Dict[str, Any]:
+        run = await db.get_run_by_ref(ref)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        docs = await db.list_documents(run["id"], persona_name=persona)
+        return {
+            "run_id": run["id"],
+            "persona": persona,
+            "documents": docs,
+            "total_chars": sum(int(d["char_count"] or 0) for d in docs),
+            "total_chunks": sum(int(d["chunk_count"] or 0) for d in docs),
+        }
+
+    @app.post("/api/runs/{ref}/documents", status_code=201)
+    async def attach_document(ref: str, body: AttachDocumentModel) -> Dict[str, Any]:
+        """Attach a document by inline text or by a server-readable path.
+
+        ``persona_name`` omitted/null makes the document cast-wide. A persona
+        name that is not in the run's cast is rejected rather than silently
+        creating material no one can ever retrieve.
+        """
+        run = await db.get_run_by_ref(ref)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+
+        if bool(body.text) == bool(body.path):
+            raise HTTPException(
+                status_code=422,
+                detail="Provide exactly one of 'text' or 'path'",
+            )
+
+        if body.persona_name is not None:
+            cast_names = {
+                p.get("name") for p in (_parse_cast(run) or []) if isinstance(p, dict)
+            }
+            if cast_names and body.persona_name not in cast_names:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"persona_name {body.persona_name!r} is not in this run's cast "
+                        f"({', '.join(sorted(n for n in cast_names if n))})"
+                    ),
+                )
+
+        try:
+            if body.text:
+                if not body.title:
+                    raise HTTPException(
+                        status_code=422, detail="title is required when supplying text"
+                    )
+                doc = ingest_text(body.text, title=body.title)
+            else:
+                doc = ingest_file(body.path, title=body.title)
+        except ExtractionError as exc:
+            # A document we cannot read is a client-supplied problem, not a
+            # server fault; the message names the cause (and any missing package).
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        document_id = await db.add_document(
+            run_id=run["id"],
+            title=doc.title,
+            chunks=[c.content for c in doc.chunks],
+            persona_name=body.persona_name,
+            source_path=doc.source_path,
+            media_type=doc.media_type,
+            char_count=doc.char_count,
+        )
+        return {
+            "run_id": run["id"],
+            "document_id": document_id,
+            "title": doc.title,
+            "persona_name": body.persona_name,
+            "media_type": doc.media_type,
+            "char_count": doc.char_count,
+            "chunk_count": len(doc.chunks),
+        }
+
+    @app.delete("/api/runs/{ref}/documents/{document_id}")
+    async def delete_document(ref: str, document_id: str) -> Dict[str, Any]:
+        run = await db.get_run_by_ref(ref)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        # Confirm the document belongs to THIS run before deleting it, so a
+        # document id from another run cannot be removed through this route.
+        owned = {d["id"] for d in await db.list_documents(run["id"])}
+        if document_id not in owned:
+            raise HTTPException(status_code=404, detail="Document not found for this run")
+        await db.delete_document(document_id)
+        return {"run_id": run["id"], "document_id": document_id, "deleted": True}
+
+    @app.post("/api/runs/{ref}/documents/reindex")
+    async def reindex_documents(ref: str) -> Dict[str, Any]:
+        """Rebuild the search index from ``doc_chunks``, the source of truth.
+
+        This is the documented recovery path for a stale or corrupt index. It is
+        safe to run at any time and is idempotent: the FTS5 table is
+        external-content, so it holds no text of its own and is always a pure
+        derivative of the chunks table.
+        """
+        run = await db.get_run_by_ref(ref)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        indexed = await db.reindex_documents()
+        return {"run_id": run["id"], "reindexed_chunks": indexed}
+
+    @app.get("/api/runs/{ref}/documents/search")
+    async def search_documents(
+        ref: str,
+        q: str = Query(..., min_length=1, description="Free text; sanitised server-side"),
+        persona: Optional[str] = Query(default=None),
+        k: int = Query(default=5, ge=1, le=50),
+        max_chars: int = Query(default=2000, ge=1),
+    ) -> Dict[str, Any]:
+        """Inspect what a query retrieves, without running a simulation.
+
+        This is the measurement tool the design depends on: it returns the
+        sanitised FTS5 query alongside the passages and their BM25 scores, so the
+        lexical-vs-semantic gap can be quantified on a real corpus instead of
+        argued about. Read-only — it performs no writes.
+        """
+        run = await db.get_run_by_ref(ref)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        fts_query = build_fts_query(q)
+        if not fts_query:
+            return {
+                "run_id": run["id"],
+                "query": q,
+                "fts_query": "",
+                "terms": [],
+                "passages": [],
+                "note": "No searchable terms in the query after removing stopwords.",
+            }
+        rows = await db.search_documents(
+            run_id=run["id"], query=fts_query, persona_name=persona, k=k
+        )
+        passages = apply_budget(rows, max_chars=max_chars)
+        return {
+            "run_id": run["id"],
+            "query": q,
+            "fts_query": fts_query,
+            "terms": extract_terms(q),
+            "persona": persona,
+            "passages": [
+                {
+                    "chunk_id": p.chunk_id,
+                    "document_id": p.document_id,
+                    "title": p.title,
+                    "ordinal": p.ordinal,
+                    "score": round(p.score, 4),
+                    "chars": len(p.content),
+                    "content": p.content,
+                    "citation": p.citation,
+                }
+                for p in passages
+            ],
+            "total_chars": sum(len(p.content) for p in passages),
+            "matched_before_budget": len(rows),
+        }
 
     # --------------------------- WebSocket stream -------------------------- #
     @app.websocket("/api/runs/{ref}/stream")
