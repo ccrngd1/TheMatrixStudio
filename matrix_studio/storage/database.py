@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -34,6 +35,9 @@ class Database:
         """
         self.db_path = db_path
         self._conn: Optional[aiosqlite.Connection] = None
+        # Set during schema creation; document retrieval degrades to "no results"
+        # rather than raising if this SQLite build has no FTS5.
+        self._fts5_available: bool = False
 
     async def connect(self):
         """Connect to database and ensure schema exists."""
@@ -208,6 +212,78 @@ class Database:
             CREATE INDEX IF NOT EXISTS thread_messages_thread
             ON thread_messages(thread_id, id)
         """)
+
+        # ------------------------------------------------------------------ #
+        # Phase 5 additive tables (per-persona document retrieval).
+        #
+        # NEW tables only — nothing above is altered, so existing databases pick
+        # these up on connect and every existing query keeps working.
+        #
+        # `persona_name` scopes a document to one persona; NULL means the whole
+        # cast may retrieve it. Scoping is a SQL predicate, so a persona provably
+        # cannot retrieve outside its own slice.
+        # ------------------------------------------------------------------ #
+        await self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS documents (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL REFERENCES runs(id),
+                persona_name TEXT,
+                title TEXT NOT NULL,
+                source_path TEXT,
+                media_type TEXT,
+                char_count INTEGER NOT NULL DEFAULT 0,
+                chunk_count INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL
+            )
+        """)
+        await self._conn.execute("""
+            CREATE INDEX IF NOT EXISTS documents_run
+            ON documents(run_id, persona_name)
+        """)
+
+        # doc_chunks is the SOURCE OF TRUTH for document text. The FTS5 table
+        # below is an index over it and holds no content of its own.
+        await self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS doc_chunks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                document_id TEXT NOT NULL REFERENCES documents(id),
+                run_id TEXT NOT NULL REFERENCES runs(id),
+                persona_name TEXT,
+                ordinal INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                UNIQUE(document_id, ordinal)
+            )
+        """)
+        await self._conn.execute("""
+            CREATE INDEX IF NOT EXISTS doc_chunks_run
+            ON doc_chunks(run_id, persona_name)
+        """)
+
+        # FTS5 EXTERNAL-CONTENT index (content='doc_chunks'): it stores only the
+        # inverted index, never the text. That is what makes the index a pure
+        # derivative of doc_chunks and lets `reindex_documents()` rebuild it with
+        # a single statement — the index cannot hold content the source table
+        # does not, so the two cannot semantically diverge.
+        #
+        # FTS5 is compiled into SQLite by default; if this build lacks it we log
+        # and continue so a run without documents is unaffected.
+        try:
+            await self._conn.execute("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS doc_chunks_fts USING fts5(
+                    content,
+                    content='doc_chunks',
+                    content_rowid='id',
+                    tokenize='porter unicode61'
+                )
+            """)
+            self._fts5_available = True
+        except Exception as exc:  # pragma: no cover - depends on SQLite build
+            self._fts5_available = False
+            logger.warning(
+                "SQLite FTS5 unavailable (%s); document retrieval is disabled. "
+                "Everything else works normally.",
+                exc,
+            )
 
         await self._conn.commit()
 
@@ -999,3 +1075,223 @@ class Database:
         ) as cursor:
             row = await cursor.fetchone()
             return float(row[0]) if row else 0.0
+
+    # ---------------------------------------------------------------- #
+    # Phase 5: per-persona document storage and retrieval.
+    # ---------------------------------------------------------------- #
+
+    async def add_document(
+        self,
+        run_id: str,
+        title: str,
+        chunks: List[str],
+        persona_name: Optional[str] = None,
+        source_path: Optional[str] = None,
+        media_type: Optional[str] = None,
+        char_count: int = 0,
+        document_id: Optional[str] = None,
+    ) -> str:
+        """Store a document and its chunks, indexing them for search.
+
+        The document row, its chunks and their FTS5 index entries are written in
+        ONE transaction. That atomicity is the reason the index lives in this
+        database rather than in a separate store: a crash cannot leave the index
+        disagreeing with the source of truth.
+
+        Args:
+            run_id: Run the document belongs to
+            title: Human-facing document title
+            chunks: Ordered chunk texts (from ``documents.ingest_*``)
+            persona_name: Persona that may retrieve it; None = whole cast
+            source_path: Original path/URI, retained for citation
+            media_type: pdf|docx|txt|md
+            char_count: Length of the extracted text
+            document_id: Optional explicit id (defaults to a fresh 12-hex id)
+
+        Returns:
+            The document id.
+        """
+        doc_id = document_id or uuid.uuid4().hex[:12]
+        now = int(time.time())
+        await self._conn.execute(
+            """
+            INSERT INTO documents (
+                id, run_id, persona_name, title, source_path, media_type,
+                char_count, chunk_count, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                doc_id, run_id, persona_name, title, source_path, media_type,
+                char_count, len(chunks), now,
+            ),
+        )
+        for ordinal, content in enumerate(chunks):
+            cursor = await self._conn.execute(
+                """
+                INSERT INTO doc_chunks (
+                    document_id, run_id, persona_name, ordinal, content
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (doc_id, run_id, persona_name, ordinal, content),
+            )
+            if self._fts5_available:
+                # External-content FTS5 is maintained explicitly rather than by
+                # trigger: we only ever bulk-insert, and an explicit write keeps
+                # the index update visibly inside this transaction.
+                await self._conn.execute(
+                    "INSERT INTO doc_chunks_fts(rowid, content) VALUES (?, ?)",
+                    (cursor.lastrowid, content),
+                )
+        await self._conn.commit()
+        return doc_id
+
+    async def list_documents(
+        self, run_id: str, persona_name: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """List a run's documents, newest first.
+
+        ``persona_name`` filters to what that persona can see: its own documents
+        plus cast-wide ones. Omitting it returns everything attached to the run.
+        """
+        if persona_name is None:
+            sql = "SELECT * FROM documents WHERE run_id = ? ORDER BY created_at DESC, id"
+            params: tuple = (run_id,)
+        else:
+            sql = (
+                "SELECT * FROM documents WHERE run_id = ? "
+                "AND (persona_name = ? OR persona_name IS NULL) "
+                "ORDER BY created_at DESC, id"
+            )
+            params = (run_id, persona_name)
+        async with self._conn.execute(sql, params) as cursor:
+            return [dict(r) for r in await cursor.fetchall()]
+
+    async def delete_document(self, document_id: str) -> bool:
+        """Delete a document, its chunks and their index entries. Returns True if it existed."""
+        async with self._conn.execute(
+            "SELECT id, content FROM doc_chunks WHERE document_id = ?", (document_id,)
+        ) as cursor:
+            rows = [(row[0], row[1]) for row in await cursor.fetchall()]
+        if self._fts5_available:
+            # External-content FTS5 cannot delete by rowid alone — it needs the
+            # original text to un-index the terms, so it is read back first (while
+            # doc_chunks still holds it) and passed to the 'delete' command.
+            for chunk_id, content in rows:
+                await self._conn.execute(
+                    "INSERT INTO doc_chunks_fts(doc_chunks_fts, rowid, content) "
+                    "VALUES ('delete', ?, ?)",
+                    (chunk_id, content),
+                )
+        await self._conn.execute(
+            "DELETE FROM doc_chunks WHERE document_id = ?", (document_id,)
+        )
+        cursor = await self._conn.execute(
+            "DELETE FROM documents WHERE id = ?", (document_id,)
+        )
+        await self._conn.commit()
+        return cursor.rowcount > 0
+
+    async def reindex_documents(self) -> int:
+        """Rebuild the FTS5 index from ``doc_chunks``, the source of truth.
+
+        This is the documented recovery path for a stale or corrupt index. It is
+        one statement because the index is external-content: it holds no text of
+        its own, so it can always be regenerated from the chunks table.
+
+        Returns:
+            Number of chunks indexed.
+        """
+        if not self._fts5_available:
+            return 0
+        await self._conn.execute(
+            "INSERT INTO doc_chunks_fts(doc_chunks_fts) VALUES('rebuild')"
+        )
+        await self._conn.commit()
+        async with self._conn.execute("SELECT COUNT(*) FROM doc_chunks") as cursor:
+            row = await cursor.fetchone()
+            return int(row[0]) if row else 0
+
+    async def search_documents(
+        self,
+        run_id: str,
+        query: str,
+        persona_name: Optional[str] = None,
+        k: int = 3,
+    ) -> List[Dict[str, Any]]:
+        """BM25 search over a persona's document slice, best match first.
+
+        ``query`` MUST already be sanitised into FTS5 syntax by
+        ``documents_retrieval.build_fts_query`` — raw conversation text contains
+        operators and quotes that would raise a syntax error or silently change
+        the query's meaning.
+
+        Returns dicts with chunk_id, document_id, title, ordinal, content and
+        score (BM25; more negative is a better match).
+        """
+        if not self._fts5_available or not query or k <= 0:
+            return []
+        if persona_name is None:
+            scope_sql = ""
+            scope_params: tuple = ()
+        else:
+            scope_sql = "AND (c.persona_name = ? OR c.persona_name IS NULL)"
+            scope_params = (persona_name,)
+        sql = f"""
+            SELECT c.id AS chunk_id, c.document_id, c.ordinal, c.content,
+                   d.title, d.source_path, d.media_type,
+                   bm25(doc_chunks_fts) AS score
+            FROM doc_chunks_fts
+            JOIN doc_chunks c ON c.id = doc_chunks_fts.rowid
+            JOIN documents d ON d.id = c.document_id
+            WHERE doc_chunks_fts MATCH ?
+              AND c.run_id = ?
+              {scope_sql}
+            ORDER BY score ASC
+            LIMIT ?
+        """
+        try:
+            async with self._conn.execute(
+                sql, (query, run_id, *scope_params, k)
+            ) as cursor:
+                return [dict(r) for r in await cursor.fetchall()]
+        except Exception as exc:
+            # A malformed MATCH must never take a run down; retrieval degrades to
+            # "no supporting passage found", which the prompt handles honestly.
+            logger.warning("Document search failed for run %s: %s", run_id, exc)
+            return []
+
+    async def count_documents(self, run_id: str) -> int:
+        """Number of documents attached to a run."""
+        async with self._conn.execute(
+            "SELECT COUNT(*) FROM documents WHERE run_id = ?", (run_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return int(row[0]) if row else 0
+
+    async def copy_documents_to_run(self, from_run_id: str, to_run_id: str) -> int:
+        """Copy a run's documents to another run (used when branching).
+
+        A branch inherits its parent's attached background, otherwise personas
+        would silently lose the material they had been reasoning from. New
+        document ids are minted so the branch owns its own rows.
+
+        Returns:
+            Number of documents copied.
+        """
+        docs = await self.list_documents(from_run_id)
+        for doc in docs:
+            async with self._conn.execute(
+                "SELECT content FROM doc_chunks WHERE document_id = ? ORDER BY ordinal",
+                (doc["id"],),
+            ) as cursor:
+                chunks = [row[0] for row in await cursor.fetchall()]
+            await self.add_document(
+                run_id=to_run_id,
+                title=doc["title"],
+                chunks=chunks,
+                persona_name=doc["persona_name"],
+                source_path=doc["source_path"],
+                media_type=doc["media_type"],
+                char_count=doc["char_count"],
+            )
+        return len(docs)

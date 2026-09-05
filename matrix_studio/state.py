@@ -101,6 +101,40 @@ class CognitionConfig(BaseModel):
         return cls(**{k: v for k, v in raw.items() if k in cls.model_fields})
 
 
+class RetrievalConfig(BaseModel):
+    """Phase 5 document-retrieval flags (per-run, read from ``config['retrieval']``).
+
+    Deliberately NOT part of ``CognitionConfig``: attaching background documents
+    to a persona is useful with cognition off, so this is an independent switch.
+    Defaults reproduce pre-Phase-5 behavior exactly — a run with no ``retrieval``
+    block never queries the index and never adds a prompt block.
+
+    ``max_chars`` is the feature, not a safety valve: it is the hard ceiling on
+    how much document text any single call can carry, which is what keeps a
+    forty-page attachment out of the per-call context.
+    """
+    type: str = Field(default="RetrievalConfig", description="Type discriminator")
+    schema_version: str = Field(default="1.0.0", description="Schema version")
+    enabled: bool = Field(default=False, description="Master switch for document retrieval")
+    k: int = Field(default=3, ge=0, description="Max passages injected per turn")
+    max_chars: int = Field(
+        default=1200, ge=0,
+        description="Hard ceiling on retrieved document characters per turn",
+    )
+    recent_turns: int = Field(
+        default=3, ge=1,
+        description="How many recent messages contribute terms to the query",
+    )
+
+    @classmethod
+    def from_config(cls, config: Optional[Dict[str, Any]]) -> "RetrievalConfig":
+        """Parse from a run ``config`` dict. Missing/invalid -> disabled default."""
+        raw = (config or {}).get("retrieval")
+        if not isinstance(raw, dict):
+            return cls()
+        return cls(**{k: v for k, v in raw.items() if k in cls.model_fields})
+
+
 class SimSnapshot(BaseModel):
     """Complete simulation state snapshot."""
     type: str = Field(default="SimSnapshot", description="Type discriminator")
