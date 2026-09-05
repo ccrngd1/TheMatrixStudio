@@ -26,7 +26,11 @@ OnEvent = Callable[[Dict[str, Any]], Awaitable[None]]
 from matrix_studio.avatar import generate_avatar
 from matrix_studio.settings import get_settings
 from matrix_studio.documents import ingest_file
-from matrix_studio.retrieval import format_documents_block, retrieve_for_turn
+from matrix_studio.retrieval import (
+    embed_pending_chunks,
+    format_documents_block,
+    retrieve_for_turn,
+)
 from matrix_studio.state import (
     THREAD_TYPES,
     AgentState,
@@ -618,6 +622,29 @@ async def run_simulation(
     # persona simply has no background material, which the prompt states honestly.
     if db and retrieval.enabled:
         await _ingest_cast_documents(run_id, cast, db, _emit, _next_seq)
+        # Phase 5f: embed the freshly ingested chunks when a vector mode is on.
+        # Done once here rather than lazily per turn so the per-turn hot path
+        # only pays for the query embedding.
+        if retrieval.mode in ("vector", "hybrid"):
+            stats = await embed_pending_chunks(
+                db, run_id, embedding_model=retrieval.embedding_model
+            )
+            await _emit(
+                turn=0,
+                seq=_next_seq(),
+                event_type="document.embedded",
+                payload=stats,
+            )
+            if stats.get("error"):
+                logger.warning(
+                    "Embedding unavailable (%s); retrieval will use lexical search.",
+                    stats["error"],
+                )
+            else:
+                logger.info(
+                    "Embedded %d chunks with %s ($%.6f)",
+                    stats["embedded"], stats["model"], stats["cost_usd"],
+                )
 
     # Fresh start: no prior turns, no seed conversation.
     return await _run_turns(
@@ -885,6 +912,9 @@ async def _run_turns(
                     term_limit=retrieval.term_limit,
                     max_df_ratio=retrieval.max_df_ratio,
                     score_ratio=retrieval.score_ratio,
+                    mode=retrieval.mode,
+                    embedding_model=retrieval.embedding_model,
+                    rrf_k=retrieval.rrf_k,
                 )
                 if passages:
                     await emit(

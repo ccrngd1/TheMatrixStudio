@@ -255,6 +255,56 @@ def filter_by_score(
     return [r for r, s in zip(rows, strengths) if s >= floor]
 
 
+def reciprocal_rank_fusion(
+    lists: Sequence[Sequence[Dict[str, Any]]],
+    rrf_k: int = 60,
+    weights: Optional[Sequence[float]] = None,
+) -> List[Dict[str, Any]]:
+    """Fuse ranked result lists by Reciprocal Rank Fusion.
+
+    Fusion is done by **rank, not score**, and that is the whole point: BM25
+    returns negative numbers where more-negative is better, while vector search
+    returns distances where smaller is better. The two are not on a comparable
+    scale and no normalisation of them is principled, but their *orderings* are
+    directly comparable.
+
+    Each document scores ``sum(weight_i / (rrf_k + rank_i))`` over the lists it
+    appears in, so a passage both retrievers like outranks one that only a single
+    retriever liked. ``rrf_k=60`` is the value from the original RRF paper and is
+    deliberately not tuned here — tuning it without a held-out set would be
+    fitting the measurement.
+
+    The returned rows keep their original fields, with ``score`` replaced by the
+    fused score (HIGHER is better, unlike either input) and the pre-fusion values
+    preserved as ``fusion_sources`` for auditability.
+    """
+    if not lists:
+        return []
+    if weights is None:
+        weights = [1.0] * len(lists)
+
+    fused: Dict[int, Dict[str, Any]] = {}
+    for list_index, (rows, weight) in enumerate(zip(lists, weights)):
+        for rank, row in enumerate(rows, start=1):
+            chunk_id = int(row["chunk_id"])
+            entry = fused.get(chunk_id)
+            if entry is None:
+                entry = dict(row)
+                entry["fusion_score"] = 0.0
+                entry["fusion_sources"] = {}
+                fused[chunk_id] = entry
+            entry["fusion_score"] += weight / (rrf_k + rank)
+            entry["fusion_sources"][str(list_index)] = {
+                "rank": rank,
+                "score": float(row.get("score", 0.0)),
+            }
+
+    out = sorted(fused.values(), key=lambda r: -r["fusion_score"])
+    for row in out:
+        row["score"] = row.pop("fusion_score")
+    return out
+
+
 def apply_budget(
     rows: Sequence[Dict[str, Any]], max_chars: int
 ) -> List[RetrievedPassage]:
@@ -319,6 +369,9 @@ async def retrieve_for_turn(
     term_limit: int = 0,
     max_df_ratio: float = 0.5,
     score_ratio: float = 0.0,
+    mode: str = "fts",
+    embedding_model: str = "",
+    rrf_k: int = 60,
 ) -> tuple[List[RetrievedPassage], str]:
     """Retrieve a persona's supporting passages for one turn.
 
@@ -365,9 +418,50 @@ async def retrieve_for_turn(
 
     # Over-fetch a little: the score filter and budget may drop trailing rows, so
     # asking for exactly k risks returning fewer passages than the budget affords.
-    rows = await db.search_documents(
-        run_id=run_id, query=query, persona_name=persona_name, k=max(k * 2, k)
-    )
+    fetch_k = max(k * 2, k)
+    lexical: List[Dict[str, Any]] = []
+    if mode in ("fts", "hybrid"):
+        lexical = await db.search_documents(
+            run_id=run_id, query=query, persona_name=persona_name, k=fetch_k
+        )
+
+    # Phase 5f: vector arm. The query embedded is the raw conversational text, not
+    # the sanitised OR-expression — the whole advantage of embeddings is that they
+    # read meaning, so stripping the sentence to keywords first would discard it.
+    semantic: List[Dict[str, Any]] = []
+    if mode in ("vector", "hybrid") and getattr(db, "vec_available", False):
+        from matrix_studio.embeddings import DEFAULT_EMBEDDING_MODEL, embed_query
+
+        # An empty embedding_model means "use the module default" (that is what
+        # RetrievalConfig documents). Resolving it here is required: passing "" to
+        # litellm raises "LLM Provider NOT provided", which the fallback would
+        # then silently swallow, leaving vector mode permanently inert.
+        model = embedding_model or DEFAULT_EMBEDDING_MODEL
+        query_text = "\n".join(
+            [str(m.get("content", "")) for m in list(conversation)[-recent_turns:]]
+            + [topic or ""]
+        ).strip()
+        result = await embed_query(query_text, model=model) if query_text else None
+        if result and result.vectors and result.vectors[0]:
+            semantic = await db.vector_search(
+                run_id=run_id, vector=result.vectors[0],
+                persona_name=persona_name, k=fetch_k,
+            )
+        elif mode == "vector":
+            # Vector-only mode with no usable embedding: fall back to lexical
+            # rather than returning nothing. Degrading beats going silent.
+            lexical = await db.search_documents(
+                run_id=run_id, query=query, persona_name=persona_name, k=fetch_k
+            )
+
+    if mode == "hybrid" and lexical and semantic:
+        rows = reciprocal_rank_fusion([lexical, semantic], rrf_k=rrf_k)
+    elif mode == "vector" and semantic:
+        rows = semantic
+    else:
+        # Covers fts mode, and hybrid/vector where one arm produced nothing.
+        rows = lexical or semantic
+
     rows = filter_by_score(rows, score_ratio)
     return apply_budget(rows[:k], max_chars), query
 
@@ -388,3 +482,67 @@ def format_documents_block(passages: Sequence[RetrievedPassage]) -> str:
         "\n\nFrom your own background material (quote or cite it by name when "
         f"it supports a claim; it is not part of the conversation):\n{lines}"
     )
+
+
+async def embed_pending_chunks(
+    db: Any,
+    run_id: str,
+    embedding_model: str = "",
+    batch: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Embed any of a run's chunks that do not yet have a vector.
+
+    Idempotent and resumable: it only touches chunks with no stored embedding, so
+    an interrupted ingest can be re-run without paying to re-embed what succeeded.
+
+    Returns a dict with ``embedded``, ``skipped``, ``tokens``, ``cost_usd`` and
+    ``model``, so ingest cost lands in the same visible accounting as generation.
+    Never raises — a failure returns ``embedded: 0`` with an ``error`` key, because
+    a run must proceed on lexical retrieval rather than die on an embedding
+    provider.
+    """
+    from matrix_studio.embeddings import (
+        DEFAULT_EMBEDDING_MODEL,
+        EmbeddingError,
+        embed_texts,
+    )
+
+    model = embedding_model or DEFAULT_EMBEDDING_MODEL
+    out: Dict[str, Any] = {
+        "embedded": 0, "skipped": 0, "tokens": 0, "cost_usd": 0.0, "model": model,
+    }
+    if not getattr(db, "vec_available", False):
+        out["error"] = (
+            "sqlite-vec is not available; install the 'vectors' extra "
+            "(pip install 'matrix-sim-studio[vectors]')"
+        )
+        return out
+
+    pending = await db.chunks_missing_vectors(run_id, limit=batch)
+    if not pending:
+        return out
+
+    try:
+        result = await embed_texts([c["content"] for c in pending], model=model)
+    except EmbeddingError as exc:
+        out["error"] = str(exc)
+        return out
+
+    pairs = [
+        (int(chunk["chunk_id"]), vector)
+        for chunk, vector in zip(pending, result.vectors)
+        if vector
+    ]
+    try:
+        stored = await db.store_chunk_vectors(run_id, pairs, result.model)
+    except ValueError as exc:
+        # Dimension mismatch against an existing index — refuse, do not corrupt.
+        out["error"] = str(exc)
+        return out
+
+    out["embedded"] = stored
+    out["skipped"] = len(pending) - stored
+    out["tokens"] = result.tokens
+    out["cost_usd"] = round(result.cost_usd, 8)
+    out["model"] = result.model
+    return out
