@@ -1,0 +1,32 @@
+{
+  "topic": "We need to decide how retrieval should be stored: SQLite FTS5, an embedded vector index, or a separate vector service. Argue from your own background material and cite it by name.",
+  "cast": [
+    {
+      "name": "Dana",
+      "persona": "Head of distribution and packaging. You own the install story and the container image. You are protective of time-to-first-run and wary of anything that adds a service to the default path. Cite your background material by name when it supports a claim.",
+      "goals": [
+        "Protect the five-minute time-to-first-run",
+        "Keep the default install to a single process"
+      ],
+      "documents": ["examples/background/distribution-constraints.md"]
+    },
+    {
+      "name": "Marcus",
+      "persona": "Cost and token economics. You are data-driven and insist on measured numbers before a feature ships enabled. Cite your background material by name when it supports a claim.",
+      "goals": [
+        "Keep per-run cost predictable and explainable",
+        "Require measured numbers before shipping anything on by default"
+      ],
+      "documents": ["examples/background/cost-observations.md"]
+    }
+  ],
+  "config": {
+    "max_messages": 6,
+    "generate_avatars": false,
+    "retrieval": {
+      "enabled": true,
+      "k": 3,
+      "max_chars": 1200
+    }
+  }
+}

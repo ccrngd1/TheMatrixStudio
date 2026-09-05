@@ -159,6 +159,60 @@ ADAPTIVE_PRESSURE_ENABLED=false  # EXPERIMENTAL adaptive-pressure intervention (
 
 **⚠ Adaptive pressure (4c, EXPERIMENTAL):** A branch intervention that observes run-level signals (repetition, stale threads, remaining budget) and injects ONE narrator-voiced world event to raise the stakes. Hard agency guard: pressure modulates the world only — generated text that negates a participant's freedom of choice is rejected outright (never emitted, never rewritten). Off by default; opt in with `ADAPTIVE_PRESSURE_ENABLED=true`.
 
+### Phase 5: Per-Persona Document Retrieval
+
+Attach background documents (PDF, Word, text, Markdown) to a **specific persona**.
+The persona draws on them during a run **without the document sitting in the
+prompt context on every call.**
+
+```json
+{
+  "cast": [
+    {
+      "name": "Dana",
+      "persona": "Head of distribution...",
+      "goals": ["Protect the install story"],
+      "documents": ["examples/background/distribution-constraints.md"]
+    }
+  ],
+  "config": {
+    "retrieval": { "enabled": true, "k": 3, "max_chars": 1200 }
+  }
+}
+```
+
+Try it: `matrix-studio run examples/retrieval-demo.json`
+
+- `enabled` — master switch, **default OFF** (a run with no `retrieval` block behaves exactly as before)
+- `k` — max passages injected per turn (default 3)
+- `max_chars` — **hard ceiling** on retrieved document characters per turn (default 1200)
+- `recent_turns` — how many recent messages contribute query terms (default 3)
+
+**How it works.** Documents are chunked and indexed with **SQLite FTS5** in the
+same database file — no vector store, no embedding provider, no new service. Each
+turn, the speaker's own slice is searched with BM25 and the best passages are
+injected up to `max_chars`. Measured on a real 17,771-character document: only
+**913 characters** (~5%) reached the prompt.
+
+**Scoping is enforced in SQL, not asked for in a prompt.** A document attached to
+`Dana` is retrievable only by Dana; `persona_name: null` (set via the API) makes
+it cast-wide. Retrieved chunk ids are recorded as `document_refs` on
+`agent.response`, and a `document.retrieved` event records the exact query and
+passages — so what a persona drew on is auditable, not asserted.
+
+**PDF/Word need an optional extra:** `pip install '.[documents]'`. `.txt` and
+`.md` need nothing. A missing extractor gives an error naming the package.
+
+**Recovery:** the FTS5 index is external-content, so it holds no text of its own
+and is always rebuildable from the `doc_chunks` table with a single statement.
+
+**Honest limitation:** BM25 is lexical — it matches words, not meaning. A query
+about "cost" will not retrieve a passage that only says "spend". See
+`docs/PHASE5-RETRIEVAL-DESIGN.md` for why FTS5 was chosen over FAISS or a vector
+database (short version: at 10³–10⁴ chunks exhaustive search takes 0.57 ms
+against a 4–7 s turn, so the choice is operational, not performance-driven), and
+for the explicit triggers that would justify moving to vectors.
+
 ### Avatar Generation
 
 ```bash

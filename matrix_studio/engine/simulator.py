@@ -25,12 +25,15 @@ OnEvent = Callable[[Dict[str, Any]], Awaitable[None]]
 
 from matrix_studio.avatar import generate_avatar
 from matrix_studio.settings import get_settings
+from matrix_studio.documents import ingest_file
+from matrix_studio.retrieval import format_documents_block, retrieve_for_turn
 from matrix_studio.state import (
     THREAD_TYPES,
     AgentState,
     CognitionConfig,
     MemoryItem,
     PendingThread,
+    RetrievalConfig,
     SimSnapshot,
 )
 from matrix_studio.storage import Database
@@ -168,6 +171,7 @@ async def _generate_response(
     cognition: Optional[CognitionConfig] = None,
     retrieved_memories: Optional[List["MemoryItem"]] = None,
     open_threads: Optional[List["PendingThread"]] = None,
+    retrieved_passages: Optional[List[Any]] = None,
 ) -> Dict[str, Any]:
     """
     Generate a response from the selected speaker.
@@ -227,6 +231,14 @@ async def _generate_response(
             f"deferred consequences — weave them in or pay them off when natural):\n{lines}"
         )
 
+    # Phase 5: surface the retrieved document passages. Unlike memory/threads
+    # this is NOT gated on cognition — attaching background material to a persona
+    # is useful with cognition off, so the block is appended in both branches
+    # below. The passages shown here are the turn's causal document_refs.
+    documents_block = (
+        format_documents_block(retrieved_passages) if retrieved_passages else ""
+    )
+
     if cognition_on:
         # Compose the JSON schema from the enabled cognition sub-features so the
         # single structured call carries exactly what's turned on.
@@ -276,7 +288,7 @@ async def _generate_response(
 
 You are participating in a conversation about: {topic}
 
-Your goals: {goals_line}{memory_block}{threads_block}
+Your goals: {goals_line}{memory_block}{threads_block}{documents_block}
 
 Respond naturally as this character. Keep responses conversational (2-4 sentences).
 
@@ -288,7 +300,7 @@ The rationale must be your genuine reason for this specific turn; do not invent 
 
 You are participating in a conversation about: {topic}
 
-Your goals: {goals_line}
+Your goals: {goals_line}{documents_block}
 
 Respond naturally as this character. Keep responses conversational (2-4 sentences)."""
 
@@ -492,6 +504,7 @@ async def run_simulation(
     max_messages = config.get("max_messages", settings.max_messages)
     generate_avatars_flag = config.get("generate_avatars", settings.enable_avatars)
     cognition = CognitionConfig.from_config(config)
+    retrieval = RetrievalConfig.from_config(config)
     run_name = request.get("name")
     run_description = request.get("description")
 
@@ -599,6 +612,13 @@ async def run_simulation(
 
         await asyncio.gather(*[_make_avatar(a) for a in agents.values()])
 
+    # Phase 5: ingest documents declared on cast members before the first turn,
+    # so a persona's background is available from turn 1. Ingestion is local file
+    # I/O only (no LLM, no network) and a failure never fails the run — the
+    # persona simply has no background material, which the prompt states honestly.
+    if db and retrieval.enabled:
+        await _ingest_cast_documents(run_id, cast, db, _emit, _next_seq)
+
     # Fresh start: no prior turns, no seed conversation.
     return await _run_turns(
         run_id=run_id,
@@ -614,7 +634,78 @@ async def run_simulation(
         next_seq=_next_seq,
         model=config.get("model") or None,
         cognition=cognition,
+        retrieval=retrieval,
     )
+
+
+async def _ingest_cast_documents(
+    run_id: str,
+    cast: List[Dict[str, Any]],
+    db: Database,
+    emit: Callable[..., Awaitable[None]],
+    next_seq: Callable[[], int],
+) -> int:
+    """Ingest ``documents`` declared on cast members into the run's index.
+
+    A cast entry may carry ``"documents": ["./background/spec.pdf", ...]``. Each
+    path is extracted, chunked and indexed scoped to that persona, so the CLI and
+    example files work without going through the API.
+
+    Emits ``document.ingested`` per document (or ``document.failed`` with the
+    reason) so the operator can see what a persona actually has, and returns the
+    number successfully ingested. Never raises.
+    """
+    ingested = 0
+    for member in cast:
+        persona_name = member.get("name")
+        paths = member.get("documents") or []
+        if isinstance(paths, str):
+            paths = [paths]
+        for path in paths:
+            try:
+                doc = ingest_file(path)
+                doc_id = await db.add_document(
+                    run_id=run_id,
+                    title=doc.title,
+                    chunks=[c.content for c in doc.chunks],
+                    persona_name=persona_name,
+                    source_path=doc.source_path,
+                    media_type=doc.media_type,
+                    char_count=doc.char_count,
+                )
+                ingested += 1
+                await emit(
+                    turn=0,
+                    seq=next_seq(),
+                    event_type="document.ingested",
+                    agent_name=persona_name,
+                    payload={
+                        "document_id": doc_id,
+                        "persona_name": persona_name,
+                        "title": doc.title,
+                        "media_type": doc.media_type,
+                        "char_count": doc.char_count,
+                        "chunk_count": len(doc.chunks),
+                    },
+                )
+                logger.info(
+                    "Ingested %s for %s (%d chunks, %d chars)",
+                    doc.title, persona_name, len(doc.chunks), doc.char_count,
+                )
+            except Exception as exc:
+                logger.warning("Document ingestion failed for %s: %s", path, exc)
+                await emit(
+                    turn=0,
+                    seq=next_seq(),
+                    event_type="document.failed",
+                    agent_name=persona_name,
+                    payload={
+                        "persona_name": persona_name,
+                        "path": str(path),
+                        "error": str(exc),
+                    },
+                )
+    return ingested
 
 
 def _retrieve_memories(agent: AgentState, k: int) -> List[MemoryItem]:
@@ -701,6 +792,7 @@ async def _run_turns(
     model: Optional[str] = None,
     cognition: Optional[CognitionConfig] = None,
     pending_threads: Optional[List[PendingThread]] = None,
+    retrieval: Optional[RetrievalConfig] = None,
 ) -> Dict[str, Any]:
     """
     Shared turn loop + completion/failure handling for both a fresh run and a
@@ -780,10 +872,44 @@ async def _run_turns(
                 [t for t in pending_threads if t.status == "open"]
                 if threads_on else []
             )
+            # Phase 5: retrieve this speaker's supporting document passages,
+            # scoped to its own slice. Independent of cognition, and skipped
+            # entirely (zero queries, zero prompt change) when disabled.
+            retrieval_on = bool(retrieval and retrieval.enabled and db is not None)
+            passages: List[Any] = []
+            if retrieval_on:
+                passages, doc_query = await retrieve_for_turn(
+                    db, run_id, speaker_name, topic, conversation,
+                    k=retrieval.k, max_chars=retrieval.max_chars,
+                    recent_turns=retrieval.recent_turns,
+                )
+                if passages:
+                    await emit(
+                        turn=turn,
+                        seq=next_seq(),
+                        event_type="document.retrieved",
+                        agent_name=speaker_name,
+                        payload={
+                            "speaker": speaker_name,
+                            "query": doc_query,
+                            "passages": [
+                                {
+                                    "chunk_id": p.chunk_id,
+                                    "document_id": p.document_id,
+                                    "title": p.title,
+                                    "ordinal": p.ordinal,
+                                    "score": round(p.score, 4),
+                                    "chars": len(p.content),
+                                }
+                                for p in passages
+                            ],
+                            "total_chars": sum(len(p.content) for p in passages),
+                        },
+                    )
             response_data = await _generate_response(
                 speaker_name, speaker, topic, conversation, settings,
                 model=model, cognition=cognition, retrieved_memories=retrieved,
-                open_threads=open_threads,
+                open_threads=open_threads, retrieved_passages=passages,
             )
 
             # Phase 4a: pre-emit priority-hierarchy validation gate. The
@@ -862,6 +988,10 @@ async def _run_turns(
                         model=model, cognition=cognition,
                         retrieved_memories=retrieved,
                         open_threads=open_threads,
+                        # Same passages as the rejected attempt: the regeneration
+                        # is of the utterance, not of the retrieval, so re-querying
+                        # would change the causal context mid-turn.
+                        retrieved_passages=passages,
                     )
 
             # Update conversation
@@ -903,6 +1033,11 @@ async def _run_turns(
             # (the causal analogue of memory_refs; present only when threads on).
             if threads_on:
                 response_payload["thread_refs"] = [t.id for t in open_threads]
+            # Phase 5: the document chunk ids that were in-context for this turn.
+            # Present only when retrieval actually returned something, so a
+            # retrieval-off run's payload is byte-for-byte unchanged.
+            if passages:
+                response_payload["document_refs"] = [p.chunk_id for p in passages]
             await emit(
                 turn=turn,
                 seq=next_seq(),
@@ -1518,6 +1653,7 @@ async def resume_simulation(
     mutation: Optional[Dict[str, Any]] = None,
     cognition: Optional[CognitionConfig] = None,
     pending_threads: Optional[List[PendingThread]] = None,
+    retrieval: Optional[RetrievalConfig] = None,
 ) -> Dict[str, Any]:
     """
     Phase 2a branch primitive — RESUME generating forward from a checkpoint.
@@ -1646,4 +1782,5 @@ async def resume_simulation(
         model=model,
         cognition=cognition,
         pending_threads=pending_threads,
+        retrieval=retrieval,
     )
