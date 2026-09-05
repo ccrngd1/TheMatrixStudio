@@ -51,6 +51,14 @@ documents = [
     "pypdf>=4.0.0",
     "python-docx>=1.1.0",
 ]
+# Phase 5f vector retrieval. sqlite-vec is a small loadable SQLite extension
+# with prebuilt wheels — no torch, no vector service, and the index lives in the
+# same database file. Optional because vector modes also need an embedding
+# provider (an API call per chunk at ingest and one per turn), and the default
+# lexical mode needs neither.
+vectors = [
+    "sqlite-vec>=0.1.6",
+]
 
 [project.scripts]
 matrix-studio = "matrix_studio.__main__:main"

@@ -63,6 +63,10 @@ from matrix_studio.retrieval import (  # noqa: E402
 from matrix_studio.settings import get_settings  # noqa: E402
 from matrix_studio.storage import Database  # noqa: E402
 
+# Set from --embedding-model before any pipeline runs; a one-element list so
+# run_pipeline can read it without threading the value through every signature.
+EMBED_MODEL = [""]
+
 GEN_PROMPT = """You are building an evaluation set for a document search system.
 
 Below is one passage from a technical document. Write TWO questions that this
@@ -192,6 +196,32 @@ async def run_pipeline(
     Running both over identical ground truth is the only honest way to claim the
     change helped.
     """
+    # Phase 5f modes. The vector arm embeds the RAW query text, not the sanitised
+    # keyword expression — reducing a sentence to keywords first would throw away
+    # the meaning that embeddings exist to capture.
+    if pipeline in ("vector", "hybrid"):
+        from matrix_studio.embeddings import embed_query
+        from matrix_studio.retrieval import reciprocal_rank_fusion
+
+        result = await embed_query(query, model=EMBED_MODEL[0])
+        semantic: List[Dict[str, Any]] = []
+        if result and result.vectors and result.vectors[0]:
+            semantic = await db.vector_search(
+                run_id="eval", vector=result.vectors[0], persona_name=None,
+                k=max(k * 2, k),
+            )
+        if pipeline == "vector":
+            return semantic[:k], "<embedding>"
+        lexical, fts = await run_pipeline(
+            db, query, max(k * 2, k), "baseline", term_limit, max_df_ratio, score_ratio
+        )
+        if not semantic:
+            return lexical[:k], fts
+        if not lexical:
+            return semantic[:k], "<embedding>"
+        fused = reciprocal_rank_fusion([lexical, semantic], rrf_k=60)
+        return fused[:k], f"{fts} + <embedding>"
+
     terms = extract_terms(query, limit=24)
     if not terms:
         return [], ""
@@ -263,6 +293,11 @@ async def main() -> int:
         help="Add a 'diluted' arm: the natural question padded with unrelated "
              "terms, modelling the engine's conversation-window query",
     )
+    ap.add_argument(
+        "--modes", default="baseline",
+        help="Comma-separated pipelines to evaluate: baseline,tuned,vector,hybrid",
+    )
+    ap.add_argument("--embedding-model", default="", help="LiteLLM embedding model")
     ap.add_argument("--term-limit", type=int, default=8)
     ap.add_argument("--max-df-ratio", type=float, default=0.5)
     ap.add_argument("--score-ratio", type=float, default=0.25)
@@ -304,6 +339,22 @@ async def main() -> int:
 
             print(f"corpus: {len(files)} files, {len(chunks)} chunks, "
                   f"{total_chars:,} chars")
+            EMBED_MODEL[0] = args.embedding_model or ""
+            if any(m in args.modes for m in ("vector", "hybrid")):
+                from matrix_studio.retrieval import embed_pending_chunks
+                if not db.vec_available:
+                    print("sqlite-vec unavailable; cannot evaluate vector modes.",
+                          file=sys.stderr)
+                    return 1
+                stats = await embed_pending_chunks(
+                    db, "eval", embedding_model=args.embedding_model
+                )
+                if stats.get("error"):
+                    print(f"embedding failed: {stats['error']}", file=sys.stderr)
+                    return 1
+                EMBED_MODEL[0] = stats["model"]
+                print(f"embedded {stats['embedded']} chunks with {stats['model']} "
+                      f"(${stats['cost_usd']:.6f}, {stats['tokens']:,} tokens)")
             if not chunks:
                 print("Nothing indexed.", file=sys.stderr)
                 return 1
@@ -322,7 +373,11 @@ async def main() -> int:
             )
 
             gen_cost = sum(g["_cost"] for g in generated if g)
-            pipelines = ("baseline", "tuned") if args.compare else ("baseline",)
+            pipelines = tuple(
+                m.strip() for m in args.modes.split(",") if m.strip()
+            )
+            if args.compare and "tuned" not in pipelines:
+                pipelines = pipelines + ("tuned",)
             arms = ["natural", "paraphrased"]
             if args.diluted:
                 # The engine does not query with a tidy question — it ORs terms
