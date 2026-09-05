@@ -206,6 +206,19 @@ passages — so what a persona drew on is auditable, not asserted.
 **Recovery:** the FTS5 index is external-content, so it holds no text of its own
 and is always rebuildable from the `doc_chunks` table with a single statement.
 
+**CLI.** Manage documents without a running server:
+
+```bash
+matrix-studio docs <run> attach ./background/spec.pdf -p Priya
+matrix-studio docs <run> list
+matrix-studio docs <run> search egress inspection evidence   # inspect retrieval
+matrix-studio docs <run> reindex                             # rebuild the index
+```
+
+`<run>` accepts a run id, name or slug. `docs search` is how you measure
+retrieval quality from the terminal — it prints the extracted terms, the
+sanitised FTS5 query, and each matching passage with its BM25 score.
+
 **API.** Documents can also be managed per run:
 
 | Endpoint | Purpose |
@@ -217,9 +230,11 @@ and is always rebuildable from the `doc_chunks` table with a single statement.
 | `GET /api/runs/{ref}/documents/search?q=…` | **Inspect what a query retrieves** — sanitised query, passages, BM25 scores |
 
 The search endpoint is the measurement instrument: it makes retrieval quality
-checkable without running a simulation. It shows the limitation plainly — on a
-real corpus, `q=how much money will this burn` returns **nothing**, while
-`q=measured token delta cost` returns the right passage.
+checkable without running a simulation, and it shows the lexical limitation
+directly. On a two-document corpus, `q=how much money will this burn` returned
+**no passages** while `q=measured token delta cost` returned the right one —
+same question, different vocabulary. Whether that matters for your corpus is an
+empirical question, which is exactly why this endpoint exists.
 
 **Honest limitation:** BM25 is lexical — it matches words, not meaning. A query
 about "cost" will not retrieve a passage that only says "spend". See

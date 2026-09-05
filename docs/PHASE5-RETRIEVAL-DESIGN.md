@@ -238,17 +238,36 @@ Both were fixed, and neither was visible in the mocked tests:
    **retrieval inspection** endpoint that makes quality measurable.
 
    Verified against a live server. The inspection endpoint immediately
-   demonstrated the lexical gap it exists to measure: on a real corpus
-   `q=how much money will this burn` returned **0 passages**, while
-   `q=measured token delta cost` returned the correct passage. That is the
-   number step 5b-4 has to move or accept.
+   demonstrated the lexical gap it exists to measure: on a two-document corpus
+   `q=how much money will this burn` returned **0 passages** while
+   `q=measured token delta cost` returned the correct passage — the same
+   question in different vocabulary.
+
+   Note the result is corpus-dependent, not a fixed property: after a third,
+   much larger document was attached, that same query DID match (Porter
+   stemming widened the surface). This is precisely why 5b-4 has to measure
+   recall on a real corpus rather than generalise from one example.
 
    One further defect fixed here, found by an API test: `max_chars` was
    documented as a hard ceiling but the truncation ellipsis was appended
    *after* clipping, returning `max_chars + 2`. The ellipsis is now charged
    against the budget, and the ceiling is asserted across awkward sizes
    (1, 2, 3, 4, 17, 99, 100, 301).
-3. **5b-3** — CLI ingest, example with a real document, UI affordance in the
-   dossier showing which passages a persona drew on.
+3. **5b-3** ✅ DONE (frontend unverified) — `matrix-studio docs
+   attach|list|search|reindex`, the `documents` / `document_retrievals` fields
+   on the agent dossier, and a Dossier panel showing them.
+
+   Fixed here: a real gap in 5a/5b — the API request models did not DECLARE
+   `cast[].documents` or `config.retrieval`, and Pydantic drops undeclared
+   fields, so cast-level attachment and the retrieval config worked from the
+   CLI but silently vanished through the API. Now declared, with an end-to-end
+   round-trip regression test.
+
+   **Frontend caveat:** this machine has no Node toolchain (`npm`/`npx`
+   absent, `frontend/node_modules` absent), so the TypeScript changes were
+   reviewed by eye but NOT typechecked and the 18 frontend tests were NOT run.
+   The changes are additive and guarded (optional fields defaulted with `??`,
+   sections rendered only when non-empty), but they need `tsc -b` and vitest on
+   a machine with Node before being trusted.
 4. **5b-4** — Measure FTS5 recall on a real corpus. Publish the number. Decide
    vectors on evidence.

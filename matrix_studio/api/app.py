@@ -53,6 +53,11 @@ class PersonaModel(BaseModel):
     name: str
     persona: str
     goals: List[str] = Field(default_factory=list)
+    # Phase 5: server-readable paths to background documents scoped to this
+    # persona, ingested at run start. Declared here because the model is the
+    # request contract — an undeclared field is silently dropped, which would
+    # make cast-level attachment work from the CLI but not through the API.
+    documents: List[str] = Field(default_factory=list)
 
 
 class CognitionConfigModel(BaseModel):
@@ -70,12 +75,25 @@ class CognitionConfigModel(BaseModel):
     thread_stale_after: int = Field(default=5, ge=1)
 
 
+class RetrievalConfigModel(BaseModel):
+    """Phase 5 per-run document retrieval. Omitted -> disabled (pre-Phase-5
+    behavior). ``max_chars`` is a hard ceiling on retrieved document text per
+    turn, which is what keeps a large attachment out of the per-call context."""
+
+    enabled: bool = False
+    k: int = Field(default=3, ge=0)
+    max_chars: int = Field(default=1200, ge=0)
+    recent_turns: int = Field(default=3, ge=1)
+
+
 class RunConfigModel(BaseModel):
     max_messages: Optional[int] = None
     generate_avatars: Optional[bool] = None
     # Phase 2c: optional cognition config. Omitted -> cognition disabled
     # (engine behaves exactly as Phase 2b).
     cognition: Optional[CognitionConfigModel] = None
+    # Phase 5: optional document retrieval. Independent of cognition.
+    retrieval: Optional[RetrievalConfigModel] = None
 
 
 class SummaryConfigModel(BaseModel):
@@ -645,6 +663,37 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
                 and (snapshot.total_turns - t.origin_turn) >= _stale_after
             )
             agent_threads.append(entry)
+        # Phase 5: what background material this persona has, and which passages
+        # it actually drew on. Sourced ONLY from real document.retrieved events —
+        # the audit trail, not a claim. A run without retrieval reports empty
+        # lists rather than synthesizing anything.
+        attached = [
+            {
+                "document_id": d["id"],
+                "title": d["title"],
+                "media_type": d["media_type"],
+                "char_count": d["char_count"],
+                "chunk_count": d["chunk_count"],
+                "cast_wide": d["persona_name"] is None,
+            }
+            for d in await db.list_documents(run["id"], persona_name=name)
+        ]
+        drew_on: List[Dict[str, Any]] = []
+        for row in await db.get_events(run["id"]):
+            if row["event_type"] != "document.retrieved" or row["agent_name"] != name:
+                continue
+            payload = row["payload"]
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except json.JSONDecodeError:
+                    continue
+            drew_on.append({
+                "turn": row["turn"],
+                "query": payload.get("query"),
+                "total_chars": payload.get("total_chars"),
+                "passages": payload.get("passages", []),
+            })
         return {
             "run_id": run["id"],
             "agent": agent.name,
@@ -653,6 +702,8 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             "memory_stream": memories,
             "beliefs": beliefs,
             "pending_threads": agent_threads,
+            "documents": attached,
+            "document_retrievals": drew_on,
             "relationships": agent.relationships,
             "tokens_in": agent.total_tokens_in,
             "tokens_out": agent.total_tokens_out,
