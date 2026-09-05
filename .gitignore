@@ -66,3 +66,6 @@ docs/.doctrees/
 .dmypy.json
 dmypy.json
 .claude/
+
+# Unrelated vendored project (not part of this repo)
+8bit-agents-activation-demo-main/
