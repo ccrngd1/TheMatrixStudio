@@ -284,11 +284,19 @@ def test_budget_keeps_whole_passages_not_fragments():
 
 
 def test_budget_truncates_a_single_oversized_first_passage():
+    """max_chars is a HARD ceiling — the ellipsis is charged against it."""
     rows = [_row(0, "word " * 500)]
     passages = apply_budget(rows, max_chars=100)
     assert len(passages) == 1
-    assert len(passages[0].content) <= 102  # budget + ellipsis
+    assert len(passages[0].content) <= 100
     assert passages[0].content.endswith("…")
+
+
+def test_budget_ceiling_holds_for_awkward_sizes():
+    rows = [_row(0, "word " * 500)]
+    for max_chars in (1, 2, 3, 4, 17, 99, 100, 301):
+        passages = apply_budget(rows, max_chars=max_chars)
+        assert sum(len(p.content) for p in passages) <= max_chars, max_chars
 
 
 def test_budget_zero_returns_nothing():

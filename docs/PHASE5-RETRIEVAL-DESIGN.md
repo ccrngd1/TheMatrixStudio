@@ -234,8 +234,20 @@ Both were fixed, and neither was visible in the mocked tests:
 1. **5b-1** ✅ DONE — `documents.py` (extract + chunk), schema + FTS5 + retrieval +
    reindex in `database.py`, `RetrievalConfig`, engine wiring, `document_refs`,
    events, tests. ← *this slice*
-2. **5b-2** — API: attach / list / delete / reindex, plus the **retrieval
-   inspection** endpoint that makes quality measurable.
+2. **5b-2** ✅ DONE — API: attach / list / delete / reindex, plus the
+   **retrieval inspection** endpoint that makes quality measurable.
+
+   Verified against a live server. The inspection endpoint immediately
+   demonstrated the lexical gap it exists to measure: on a real corpus
+   `q=how much money will this burn` returned **0 passages**, while
+   `q=measured token delta cost` returned the correct passage. That is the
+   number step 5b-4 has to move or accept.
+
+   One further defect fixed here, found by an API test: `max_chars` was
+   documented as a hard ceiling but the truncation ellipsis was appended
+   *after* clipping, returning `max_chars + 2`. The ellipsis is now charged
+   against the budget, and the ceiling is asserted across awkward sizes
+   (1, 2, 3, 4, 17, 99, 100, 301).
 3. **5b-3** — CLI ingest, example with a real document, UI affordance in the
    dossier showing which passages a persona drew on.
 4. **5b-4** — Measure FTS5 recall on a real corpus. Publish the number. Decide
