@@ -882,6 +882,9 @@ async def _run_turns(
                     db, run_id, speaker_name, topic, conversation,
                     k=retrieval.k, max_chars=retrieval.max_chars,
                     recent_turns=retrieval.recent_turns,
+                    term_limit=retrieval.term_limit,
+                    max_df_ratio=retrieval.max_df_ratio,
+                    score_ratio=retrieval.score_ratio,
                 )
                 if passages:
                     await emit(

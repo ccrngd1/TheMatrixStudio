@@ -17,8 +17,10 @@ from matrix_studio.retrieval import (
     build_fts_query,
     build_turn_query,
     extract_terms,
+    filter_by_score,
     format_documents_block,
     retrieve_for_turn,
+    select_discriminative_terms,
 )
 from matrix_studio.state import RetrievalConfig
 from matrix_studio.storage import Database
@@ -403,3 +405,120 @@ def test_unlisted_contraction_falls_back_to_stem():
     terms = extract_terms("we'll ship egress")
     assert "we'll" not in terms and "we" not in terms
     assert terms == ["ship", "egress"]
+
+
+# --------------------------------------------------------------------------
+# Experimental query/ranking knobs (MEASURED HARMFUL, default off).
+# Tested because they remain callable and the harness uses them.
+# --------------------------------------------------------------------------
+
+
+def test_select_discriminative_drops_absent_and_ubiquitous_terms():
+    terms = ["absent", "rare", "common"]
+    df = {"absent": 0, "rare": 2, "common": 90}
+    got = select_discriminative_terms(terms, df, total_chunks=100, limit=8, max_df_ratio=0.5)
+    assert got == ["rare"]
+
+
+def test_select_discriminative_ranks_rarest_first():
+    terms = ["a1", "b2", "c3"]
+    df = {"a1": 9, "b2": 1, "c3": 5}
+    assert select_discriminative_terms(terms, df, 100, limit=3) == ["b2", "c3", "a1"]
+
+
+def test_select_discriminative_respects_limit():
+    terms = [f"t{i}" for i in range(20)]
+    df = {t: i + 1 for i, t in enumerate(terms)}
+    assert len(select_discriminative_terms(terms, df, 100, limit=5)) == 5
+
+
+def test_select_discriminative_falls_back_rather_than_returning_nothing():
+    """An over-aggressive filter must never produce an empty query."""
+    terms = ["only", "common"]
+    df = {"only": 99, "common": 98}
+    got = select_discriminative_terms(terms, df, 100, limit=8, max_df_ratio=0.1)
+    assert got, "filter emptied the query instead of falling back"
+    assert set(got) <= set(terms)
+
+
+def test_select_discriminative_falls_back_when_all_absent():
+    terms = ["x1", "y2"]
+    assert select_discriminative_terms(terms, {"x1": 0, "y2": 0}, 100) == terms
+
+
+def test_select_discriminative_without_frequencies_is_a_passthrough():
+    terms = ["a1", "b2", "c3"]
+    assert select_discriminative_terms(terms, {}, 0, limit=2) == ["a1", "b2"]
+
+
+def test_select_discriminative_empty_input():
+    assert select_discriminative_terms([], {"a": 1}, 10) == []
+
+
+def test_filter_by_score_keeps_strong_matches_only():
+    rows = [_row(0, "a", score=-10.0), _row(1, "b", score=-8.0), _row(2, "c", score=-1.0)]
+    kept = filter_by_score(rows, score_ratio=0.5)
+    assert [r["chunk_id"] for r in kept] == [0, 1]
+
+
+def test_filter_by_score_always_keeps_the_best_row():
+    """Which is exactly why it cannot produce an empty result — see the docstring."""
+    rows = [_row(0, "a", score=-2.0)]
+    assert filter_by_score(rows, score_ratio=0.99) == rows
+
+
+def test_filter_by_score_disabled_at_zero():
+    rows = [_row(0, "a", score=-10.0), _row(1, "b", score=-0.001)]
+    assert filter_by_score(rows, score_ratio=0.0) == rows
+
+
+def test_filter_by_score_handles_empty_and_all_zero_scores():
+    assert filter_by_score([], 0.5) == []
+    rows = [_row(0, "a", score=0.0), _row(1, "b", score=0.0)]
+    assert filter_by_score(rows, 0.5) == rows
+
+
+def test_retrieval_config_experimental_knobs_default_off():
+    """They were measured harmful; the defaults must not enable them."""
+    cfg = RetrievalConfig.from_config({"retrieval": {"enabled": True}})
+    assert cfg.term_limit == 0
+    assert cfg.score_ratio == 0.0
+
+
+async def test_retrieve_for_turn_defaults_do_not_apply_the_knobs(run_db):
+    """Default retrieval must behave as the measured-best baseline."""
+    await run_db.add_document(
+        run_id="r1", title="a.md",
+        chunks=[f"retrieval design passage {i} with egress inspection" for i in range(6)],
+        persona_name="A",
+    )
+    passages, query = await retrieve_for_turn(
+        run_db, "r1", "A", "retrieval design egress inspection",
+        conversation=[], k=5, max_chars=5000,
+    )
+    # All terms retained (no discriminative narrowing) and no tail trimming.
+    assert query.count(" OR ") >= 3
+    assert len(passages) == 5
+
+
+async def test_term_document_frequencies_counts_within_scope(run_db):
+    await run_db.add_document(
+        run_id="r1", title="a.md",
+        chunks=["egress inspection", "egress evidence", "unrelated text"],
+        persona_name="A",
+    )
+    await run_db.add_document(
+        run_id="r1", title="b.md", chunks=["egress elsewhere"], persona_name="B",
+    )
+    df = await run_db.term_document_frequencies("r1", ["egress", "inspection", "absent"], "A")
+    assert df["egress"] == 2, "counted outside the persona's slice"
+    assert df["inspection"] == 1
+    assert df["absent"] == 0
+
+
+async def test_chunk_count_is_scoped(run_db):
+    await run_db.add_document(run_id="r1", title="a", chunks=["x", "y"], persona_name="A")
+    await run_db.add_document(run_id="r1", title="b", chunks=["z"], persona_name="B")
+    await run_db.add_document(run_id="r1", title="s", chunks=["w"], persona_name=None)
+    assert await run_db.chunk_count("r1") == 4
+    assert await run_db.chunk_count("r1", "A") == 3  # own + cast-wide

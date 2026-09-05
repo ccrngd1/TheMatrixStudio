@@ -1295,3 +1295,65 @@ class Database:
                 char_count=doc["char_count"],
             )
         return len(docs)
+
+    async def term_document_frequencies(
+        self,
+        run_id: str,
+        terms: List[str],
+        persona_name: Optional[str] = None,
+    ) -> Dict[str, int]:
+        """How many chunks in a persona's slice contain each term.
+
+        Used to pick the DISCRIMINATIVE terms for a query. A term present in
+        almost every chunk carries no ranking signal, and a term present in none
+        cannot match at all; both dilute an OR query built from conversational
+        text. Returned counts are FTS5-tokenised (so stemming applies), which is
+        the right basis because it is how matching will actually happen.
+
+        One small MATCH per term. Terms are checked individually rather than via
+        an fts5vocab table because vocab rows hold stemmed forms, which would not
+        line up with the raw query terms callers pass in.
+        """
+        if not self._fts5_available or not terms:
+            return {}
+        if persona_name is None:
+            scope_sql = ""
+            scope_params: tuple = ()
+        else:
+            scope_sql = "AND (c.persona_name = ? OR c.persona_name IS NULL)"
+            scope_params = (persona_name,)
+        sql = f"""
+            SELECT COUNT(*) FROM doc_chunks_fts
+            JOIN doc_chunks c ON c.id = doc_chunks_fts.rowid
+            WHERE doc_chunks_fts MATCH ? AND c.run_id = ? {scope_sql}
+        """
+        out: Dict[str, int] = {}
+        for term in terms:
+            if '"' in term:
+                continue
+            try:
+                async with self._conn.execute(
+                    sql, (f'"{term}"', run_id, *scope_params)
+                ) as cursor:
+                    row = await cursor.fetchone()
+                    out[term] = int(row[0]) if row else 0
+            except Exception as exc:  # noqa: BLE001
+                # A term that cannot be probed is simply unknown; never fatal.
+                logger.debug("term frequency probe failed for %r: %s", term, exc)
+                out[term] = 0
+        return out
+
+    async def chunk_count(self, run_id: str, persona_name: Optional[str] = None) -> int:
+        """Number of indexed chunks in a persona's slice (for df ratios)."""
+        if persona_name is None:
+            sql = "SELECT COUNT(*) FROM doc_chunks WHERE run_id = ?"
+            params: tuple = (run_id,)
+        else:
+            sql = (
+                "SELECT COUNT(*) FROM doc_chunks WHERE run_id = ? "
+                "AND (persona_name = ? OR persona_name IS NULL)"
+            )
+            params = (run_id, persona_name)
+        async with self._conn.execute(sql, params) as cursor:
+            row = await cursor.fetchone()
+            return int(row[0]) if row else 0

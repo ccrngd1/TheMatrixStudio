@@ -54,7 +54,12 @@ from typing import Any, Dict, List, Optional, Sequence
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from matrix_studio.documents import ExtractionError, ingest_file  # noqa: E402
-from matrix_studio.retrieval import build_fts_query, extract_terms  # noqa: E402
+from matrix_studio.retrieval import (  # noqa: E402
+    build_fts_query,
+    extract_terms,
+    filter_by_score,
+    select_discriminative_terms,
+)
 from matrix_studio.settings import get_settings  # noqa: E402
 from matrix_studio.storage import Database  # noqa: E402
 
@@ -171,8 +176,52 @@ def rank_of_gold(
     return {"strict": strict, "lenient": lenient}
 
 
-def summarise(results: List[Dict[str, Any]], arm: str, ks: Sequence[int]) -> Dict[str, Any]:
-    rows = [r for r in results if r["arm"] == arm]
+async def run_pipeline(
+    db: Any,
+    query: str,
+    k: int,
+    pipeline: str,
+    term_limit: int,
+    max_df_ratio: float,
+    score_ratio: float,
+) -> tuple[List[Dict[str, Any]], str]:
+    """Retrieve with either the pre-measurement or the tuned query pipeline.
+
+    ``baseline`` is the original behaviour: OR every extracted term, no score
+    filtering. ``tuned`` narrows to discriminative terms and trims the weak tail.
+    Running both over identical ground truth is the only honest way to claim the
+    change helped.
+    """
+    terms = extract_terms(query, limit=24)
+    if not terms:
+        return [], ""
+    if pipeline == "tuned":
+        doc_freq = await db.term_document_frequencies("eval", terms, persona_name=None)
+        total = await db.chunk_count("eval", persona_name=None)
+        terms = select_discriminative_terms(
+            terms, doc_freq, total, limit=term_limit, max_df_ratio=max_df_ratio
+        )
+    fts = " OR ".join(f'"{t}"' for t in terms if '"' not in t)
+    if not fts:
+        return [], ""
+    rows = await db.search_documents(
+        run_id="eval", query=fts, persona_name=None, k=max(k * 2, k)
+    )
+    if pipeline == "tuned":
+        rows = filter_by_score(rows, score_ratio)
+    return rows[:k], fts
+
+
+def summarise(
+    results: List[Dict[str, Any]],
+    arm: str,
+    ks: Sequence[int],
+    pipeline: Optional[str] = None,
+) -> Dict[str, Any]:
+    rows = [
+        r for r in results
+        if r["arm"] == arm and (pipeline is None or r.get("pipeline") == pipeline)
+    ]
     n = len(rows)
     if not n:
         return {"n": 0}
@@ -204,6 +253,19 @@ async def main() -> int:
     ap.add_argument("--concurrency", type=int, default=8)
     ap.add_argument("--model", default=None, help="Query-generation model")
     ap.add_argument("--json-out", type=Path, default=None)
+    ap.add_argument(
+        "--compare", action="store_true",
+        help="Also evaluate the tuned query pipeline (discriminative terms + "
+             "score filter) against the pre-measurement baseline",
+    )
+    ap.add_argument(
+        "--diluted", action="store_true",
+        help="Add a 'diluted' arm: the natural question padded with unrelated "
+             "terms, modelling the engine's conversation-window query",
+    )
+    ap.add_argument("--term-limit", type=int, default=8)
+    ap.add_argument("--max-df-ratio", type=float, default=0.5)
+    ap.add_argument("--score-ratio", type=float, default=0.25)
     args = ap.parse_args()
 
     model = args.model or get_settings().litellm_model
@@ -260,53 +322,77 @@ async def main() -> int:
             )
 
             gen_cost = sum(g["_cost"] for g in generated if g)
+            pipelines = ("baseline", "tuned") if args.compare else ("baseline",)
+            arms = ["natural", "paraphrased"]
+            if args.diluted:
+                # The engine does not query with a tidy question — it ORs terms
+                # from a window of recent conversation, so the real query is a
+                # good question buried in unrelated chatter. This arm models that
+                # by padding the natural question with terms from an unrelated
+                # chunk, which is the case discriminative term selection targets.
+                arms.append("diluted")
             results: List[Dict[str, Any]] = []
             for chunk, queries in zip(sample, generated):
                 if not queries:
                     continue
-                for arm in ("natural", "paraphrased"):
+                filler_pool = [c for c in chunks if c["id"] != chunk["id"]]
+                filler = " ".join(
+                    extract_terms(rng.choice(filler_pool)["content"], limit=18)
+                ) if filler_pool else ""
+                queries = dict(queries)
+                queries["diluted"] = f"{queries['natural']} {filler}"
+                for arm in arms:
                     query = queries[arm]
-                    fts = build_fts_query(query)
-                    rows = (
-                        await db.search_documents(
-                            run_id="eval", query=fts, persona_name=None, k=args.k
+                    for pipeline in pipelines:
+                        rows, fts = await run_pipeline(
+                            db, query, args.k, pipeline,
+                            args.term_limit, args.max_df_ratio, args.score_ratio,
                         )
-                        if fts
-                        else []
-                    )
-                    results.append({
-                        "arm": arm,
-                        "query": query,
-                        "fts_query": fts,
-                        "gold_chunk_id": chunk["id"],
-                        "matched": len(rows),
-                        "overlap": lexical_overlap(query, chunk["content"]),
-                        "rank": rank_of_gold(
-                            rows, chunk["id"], chunk["document_id"], chunk["ordinal"]
-                        ),
-                    })
+                        results.append({
+                            "arm": arm,
+                            "pipeline": pipeline,
+                            "query": query,
+                            "fts_query": fts,
+                            "gold_chunk_id": chunk["id"],
+                            "matched": len(rows),
+                            "overlap": lexical_overlap(query, chunk["content"]),
+                            "rank": rank_of_gold(
+                                rows, chunk["id"], chunk["document_id"], chunk["ordinal"]
+                            ),
+                        })
 
             ks = [k for k in (1, 3, args.k) if k <= args.k]
             ks = sorted(set(ks))
-            summary = {arm: summarise(results, arm, ks) for arm in ("natural", "paraphrased")}
+            summary = {
+                f"{arm}/{pipeline}": summarise(results, arm, ks, pipeline)
+                for arm in arms
+                for pipeline in pipelines
+            }
 
             # Chance baseline: probability a uniformly random top-k selection
             # contains the gold chunk, for this corpus size.
             baseline = round(min(1.0, args.k / len(chunks)), 6)
 
-            print(f"{'metric':28s} {'natural':>10s} {'paraphrased':>12s}")
-            print("-" * 52)
+            cols = list(summary)
+            width = max(12, max(len(c) for c in cols) + 1)
+            header = f"{'metric':28s}" + "".join(f"{c:>{width}s}" for c in cols)
+            print(header)
+            print("-" * len(header))
             for key in [f"recall@{k}_strict" for k in ks] + \
                        [f"recall@{k}_lenient" for k in ks] + \
                        ["mrr_strict", "mrr_lenient", "zero_result_rate",
                         "mean_lexical_overlap"]:
-                nat = summary["natural"].get(key, "-")
-                par = summary["paraphrased"].get(key, "-")
-                print(f"{key:28s} {nat!s:>10s} {par!s:>12s}")
-            print("-" * 52)
-            print(f"{'n (queries per arm)':28s} {summary['natural']['n']:>10d} "
-                  f"{summary['paraphrased']['n']:>12d}")
-            print(f"{'random-guess recall@k':28s} {baseline:>10} {baseline:>12}")
+                line = f"{key:28s}"
+                for c in cols:
+                    line += f"{summary[c].get(key, '-')!s:>{width}s}"
+                print(line)
+            print("-" * len(header))
+            line = f"{'n (queries)':28s}"
+            for c in cols:
+                line += f"{summary[c]['n']!s:>{width}s}"
+            print(line)
+            print(f"{'random-guess recall@k':28s}" +
+                  "".join(f"{baseline!s:>{width}s}" for _ in cols))
             print(f"\nquery-generation cost: ${gen_cost:.4f}")
 
             report = {

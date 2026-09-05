@@ -84,6 +84,11 @@ class RetrievalConfigModel(BaseModel):
     k: int = Field(default=3, ge=0)
     max_chars: int = Field(default=1200, ge=0)
     recent_turns: int = Field(default=3, ge=1)
+    # Experimental, DEFAULT OFF: measured harmful in
+    # docs/PHASE5-RETRIEVAL-MEASUREMENT.md (recall fell on all three arms).
+    term_limit: int = Field(default=0, ge=0)
+    max_df_ratio: float = Field(default=0.5, gt=0.0, le=1.0)
+    score_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 class RunConfigModel(BaseModel):

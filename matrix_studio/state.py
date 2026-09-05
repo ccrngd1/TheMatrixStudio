@@ -125,6 +125,24 @@ class RetrievalConfig(BaseModel):
         default=3, ge=1,
         description="How many recent messages contribute terms to the query",
     )
+    # Experimental query/ranking knobs, both DEFAULT OFF because they were
+    # MEASURED AS HARMFUL. docs/PHASE5-RETRIEVAL-MEASUREMENT.md A/B'd them across
+    # three arms and recall fell in every one — worst on the "diluted" arm that
+    # models the engine's real conversation-window query (recall@5 0.339 tuned vs
+    # 0.509 baseline). Kept only so the measurement harness can re-evaluate them;
+    # do not enable without re-running that comparison.
+    term_limit: int = Field(
+        default=0, ge=0,
+        description="Max discriminative query terms (0 = OFF; measured harmful when on)",
+    )
+    max_df_ratio: float = Field(
+        default=0.5, gt=0.0, le=1.0,
+        description="Drop query terms appearing in more than this fraction of chunks",
+    )
+    score_ratio: float = Field(
+        default=0.0, ge=0.0, le=1.0,
+        description="Drop matches weaker than this fraction of the best score (0 = OFF; measured harmful when on)",
+    )
 
     @classmethod
     def from_config(cls, config: Optional[Dict[str, Any]]) -> "RetrievalConfig":
