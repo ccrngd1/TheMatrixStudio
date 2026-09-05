@@ -11,8 +11,12 @@ from matrix_studio.settings import Settings
 
 
 def test_settings_defaults():
-    """Test that settings have sensible defaults."""
-    # Ignore any local .env so we assert the true code defaults.
+    """Test that settings have sensible defaults.
+
+    ``_env_file=None`` ignores any local ``.env``; the ``clean_env`` fixture in
+    conftest clears the matching environment variables, which is what makes this
+    assert real code defaults rather than local configuration.
+    """
     settings = Settings(_env_file=None)
     assert settings.litellm_model == "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0"
     assert settings.litellm_temperature == 0.7

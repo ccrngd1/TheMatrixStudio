@@ -23,20 +23,37 @@ def reset_settings_singleton():
 
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch):
-    """Clean environment variables that might affect tests."""
-    # Disable .env file loading in Settings to avoid permission errors
-    # (the .env file is owned by root in this environment)
+    """Give every test the same environment: code defaults, no local config.
+
+    ``_MSS_TEST_MODE`` stops ``Settings`` from reading ``.env`` directly, but that
+    is not sufficient on its own. Importing litellm runs ``load_dotenv()`` at
+    import time (``litellm/__init__.py``), which copies the developer's ``.env``
+    into ``os.environ`` — and real environment variables outrank everything. So
+    on a machine with a populated ``.env`` (i.e. anyone who followed the README),
+    tests would silently pick up local configuration and assertions about
+    defaults would fail.
+
+    Clearing every var that maps to a ``Settings`` field closes that hole at the
+    root. The list is derived from the model so it cannot go stale as fields are
+    added. Tests that want a specific value still set it with ``monkeypatch``,
+    which runs after this fixture.
+    """
     monkeypatch.setenv("_MSS_TEST_MODE", "1")
 
-    # Remove any API keys from environment
-    env_vars_to_remove = [
-        "LITELLM_MODEL",
-        "AWS_ACCESS_KEY_ID",
-        "AWS_SECRET_ACCESS_KEY",
-        "OPENAI_API_KEY",
-        "ANTHROPIC_API_KEY",
-    ]
-    for var in env_vars_to_remove:
+    from matrix_studio.settings import Settings
+
+    for field in Settings.model_fields:
+        monkeypatch.delenv(field.upper(), raising=False)
+
+    # Not Settings fields, but read straight from the environment by
+    # litellm/boto3. Cleared so a stray credential cannot turn a mocked test
+    # into a live billable call.
+    for var in (
+        "AWS_BEARER_TOKEN_BEDROCK",
+        "AWS_SESSION_TOKEN",
+        "AWS_PROFILE",
+        "AWS_DEFAULT_REGION",
+    ):
         monkeypatch.delenv(var, raising=False)
 
 
