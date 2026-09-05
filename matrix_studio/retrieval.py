@@ -160,6 +160,101 @@ def build_turn_query(
     return build_fts_query("\n".join(parts), limit=limit)
 
 
+def select_discriminative_terms(
+    terms: Sequence[str],
+    doc_freq: Dict[str, int],
+    total_chunks: int,
+    limit: int = 8,
+    max_df_ratio: float = 0.5,
+) -> List[str]:
+    """Narrow a query to its rarest in-corpus terms.
+
+    **MEASURED HARMFUL — off by default. Do not enable without re-measuring.**
+    The hypothesis was that real turn-queries are diluted (an unweighted OR over
+    ~24 conversational terms, only ~39% of which appear in the corpus) and that
+    keeping the rarest would sharpen ranking. The A/B in
+    ``docs/PHASE5-RETRIEVAL-MEASUREMENT.md`` refuted it: recall fell on all three
+    arms, worst on the "diluted" arm this was designed for (recall@5 0.339 vs
+    0.509 baseline).
+
+    The reason is structural: document frequency measures rarity, not relevance.
+    When a query mixes a real question with conversational filler, the filler
+    often supplies the *rarest* terms, so rarity-ranking actively promotes noise
+    and can discard the common-but-relevant terms that were matching.
+
+    Retained only so the harness can re-evaluate it against a future corpus or a
+    smarter ranking signal.
+
+    Two filters, in order:
+
+    - **drop df == 0** — a term absent from the corpus can never match, so it can
+      only add noise to the query string.
+    - **drop df > max_df_ratio * total_chunks** — a term in most chunks carries
+      almost no ranking signal (the IDF intuition, applied as a hard cut because
+      FTS5's OR has no term weighting we can set).
+
+    Survivors are ranked rarest-first and truncated to ``limit``, because a short
+    query of rare terms targets far better than a long one of common terms.
+
+    Falls back deliberately: if the filters would leave nothing, the original
+    terms are returned rather than an empty query. Retrieving something imperfect
+    beats retrieving nothing because a heuristic was too aggressive.
+    """
+    if not terms:
+        return []
+    if not doc_freq or total_chunks <= 0:
+        return list(terms)[:limit]
+
+    ceiling = max(1, int(total_chunks * max_df_ratio))
+    kept = [
+        t for t in terms
+        if 0 < doc_freq.get(t, 0) <= ceiling
+    ]
+    if not kept:
+        # Nothing survived: fall back to any term that at least exists, then to
+        # the raw terms. Never return an empty query from a non-empty one.
+        kept = [t for t in terms if doc_freq.get(t, 0) > 0] or list(terms)
+        return kept[:limit]
+
+    kept.sort(key=lambda t: doc_freq.get(t, 0))
+    return kept[:limit]
+
+
+def filter_by_score(
+    rows: Sequence[Dict[str, Any]], score_ratio: float
+) -> List[Dict[str, Any]]:
+    """Drop matches far weaker than the best one.
+
+    FTS5 BM25 scores are negative and more-negative is better, so strength is
+    ``abs(score)``. A row is kept when its strength is at least ``score_ratio`` of
+    the best row's strength.
+
+    **MEASURED HARMFUL — off by default. Do not enable without re-measuring.**
+    It was intended to address the 0.000 zero-result rate (FTS5 essentially always
+    returns something, so on a hard query a persona is handed a confidently
+    irrelevant passage). It fails at that AND costs recall:
+
+    - It cannot produce an empty result, because the filter is *relative* and the
+      best row always clears its own threshold. The zero-result rate stayed 0.000
+      with it enabled, so the stated motivation went unmet.
+    - The gold passage is often ranked below the top match, so trimming the tail
+      trims real hits: recall@5 fell in every measured arm.
+
+    Making "no supporting passage found" reachable needs an ABSOLUTE score floor,
+    which requires calibration this measurement has not done.
+
+    ``score_ratio <= 0`` disables the filter. The top-ranked row is always kept.
+    """
+    if not rows or score_ratio <= 0:
+        return list(rows)
+    strengths = [abs(float(r["score"])) for r in rows]
+    best = max(strengths)
+    if best <= 0:
+        return list(rows)
+    floor = best * score_ratio
+    return [r for r, s in zip(rows, strengths) if s >= floor]
+
+
 def apply_budget(
     rows: Sequence[Dict[str, Any]], max_chars: int
 ) -> List[RetrievedPassage]:
@@ -221,6 +316,9 @@ async def retrieve_for_turn(
     k: int,
     max_chars: int,
     recent_turns: int = 3,
+    term_limit: int = 0,
+    max_df_ratio: float = 0.5,
+    score_ratio: float = 0.0,
 ) -> tuple[List[RetrievedPassage], str]:
     """Retrieve a persona's supporting passages for one turn.
 
@@ -233,14 +331,44 @@ async def retrieve_for_turn(
     """
     if k <= 0 or max_chars <= 0:
         return [], ""
-    query = build_turn_query(topic, conversation, recent_turns=recent_turns, limit=24)
+
+    candidates = extract_terms(
+        "\n".join(
+            [str(m.get("content", "")) for m in list(conversation)[-recent_turns:]]
+            + [topic or ""]
+        ),
+        limit=24,
+    )
+    if not candidates:
+        return [], ""
+
+    # Narrow to the terms that actually discriminate within this persona's slice.
+    # Skipped when term_limit is 0, which reproduces the pre-measurement behavior.
+    terms = candidates
+    if term_limit and hasattr(db, "term_document_frequencies"):
+        try:
+            doc_freq = await db.term_document_frequencies(
+                run_id, candidates, persona_name=persona_name
+            )
+            total = await db.chunk_count(run_id, persona_name=persona_name)
+            terms = select_discriminative_terms(
+                candidates, doc_freq, total, limit=term_limit,
+                max_df_ratio=max_df_ratio,
+            )
+        except Exception:  # noqa: BLE001
+            # Term selection is an optimisation; a failure must not stop retrieval.
+            terms = candidates
+
+    query = " OR ".join(f'"{t}"' for t in terms if '"' not in t)
     if not query:
         return [], ""
-    # Over-fetch a little: the budget may drop trailing rows, so asking for
-    # exactly k risks returning fewer passages than the budget could afford.
+
+    # Over-fetch a little: the score filter and budget may drop trailing rows, so
+    # asking for exactly k risks returning fewer passages than the budget affords.
     rows = await db.search_documents(
         run_id=run_id, query=query, persona_name=persona_name, k=max(k * 2, k)
     )
+    rows = filter_by_score(rows, score_ratio)
     return apply_budget(rows[:k], max_chars), query
 
 
