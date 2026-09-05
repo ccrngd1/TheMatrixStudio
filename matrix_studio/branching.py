@@ -37,7 +37,13 @@ from matrix_studio.engine import resume_simulation
 from matrix_studio.engine.simulator import OnEvent
 from matrix_studio.naming import generate_run_name
 from matrix_studio.settings import get_settings
-from matrix_studio.state import AgentState, CognitionConfig, PendingThread, SimSnapshot
+from matrix_studio.state import (
+    AgentState,
+    CognitionConfig,
+    PendingThread,
+    RetrievalConfig,
+    SimSnapshot,
+)
 from matrix_studio.storage import Database
 
 logger = logging.getLogger(__name__)
@@ -372,7 +378,20 @@ async def execute_branch(
     # forward. Runs without a cognition config get the disabled default
     # (unchanged pre-4b branch behavior).
     branch_run = await db.get_run(branch_run_id)
-    cognition = CognitionConfig.from_config(_parse_config(branch_run or {}))
+    branch_config = _parse_config(branch_run or {})
+    cognition = CognitionConfig.from_config(branch_config)
+
+    # Phase 5: a branch inherits the parent's attached documents, otherwise its
+    # personas would silently lose the background material they had been
+    # reasoning from at the fork. Copied (not shared) so the branch owns its rows
+    # and deleting a parent's document cannot alter a recorded branch.
+    retrieval = RetrievalConfig.from_config(branch_config)
+    if retrieval.enabled:
+        copied_docs = await db.copy_documents_to_run(parent_run["id"], branch_run_id)
+        if copied_docs:
+            logger.info(
+                "Branch %s: copied %d parent documents", branch_run_id, copied_docs
+            )
 
     return await resume_simulation(
         run_id=branch_run_id,
@@ -388,6 +407,7 @@ async def execute_branch(
         mutation=resolved_mutation,
         cognition=cognition,
         pending_threads=pending_threads,
+        retrieval=retrieval,
     )
 
 
@@ -531,4 +551,7 @@ async def resume_run_in_place(
         # config + replayed thread ledger (a run that used threads keeps them).
         cognition=CognitionConfig.from_config(resume_cfg),
         pending_threads=pending_threads,
+        # Phase 5: an in-place resume keeps its own documents — they are already
+        # attached to this run_id, so nothing needs copying.
+        retrieval=RetrievalConfig.from_config(resume_cfg),
     )
