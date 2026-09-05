@@ -7,13 +7,19 @@ goes against the original preference.
 Reproduce with:
 
 ```bash
+# lexical bounds + the engine-shaped arm + the rejected query tuning
 scripts/measure_retrieval_recall.py docs README.md PHASE4-REPORT.md CHANGELOG.md \
     --sample 60 --k 5 --compare --diluted --json-out /tmp/recall.json
+
+# lexical vs vector vs hybrid (needs the 'vectors' extra + an embedding provider)
+scripts/measure_retrieval_recall.py docs README.md PHASE4-REPORT.md CHANGELOG.md \
+    --sample 60 --k 5 --diluted --modes baseline,vector,hybrid
 ```
 
-`--diluted` adds the engine-shaped query arm; `--compare` A/Bs the tuned query
-pipeline against the baseline. Without those flags only the two bounding arms of
-the baseline pipeline are measured.
+`--diluted` adds the engine-shaped query arm; `--compare` A/Bs the rejected query
+tuning against the baseline; `--modes` selects which retrieval pipelines to
+evaluate. Without those flags only the two bounding arms of the lexical pipeline
+are measured.
 
 ## Method
 
@@ -156,29 +162,111 @@ Both knobs are retained in `RetrievalConfig` but **default to off**
 docstrings so nobody re-enables them on the strength of the plausible-sounding
 rationale that motivated them here.
 
+## Vectors, measured (5f)
+
+`sqlite-vec` plus Titan Embed v2 embeddings were then built and measured against
+the same ground truth, adding `vector` (embeddings only) and `hybrid`
+(Reciprocal Rank Fusion of both) to the `fts` baseline.
+
+**recall@5 (strict)**
+
+| arm | fts | vector | hybrid |
+|---|---|---|---|
+| natural | 0.900 | 0.933 | **0.950** |
+| **diluted** (engine-shaped) | 0.400 | **0.817** | 0.700 |
+| paraphrased | 0.267 | **0.617** | 0.550 |
+
+**recall@1 (strict)** — matters most at `k=1..3`, which is what a turn actually gets
+
+| arm | fts | vector | hybrid |
+|---|---|---|---|
+| natural | 0.617 | 0.583 | **0.700** |
+| **diluted** | 0.017 | **0.367** | 0.233 |
+| paraphrased | 0.100 | **0.267** | 0.167 |
+
+**MRR (strict)**: natural 0.725 / 0.723 / **0.814**; diluted 0.127 / **0.549** /
+0.409; paraphrased 0.160 / **0.375** / 0.301.
+
+### What this settles
+
+**Vectors work, decisively, on the query shape this engine actually produces.**
+Diluted recall@5 goes 0.400 → 0.817 (2.0×) and diluted recall@1 goes 0.017 →
+0.367 (22×). The `recall@1` figure is the one that matters most in practice: a
+turn injects only `k` passages, and lexical search was putting the right passage
+first almost never.
+
+**Hybrid is not uniformly better, and that is worth stating plainly.** It wins on
+the *natural* arm (best recall@1, recall@5 and MRR of any mode) but **loses to
+pure vector on both diluted and paraphrased**. Equal-weight RRF lets a weak
+lexical ranking drag down a strong semantic one; when the query is well-formed the
+lexical list is good and fusion helps, and when it is diluted the lexical list is
+noise and fusion hurts. `reciprocal_rank_fusion` accepts weights and tuning them
+would likely fix this, but that tuning has not been done, so no weighted result is
+claimed.
+
+Practical reading: **`mode="vector"` for engine turns** (diluted queries),
+**`hybrid` for the human-facing `/documents/search`** (well-formed queries).
+
+### Cost, which was the gate
+
+| | measured |
+|---|---|
+| Embedding a 231,744-char corpus (387 chunks) | **$0.0014** (69,864 tokens) |
+| Per-turn query embedding | ~**$0.0000001** |
+| Generation, per turn, for comparison | ~$0.0006 |
+
+Ingest is a one-off fraction of a cent per corpus and the per-turn embedding is
+roughly **one four-thousandth** of the turn's generation cost. The cost objection
+that motivated trying the free fixes first does not survive contact with the
+numbers.
+
+### Caveats on these figures
+
+- **`diluted/fts` measured 0.400 here versus 0.509 in the earlier run.** Same
+  method, different corpus size (387 vs 381 chunks) and randomly drawn filler, so
+  there is real run-to-run variance of ~0.1 on this arm. Treat single-arm figures
+  as ±0.1, and prefer the *direction* of the fts→vector gap (which is far larger
+  than that variance) over its exact size.
+- **One embedding model.** Titan Embed v2 only; Cohere and OpenAI embeddings were
+  confirmed callable but not evaluated for quality.
+- **Vector search post-filters for scope.** vec0's MATCH cannot join in-predicate,
+  so the KNN scan is over-fetched then filtered by persona. Correctness holds (a
+  test asserts a persona cannot cross slices) but on a run with many personas some
+  scan effort is wasted.
+
 ## Verdict
 
 **The design doc's stated trigger for moving to vectors has been met.** It said:
 *"Measured recall on a real corpus shows FTS5 missing passages a persona needed to
-defend a position."* At a directly measured **0.509 recall@5 under the engine's own
-query shape**, that condition holds — a persona misses its supporting passage
-roughly half the time.
+defend a position."* Directly measured under the engine's own query shape, lexical
+recall@5 is **0.40-0.51** across two runs — a persona misses its supporting
+passage about half the time, and recall@1 is near zero (0.017).
 
 And the cheap alternatives are now *tested rather than assumed*: query-side
 tuning did not help, so the remaining levers are the ones that cost something.
 
-1. **Embeddings via `sqlite-vec`** are now the justified next step. The migration
-   stays additive — `doc_chunks` already holds the text, chunking and scoping and
-   the retrieval interface are unchanged — and the operational reasons for staying
-   inside SQLite (atomicity, one file, no extra service) are untouched by this
-   result. The cost that must be accepted is an embedding provider: API calls at
-   ingest and per query, or `torch` locally.
-2. **An absolute score floor** remains worth building, separately from recall, so
-   a weak match can return nothing instead of confidently wrong grounding. It
-   needs calibration data this measurement did not gather.
+1. **Embeddings via `sqlite-vec`** — BUILT and MEASURED (see the section above).
+   Diluted recall@5 0.400 -> 0.817, diluted recall@1 0.017 -> 0.367, at $0.0014
+   to embed a 231k-char corpus and ~$1e-7 per turn. The migration was additive as
+   predicted: `doc_chunks` already held the text, so chunking, scoping and the
+   retrieval interface did not change, and the index still lives in the one
+   SQLite file.
+2. **An absolute score floor** remains unbuilt and still worth doing, separately
+   from recall, so a weak match can return nothing instead of confidently wrong
+   grounding. Vector distances are better behaved for thresholding than BM25
+   scores, so this is more tractable now than it was, but it still needs
+   calibration data this measurement did not gather. The zero-result rate remains
+   0.000 in every mode.
 3. **Better query construction may still help**, but not via rarity. Extracting
    the salient noun phrases from the *current utterance* rather than ORing a
-   window of loose terms is a different hypothesis, and it is untested.
+   window of loose terms is a different hypothesis, and it is untested. It matters
+   less now: embedding the raw conversational text sidesteps keyword construction
+   entirely, which is part of why the vector arm wins.
+
+4. **Weighted hybrid fusion** is the clearest remaining lever. Hybrid already
+   beats every mode on well-formed queries; equal weighting is what makes it lose
+   on diluted ones. `reciprocal_rank_fusion` takes weights; tuning them against a
+   held-out split is untested work.
 
 Nothing in the storage decision is invalidated: the reason for choosing FTS5 over
 FAISS was operational (atomicity, no embedding provider, one file), and this

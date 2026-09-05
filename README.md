@@ -188,11 +188,38 @@ Try it: `matrix-studio run examples/retrieval-demo.json`
 - `max_chars` — **hard ceiling** on retrieved document characters per turn (default 1200)
 - `recent_turns` — how many recent messages contribute query terms (default 3)
 
-**How it works.** Documents are chunked and indexed with **SQLite FTS5** in the
-same database file — no vector store, no embedding provider, no new service. Each
-turn, the speaker's own slice is searched with BM25 and the best passages are
-injected up to `max_chars`. Measured on a real 17,771-character document: only
-**913 characters** (~5%) reached the prompt.
+**How it works.** Documents are chunked and indexed in the same database file —
+no separate vector service, no new process. Each turn, the speaker's own slice is
+searched and the best passages are injected up to `max_chars`. Measured on a real
+17,771-character document: only **913 characters** (~5%) reached the prompt.
+
+**Retrieval modes.** `mode` selects how passages are found:
+
+| mode | needs | measured recall@5 on engine-shaped queries |
+|---|---|---|
+| `fts` *(default)* | nothing — FTS5 is built into SQLite | 0.40–0.51 |
+| `vector` | `[vectors]` extra + an embedding provider | **0.82** |
+| `hybrid` | same as `vector` | 0.70 (but best of all three on well-formed queries) |
+
+```bash
+pip install '.[vectors]'          # sqlite-vec; no torch, no vector service
+matrix-studio docs <run> embed    # one-off, resumable, ~$0.0014 per 230k chars
+```
+```json
+"retrieval": { "enabled": true, "mode": "vector", "k": 3, "max_chars": 1200 }
+```
+
+`fts` is the default because it needs no embedding provider and no extra install,
+but **`vector` is roughly twice as good** on the queries this engine actually
+generates, and costs about **$0.0000001 per turn** — a four-thousandth of the
+turn's generation cost. Use it if you can. `hybrid` fuses both by Reciprocal Rank
+Fusion; it wins on well-worded queries and loses to pure `vector` on conversational
+ones, because equal-weight fusion lets a weak lexical ranking drag down a strong
+semantic one. Full numbers and caveats in `docs/PHASE5-RETRIEVAL-MEASUREMENT.md`.
+
+Vector retrieval degrades rather than fails: if `sqlite-vec` is missing or the
+embedding provider errors, the turn falls back to lexical search and the run
+continues.
 
 **Scoping is enforced in SQL, not asked for in a prompt.** A document attached to
 `Dana` is retrievable only by Dana; `persona_name: null` (set via the API) makes
@@ -212,7 +239,8 @@ and is always rebuildable from the `doc_chunks` table with a single statement.
 matrix-studio docs <run> attach ./background/spec.pdf -p Priya
 matrix-studio docs <run> list
 matrix-studio docs <run> search egress inspection evidence   # inspect retrieval
-matrix-studio docs <run> reindex                             # rebuild the index
+matrix-studio docs <run> reindex                             # rebuild lexical index
+matrix-studio docs <run> embed                               # embed for vector mode
 ```
 
 `<run>` accepts a run id, name or slug. `docs search` is how you measure
@@ -226,7 +254,8 @@ sanitised FTS5 query, and each matching passage with its BM25 score.
 | `POST /api/runs/{ref}/documents` | Attach by inline `text` or server-readable `path`; `persona_name` null = cast-wide |
 | `GET /api/runs/{ref}/documents` | List, optionally `?persona=Name` (own + cast-wide) |
 | `DELETE /api/runs/{ref}/documents/{id}` | Remove a document and its index entries |
-| `POST /api/runs/{ref}/documents/reindex` | Rebuild the index from `doc_chunks` (recovery path) |
+| `POST /api/runs/{ref}/documents/reindex` | Rebuild the lexical index from `doc_chunks` (recovery path) |
+| `POST /api/runs/{ref}/documents/embed` | Embed chunks for vector/hybrid mode (idempotent, resumable) |
 | `GET /api/runs/{ref}/documents/search?q=…` | **Inspect what a query retrieves** — sanitised query, passages, BM25 scores |
 
 The search endpoint is the measurement instrument: it makes retrieval quality
@@ -236,12 +265,19 @@ directly. On a two-document corpus, `q=how much money will this burn` returned
 same question, different vocabulary. Whether that matters for your corpus is an
 empirical question, which is exactly why this endpoint exists.
 
-**Honest limitation:** BM25 is lexical — it matches words, not meaning. A query
-about "cost" will not retrieve a passage that only says "spend". See
-`docs/PHASE5-RETRIEVAL-DESIGN.md` for why FTS5 was chosen over FAISS or a vector
-database (short version: at 10³–10⁴ chunks exhaustive search takes 0.57 ms
-against a 4–7 s turn, so the choice is operational, not performance-driven), and
-for the explicit triggers that would justify moving to vectors.
+**Honest limitations.** In `fts` mode BM25 is lexical — it matches words, not
+meaning — which measured at only ~0.4-0.5 recall@5 on real queries; that is why
+`vector` mode exists. In every mode the zero-result rate is **0.000**: retrieval
+always returns *something*, so a persona can be handed a confidently irrelevant
+passage rather than nothing. There is no absolute score floor yet.
+`document_refs` and `document.retrieved` exist so what a persona drew on can be
+audited rather than trusted.
+
+See `docs/PHASE5-RETRIEVAL-DESIGN.md` for why the index lives in SQLite rather
+than FAISS or a vector service (atomicity with the event log, one file to back up,
+and at 10³-10⁴ chunks exhaustive search costs 0.57 ms against a 4-7 s turn), and
+`docs/PHASE5-RETRIEVAL-MEASUREMENT.md` for the recall numbers behind the mode
+recommendation.
 
 ### Avatar Generation
 

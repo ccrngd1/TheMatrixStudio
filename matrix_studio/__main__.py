@@ -234,6 +234,23 @@ async def _docs_action(args: argparse.Namespace) -> int:
             print(f"Rebuilt the document index from doc_chunks: {count} chunks.")
             return 0
 
+        if args.docs_action == "embed":
+            from matrix_studio.retrieval import embed_pending_chunks
+
+            stats = await embed_pending_chunks(
+                db, run_id, embedding_model=args.model or ""
+            )
+            if stats.get("error"):
+                print(f"Error: {stats['error']}", file=sys.stderr)
+                return 1
+            already = await db.count_chunk_vectors(run_id)
+            print(
+                f"Embedded {stats['embedded']} chunk(s) with {stats['model']}: "
+                f"{stats['tokens']:,} tokens, ${stats['cost_usd']:.6f}. "
+                f"{already} chunk(s) now have vectors."
+            )
+            return 0
+
         print(f"Error: unknown docs action: {args.docs_action}", file=sys.stderr)
         return 2
     finally:
@@ -328,7 +345,16 @@ Examples:
         help="Hard ceiling on returned characters (default 2000)",
     )
 
-    docs_sub.add_parser("reindex", help="Rebuild the index from doc_chunks")
+    docs_sub.add_parser("reindex", help="Rebuild the lexical index from doc_chunks")
+
+    embed_p = docs_sub.add_parser(
+        "embed",
+        help="Embed chunks for vector/hybrid retrieval (needs the 'vectors' extra)",
+    )
+    embed_p.add_argument(
+        "-m", "--model", default=None,
+        help="LiteLLM embedding model (default: Titan Embed v2)",
+    )
 
     docs_p.set_defaults(func=_cmd_docs)
 

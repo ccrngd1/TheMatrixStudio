@@ -271,15 +271,38 @@ Both were fixed, and neither was visible in the mocked tests:
    a machine with Node before being trusted.
 4. **5b-4** ✅ DONE — see `docs/PHASE5-RETRIEVAL-MEASUREMENT.md`.
 
-   Measured on this project's own docs (369 chunks, 220k chars): recall@5 is
-   **0.967** when the query shares the document's vocabulary and **0.300** when
-   it does not. Real turn-queries measured 0.394 mean lexical overlap, between
-   the two arms, implying roughly **45-65% recall@5 in actual use**.
+   Measured on this project's own docs (381 chunks, 228k chars): lexical recall@5
+   is **0.966** when the query shares the document's vocabulary and **0.254** when
+   it does not. Under the engine's own query shape it is **0.40–0.51**, with
+   recall@1 near zero (0.017).
 
-   **The trigger stated above has therefore been met** — but the measurement
-   also shows the dominant variable is the QUERY, not the index, so the order of
-   work is: improve query construction (free), add a score threshold so weak
-   matches return nothing instead of a confidently wrong passage, and only then
-   add embeddings via `sqlite-vec`. The storage decision is unaffected: it was
-   made on operational grounds (atomicity, no embedding provider, one file),
-   and this result speaks only to retrieval quality.
+   **The trigger stated above has therefore been met.** The measurement also
+   suggested the dominant variable was the QUERY rather than the index, so the
+   free query-side fixes were tried first — and rejected (see 5f).
+
+5. **5f** ✅ DONE — vectors built, after the cheap fixes were measured and failed.
+
+   *Rejected first:* discriminative term selection and a relative score filter.
+   Both **reduced** recall on all three arms (engine-shaped recall@5 0.509 →
+   0.339), so both default OFF. Document frequency measures rarity, not
+   relevance, and a relative score filter can never produce an empty result — the
+   reasons are structural, recorded in their docstrings.
+
+   *Then built:* `sqlite-vec` + LiteLLM embeddings (Titan Embed v2 default).
+   Engine-shaped recall@5 **0.40–0.51 → 0.82**; recall@1 **0.017 → 0.367**. Cost
+   $0.0014 to embed a 231k-char corpus and ~$1e-7 per turn, against ~$0.0006 per
+   turn of generation — so the cost objection did not survive measurement.
+   `mode` selects `fts` (default, needs no provider) | `vector` | `hybrid`.
+
+   **The additive-migration prediction held exactly:** `doc_chunks` already held
+   the text, so chunking, scoping and the retrieval interface were unchanged, and
+   the vector index is another table in the *same* SQLite file — the atomicity and
+   single-file properties that motivated choosing FTS5 over FAISS survived intact.
+   Vector modes degrade to lexical if `sqlite-vec` or the provider is unavailable.
+
+   *Surprise worth recording:* `hybrid` is **not** uniformly best. It wins on
+   well-formed queries but loses to pure `vector` on conversational ones, because
+   equal-weight RRF lets a weak lexical ranking drag down a strong semantic one.
+
+   Still open: an **absolute** score floor (zero-result rate is 0.000 in every
+   mode, so retrieval never reports "nothing found"), and weighted hybrid fusion.

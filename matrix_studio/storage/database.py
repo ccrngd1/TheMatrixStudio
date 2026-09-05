@@ -38,6 +38,14 @@ class Database:
         # Set during schema creation; document retrieval degrades to "no results"
         # rather than raising if this SQLite build has no FTS5.
         self._fts5_available: bool = False
+        # Phase 5f: sqlite-vec is optional. When the extension cannot be loaded
+        # (package absent, or a Python built without extension support) vector
+        # retrieval degrades to lexical rather than failing.
+        self._vec_available: bool = False
+        # Dimension of the live vec0 table, discovered from embedding_meta or set
+        # when the table is created. Vec tables are fixed-width, so a model change
+        # must be detected rather than silently mixing dimensions.
+        self._vec_dim: Optional[int] = None
 
     async def connect(self):
         """Connect to database and ensure schema exists."""
@@ -53,8 +61,40 @@ class Database:
         await self._conn.execute("PRAGMA journal_mode=WAL")
         await self._conn.execute("PRAGMA synchronous=NORMAL")
 
+        # Phase 5f: load sqlite-vec if it is installed and this Python's sqlite3
+        # allows extensions. Optional by design — everything except vector
+        # retrieval works without it.
+        await self._load_vec_extension()
+
         # Create schema
         await self._create_schema()
+
+    async def _load_vec_extension(self) -> None:
+        """Load the sqlite-vec extension, tolerating every way it can be absent."""
+        try:
+            import sqlite_vec
+        except ImportError:
+            logger.debug(
+                "sqlite-vec not installed; vector retrieval unavailable "
+                "(install with: pip install 'matrix-sim-studio[vectors]')"
+            )
+            return
+        try:
+            await self._conn.enable_load_extension(True)
+            await self._conn.load_extension(sqlite_vec.loadable_path())
+            self._vec_available = True
+        except Exception as exc:  # noqa: BLE001
+            # Some distro/macOS Pythons ship sqlite3 with extension loading
+            # compiled out; that is a deployment fact, not an error to raise.
+            logger.warning(
+                "sqlite-vec present but could not be loaded (%s); "
+                "vector retrieval unavailable, lexical retrieval unaffected.", exc
+            )
+        finally:
+            try:
+                await self._conn.enable_load_extension(False)
+            except Exception:  # noqa: BLE001
+                pass
 
     async def close(self):
         """Close database connection."""
@@ -285,7 +325,64 @@ class Database:
                 exc,
             )
 
+        # ------------------------------------------------------------------ #
+        # Phase 5f: vector-embedding support (optional, additive).
+        #
+        # embedding_meta records which model and dimension the vec0 table was
+        # built for. vec0 tables are FIXED-WIDTH, so switching embedding model
+        # must be detected and reported rather than silently mixing dimensions
+        # that would produce meaningless distances.
+        # ------------------------------------------------------------------ #
+        await self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS embedding_meta (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                model TEXT NOT NULL,
+                dim INTEGER NOT NULL,
+                created_at INTEGER NOT NULL
+            )
+        """)
+        # Maps a vec0 rowid back to its chunk, and records which model produced it.
+        await self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS chunk_vectors (
+                chunk_id INTEGER PRIMARY KEY REFERENCES doc_chunks(id),
+                run_id TEXT NOT NULL,
+                persona_name TEXT,
+                model TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            )
+        """)
+        await self._conn.execute("""
+            CREATE INDEX IF NOT EXISTS chunk_vectors_run
+            ON chunk_vectors(run_id, persona_name)
+        """)
+
         await self._conn.commit()
+
+        # Recreate the vec0 table on connect if a previous session recorded its
+        # dimension. The virtual table itself persists, but _vec_dim is in-memory.
+        if self._vec_available:
+            async with self._conn.execute(
+                "SELECT model, dim FROM embedding_meta WHERE id = 1"
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row:
+                self._vec_dim = int(row[1])
+                await self._ensure_vec_table(self._vec_dim)
+
+    async def _ensure_vec_table(self, dim: int) -> None:
+        """Create the fixed-width vec0 table for ``dim``, if not already present."""
+        if not self._vec_available:
+            return
+        await self._conn.execute(
+            f"CREATE VIRTUAL TABLE IF NOT EXISTS chunk_vec USING vec0("
+            f"embedding float[{dim}])"
+        )
+        self._vec_dim = dim
+
+    @property
+    def vec_available(self) -> bool:
+        """Whether vector retrieval can be used at all in this process."""
+        return self._vec_available
 
     async def create_run(
         self,
@@ -1355,5 +1452,187 @@ class Database:
             )
             params = (run_id, persona_name)
         async with self._conn.execute(sql, params) as cursor:
+            row = await cursor.fetchone()
+            return int(row[0]) if row else 0
+
+    # ---------------------------------------------------------------- #
+    # Phase 5f: vector storage and KNN search.
+    # ---------------------------------------------------------------- #
+
+    async def embedding_model(self) -> Optional[str]:
+        """The model the stored vectors were produced with, if any."""
+        async with self._conn.execute(
+            "SELECT model FROM embedding_meta WHERE id = 1"
+        ) as cursor:
+            row = await cursor.fetchone()
+            return str(row[0]) if row else None
+
+    async def store_chunk_vectors(
+        self,
+        run_id: str,
+        vectors: List[tuple],
+        model: str,
+    ) -> int:
+        """Store embeddings for chunks. ``vectors`` is ``[(chunk_id, [floats]), ...]``.
+
+        The vec0 table is created on first use with the dimension of the incoming
+        vectors, and that dimension is recorded in ``embedding_meta``. A later call
+        carrying a different dimension is REFUSED rather than written, because vec0
+        is fixed-width and mixing dimensions silently produces meaningless
+        distances. Switching embedding model therefore requires a re-embed, which
+        the error message says.
+
+        Returns the number of vectors stored.
+        """
+        if not self._vec_available or not vectors:
+            return 0
+        from matrix_studio.embeddings import serialise
+
+        dim = len(vectors[0][1])
+        if dim <= 0:
+            return 0
+
+        existing_model = await self.embedding_model()
+        if self._vec_dim is not None and self._vec_dim != dim:
+            raise ValueError(
+                f"Stored embeddings are {self._vec_dim}-dimensional (model "
+                f"{existing_model!r}) but {model!r} produced {dim}. Vector tables "
+                "are fixed-width; delete the documents and re-attach them to "
+                "switch embedding model."
+            )
+        await self._ensure_vec_table(dim)
+
+        now = int(time.time())
+        if existing_model is None:
+            await self._conn.execute(
+                "INSERT OR REPLACE INTO embedding_meta (id, model, dim, created_at) "
+                "VALUES (1, ?, ?, ?)",
+                (model, dim, now),
+            )
+
+        stored = 0
+        for chunk_id, vector in vectors:
+            if not vector or len(vector) != dim:
+                continue
+            async with self._conn.execute(
+                "SELECT run_id, persona_name FROM doc_chunks WHERE id = ?",
+                (chunk_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+            if not row:
+                continue
+            # Replace rather than duplicate, so re-embedding a chunk is safe.
+            await self._conn.execute("DELETE FROM chunk_vec WHERE rowid = ?", (chunk_id,))
+            await self._conn.execute(
+                "INSERT INTO chunk_vec(rowid, embedding) VALUES (?, ?)",
+                (chunk_id, serialise(vector)),
+            )
+            await self._conn.execute(
+                "INSERT OR REPLACE INTO chunk_vectors "
+                "(chunk_id, run_id, persona_name, model, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (chunk_id, row[0], row[1], model, now),
+            )
+            stored += 1
+        await self._conn.commit()
+        return stored
+
+    async def vector_search(
+        self,
+        run_id: str,
+        vector: List[float],
+        persona_name: Optional[str] = None,
+        k: int = 3,
+    ) -> List[Dict[str, Any]]:
+        """KNN search over a persona's embedded chunks, nearest first.
+
+        Returns the same row shape as ``search_documents`` so the two can be fused
+        without the caller special-casing them, with ``score`` carrying the vector
+        distance (LOWER is nearer — the opposite polarity of BM25, which is why
+        fusion is done by RANK rather than by raw score).
+
+        Scoping is applied AFTER the KNN scan. vec0's MATCH does not accept
+        arbitrary joins in the same predicate, so the scan is over-fetched and then
+        filtered; correctness is preserved (a persona still cannot see another's
+        material) at the cost of some wasted candidates on multi-persona runs.
+        """
+        if not self._vec_available or not vector or k <= 0:
+            return []
+        if self._vec_dim is not None and len(vector) != self._vec_dim:
+            logger.warning(
+                "Query vector is %d-dimensional but the index is %d; "
+                "skipping vector search.", len(vector), self._vec_dim,
+            )
+            return []
+        from matrix_studio.embeddings import serialise
+
+        # Over-fetch so post-filtering by persona/run still yields k results.
+        scan_k = max(k * 8, 32)
+        try:
+            async with self._conn.execute(
+                """
+                SELECT rowid, distance FROM chunk_vec
+                WHERE embedding MATCH ? ORDER BY distance LIMIT ?
+                """,
+                (serialise(vector), scan_k),
+            ) as cursor:
+                hits = [(int(r[0]), float(r[1])) for r in await cursor.fetchall()]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Vector search failed for run %s: %s", run_id, exc)
+            return []
+        if not hits:
+            return []
+
+        by_id = {cid: dist for cid, dist in hits}
+        placeholders = ",".join("?" for _ in by_id)
+        if persona_name is None:
+            scope_sql = ""
+            scope_params: tuple = ()
+        else:
+            scope_sql = "AND (c.persona_name = ? OR c.persona_name IS NULL)"
+            scope_params = (persona_name,)
+        sql = f"""
+            SELECT c.id AS chunk_id, c.document_id, c.ordinal, c.content,
+                   d.title, d.source_path, d.media_type
+            FROM doc_chunks c
+            JOIN documents d ON d.id = c.document_id
+            WHERE c.id IN ({placeholders}) AND c.run_id = ? {scope_sql}
+        """
+        async with self._conn.execute(
+            sql, (*by_id.keys(), run_id, *scope_params)
+        ) as cursor:
+            rows = [dict(r) for r in await cursor.fetchall()]
+        for row in rows:
+            row["score"] = by_id[int(row["chunk_id"])]
+        rows.sort(key=lambda r: r["score"])
+        return rows[:k]
+
+    async def chunks_missing_vectors(
+        self, run_id: str, limit: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """Chunks in a run that have no stored embedding yet.
+
+        Used by the reindex path so embedding a corpus is resumable: a run
+        interrupted part-way through does not have to start over.
+        """
+        sql = """
+            SELECT c.id AS chunk_id, c.content
+            FROM doc_chunks c
+            LEFT JOIN chunk_vectors v ON v.chunk_id = c.id
+            WHERE c.run_id = ? AND v.chunk_id IS NULL
+            ORDER BY c.id
+        """
+        params: tuple = (run_id,)
+        if limit is not None:
+            sql += " LIMIT ?"
+            params = (run_id, limit)
+        async with self._conn.execute(sql, params) as cursor:
+            return [dict(r) for r in await cursor.fetchall()]
+
+    async def count_chunk_vectors(self, run_id: str) -> int:
+        """Number of chunks in a run that have a stored embedding."""
+        async with self._conn.execute(
+            "SELECT COUNT(*) FROM chunk_vectors WHERE run_id = ?", (run_id,)
+        ) as cursor:
             row = await cursor.fetchone()
             return int(row[0]) if row else 0

@@ -8,7 +8,7 @@ and migration support.
 
 from typing import Any, Dict, List, Optional
 import uuid
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class MemoryItem(BaseModel):
@@ -125,6 +125,31 @@ class RetrievalConfig(BaseModel):
         default=3, ge=1,
         description="How many recent messages contribute terms to the query",
     )
+    # Phase 5f: retrieval mode. "fts" is lexical BM25 only (the default, no
+    # embedding provider needed). "vector" is embeddings only. "hybrid" fuses both
+    # by Reciprocal Rank Fusion. vector/hybrid require the sqlite-vec extra AND an
+    # embedding provider, and cost one embedding call per turn plus one per chunk
+    # at ingest — which is why they are opt-in rather than the default.
+    mode: str = Field(
+        default="fts", description="Retrieval mode: fts | vector | hybrid",
+    )
+    embedding_model: str = Field(
+        default="", description="LiteLLM embedding model ('' = module default)",
+    )
+    rrf_k: int = Field(
+        default=60, ge=1,
+        description="Reciprocal Rank Fusion constant for hybrid mode",
+    )
+
+    @field_validator("mode")
+    @classmethod
+    def _check_mode(cls, v: str) -> str:
+        """Reject an unknown mode rather than silently retrieving nothing."""
+        allowed = {"fts", "vector", "hybrid"}
+        if v not in allowed:
+            raise ValueError(f"mode must be one of {sorted(allowed)}, got {v!r}")
+        return v
+
     # Experimental query/ranking knobs, both DEFAULT OFF because they were
     # MEASURED AS HARMFUL. docs/PHASE5-RETRIEVAL-MEASUREMENT.md A/B'd them across
     # three arms and recall fell in every one — worst on the "diluted" arm that

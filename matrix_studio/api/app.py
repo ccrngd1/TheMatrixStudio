@@ -36,7 +36,12 @@ from matrix_studio import analysis, service
 from matrix_studio.api.manager import RunManager, TERMINAL_EVENTS, event_row_to_wire
 from matrix_studio.documents import ExtractionError, ingest_file, ingest_text
 from matrix_studio.naming import generate_run_name
-from matrix_studio.retrieval import apply_budget, build_fts_query, extract_terms
+from matrix_studio.retrieval import (
+    apply_budget,
+    build_fts_query,
+    embed_pending_chunks,
+    extract_terms,
+)
 from matrix_studio.settings import get_settings
 from matrix_studio.storage import Database
 
@@ -84,6 +89,10 @@ class RetrievalConfigModel(BaseModel):
     k: int = Field(default=3, ge=0)
     max_chars: int = Field(default=1200, ge=0)
     recent_turns: int = Field(default=3, ge=1)
+    # Phase 5f: fts (default, no embedding provider needed) | vector | hybrid.
+    mode: str = Field(default="fts")
+    embedding_model: str = ""
+    rrf_k: int = Field(default=60, ge=1)
     # Experimental, DEFAULT OFF: measured harmful in
     # docs/PHASE5-RETRIEVAL-MEASUREMENT.md (recall fell on all three arms).
     term_limit: int = Field(default=0, ge=0)
@@ -1214,6 +1223,32 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Run not found")
         indexed = await db.reindex_documents()
         return {"run_id": run["id"], "reindexed_chunks": indexed}
+
+    @app.post("/api/runs/{ref}/documents/embed")
+    async def embed_documents(
+        ref: str,
+        model: Optional[str] = Query(default=None, description="LiteLLM embedding model"),
+    ) -> Dict[str, Any]:
+        """Embed a run's chunks for vector/hybrid retrieval.
+
+        Idempotent and resumable — only chunks without a vector are embedded, so
+        re-running never pays to redo work. Reports real tokens and cost, because
+        embeddings are a per-chunk spend and the cost gate applies to them too.
+
+        Returns 422 (not 500) when sqlite-vec or the embedding provider is
+        unavailable: that is a deployment condition the caller can act on.
+        """
+        run = await db.get_run_by_ref(ref)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        stats = await embed_pending_chunks(db, run["id"], embedding_model=model or "")
+        if stats.get("error"):
+            raise HTTPException(status_code=422, detail=stats["error"])
+        return {
+            "run_id": run["id"],
+            **stats,
+            "chunks_with_vectors": await db.count_chunk_vectors(run["id"]),
+        }
 
     @app.get("/api/runs/{ref}/documents/search")
     async def search_documents(
