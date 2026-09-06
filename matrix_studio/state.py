@@ -140,6 +140,16 @@ class RetrievalConfig(BaseModel):
         default=60, ge=1,
         description="Reciprocal Rank Fusion constant for hybrid mode",
     )
+    # Phase 5g: when retrieval ran and found nothing, ask the persona to say — in
+    # its own voice — that it is speaking from experience rather than a source.
+    # Deliberately about PROVENANCE, not evidentiary support: the engine knows
+    # only that nothing was retrieved, and at ~0.82 recall the supporting passage
+    # may well exist in the corpus and simply have been missed. Claiming "no
+    # documentation supports this" would be wrong ~18% of the time.
+    disclose_unsupported: bool = Field(
+        default=False,
+        description="Ask the persona to flag in-voice when it has no retrieved source",
+    )
 
     @field_validator("mode")
     @classmethod
