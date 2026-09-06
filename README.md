@@ -373,7 +373,7 @@ structure carries commitments.
 |---|---|---|
 | `personas.enabled` | `false` | Master switch. Off ⇒ `structured` blocks are ignored and prompts are byte-identical to pre-Phase-6 |
 | `personas.withhold_concerns` | `true` | Keep `underlying_concern` unsaid until someone asks |
-| `personas.dismissal_rule` | `true` | Render the re-tuned engagement rule alongside `dismisses` |
+| `personas.dismissal_rule` | `"mandatory"` | Which rule wording to render: `mandatory` (measured best) \| `retuned` \| `blunt` \| `off`. Booleans accepted |
 
 `firmness` is `negotiable` | `firm` | `non-negotiable` | `requires-escalation`. An
 unknown value is **rejected** (422 from the API) rather than silently downgraded —
@@ -398,29 +398,37 @@ still answer the substance of a challenge directly and state the other side's po
 at its strongest before setting it aside, may not repeat a dismissal, and may not
 spend a whole turn declining to engage.
 
-**Measured, and the behavioural case is not established.** A fourth arm
-(`examples/validation/arm-d-shipped.json`) ran this feature live, three times, against
-the same brief and metrics as the original three. At n = 3 the within-arm spread
-turned out to exceed most between-arm gaps, so the divergence, accommodation,
-citation-rate and turn-length differences are all **below noise** — and the single
-best result from the first run, "evidence-driven position change, 2 of 2", **did not
-replicate** (0 in both repeats).
+**The dismissal rule is measured and fixed; the rest of the behavioural case is not
+established.** Six arms have now run live against the same brief.
 
-One finding *is* callable, and it goes against the feature: the re-tuned dismissal
-rule **suppressed dismissal**, to 0.067 across three runs against Arm B's 0.355,
-with two runs containing no dismissal of any kind. That is the control's rate, so the
-retune appears to have given back the five-fold gain that made `dismisses` the
-premise validation's highest-value field.
+The rule shipped in the first cut of Phase 6 *suppressed* dismissal to 0.067 — the
+control's rate, with two of three runs producing none at all. The current default
+(`mandatory`) measures **0.333** against Arm B's 0.355, with the best engagement score
+of any arm (talking-past 1.00). That was verified against a criterion **pre-registered
+before the wording existed** (`docs/PHASE6-DISMISSAL-RETUNE.md`).
 
-What *is* tested and sound is the schema and its honesty properties: withholding
-works with zero leaks, per-persona scoping holds, convictions survive a fork, an
-invalid `firmness` is rejected, and the feature is off by default. Turning it on is
-reasonable if you want positions defended and revisable; it is not currently
-supported by measurement, and the dismissal rule needs re-tuning again.
+The finding worth knowing if you write your own persona instructions:
 
-`requires-escalation` and the concern-reveal path had no trigger in any run and stay
-untested. Full numbers, the two measurement-instrument defects found and fixed en
-route, and the harness's resolution floor (~0.02 similarity, ~0.2 on rates):
+> **A rendered instruction must require an utterance, not license an omission.**
+
+Arm B's *"Ignore the things you consider not your problem"* produces a 0.355 dismissal
+rate in hand-written prose and **0.000** through this renderer — identical words. The
+version that works says *"you MUST say plainly … every time it comes up … not
+optional"*. Permissions get read as optional and the model defaults to silence.
+
+Not established: divergence, accommodation, citation rate and turn length differences
+are all **below** the harness's noise floor at n = 3, and the early "evidence-driven
+position change" result did not replicate. `distinct_positions` is unstable in every
+rendered arm (5, 5, 3 and 2, 2, 5 against Arm B's consistent 5, 5, 5) — the one signal
+pointing at a possible real cost to rendering convictions from data rather than prose.
+`requires-escalation` and the concern-reveal path had no trigger in any of nine runs.
+
+What *is* tested and sound is the schema and its honesty properties: withholding works
+with zero leaks, per-persona scoping holds, convictions survive a fork, an invalid
+`firmness` is rejected, and the feature is off by default.
+
+Full numbers, the two measurement-instrument defects found and fixed en route, and the
+resolution floor (~0.02 similarity, ~0.2 on rates):
 `docs/PHASE6-STRUCTURED-PERSONAS.md` and `docs/BACKLOG.md`.
 
 ### Avatar Generation
@@ -633,7 +641,7 @@ npm run dev
 - ✅ **Phase 4:** Deeper cognition & steering — priority-hierarchy validation gate, pending-thread ledger, structured output view, adaptive pressure (experimental) (v0.4.0)
 - ✅ **Phase 5:** Per-persona document retrieval — FTS5 + optional `sqlite-vec` embeddings, per-call context budget, retrieval inspection endpoint, unsupported-claim disclosure, citation provenance (unreleased)
 - ✅ **Phase 6:** Structured personas — convictions with firmness + exit conditions, `dismisses` with a re-tuned engagement rule, withheld underlying concerns; measured live as Arm D at n = 3 — honesty properties sound, behavioural case not established (unreleased)
-- **Next:** Re-tune the Phase 6 dismissal rule — measured at n = 3 as suppressing dismissal to the control's rate
+- **Next:** Explain `distinct_positions` instability in the rendered arms — the one signal of a real cost to rendering convictions from data
 - **Future:** Embedding-based *memory* retrieval (document retrieval shipped in Phase 5), multi-modal inputs, hosted deployment
 
 **Open work is indexed in [`docs/BACKLOG.md`](docs/BACKLOG.md)** — including what was

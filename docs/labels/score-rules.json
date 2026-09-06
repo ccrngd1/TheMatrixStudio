@@ -1,0 +1,258 @@
+{
+  "deterministic": {
+    "A_control": {
+      "turns": 15,
+      "speakers": 5,
+      "cross_speaker_similarity": 0.1829,
+      "within_speaker_similarity": 0.1603,
+      "accommodation_turns": 10,
+      "accommodation_rate": 0.667,
+      "dismissal_turns": 1,
+      "dismissal_rate": 0.067,
+      "citation_turns": 1,
+      "citation_rate": 0.067,
+      "mean_turn_chars": 1110,
+      "turns_per_speaker": {
+        "Dana": 3,
+        "Marcus": 4,
+        "Priya": 2,
+        "Simone": 3,
+        "Tomas": 3
+      }
+    },
+    "B_structured": {
+      "turns": 15,
+      "speakers": 5,
+      "cross_speaker_similarity": 0.1597,
+      "within_speaker_similarity": 0.1584,
+      "accommodation_turns": 6,
+      "accommodation_rate": 0.4,
+      "dismissal_turns": 6,
+      "dismissal_rate": 0.4,
+      "citation_turns": 3,
+      "citation_rate": 0.2,
+      "mean_turn_chars": 962,
+      "turns_per_speaker": {
+        "Dana": 3,
+        "Marcus": 4,
+        "Priya": 3,
+        "Simone": 2,
+        "Tomas": 3
+      }
+    },
+    "C_grounded": {
+      "turns": 15,
+      "speakers": 5,
+      "cross_speaker_similarity": 0.2021,
+      "within_speaker_similarity": 0.2177,
+      "accommodation_turns": 4,
+      "accommodation_rate": 0.267,
+      "dismissal_turns": 7,
+      "dismissal_rate": 0.467,
+      "citation_turns": 7,
+      "citation_rate": 0.467,
+      "mean_turn_chars": 1063,
+      "turns_per_speaker": {
+        "Dana": 3,
+        "Marcus": 4,
+        "Priya": 3,
+        "Simone": 2,
+        "Tomas": 3
+      }
+    },
+    "D_shipped": {
+      "turns": 15,
+      "speakers": 5,
+      "cross_speaker_similarity": 0.1895,
+      "within_speaker_similarity": 0.1938,
+      "accommodation_turns": 6,
+      "accommodation_rate": 0.4,
+      "dismissal_turns": 3,
+      "dismissal_rate": 0.2,
+      "citation_turns": 3,
+      "citation_rate": 0.2,
+      "mean_turn_chars": 1318,
+      "turns_per_speaker": {
+        "Dana": 4,
+        "Marcus": 4,
+        "Priya": 2,
+        "Simone": 2,
+        "Tomas": 3
+      }
+    },
+    "E_mandatory": {
+      "turns": 15,
+      "speakers": 5,
+      "cross_speaker_similarity": 0.2064,
+      "within_speaker_similarity": 0.1751,
+      "accommodation_turns": 6,
+      "accommodation_rate": 0.4,
+      "dismissal_turns": 6,
+      "dismissal_rate": 0.4,
+      "citation_turns": 1,
+      "citation_rate": 0.067,
+      "mean_turn_chars": 1324,
+      "turns_per_speaker": {
+        "Dana": 3,
+        "Marcus": 4,
+        "Priya": 2,
+        "Simone": 3,
+        "Tomas": 3
+      }
+    },
+    "F_blunt": {
+      "turns": 15,
+      "speakers": 5,
+      "cross_speaker_similarity": 0.1806,
+      "within_speaker_similarity": 0.156,
+      "accommodation_turns": 4,
+      "accommodation_rate": 0.267,
+      "dismissal_turns": 0,
+      "dismissal_rate": 0.0,
+      "citation_turns": 1,
+      "citation_rate": 0.067,
+      "mean_turn_chars": 1003,
+      "turns_per_speaker": {
+        "Dana": 3,
+        "Marcus": 5,
+        "Priya": 1,
+        "Simone": 3,
+        "Tomas": 3
+      }
+    }
+  },
+  "length_normalised": {
+    "cross_budget_tokens": 128,
+    "within_budget_tokens": 43,
+    "method": "equal-volume truncation (deterministic; no sampling)",
+    "arms": {
+      "A_control": {
+        "cross_speaker_similarity_norm": 0.1482,
+        "within_speaker_similarity_norm": 0.0874
+      },
+      "B_structured": {
+        "cross_speaker_similarity_norm": 0.115,
+        "within_speaker_similarity_norm": 0.0931
+      },
+      "C_grounded": {
+        "cross_speaker_similarity_norm": 0.1465,
+        "within_speaker_similarity_norm": 0.1393
+      },
+      "D_shipped": {
+        "cross_speaker_similarity_norm": 0.136,
+        "within_speaker_similarity_norm": 0.1289
+      },
+      "E_mandatory": {
+        "cross_speaker_similarity_norm": 0.1441,
+        "within_speaker_similarity_norm": 0.0929
+      },
+      "F_blunt": {
+        "cross_speaker_similarity_norm": 0.1455,
+        "within_speaker_similarity_norm": 0.1177
+      }
+    },
+    "budget_sensitivity": {
+      "108": [
+        "B_structured",
+        "F_blunt",
+        "D_shipped",
+        "E_mandatory",
+        "A_control",
+        "C_grounded"
+      ],
+      "128": [
+        "B_structured",
+        "D_shipped",
+        "E_mandatory",
+        "F_blunt",
+        "C_grounded",
+        "A_control"
+      ]
+    },
+    "ordering_stable_for": [
+      "A_control vs B_structured",
+      "A_control vs D_shipped",
+      "A_control vs E_mandatory",
+      "A_control vs F_blunt",
+      "B_structured vs C_grounded",
+      "B_structured vs D_shipped",
+      "B_structured vs E_mandatory",
+      "B_structured vs F_blunt",
+      "C_grounded vs D_shipped",
+      "C_grounded vs E_mandatory",
+      "C_grounded vs F_blunt",
+      "D_shipped vs E_mandatory"
+    ],
+    "ordering_FLIPS_for": [
+      "A_control vs C_grounded",
+      "D_shipped vs F_blunt",
+      "E_mandatory vs F_blunt"
+    ]
+  },
+  "within_arm_variance": {
+    "A_control": {
+      "per_run": [
+        0.1386
+      ],
+      "mean": 0.1386,
+      "spread": null,
+      "budget_tokens": 117
+    },
+    "B_structured": {
+      "per_run": [
+        0.1117,
+        0.1183,
+        0.1289
+      ],
+      "mean": 0.1196,
+      "spread": 0.0172,
+      "budget_tokens": 117
+    },
+    "C_grounded": {
+      "per_run": [
+        0.1436
+      ],
+      "mean": 0.1436,
+      "spread": null,
+      "budget_tokens": 117
+    },
+    "D_shipped": {
+      "per_run": [
+        0.1325,
+        0.1404,
+        0.1441
+      ],
+      "mean": 0.139,
+      "spread": 0.0116,
+      "budget_tokens": 117
+    },
+    "E_mandatory": {
+      "per_run": [
+        0.132,
+        0.1547,
+        0.1587
+      ],
+      "mean": 0.1485,
+      "spread": 0.0267,
+      "budget_tokens": 117
+    },
+    "F_blunt": {
+      "per_run": [
+        0.1316,
+        0.165,
+        0.1352
+      ],
+      "mean": 0.1439,
+      "spread": 0.0334,
+      "budget_tokens": 117
+    }
+  },
+  "repeat_counts": {
+    "A_control": 1,
+    "B_structured": 3,
+    "C_grounded": 1,
+    "D_shipped": 3,
+    "E_mandatory": 3,
+    "F_blunt": 3
+  }
+}

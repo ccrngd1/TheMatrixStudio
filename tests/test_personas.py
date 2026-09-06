@@ -201,9 +201,11 @@ def test_retuned_variant_is_retained_verbatim():
 
 
 def test_blunt_variant_is_arm_b_wording():
-    """`blunt` exists to isolate the rule from the rendering: it holds the Phase 6
-    rendering fixed and restores the wording that produced Arm B's dismissal rate.
-    `off` cannot express this, because it drops the `dismisses` list too."""
+    """`blunt` isolates the rule from the rendering, and its text is locked for the
+    same reason `retuned`'s is: it MEASURED at 0.000 across three runs through this
+    renderer, against 0.355 for the identical words in Arm B's hand-written prose.
+    That contrast is the evidence for the whole "require an utterance" rule, so
+    editing the text would destroy a recorded result."""
     out = build().render_private(dismissal_rule="blunt")
     assert "Ignore the things you consider not your problem" in out
     assert "retrieval answer quality" in out
@@ -277,6 +279,19 @@ def test_unknown_variant_is_rejected_not_defaulted():
         normalise_dismissal_rule("gentle")
     with pytest.raises(ValueError):
         build().render_private(dismissal_rule="gentle")
+
+
+def test_only_mandatory_requires_an_utterance():
+    """The measured rule, asserted directly. Across four data points the variants
+    that PERMIT declining produce ~0 dismissals (blunt 0.000 rendered, retuned
+    0.067) and the one that DEMANDS it produces 0.333. If a future edit turns
+    `mandatory` back into a permission, this fails."""
+    mandatory = build().render_private(dismissal_rule="mandatory")
+    assert "MUST" in mandatory, "the shipped rule no longer demands an utterance"
+    assert "not optional" in mandatory
+    for permissive in ("blunt", "retuned"):
+        out = build().render_private(dismissal_rule=permissive)
+        assert "MUST say plainly" not in out, permissive
 
 
 def test_the_three_variants_are_genuinely_different_texts():
