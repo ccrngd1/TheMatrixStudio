@@ -45,15 +45,26 @@ def arms(mod):
     return {name: mod.build_arm(kind) for name, kind in mod.ARMS.items()}
 
 
-# Arm D's permitted deviations, enumerated. Anything outside these fails.
+# The Phase 6 arms' permitted deviations, enumerated. Anything outside these fails.
 ARM_D = "arm-d-shipped"
+# D, E and F share a cast and differ ONLY in config.personas.dismissal_rule.
+STRUCTURED_ARMS = (ARM_D, "arm-e-mandatory", "arm-f-blunt")
 ARM_D_CONFIG_KEYS = {"personas"}
 ARM_D_CAST_KEYS = {"structured"}
+# The variant each arm must carry. A drift here would make an arm silently test
+# the wrong wording, which is the exact failure the engine bug
+# (bool(dismissal_rule)) would have caused.
+EXPECTED_RULES = {
+    ARM_D: "retuned",
+    "arm-e-mandatory": "mandatory",
+    "arm-f-blunt": "blunt",
+}
 
 
 def test_all_arms_built(arms):
     assert set(arms) == {
-        "arm-a-control", "arm-b-structured", "arm-c-grounded", ARM_D,
+        "arm-a-control", "arm-b-structured", "arm-c-grounded",
+        *STRUCTURED_ARMS,
     }
 
 
@@ -69,7 +80,7 @@ def test_arms_differ_only_in_persona_string(arms):
         assert arm["topic"] == reference["topic"], f"{name}: topic differs"
 
         extra_config = set(arm["config"]) - set(reference["config"])
-        assert extra_config == (ARM_D_CONFIG_KEYS if name == ARM_D else set()), (
+        assert extra_config == (ARM_D_CONFIG_KEYS if name in STRUCTURED_ARMS else set()), (
             f"{name}: unexpected config keys {sorted(extra_config)}"
         )
         shared = {k: v for k, v in arm["config"].items() if k in reference["config"]}
@@ -84,9 +95,44 @@ def test_arms_differ_only_in_persona_string(arms):
 
         for member, ref_member in zip(arm["cast"], reference["cast"]):
             extra = set(member) - set(ref_member)
-            assert extra == (ARM_D_CAST_KEYS if name == ARM_D else set()), (
+            assert extra == (ARM_D_CAST_KEYS if name in STRUCTURED_ARMS else set()), (
                 f"{name}/{member['name']}: unexpected cast keys {sorted(extra)}"
             )
+
+
+def test_rule_variant_arms_differ_only_in_the_rule(arms):
+    """D, E and F are the dismissal-rule experiment. They must share a byte-identical
+    cast, so the rendered wording is the single variable. If the cast drifted, the
+    arms would be measuring two things at once — the mistake Arm D itself made
+    against Arm B."""
+    casts = {a: arms[a]["cast"] for a in STRUCTURED_ARMS}
+    reference = casts[ARM_D]
+    for name, cast in casts.items():
+        assert cast == reference, f"{name}: cast differs from {ARM_D}"
+    rules = {a: arms[a]["config"]["personas"]["dismissal_rule"] for a in STRUCTURED_ARMS}
+    assert rules == EXPECTED_RULES, rules
+    assert len(set(rules.values())) == len(rules), "two arms share a variant"
+
+
+def test_rule_variants_produce_genuinely_different_prompts(arms):
+    """The whole experiment rests on the variant reaching the prompt. A silent
+    collapse to the default wording — which a `bool()` coercion in the engine did
+    cause — would produce numbers that tested nothing."""
+    from matrix_studio.personas import effective_persona, parse_structured
+
+    rendered = {}
+    for name in STRUCTURED_ARMS:
+        member = arms[name]["cast"][0]
+        rendered[name] = effective_persona(
+            member["persona"],
+            parse_structured(member["structured"]),
+            dismissal_rule=arms[name]["config"]["personas"]["dismissal_rule"],
+        )
+    assert len(set(rendered.values())) == len(STRUCTURED_ARMS)
+    # Each arm's own wording, spot-checked by a phrase unique to it.
+    assert "not on your attention" in rendered[ARM_D]
+    assert "MUST say plainly" in rendered["arm-e-mandatory"]
+    assert "Ignore the things you consider not your problem" in rendered["arm-f-blunt"]
 
 
 def test_arm_d_is_the_control_prose_plus_structured_data(arms):

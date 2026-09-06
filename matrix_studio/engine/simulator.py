@@ -247,7 +247,12 @@ async def _generate_response(
         agent.structured,
         enabled=personas_on,
         withhold_concerns=bool(personas.withhold_concerns) if personas else True,
-        dismissal_rule=bool(personas.dismissal_rule) if personas else True,
+        # NOT bool() — `dismissal_rule` is a named variant ("mandatory" | "retuned"
+        # | "blunt" | "off"), and coercing it to a bool collapsed every variant to
+        # the default wording. That is silent: an arm would run, produce numbers,
+        # and have tested nothing. Caught by
+        # test_the_rule_variant_reaches_the_prompt.
+        dismissal_rule=personas.dismissal_rule if personas else "mandatory",
     )
 
     # Build context for the agent

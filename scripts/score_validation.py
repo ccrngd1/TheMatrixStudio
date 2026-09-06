@@ -47,10 +47,13 @@ ARM_FILES = {
     # Phase 6: Arm B's content as structured DATA + the re-tuned dismissal rule.
     # Optional so the original three-arm comparison still scores on its own.
     "D_shipped": "arm-d-shipped.json",
+    # Phase 6 dismissal-rule variants (docs/PHASE6-DISMISSAL-RETUNE.md).
+    "E_mandatory": "arm-e-mandatory.json",
+    "F_blunt": "arm-f-blunt.json",
 }
 
 # Arms whose absence is not an error (added after the original experiment ran).
-OPTIONAL_ARMS = {"D_shipped"}
+OPTIONAL_ARMS = {"D_shipped", "E_mandatory", "F_blunt"}
 
 # Phrases that concede ground or align the speaker with someone else. High rates
 # mean the cast is harmonising, which is the failure mode under investigation.
