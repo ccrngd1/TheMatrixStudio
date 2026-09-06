@@ -325,5 +325,20 @@ Both were fixed, and neither was visible in the mocked tests:
    The two compose: floor rejects everything -> no passages -> disclosure fires ->
    the persona states the absence. Verified end to end.
 
-   Still open: **wrong-passage retrieval remains undetected** (measured as not
-   separable by score), and weighted hybrid fusion.
+7. **5i** ✅ DONE — citation provenance. Measured 1 real failure in 92 turns: a
+   persona lifted another persona's document label out of the transcript and
+   asserted what it "specifies", never having had access to it. SQL scoping stops
+   a persona READING another's slice; nothing stopped it CITING one.
+
+   Fixed by modelling **attributed hearsay** rather than suppression: a citation
+   is legitimate first-hand, or second-hand if it credits a participant who really
+   did cite it. Enforced in the 4a gate as `citation_integrity` (top of the
+   hierarchy, zero LLM cost), recorded as `citation_provenance` on
+   `agent.response`. Only ATTRIBUTIVE use is judged — two real cases proved that
+   necessary ("I haven't seen that doc you're referencing", and a proposed code
+   comment referencing a doc yet to be written).
+
+   Still open: **entailment** — a first-hand citation of a passage that does not
+   actually support the claim. Needs an LLM judge, a measured base rate, and it
+   consumes 5i's output. Also: weighted hybrid fusion, and hop-drift across
+   second-hand chains.

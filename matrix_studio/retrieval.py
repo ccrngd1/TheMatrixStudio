@@ -539,7 +539,8 @@ UNSUPPORTED_BLOCK = (
     "explicitly, in your own words and in character, before or while making your "
     "point — that you are going from your own experience here rather than from "
     "anything documented. Do not invent a citation or name a document you were "
-    "not given."
+    "not given. If another participant cited a document, you may use what they "
+    "said about it — but credit them for it rather than claiming to have read it."
 )
 
 
@@ -585,7 +586,24 @@ def format_documents_block(passages: Sequence[RetrievedPassage]) -> str:
     return (
         "\n\nFrom your own background material (quote or cite it by name when "
         f"it supports a claim; it is not part of the conversation):\n{lines}"
+        + CITATION_RULE
     )
+
+
+# Phase 5i: evidence legitimately travels through people — an SME shows you a
+# document, you report back, and the record says "Priya cited X as saying Y".
+# Forbidding second-hand use would destroy information the discussion needs, so
+# the rule preserves the evidential RELATIONSHIP instead of suppressing the
+# citation. Observed failure this addresses: a persona lifted another persona's
+# document label out of the transcript and asserted what it "specifies", having
+# never had access to it.
+CITATION_RULE = (
+    "\n\nOnly the material listed above is something you have read yourself. If "
+    "you want to use a document another participant cited, do not present it as "
+    "something you read — name them and what they said it said (for example "
+    "\"Priya cited that report as saying...\"). Never assert what a document "
+    "contains unless you read it here or are crediting whoever did."
+)
 
 
 async def embed_pending_chunks(

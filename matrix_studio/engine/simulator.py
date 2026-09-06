@@ -24,6 +24,11 @@ import litellm
 OnEvent = Callable[[Dict[str, Any]], Awaitable[None]]
 
 from matrix_studio.avatar import generate_avatar
+from matrix_studio.citations import (
+    CitationContext,
+    analyse_citations,
+    provenance_payload,
+)
 from matrix_studio.settings import get_settings
 from matrix_studio.documents import ingest_file
 from matrix_studio.retrieval import (
@@ -860,6 +865,11 @@ async def _run_turns(
     turn = start_turn
     if pending_threads is None:
         pending_threads = []
+    # Phase 5i: ``(speaker, document_title)`` for every FIRST-HAND citation made so
+    # far. A second-hand attribution ("Priya cited X as saying Y") is only accepted
+    # when the credited participant appears here, which is what makes crediting
+    # verifiable rather than merely plausible.
+    firsthand_citations: List[tuple] = []
 
     try:
         while turn < max_messages:
@@ -908,6 +918,9 @@ async def _run_turns(
                 [t for t in pending_threads if t.status == "open"]
                 if threads_on else []
             )
+            # Phase 5i: a second-hand citation is only legitimate if the credited
+            # participant genuinely cited that document first-hand earlier. That
+            # ledger is accumulated here as the run proceeds.
             # Phase 5: retrieve this speaker's supporting document passages,
             # scoped to its own slice. Independent of cognition, and skipped
             # entirely (zero queries, zero prompt change) when disabled.
@@ -987,6 +1000,13 @@ async def _run_turns(
             # attempt is emitted as-is with a validation.flagged event. With
             # validation_enabled=False this block is skipped entirely —
             # byte-for-byte pre-4a behavior (regression-locked by test).
+            citation_ctx = (
+                CitationContext.build(
+                    own_passages=passages, prior_firsthand=firsthand_citations
+                )
+                if retrieval_on else None
+            )
+
             if settings.validation_enabled:
                 attempt = 0
                 while True:
@@ -1002,6 +1022,7 @@ async def _run_turns(
                         conversation,
                         settings,
                         model=model,
+                        citation_context=citation_ctx,
                     )
                     # A selective LLM confirmation is a real cost — attribute
                     # it to the speaker like every other call this turn.
@@ -1107,6 +1128,20 @@ async def _run_turns(
             # retrieval-off run's payload is byte-for-byte unchanged.
             if passages:
                 response_payload["document_refs"] = [p.chunk_id for p in passages]
+            # Phase 5i: how this turn came by its evidence. Makes an evidence
+            # chain machine-readable — a claim can be traced back through the
+            # participant who surfaced a document to the document itself, instead
+            # of the hop being invisible in the record.
+            if citation_ctx is not None:
+                cites = analyse_citations(
+                    response_data["content"], speaker_name,
+                    list(agents.keys()), citation_ctx,
+                )
+                if cites:
+                    response_payload["citation_provenance"] = provenance_payload(cites)
+                    for c in cites:
+                        if c.kind == "firsthand":
+                            firsthand_citations.append((speaker_name, c.title))
             await emit(
                 turn=turn,
                 seq=next_seq(),
