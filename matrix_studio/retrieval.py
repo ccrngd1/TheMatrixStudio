@@ -21,9 +21,12 @@ without a model.
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
+
+logger = logging.getLogger(__name__)
 
 # FTS5 bareword operators, plus conversational filler that adds no retrieval
 # signal. Kept deliberately small: over-filtering throws away real query terms.
@@ -305,6 +308,46 @@ def reciprocal_rank_fusion(
     return out
 
 
+def apply_similarity_floor(
+    rows: Sequence[Dict[str, Any]], min_similarity: float
+) -> tuple[List[Dict[str, Any]], int]:
+    """Drop vector matches whose cosine similarity is below an absolute floor.
+
+    Returns ``(kept, rejected_count)``.
+
+    Unlike ``filter_by_score`` (relative, and therefore incapable of returning
+    nothing), this compares against a fixed value, so an entirely unrelated query
+    can legitimately yield **no passages at all** — which is the point.
+
+    **What this is:** an off-topic guard. A query with nothing to do with the
+    corpus scores ~0.0-0.07 cosine, far below any genuine match.
+
+    **What this is NOT:** a relevance filter. Measured over 180 retrievals,
+    correct matches span 0.228-0.870 and incorrect ones 0.166-0.699 — almost
+    complete overlap. No threshold distinguishes the right passage from a wrong
+    one, and pretending otherwise would trade real recall for nothing. See
+    ``docs/PHASE5-RETRIEVAL-MEASUREMENT.md``.
+
+    Rows must carry ``score`` as a sqlite-vec L2 distance over UNIT vectors; the
+    conversion is invalid otherwise, so a caller that cannot guarantee unit-norm
+    vectors should pass ``min_similarity=0``.
+    """
+    if not rows or min_similarity <= 0:
+        return list(rows), 0
+    from matrix_studio.embeddings import distance_to_cosine
+
+    kept: List[Dict[str, Any]] = []
+    for row in rows:
+        cos = distance_to_cosine(float(row["score"]))
+        enriched = dict(row)
+        # Surface the cosine so a rejection (or a near-miss) is auditable rather
+        # than an unexplained absence.
+        enriched["cosine"] = round(cos, 4)
+        if cos >= min_similarity:
+            kept.append(enriched)
+    return kept, len(rows) - len(kept)
+
+
 def apply_budget(
     rows: Sequence[Dict[str, Any]], max_chars: int
 ) -> List[RetrievedPassage]:
@@ -372,18 +415,21 @@ async def retrieve_for_turn(
     mode: str = "fts",
     embedding_model: str = "",
     rrf_k: int = 60,
-) -> tuple[List[RetrievedPassage], str]:
+    min_similarity: float = 0.0,
+) -> tuple[List[RetrievedPassage], str, int]:
     """Retrieve a persona's supporting passages for one turn.
 
-    Returns ``(passages, query)``. The query is returned so the emitted
-    ``document.retrieved`` event can record exactly what was asked — retrieval
-    that cannot be inspected cannot be debugged or measured.
+    Returns ``(passages, query, floor_rejected)``. The query is returned so the
+    emitted ``document.retrieved`` event can record exactly what was asked, and
+    ``floor_rejected`` counts matches dropped by the similarity floor — without it,
+    "found nothing" and "found only weak matches" would be indistinguishable in
+    the log. Retrieval that cannot be inspected cannot be debugged or measured.
 
     Never raises: any failure degrades to no passages, because a retrieval
     problem must not end a run.
     """
     if k <= 0 or max_chars <= 0:
-        return [], ""
+        return [], "", 0
 
     candidates = extract_terms(
         "\n".join(
@@ -393,7 +439,7 @@ async def retrieve_for_turn(
         limit=24,
     )
     if not candidates:
-        return [], ""
+        return [], "", 0
 
     # Narrow to the terms that actually discriminate within this persona's slice.
     # Skipped when term_limit is 0, which reproduces the pre-measurement behavior.
@@ -414,7 +460,7 @@ async def retrieve_for_turn(
 
     query = " OR ".join(f'"{t}"' for t in terms if '"' not in t)
     if not query:
-        return [], ""
+        return [], "", 0
 
     # Over-fetch a little: the score filter and budget may drop trailing rows, so
     # asking for exactly k risks returning fewer passages than the budget affords.
@@ -429,6 +475,7 @@ async def retrieve_for_turn(
     # the sanitised OR-expression — the whole advantage of embeddings is that they
     # read meaning, so stripping the sentence to keywords first would discard it.
     semantic: List[Dict[str, Any]] = []
+    floor_rejected = 0
     if mode in ("vector", "hybrid") and getattr(db, "vec_available", False):
         from matrix_studio.embeddings import DEFAULT_EMBEDDING_MODEL, embed_query
 
@@ -443,10 +490,28 @@ async def retrieve_for_turn(
         ).strip()
         result = await embed_query(query_text, model=model) if query_text else None
         if result and result.vectors and result.vectors[0]:
+            query_vector = result.vectors[0]
             semantic = await db.vector_search(
-                run_id=run_id, vector=result.vectors[0],
+                run_id=run_id, vector=query_vector,
                 persona_name=persona_name, k=fetch_k,
             )
+            if semantic and min_similarity > 0:
+                from matrix_studio.embeddings import is_unit_norm
+
+                # The distance->cosine conversion is only valid for unit vectors.
+                # A provider returning unnormalised embeddings would make the
+                # threshold meaningless, so skip the floor rather than apply it
+                # to a number that does not mean what it claims to.
+                if is_unit_norm(query_vector):
+                    semantic, floor_rejected = apply_similarity_floor(
+                        semantic, min_similarity
+                    )
+                else:
+                    logger.warning(
+                        "Embedding model %s returns non-unit vectors; the "
+                        "similarity floor is not applicable and was skipped.",
+                        model,
+                    )
         elif mode == "vector":
             # Vector-only mode with no usable embedding: fall back to lexical
             # rather than returning nothing. Degrading beats going silent.
@@ -463,7 +528,10 @@ async def retrieve_for_turn(
         rows = lexical or semantic
 
     rows = filter_by_score(rows, score_ratio)
-    return apply_budget(rows[:k], max_chars), query
+    # floor_rejected rides along so the emitted event can distinguish "retrieval
+    # found nothing" from "retrieval found only things below the floor".
+    passages = apply_budget(rows[:k], max_chars)
+    return passages, query, floor_rejected
 
 
 UNSUPPORTED_BLOCK = (

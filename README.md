@@ -221,6 +221,19 @@ Vector retrieval degrades rather than fails: if `sqlite-vec` is missing or the
 embedding provider errors, the turn falls back to lexical search and the run
 continues.
 
+**Off-topic guard** (`min_similarity`, default `0.15`, vector/hybrid only). Vector
+matches below this cosine are rejected, so a query with nothing to do with the
+corpus yields **no passages at all** rather than a confidently irrelevant one.
+Calibrated over 180 real retrievals: 0.15 sits below the weakest measured genuine
+hit (0.228), so it costs nothing measurable, while genuinely off-topic queries
+score ~0.0-0.07. Set `0` to disable.
+
+It is deliberately **not** a relevance filter — measured, correct and incorrect
+retrievals overlap almost completely (hits 0.228-0.870, misses 0.166-0.699), so no
+threshold can tell a right passage from a wrong one. Raising it trades real recall
+for nothing. `fts` mode has no floor: BM25 scores are query-dependent, so no fixed
+value transfers.
+
 **Unsupported-claim disclosure** (`disclose_unsupported`, default off). When
 retrieval runs and finds nothing, the persona is asked to say so in its own voice
 — so the transcript distinguishes a grounded claim from an ungrounded one, not

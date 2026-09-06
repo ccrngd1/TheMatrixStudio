@@ -316,7 +316,7 @@ async def test_retrieve_for_turn_respects_k_and_budget(run_db):
         chunks=[f"retrieval design passage number {i} " + "filler " * 40 for i in range(20)],
         persona_name="A",
     )
-    passages, query = await retrieve_for_turn(
+    passages, query, _rej = await retrieve_for_turn(
         run_db, "r1", "A", "retrieval design",
         conversation=[{"speaker": "B", "content": "tell me about retrieval design"}],
         k=3, max_chars=600,
@@ -327,14 +327,14 @@ async def test_retrieve_for_turn_respects_k_and_budget(run_db):
 
 
 async def test_retrieve_for_turn_disabled_by_zero_k(run_db):
-    passages, query = await retrieve_for_turn(
+    passages, query, _rej = await retrieve_for_turn(
         run_db, "r1", "A", "topic", conversation=[], k=0, max_chars=1000
     )
     assert passages == [] and query == ""
 
 
 async def test_retrieve_for_turn_no_documents_is_empty_not_an_error(run_db):
-    passages, _ = await retrieve_for_turn(
+    passages, _query, _rej = await retrieve_for_turn(
         run_db, "r1", "A", "retrieval design", conversation=[], k=3, max_chars=900
     )
     assert passages == []
@@ -492,7 +492,7 @@ async def test_retrieve_for_turn_defaults_do_not_apply_the_knobs(run_db):
         chunks=[f"retrieval design passage {i} with egress inspection" for i in range(6)],
         persona_name="A",
     )
-    passages, query = await retrieve_for_turn(
+    passages, query, _rej = await retrieve_for_turn(
         run_db, "r1", "A", "retrieval design egress inspection",
         conversation=[], k=5, max_chars=5000,
     )

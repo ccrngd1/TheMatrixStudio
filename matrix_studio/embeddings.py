@@ -68,6 +68,42 @@ class EmbeddingResult:
         return sum(1 for v in self.vectors if v)
 
 
+def is_unit_norm(vector: Sequence[float], tolerance: float = 0.01) -> bool:
+    """Whether a vector is (near enough) unit length.
+
+    This matters because ``distance_to_cosine`` below is only valid for unit
+    vectors. Titan Embed v2 returns exactly unit-norm vectors (verified), but a
+    different provider may not, and silently applying the conversion to
+    non-normalised vectors would produce a meaningless similarity — and therefore
+    a meaningless score floor.
+    """
+    if not vector:
+        return False
+    norm = sum(float(x) * float(x) for x in vector) ** 0.5
+    return abs(norm - 1.0) <= tolerance
+
+
+def normalise(vector: Sequence[float]) -> List[float]:
+    """Scale a vector to unit length. A zero vector is returned unchanged."""
+    norm = sum(float(x) * float(x) for x in vector) ** 0.5
+    if norm <= 0:
+        return [float(x) for x in vector]
+    return [float(x) / norm for x in vector]
+
+
+def distance_to_cosine(distance: float) -> float:
+    """Convert a sqlite-vec L2 distance to cosine similarity.
+
+    For UNIT vectors, ``|a-b|^2 = 2 - 2·cos``, so ``cos = 1 - d^2/2``. That gives
+    an interpretable, provider-portable scale where 1.0 is identical, 0.0 is
+    unrelated (orthogonal) and negative is actively opposed — which is what makes
+    an absolute threshold meaningful, unlike a raw BM25 score.
+
+    Only valid for unit-norm vectors; see ``is_unit_norm``.
+    """
+    return 1.0 - (distance * distance) / 2.0
+
+
 def serialise(vector: Sequence[float]) -> bytes:
     """Pack a float vector into the little-endian float32 blob sqlite-vec expects."""
     return struct.pack(f"<{len(vector)}f", *(float(x) for x in vector))
