@@ -1,6 +1,6 @@
 # TheMatrix Simulation Studio
 
-**Version 0.4.0** — Multi-agent conversation simulator with live control-room UI, checkpointing/branching, cognition system, consistency validation, pending-thread ledger, and non-photorealistic avatars.
+**Version 0.5.0** — Multi-agent conversation simulator with live control-room UI, checkpointing/branching, agent cognition, consistency validation, pending-thread ledger, per-persona document retrieval, structured personas, and non-photorealistic avatars.
 
 TheMatrix Simulation Studio is a standalone tool for running multi-agent conversation simulations. Define a topic and cast of personas, hit **Run**, and watch the conversation unfold live in a web control room. Features checkpointing, timeline branching, optional agent cognition (memory + reflection + goals), and anime-style avatar generation.
 
@@ -639,8 +639,8 @@ npm run dev
 - ✅ **Phase 2c:** Agent cognition — memory stream, reflection, relationships, dynamic goals, why-trace
 - ✅ **Phase 3:** Release polish — cost guards, BYO-key readiness, examples, docs, hygiene (v0.3.0)
 - ✅ **Phase 4:** Deeper cognition & steering — priority-hierarchy validation gate, pending-thread ledger, structured output view, adaptive pressure (experimental) (v0.4.0)
-- ✅ **Phase 5:** Per-persona document retrieval — FTS5 + optional `sqlite-vec` embeddings, per-call context budget, retrieval inspection endpoint, unsupported-claim disclosure, citation provenance (unreleased)
-- ✅ **Phase 6:** Structured personas — convictions with firmness + exit conditions, `dismisses` with a re-tuned engagement rule, withheld underlying concerns; measured live as Arm D at n = 3 — honesty properties sound, behavioural case not established (unreleased)
+- ✅ **Phase 5:** Per-persona document retrieval — FTS5 + optional `sqlite-vec` embeddings, per-call context budget, retrieval inspection endpoint, unsupported-claim disclosure, citation provenance (v0.5.0)
+- ✅ **Phase 6:** Structured personas — convictions with firmness + exit conditions, `dismisses` with a re-tuned engagement rule, withheld underlying concerns; measured live as Arm D at n = 3 — honesty properties sound, behavioural case not established (v0.5.0)
 - **Next:** Explain `distinct_positions` instability in the rendered arms — the one signal of a real cost to rendering convictions from data
 - **Future:** Embedding-based *memory* retrieval (document retrieval shipped in Phase 5), multi-modal inputs, hosted deployment
 
@@ -674,4 +674,4 @@ For issues and questions, please open an issue on GitHub.
 
 ---
 
-**Version 0.4.0** — Built with Claude Code. Phases 0-4 complete. Ready for production use with BYO API keys.
+**Version 0.5.0** — Built with Claude Code. Phases 0-6 complete. Ready for production use with BYO API keys.
