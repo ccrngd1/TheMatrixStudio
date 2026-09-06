@@ -1,0 +1,166 @@
+{
+  "B_structured": [
+    {
+      "distinct_positions": 5,
+      "positions_citing_a_named_source": 1,
+      "participants_who_changed_position": 1,
+      "position_changes_justified_by_new_evidence": 0,
+      "converged_to_single_view": false,
+      "talking_past_each_other": 1,
+      "specificity": 5,
+      "most_distinctive_participant": "Tomas",
+      "least_distinctive_participant": "Simone",
+      "one_line_characterisation": "Five stakeholders with orthogonal constraints negotiated a testing sequence rather than resolving the underlying decision, with Marcus shifting from demanding measurement-first to accepting design-first only after Dana reframed the logical impossibility of his request.",
+      "_judge_cost_usd": 0.004718
+    },
+    {
+      "distinct_positions": 5,
+      "positions_citing_a_named_source": 0,
+      "participants_who_changed_position": 0,
+      "position_changes_justified_by_new_evidence": 0,
+      "converged_to_single_view": false,
+      "talking_past_each_other": 1,
+      "specificity": 5,
+      "most_distinctive_participant": "Priya",
+      "least_distinctive_participant": "Simone",
+      "one_line_characterisation": "Five stakeholders with orthogonal constraints (infrastructure, cost, hallucination risk, auditability, sales velocity) negotiated toward a testable architecture (SQLite-embedded retrieval with token measurement) without anyone abandoning their core requirement.",
+      "_judge_cost_usd": 0.004576
+    },
+    {
+      "distinct_positions": 5,
+      "positions_citing_a_named_source": 2,
+      "participants_who_changed_position": 0,
+      "position_changes_justified_by_new_evidence": 0,
+      "converged_to_single_view": false,
+      "talking_past_each_other": 3,
+      "specificity": 5,
+      "most_distinctive_participant": "Priya",
+      "least_distinctive_participant": "Marcus",
+      "one_line_characterisation": "Five stakeholders each articulated a non-negotiable prerequisite gate (install speed, token cost, retrieval quality, auditability, customer-facing capability) and held them in parallel without resolving which gate must be satisfied first.",
+      "_judge_cost_usd": 0.005306
+    }
+  ],
+  "D_shipped": [
+    {
+      "distinct_positions": 5,
+      "positions_citing_a_named_source": 1,
+      "participants_who_changed_position": 2,
+      "position_changes_justified_by_new_evidence": 2,
+      "converged_to_single_view": false,
+      "talking_past_each_other": 2,
+      "specificity": 5,
+      "most_distinctive_participant": "Priya",
+      "least_distinctive_participant": "Marcus",
+      "one_line_characterisation": "Five stakeholders built consensus on technical constraints (embedding, versioning, auditability) while diverging sharply on whether those constraints solve the actual customer problem, with Simone and Priya naming different risks the others were optimizing away.",
+      "_judge_cost_usd": 0.005918
+    },
+    {
+      "distinct_positions": 3,
+      "positions_citing_a_named_source": 0,
+      "participants_who_changed_position": 0,
+      "position_changes_justified_by_new_evidence": 0,
+      "converged_to_single_view": true,
+      "talking_past_each_other": 2,
+      "specificity": 5,
+      "most_distinctive_participant": "Priya",
+      "least_distinctive_participant": "Marcus",
+      "one_line_characterisation": "The group converged on a measurement protocol after Simone and Dana repeatedly misaligned on whether the test should measure cost or justify viability, with Priya introducing a reasoning-quality concern that remained orthogonal to the final decision gate.",
+      "_judge_cost_usd": 0.005426
+    },
+    {
+      "distinct_positions": 3,
+      "positions_citing_a_named_source": 0,
+      "participants_who_changed_position": 0,
+      "position_changes_justified_by_new_evidence": 0,
+      "converged_to_single_view": true,
+      "talking_past_each_other": 1,
+      "specificity": 5,
+      "most_distinctive_participant": "Tomas",
+      "least_distinctive_participant": "Dana",
+      "one_line_characterisation": "Five stakeholders with initially competing constraints (sales velocity, cost transparency, system maintainability, deployment simplicity, and feature reliability) negotiated toward a shared sequential decision process\u2014spike first, measure second, ship only if all constraints hold\u2014without anyone abandoning their core requirement.",
+      "_judge_cost_usd": 0.005008
+    }
+  ],
+  "E_mandatory": [
+    {
+      "distinct_positions": 5,
+      "positions_citing_a_named_source": 2,
+      "participants_who_changed_position": 0,
+      "position_changes_justified_by_new_evidence": 0,
+      "converged_to_single_view": false,
+      "talking_past_each_other": 1,
+      "specificity": 5,
+      "most_distinctive_participant": "Priya",
+      "least_distinctive_participant": "Dana",
+      "one_line_characterisation": "Five stakeholders with non-overlapping domains negotiated a shared measurement protocol without anyone abandoning their initial constraint, each adding specificity to what 'done' means rather than debating whether to proceed.",
+      "_judge_cost_usd": 0.005741
+    },
+    {
+      "distinct_positions": 5,
+      "positions_citing_a_named_source": 0,
+      "participants_who_changed_position": 0,
+      "position_changes_justified_by_new_evidence": 0,
+      "converged_to_single_view": false,
+      "talking_past_each_other": 1,
+      "specificity": 5,
+      "most_distinctive_participant": "Tomas",
+      "least_distinctive_participant": "Marcus",
+      "one_line_characterisation": "Five stakeholders with distinct remits negotiated a prototype experiment by explicitly mapping their non-overlapping concerns onto a single customer test, each asking for different measurements from the same run without resolving whether those measurements can coexist.",
+      "_judge_cost_usd": 0.005646
+    },
+    {
+      "distinct_positions": 3,
+      "positions_citing_a_named_source": 0,
+      "participants_who_changed_position": 2,
+      "position_changes_justified_by_new_evidence": 2,
+      "converged_to_single_view": true,
+      "talking_past_each_other": 1,
+      "specificity": 5,
+      "most_distinctive_participant": "Priya",
+      "least_distinctive_participant": "Marcus",
+      "one_line_characterisation": "Five stakeholders with distinct constraints (sales velocity, cost transparency, install simplicity, reproducibility, grounding integrity) negotiated toward a concrete compromise\u2014excerpts disabled by default, measured on realistic forty-page documents before demo use\u2014by explicitly separating what each person could weigh from what they couldn't.",
+      "_judge_cost_usd": 0.005668
+    }
+  ],
+  "F_blunt": [
+    {
+      "distinct_positions": 2,
+      "positions_citing_a_named_source": 0,
+      "participants_who_changed_position": 0,
+      "position_changes_justified_by_new_evidence": 0,
+      "converged_to_single_view": true,
+      "talking_past_each_other": 1,
+      "specificity": 5,
+      "most_distinctive_participant": "Tomas",
+      "least_distinctive_participant": "Marcus",
+      "one_line_characterisation": "A group with initially divergent concerns (sales urgency vs. cost vs. auditability vs. operational simplicity) converged on a single concrete test through iterative constraint-stacking rather than anyone abandoning their position.",
+      "_judge_cost_usd": 0.004759
+    },
+    {
+      "distinct_positions": 2,
+      "positions_citing_a_named_source": 0,
+      "participants_who_changed_position": 1,
+      "position_changes_justified_by_new_evidence": 0,
+      "converged_to_single_view": true,
+      "talking_past_each_other": 1,
+      "specificity": 5,
+      "most_distinctive_participant": "Tomas",
+      "least_distinctive_participant": "Priya",
+      "one_line_characterisation": "A group with genuine technical disagreement (retrieval vs. excerpts) resolved by timeline pressure and a commitment to measure before scaling, with one participant holding firm on infrastructure risk while others converged on a measured-later approach.",
+      "_judge_cost_usd": 0.005138
+    },
+    {
+      "distinct_positions": 5,
+      "positions_citing_a_named_source": 0,
+      "participants_who_changed_position": 2,
+      "position_changes_justified_by_new_evidence": 2,
+      "converged_to_single_view": true,
+      "talking_past_each_other": 1,
+      "specificity": 5,
+      "most_distinctive_participant": "Priya",
+      "least_distinctive_participant": "Dana",
+      "one_line_characterisation": "A group moved from competing constraints toward a shared gate-based decision framework after one participant named the actual failure mode everyone was circling.",
+      "_judge_cost_usd": 0.005349
+    }
+  ]
+}
