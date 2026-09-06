@@ -66,15 +66,53 @@ rendered instruction that wants visible behaviour.
   appeared**, and the only signal pointing at a real cost to rendering convictions
   from data rather than prose. Judge variance at n = 3 is unknown, so it is recorded,
   not concluded. Highest-value remaining Phase 6 question.
-- **`requires-escalation` and the concern-reveal path** still have no trigger in any
-  of nine runs.
-- **Cognition ON** has never been run in any arm.
+- **`requires-escalation` FIRED** — 2 of 3 cognition-on runs, 0 of 3 cognition-off
+  (`docs/PHASE6-COGNITION-INTERACTION.md`). First time in fifteen runs. Suggestive, not
+  established: 2/3 vs 0/3 at n=3 is ~p 0.4, and the all-persona escalation count is
+  below the noise gate. Plausible mechanism — escalation needs *sustained* pressure to
+  concede and without memory every turn starts fresh. **The single most worthwhile
+  thing to run more of.**
+- **The concern-reveal path is still untested** — nobody asked "why" in any of fifteen
+  runs. Unchanged.
+- ~~**Cognition ON** has never been run in any arm.~~ DONE — Arm G, n=3 at 30 turns.
+  Found and fixed two engine defects on the way (see below). Result: the pre-registered
+  concern-leak does **not** happen (100 memories read, zero leaks); reflections
+  *reinforce* convictions rather than eroding them; the only callable metric is that
+  cognition makes turns **~30% shorter** (807 → 563 chars), cause unmeasured.
 - **Arms A and C are still n = 1**, so their own noise is unmeasured.
 
 **Resolution floor for this harness:** at 15 turns and 5 personas it cannot resolve
 differences below ~**0.02** in cross-speaker similarity or ~**0.2** in the rate
 metrics. Several previously published conclusions, including the original
 experiment's headline 0.183-vs-0.160, sit inside that band.
+
+### Engine: two shipped features were silently broken against real models
+**Status:** FIXED 2026-09-06, locked by `tests/test_jsonio.py`.
+
+Both found by trying to run cognition for the first time. Both fail *silently* — the
+run completes and reports success — which is why neither was caught earlier.
+
+1. **Strict JSON parsing.** Haiku 4.5 wraps structured output in a markdown fence;
+   `json.loads` rejected it. Consequences: **cognition completely inert** (30/30 turns,
+   0 memories, 0 reflections, 0 rationales, while costing *more* than not using it —
+   shipped since v0.2), and **the Phase 4a validation gate silently dropping every
+   suspicion** (its confirmation call fails open, so a `JSONDecodeError` became
+   `violation: False` — so the selective LLM confirmation had never confirmed
+   anything). Fixed by one tolerant parser, `matrix_studio/jsonio.py`, now used by all
+   five call sites. Two other modules had already solved this independently
+   (`analysis.py` in Phase 1.5, `naming.py`) while the engine and gate never learned it
+   — that duplication is why the lesson did not spread.
+2. **Provider parameter restrictions.** Sonnet 5 accepts only `temperature=1`; the
+   engine passes 0.7 / 0.3 / 0.0. Every call raised `UnsupportedParamsError` and the
+   engine wrote the error text into the transcript **as the character's speech**, with
+   the run reporting `complete` and `$0.0000` cost. Fixed with
+   `litellm.drop_params = True`.
+
+The two are independent and both needed: the JSON fix alone still breaks on Sonnet,
+`drop_params` alone still breaks on Haiku.
+
+**Revisit trigger:** any new model. This class of defect is only findable by running
+against the real thing, and `PHASE4-REPORT.md` §4 had flagged exactly this gap.
 
 ### Premise-validation scorer: instrument defects found and fixed
 **Status:** FIXED 2026-09-06, locked by `tests/test_validation_scoring.py`.
