@@ -71,7 +71,9 @@ rendered instruction that wants visible behaviour.
   established: 2/3 vs 0/3 at n=3 is ~p 0.4, and the all-persona escalation count is
   below the noise gate. Plausible mechanism — escalation needs *sustained* pressure to
   concede and without memory every turn starts fresh. **The single most worthwhile
-  thing to run more of.**
+  thing to run more of** — but not by repeating identical runs. The efficient route is
+  a brief engineered so a persona genuinely gets **overruled**, which raises the base
+  rate so fewer runs settle it. Same trick that made the dismissal question tractable.
 - **The concern-reveal path is still untested** — nobody asked "why" in any of fifteen
   runs. Unchanged.
 - ~~**Cognition ON** has never been run in any arm.~~ DONE — Arm G, n=3 at 30 turns.
@@ -246,11 +248,41 @@ difference.
 rather than chunk level so re-chunking does not move the gold.
 
 ### Phase 4 behaviour against real models
-**Status:** OPEN. From `PHASE4-REPORT.md` §4 — how often the 4a heuristics fire,
-how often the selective LLM confirmation triggers, how well real models use the 4b
-`thread_updates` schema, and the quality of 4c pressure events are all unmeasured
-against a live model. Phase 5 showed live runs contradicting mocked expectations
-three separate times, so this is not a formality.
+**Status:** OPEN — but one of its questions was answered, accidentally and badly.
+
+From `PHASE4-REPORT.md` §4: how often the 4a heuristics fire, how often the selective
+LLM confirmation triggers, how well real models use the 4b `thread_updates` schema, and
+the quality of 4c pressure events were all unmeasured against a live model.
+
+**"How often does the selective LLM confirmation trigger?" now has an answer: never.**
+It parsed its response strictly inside a fail-open handler, so against a fenced-JSON
+model every `JSONDecodeError` became `violation: False`. Fixed 2026-09-06 (see *Engine:
+two shipped features were silently broken*), but the rate it fires at is **still
+unmeasured** — now for the first time measurable.
+
+The rest stands, and today is the argument for doing it: this gap was hiding two
+silently-broken shipped features, not merely missing numbers.
+
+### Scoring phrase lists are validated against Haiku only
+**Status:** OPEN — free to fix, and it gates every future rate.
+
+`ACCOMMODATION` and `DISMISSAL` in `scripts/score_validation.py` were hand-labelled
+against **Haiku 4.5 output at 15 turns** (`docs/labels/dismissal-labels.json`). The
+default model is now **Sonnet 5**, so every future run inherits lists that were never
+checked against the idiom they will be scoring.
+
+Evidence this is not theoretical: the same Arm E configuration scores accommodation
+**0.033** on Sonnet at 30 turns against **0.400** on Haiku at 15. Model and turn count
+both changed at once, so the gap is not attributable — but a 12× difference in a rate
+metric is not something to quote past.
+
+**Until this is done, no rate from a Sonnet run may be compared to any Haiku number,
+and the pre-registered ≥0.30 dismissal criterion does not transfer across turn counts.**
+
+**To resolve:** hand-label a batch of Sonnet turns the way B and D were labelled, then
+patch the patterns until they reproduce the reading — labelling *first*, because tuning
+patterns against a number rather than a reading is exactly how the original defect got
+in. Arms A and C remain unlabelled on Haiku too.
 
 ### Citation gate: false-positive rate unmeasured
 **Status:** OPEN. The gate fired **16 times across 48 turns** in one batch, and the
@@ -312,8 +344,9 @@ batch of activations the way the entailment set was labelled.
 
 ## Housekeeping
 
-- **README roadmap** now lists Phase 5 (fixed), but the four screenshot
-  placeholders remain `TODO`.
+- **Four README screenshot placeholders remain `TODO`.** Now actually fixable: the
+  Docker image builds and the container serves the UI (verified 2026-09-06), so real
+  screenshots can be captured rather than mocked up. This was previously impossible.
 - **`PROJECT-SPEC.md` §4a is stale** — it says the priority hierarchy is "a design
   principle, not yet a code gate". It has been a code gate since Phase 4a, and 5i
   added `citation_integrity` to it.
