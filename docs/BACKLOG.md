@@ -148,9 +148,21 @@ batch of activations the way the entailment set was labelled.
 
 ## Blocked
 
-- **Push to origin.** 14 commits sit on local `master`. The remote is HTTPS GitHub
-  and no credential is available to this user (`gh` absent). Nothing else depends
-  on it.
+- **Push to origin.** `origin/master` is at `2acdbac` — the **Phase 4 release**. So
+  everything unpushed is exactly *all of Phase 5*. Stated that way rather than as a
+  commit count, because a hardcoded count goes stale on the next commit (an earlier
+  draft of this file said 14 when it was 13). Current figure:
+
+  ```bash
+  git rev-list --count origin/master..master
+  ```
+
+  The remote is HTTPS GitHub and no credential is available to this user (`gh`
+  absent). Nothing else depends on it.
+
+  Note: `PHASE4-REPORT.md` §5 says pushes fail in this environment and Phase 4's
+  commits are unpushed. That is now **stale** — `origin/master` contains the Phase 4
+  release, so it was pushed at some point after that report was written.
 - **Frontend verification.** The Phase 5c Dossier/types changes were reviewed by
   eye but never typechecked or covered by the 18 frontend tests: this machine has
   no Node toolchain (`npm`/`npx` absent, `frontend/node_modules` absent). Needs
