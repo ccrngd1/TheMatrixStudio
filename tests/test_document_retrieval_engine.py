@@ -566,3 +566,135 @@ async def test_disclosure_is_a_prompt_request_not_a_gate(db, tmp_path):
     assert result["status"] == "complete"
     # The mock never hedges, yet the event still records the true state.
     assert len(await _events(db, "ignored", "document.unsupported")) == 1
+
+
+# --------------------------------------------------------------------------- #
+# (8) Phase 5i: citation provenance in the live turn loop
+# --------------------------------------------------------------------------- #
+
+
+async def test_gate_rejects_citing_a_document_the_speaker_never_held(db, tmp_path):
+    """The observed real failure, now caught pre-emit and regenerated.
+
+    Dana holds dana.md only. Her first attempt asserts what marcus.md specifies —
+    a document she has never retrieved. The 4a gate must reject it, regenerate,
+    and the committed turn must be the clean second attempt.
+    """
+    attempts = {"n": 0}
+
+    def fake(*args, **kwargs):
+        messages = kwargs["messages"]
+        text = " ".join(m["content"] for m in messages)
+        if "conversation moderator" in text:
+            return _Resp(json.dumps({"speaker": "Dana", "reason": "her turn"}))
+        if "consistency validator" in text:
+            return _Resp(json.dumps({"violation": True}))
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            return _Resp(
+                "Per marcus.md #0, token accounting is the gate here, so egress "
+                "inspection can wait until the numbers land."
+            )
+        return _Resp(
+            "Egress inspection gives us the auditable evidence we need, and that "
+            "is the constraint I care about most this quarter."
+        )
+
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=fake):
+        await run_simulation(
+            _request(
+                tmp_path,
+                retrieval={"enabled": True, "k": 2, "max_chars": 900},
+                max_messages=1,
+            ),
+            db=db, run_id="cite-gate",
+        )
+
+    checked = await _events(db, "cite-gate", "validation.checked")
+    violations = [c for c in checked if not c["payload"]["passed"]]
+    assert violations, "the gate did not reject the illegitimate citation"
+    assert violations[0]["payload"]["principle"] == "citation_integrity"
+    assert "marcus.md" in violations[0]["payload"]["reason"]
+
+    responses = await _events(db, "cite-gate", "agent.response")
+    assert "marcus.md" not in responses[0]["payload"]["message"], (
+        "the bad citation was committed instead of regenerated"
+    )
+
+
+async def test_firsthand_citation_is_recorded_as_provenance(db, tmp_path):
+    def fake(*args, **kwargs):
+        messages = kwargs["messages"]
+        text = " ".join(m["content"] for m in messages)
+        if "conversation moderator" in text:
+            return _Resp(json.dumps({"speaker": "Dana", "reason": "her turn"}))
+        return _Resp(
+            "Per dana.md #0, egress inspection is what gives the auditor "
+            "evidence, so that is the line I am holding."
+        )
+
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=fake):
+        await run_simulation(
+            _request(
+                tmp_path,
+                retrieval={"enabled": True, "k": 2, "max_chars": 900},
+                max_messages=1,
+            ),
+            db=db, run_id="cite-prov",
+        )
+    responses = await _events(db, "cite-prov", "agent.response")
+    prov = responses[0]["payload"].get("citation_provenance")
+    assert prov, "provenance was not recorded"
+    assert prov[0]["kind"] == "firsthand"
+    assert prov[0]["label"].startswith("dana.md")
+
+
+async def test_honest_disclaimer_about_another_document_is_not_rejected(db, tmp_path):
+    """Flagging this would punish the exact behaviour 5g is trying to produce."""
+    def fake(*args, **kwargs):
+        messages = kwargs["messages"]
+        text = " ".join(m["content"] for m in messages)
+        if "conversation moderator" in text:
+            return _Resp(json.dumps({"speaker": "Dana", "reason": "her turn"}))
+        if "consistency validator" in text:
+            return _Resp(json.dumps({"violation": True}))
+        return _Resp(
+            "I haven't seen that marcus.md file you're referencing, so I will "
+            "speak to what egress inspection actually buys us instead."
+        )
+
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=fake):
+        await run_simulation(
+            _request(
+                tmp_path,
+                retrieval={"enabled": True, "k": 2, "max_chars": 900},
+                max_messages=1,
+            ),
+            db=db, run_id="cite-honest",
+        )
+    checked = await _events(db, "cite-honest", "validation.checked")
+    bad = [
+        c for c in checked
+        if not c["payload"]["passed"]
+        and c["payload"].get("principle") == "citation_integrity"
+    ]
+    assert not bad, "an honest disclaimer was flagged as a citation violation"
+
+
+async def test_no_citation_checking_when_retrieval_is_off(db, tmp_path):
+    """Retrieval off means no citation context, so the check is skipped entirely."""
+    def fake(*args, **kwargs):
+        messages = kwargs["messages"]
+        text = " ".join(m["content"] for m in messages)
+        if "conversation moderator" in text:
+            return _Resp(json.dumps({"speaker": "Dana", "reason": "her turn"}))
+        return _Resp("Per some-invented-file.md, the answer is obviously yes here.")
+
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=fake):
+        await run_simulation(_request(tmp_path, max_messages=1), db=db, run_id="cite-off")
+    responses = await _events(db, "cite-off", "agent.response")
+    assert "citation_provenance" not in responses[0]["payload"]
+    checked = await _events(db, "cite-off", "validation.checked")
+    assert all(
+        c["payload"].get("principle") != "citation_integrity" for c in checked
+    )

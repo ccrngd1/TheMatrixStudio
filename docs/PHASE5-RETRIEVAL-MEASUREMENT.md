@@ -368,6 +368,96 @@ have offered a cost-observations passage as background for a falconry question.
   so the floor is skipped with a warning rather than misapplied.
 - One corpus, one embedding model, one run.
 
+## Citation provenance (5i) — attributed hearsay, not suppression
+
+### The observed failure
+
+Scanning 92 turns across 10 run databases for citations and checking each against
+the turn's `document_refs`:
+
+| | count |
+|---|---|
+| turns containing a citation | 14 |
+| citation matched a passage in context | 14 |
+| **document NOT in this turn's context** | **1** |
+| wrong chunk ordinal of a held document | 0 |
+| cited when no passages were retrieved | 0 |
+
+The single failure, in full: Priya retrieved `phase4-report.md #31` (her own
+document) and cited it. On the next turn **Dana** — whose only document is
+`project-spec.md`, and who retrieved only from it — wrote *"which is what
+phase4-report.md #31 actually specifies"*. She lifted the label out of Priya's
+turn and asserted what a document she had never seen contains.
+
+**This is an architectural gap, not a model quirk.** SQL scoping stops a persona
+*reading* another's slice; nothing stopped it *citing* one. A persona could borrow
+another's evidential authority by name, which defeats the purpose of per-persona
+slices.
+
+### Why suppression was the wrong fix
+
+The first plan was "only cite documents you have read". That destroys information:
+in a real review evidence legitimately propagates through people — an SME shows
+you a document, you report back, and the record says *"Priya cited X as saying
+Y"*. Dana **should** be able to reason with what Priya surfaced. The error is not
+using it; it is presenting second-hand evidence as first-hand.
+
+So a citation is legitimate when it is either:
+
+- **first-hand** — the label is among the passages this turn retrieved; or
+- **second-hand** — attributed to a participant who really did cite it, with the
+  document in their own retrieved passages.
+
+Anything else attributive is **unverified**. This completes a distinction the
+engine already drew — `document_refs` (I retrieved this), `memory_refs` (I
+remember this), the 5g disclosure (I have nothing) — with "someone else surfaced
+this".
+
+### Only attributive use is judged, and that mattered immediately
+
+Merely naming a document is honest and must never be flagged. A live run produced
+*"I haven't seen that distribution-constraints.md doc you're referencing"* — the
+correct behaviour, and a naive membership test would have rejected it.
+
+A second real case settled the design: a persona wrote *"see [UPGRADE-PATH.md]
+for rationale"* **inside a proposed code comment** — suggesting a document be
+created, not asserting what one says. Classified `mention`, non-attributive,
+correctly left alone. A binary "label not in my refs -> violation" rule would have
+regenerated a perfectly good turn.
+
+So the check requires an attribution cue (per / according to / specifies / states
+/ shows / confirms ...) near the label, and no disclaimer ("haven't seen", "don't
+have", "you're referencing").
+
+### Where it lives
+
+The Phase 4a pre-emit gate, as principle `citation_integrity`, ranked with
+coherence at the top of the hierarchy — a false citation corrupts the exported
+record, which is the artifact this tool exists to produce. Handling follows 4a
+exactly: reject and regenerate on the existing budget, then emit verbatim with a
+flag. Output is never rewritten. Zero LLM calls: the check is a set-membership
+test against data the engine already holds.
+
+`agent.response` now carries `citation_provenance` —
+`{label, kind, attributive, via?}` per citation — which makes an evidence chain
+machine-readable. That serves the traceability goal from the spec that started
+this work (*"trace from each requirement to the concerns, personas and corpus
+documents it derives from"*); previously the second-hand hop was invisible.
+
+### Limits
+
+- **Prevalence is low (1 in 92 turns, 1 in 14 cited turns) on a small sample.**
+  The mechanism is real and now guarded, but no rate should be quoted.
+- **The gate's live catch rate is unverified.** A re-run of the original scenario
+  produced no illegitimate citation at all, so the rejection path is proven only
+  by tests with a mocked bad citation — not yet by catching a real one.
+- **Entailment is still not checked.** A first-hand citation of a passage that does
+  not actually support the claim remains undetected. That needs an LLM judge and a
+  measured base rate, and it consumes this stage's output (a first-hand cite is
+  verified against the passage, a second-hand one against the transcript).
+- **Drift across hops is not modelled.** Dana can faithfully relay a claim Priya
+  got wrong; hop count is recorded implicitly via `via` but not capped.
+
 ## Verdict
 
 **The design doc's stated trigger for moving to vectors has been met.** It said:
