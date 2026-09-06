@@ -1,7 +1,10 @@
 # Structured personas × cognition — pre-registered
 
-**Status:** PRE-REGISTRATION. Committed **before** the arm exists and before any run.
-Nothing below has been measured.
+**Status:** INTERRUPTED. The first three runs found that **cognition was completely
+non-functional against this model**, so the interaction could not be measured — there
+was nothing to interact with. The defect is fixed (`matrix_studio/jsonio.py`) and the
+experiment is still to run. Everything below the line records that; nothing above it
+was edited.
 
 ## The gap
 
@@ -108,4 +111,76 @@ not decay. I expect at least one concern leak through memory across six runs.
 
 ## Results
 
-*(empty — nothing run yet)*
+### The experiment could not run: cognition was inert
+
+Three runs in (2× Arm E, 1× Arm G, 30 turns each), the Arm G transcript showed
+**every one of its 30 turns** carrying a markdown-fenced JSON blob as the utterance:
+
+```
+```json
+{"utterance": "I want to be direct: I've watched this exact question kill two deals...
+```
+
+`json.loads` rejects that, and `_generate_response` degrades gracefully by keeping the
+raw text as the utterance — so the run completed, cost **more** than the cognition-off
+arm ($0.22 vs $0.21), and produced:
+
+| | Arm G, 30 turns, 5 personas |
+|---|---|
+| Memories formed | **0** |
+| Reflections | **0** |
+| Rationales captured | **0** |
+| `goal_served` captured | **0** |
+| Turns whose utterance was a JSON blob | **30 / 30** |
+
+Cognition has been a shipped feature since v0.2. Against this model it did nothing at
+all, while looking like it worked.
+
+The remaining runs were **stopped rather than completed** — three more runs of a
+feature known to be inert would have cost ~$0.65 to measure nothing.
+
+### Same root cause, two more defects
+
+`response_format={"type": "json_object"}` is passed on every one of these calls and is
+evidently not honoured on this provider path. Three call sites parsed strictly:
+
+1. **`_generate_response`** — the one above. Cognition inert.
+2. **The Phase 4a validation gate** (`validation.py`). Its confirmation call catches
+   broad exceptions and **fails open**, so a `JSONDecodeError` became
+   `violation: False`. The selective LLM confirmation had **never confirmed anything**
+   against this model — which is exactly the item `PHASE4-REPORT.md` §4 flagged as
+   unmeasured. That bill came due here.
+3. **`_select_next_speaker`** — fell back to substring-matching a name out of the raw
+   JSON, which usually still worked. The least harmful, and the reason nothing looked
+   obviously wrong.
+
+Two *other* modules had already solved this independently — `analysis.py` grew an
+`_extract_json` in Phase 1.5, `naming.py` strips fences by hand — while the engine and
+the gate never learned it. That duplication is why the lesson did not spread.
+
+### The fix, verified live
+
+`matrix_studio/jsonio.py`: one tolerant `extract_json_object`, used by all five call
+sites. Tries the whole string, then a fenced block, then the widest `{...}` span; never
+raises; returns `None` rather than a non-dict so callers cannot be handed something
+they will `.get()` on.
+
+Verified against the same model on a 6-turn run:
+
+| | before | after |
+|---|---|---|
+| Fenced-JSON utterances | 30 / 30 | **0 / 6** |
+| Memories formed | 0 | **12** |
+| Rationale captured | 0 | **6 / 6** |
+| `goal_served` captured | 0 | **6 / 6** |
+
+`tests/test_jsonio.py` locks it, starting from the literal payload observed in the
+broken run, plus a test asserting a strict `json.loads` **would** have failed on it —
+so the tolerance cannot later be removed as unnecessary.
+
+### The interaction question is still open
+
+Nothing in the pre-registered plan has been answered. The concern-leak check has an
+instrument now (`scripts/check_concern_leak.py`) but no valid data: it ran against the
+broken transcripts and its candidates were vocabulary overlap with the topic, not
+leaks. Re-run required, now that cognition actually does something.

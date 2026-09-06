@@ -31,6 +31,7 @@ from matrix_studio.citations import (
 )
 from matrix_studio.settings import get_settings
 from matrix_studio.documents import ingest_file
+from matrix_studio.jsonio import extract_json_object
 from matrix_studio.retrieval import (
     embed_pending_chunks,
     format_documents_block,
@@ -169,14 +170,13 @@ Respond with ONLY the name of the persona who should speak next. Choose naturall
         reason: Optional[str] = None
         selected = raw
         if cognition_on:
-            try:
-                parsed = json.loads(raw)
+            # Tolerant parse: this model wraps JSON in a markdown fence, which a bare
+            # json.loads rejects. See matrix_studio/jsonio.py.
+            parsed = extract_json_object(raw)
+            if parsed is not None:
                 selected = str(parsed.get("speaker", "")).strip() or raw
                 r = parsed.get("reason")
                 reason = str(r).strip() if r else None
-            except (json.JSONDecodeError, TypeError, AttributeError):
-                selected = raw
-                reason = None
 
         # Validate selection
         matched = _match(selected)
@@ -404,8 +404,17 @@ Respond naturally as this character. Keep responses conversational (2-4 sentence
         relationship_updates: Dict[str, str] = {}
         thread_updates: Dict[str, Any] = {"open": [], "resolved": [], "abandoned": []}
         if cognition_on:
-            try:
-                parsed = json.loads(raw)
+            # Tolerant parse. A bare json.loads here made cognition COMPLETELY INERT
+            # against a model that fences its JSON: 30 of 30 turns fell through to the
+            # degradation path below, so the transcript carried fenced JSON blobs and
+            # the run produced 0 memories, 0 reflections and 0 rationales while costing
+            # more than not using cognition at all. See matrix_studio/jsonio.py.
+            parsed = extract_json_object(raw)
+            if parsed is None:
+                # Genuinely unparseable: keep the raw text as the utterance (unchanged
+                # pre-existing behaviour) so a bad response never stalls a run.
+                content = raw
+            else:
                 content = str(parsed.get("utterance", "")).strip() or raw
                 rat = parsed.get("rationale")
                 rationale = str(rat).strip() if rat else None
@@ -467,15 +476,6 @@ Respond naturally as this character. Keep responses conversational (2-4 sentence
                                 thread_updates[key] = [
                                     str(i).strip() for i in ids if str(i).strip()
                                 ]
-            except (json.JSONDecodeError, TypeError, AttributeError):
-                # Graceful degradation: keep the raw text as the utterance.
-                content = raw
-                rationale = None
-                goal_served = None
-                formed_memories = []
-                goal_update = None
-                relationship_updates = {}
-                thread_updates = {"open": [], "resolved": [], "abandoned": []}
 
         # Extract usage info
         usage = response.usage
