@@ -118,6 +118,7 @@ def heuristic_check(
     speaker_name: str,
     agent_names: List[str],
     conversation: List[Dict[str, Any]],
+    citation_context: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     Run the deterministic checks in hierarchy order over one candidate
@@ -128,6 +129,25 @@ def heuristic_check(
     confirmed by :func:`llm_confirm` before being treated as a violation.
     """
     others = [n for n in agent_names if n != speaker_name]
+
+    # coherence (Phase 5i): a citation the speaker cannot legitimately make —
+    # a document nobody retrieved, or another persona's document asserted without
+    # crediting them. Ranked with coherence because a false citation corrupts the
+    # exported record, which is the artifact this tool exists to produce.
+    # Skipped entirely when no citation context is supplied (pre-5i behavior).
+    if citation_context is not None:
+        from matrix_studio.citations import analyse_citations, citation_violation
+
+        cites = analyse_citations(
+            utterance, speaker_name, agent_names, citation_context
+        )
+        reason = citation_violation(cites)
+        if reason:
+            return {
+                "result": "violation",
+                "principle": "citation_integrity",
+                "reason": reason,
+            }
 
     # coherence: the model emitted dialogue AS another cast member, breaking
     # the one-speaker-per-turn frame the sim runs on.
@@ -270,6 +290,7 @@ async def validate_utterance(
     conversation: List[Dict[str, Any]],
     settings,
     model: Optional[str] = None,
+    citation_context: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     Full pre-emit validation of one candidate utterance: heuristics first, a
@@ -281,7 +302,10 @@ async def validate_utterance(
        "llm_tokens_in", "llm_tokens_out", "llm_cost_usd"}``
     (LLM usage fields are 0 when no confirmation call was made.)
     """
-    verdict = heuristic_check(utterance, speaker_name, agent_names, conversation)
+    verdict = heuristic_check(
+        utterance, speaker_name, agent_names, conversation,
+        citation_context=citation_context,
+    )
     usage = {"llm_tokens_in": 0, "llm_tokens_out": 0, "llm_cost_usd": 0.0}
 
     if verdict["result"] == "ok":

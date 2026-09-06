@@ -234,6 +234,21 @@ threshold can tell a right passage from a wrong one. Raising it trades real reca
 for nothing. `fts` mode has no floor: BM25 scores are query-dependent, so no fixed
 value transfers.
 
+**Citation provenance.** A persona may only assert what a document says if it
+retrieved that document itself, or if it credits the participant who did:
+
+> *"Priya cited phase4-report.md #31 as saying thread retrieval has no ranking."*
+
+This models how evidence actually travels — an SME shows you a document, you
+report back — rather than forbidding second-hand use, which would destroy
+information the discussion needs. Presenting second-hand evidence as first-hand is
+rejected by the Phase 4a gate as a `citation_integrity` violation (regenerate, then
+flag; never rewritten), and every citation is recorded on `agent.response` as
+`citation_provenance` with `kind: firsthand | secondhand | mention` so an evidence
+chain is machine-readable. Only *attributive* use is judged — saying "I haven't
+seen that doc you're referencing" is honest and passes. Zero LLM cost: it is a
+set-membership test against data the engine already holds.
+
 **Unsupported-claim disclosure** (`disclose_unsupported`, default off). When
 retrieval runs and finds nothing, the persona is asked to say so in its own voice
 — so the transcript distinguishes a grounded claim from an ungrounded one, not
