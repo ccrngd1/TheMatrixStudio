@@ -216,14 +216,27 @@ skipping the arm — a third difference creeping in still fails.
 
 ### Deterministic
 
+The similarity rows are reported **length-normalised**. Raw Jaccard on token sets
+grows monotonically with text volume — the *same* arm truncated to 300-char turns
+scores 0.105 and at full length 0.160, with identical speakers and positions — and
+Arm D's turns are 37% longer than Arm B's, so the raw comparison was unreadable.
+`scripts/score_validation.py` now truncates every speaker to a common token volume
+before comparing, and reports which orderings survive changing that volume.
+See §*The instrument had to be fixed first* below.
+
 | Metric | A control | B structured | C grounded | **D shipped** |
 |---|---|---|---|---|
-| Cross-speaker similarity *(lower = more divergent)* | 0.1829 | **0.1597** | 0.2021 | 0.1895 |
-| Within-speaker similarity *(lower = less repetitive)* | 0.1603 | **0.1584** | 0.2177 | 0.1938 |
+| Cross-speaker similarity, normalised *(lower = more divergent)* | 0.1611 | **0.1355** | 0.1740 | 0.1478 |
+| Within-speaker similarity, normalised *(lower = less repetitive)* | **0.1101** | 0.1153 | 0.1684 | 0.1362 |
 | Accommodation rate *(lower = less harmonising)* | 0.667 | 0.400 | **0.267** | 0.400 |
-| Dismissal rate | 0.067 | 0.333 | 0.467 | 0.133 |
+| Dismissal rate *(hand-verified on B and D)* | 0.067 | 0.400 | 0.467 | 0.200 |
 | Citation rate | 0.067 | 0.200 | **0.467** | 0.200 |
 | Mean turn length (chars) | 1110 | 962 | 1063 | **1318** |
+| *Cross-speaker similarity, RAW (length-biased; do not compare)* | *0.1829* | *0.1597* | *0.2021* | *0.1895* |
+
+Callable at every meaningful budget (102-187 tokens): **B < D < C**, and **D < A**.
+Not callable: **A vs C** — that pair flips with the budget and is inside the
+instrument's resolution.
 
 ### Blind judge
 
@@ -270,30 +283,69 @@ collapse that made Arm C unshippable did not happen with the same `dismisses`
 lists present. Accommodation landed at 0.400, identical to Arm B and well below
 the control's 0.667.
 
-### The clear regression: divergence, and a length confound
+### Divergence: one correction in each direction
 
-Arm D is **worse than Arm B on both similarity measures** (cross-speaker 0.1895 vs
-0.1597; within-speaker 0.1938 vs 0.1584). Arm B remains the best arm on divergence.
+Fixing the instrument moved this result **both ways**, and both corrections matter
+more than the original reading did.
 
-But the comparison is **confounded by turn length**: Arm D's turns are 1318 chars
-against Arm B's 962, **37% longer**. These metrics are Jaccard overlap on token
-sets, and longer turns mechanically share more vocabulary, so some of the gap is
-length rather than convergence. The direction of the confound is known; its size is
-not, and it is not separable at n = 1. **This is not resolved.**
+**Arm D beats the control.** Normalised, D scores 0.1478 against A's 0.1611, and
+that ordering holds at every budget tested. The raw metric said the opposite —
+D 0.1895 vs A 0.1829 — purely because D's turns are longer. So "structured personas
+made the cast *less* divergent than the prose baseline", which is what the raw
+numbers said, is **wrong**.
 
-Dismissal rate also fell — **0.133 vs Arm B's 0.333** (2 turns vs 5 of 15). Two
-readings, not distinguishable from one run:
+**Arm D is still less divergent than Arm B**, and this survives normalisation:
+0.1478 vs 0.1355, stable at every budget. The earlier hedge that the gap "may be
+entirely length" was too generous to the feature. Arm B's hand-written prose
+genuinely produces more divergent language than the same content rendered from
+data. That is a real regression and it is the strongest argument against assuming
+the schema is a pure win.
 
-1. The retune working as designed. It instructs a persona to engage with the
-   substance *and* decline only "once, briefly" — fewer, shorter dismissals inside
-   longer substantive turns is the predicted shape, and longer turns plus lower
-   talking-past is consistent with it.
-2. The regex missing dismissals phrased in ways the pattern list does not cover.
-   `DISMISSAL` in `scripts/score_validation.py` is an English phrase list and was
-   written against the *original* arms' idiom.
+**Within-speaker similarity: the control is least repetitive** (0.1101), then B
+(0.1153), D (0.1362), C (0.1684). Some of this is by design — holding a position
+means returning to it — but it is worth stating plainly that structure makes
+speakers more self-similar, and that Arm C's collapse is the extreme of a
+gradient the feature sits on, not a separate phenomenon.
 
-Reading the transcript favours (1) — the personas do answer challenges directly
-before setting concerns aside — but that is an impression, not a measurement.
+**Dismissal rate, hand-verified.** Arm D dismisses about half as often as Arm B
+(0.200 vs 0.400 by hand count). The earlier suspicion that this was a regex
+artifact was **wrong**: hand-labelling found the regex under-counting *both* arms
+by exactly one turn, so the gap is real behaviour.
+
+What the rate misses is *shape*, which reading catches and no counter will. Arm B's
+dismissals are bare — *"I don't care about the demo working"*. Arm D's are attached
+to substantive engagement — *"Marcus and Priya are right that we need to know
+whether retrieval actually grounds the agent … that's a real risk and it matters.
+But that's not my problem to solve."* Fewer, better-formed dismissals is exactly
+what the retuned rule asks for, so the drop is the predicted outcome rather than a
+loss of the behaviour. Labels: `docs/labels/dismissal-labels.json`.
+
+### The instrument had to be fixed first
+
+Two defects, both of which had already changed a published conclusion:
+
+**Length bias.** Every overlap metric on accumulated text grows with volume, so
+arms of different verbosity cannot be compared directly. Three fixes were tried
+and rejected before the boring one worked — subsampling the token stream (equalises
+count, not vocabulary size), subsampling the vocabulary (worse: drawing N words
+from differently-sized vocabularies changes the chance of drawing shared ones), and
+TF-cosine (also length-sensitive, 0.235 → 0.392 under the same sweep). What works
+is truncating every speaker to a common volume. All four attempts are recorded in
+the scorer so none is retried.
+
+**A too-aggressive robustness check.** The first budget-sensitivity sweep included
+40-80 token budgets, where the ordering scrambles completely. Eighty content tokens
+is a couple of sentences — too little text for vocabulary overlap to mean anything.
+Including them reported *every* pair as uncallable and hid the real result. There is
+now a 100-token floor with the measured justification attached.
+
+**Dismissal idiom.** `DISMISSAL` was authored against the original three arms and
+missed bare-possessive forms (*"not mine"*, *"their job to own"*, *"your call to
+make … not mine"*). Arms B and D were hand-labelled **first**, then the patterns
+patched until they reproduced the reading — that order matters, because tuning
+patterns against a number rather than a reading is how the original defect got in.
+`tests/test_validation_scoring.py` locks both fixes; arms A and C were never
+labelled, so their dismissal rates remain regex-only and are not asserted.
 
 ### Two properties that could not be tested
 
@@ -314,15 +366,22 @@ inert in practice — carried, never surfaced. Recorded in `docs/BACKLOG.md`.
 
 ### Honest verdict
 
-Phase 6 reproduces Arm B's accommodation benefit, avoids Arm C's failure mode, and
-is the **first arm to produce evidence-driven position change** — the specific
-behaviour it was built for. It does **not** reproduce Arm B's divergence advantage,
-and its dismissal rate is a third of Arm B's.
+Phase 6 beats the prose control on divergence, reproduces Arm B's accommodation
+benefit, avoids Arm C's failure mode, and is the **first arm to produce
+evidence-driven position change** — the specific behaviour it was built for.
 
-So: ship it on for panels where you want positions defended and genuinely revisable;
-Arm B's hand-written prose still wins on raw divergence. And the original run's
-caveat applies unchanged — **n = 1 per arm on a non-deterministic model.** The
-±differences on similarity here are well inside what one re-run could reverse.
+It does **not** reach Arm B's divergence, and that gap survives length
+normalisation, so hand-written prose structure is genuinely better at making
+speakers sound different than the same content rendered from data. Its dismissal
+rate is half Arm B's, which reading suggests is the retune working (fewer, better
+formed) rather than the behaviour going missing — but that reading is a judgment,
+not a measurement.
+
+So: ship it on for panels where you want positions defended and genuinely
+revisable, and do not claim it makes a cast *more* divergent than careful prose.
+The original run's caveat applies unchanged — **n = 1 per arm on a
+non-deterministic model** — and several differences here are inside what one
+re-run could reverse.
 
 ## What is NOT claimed
 
@@ -364,14 +423,17 @@ so the original three-arm comparison stays reproducible on its own.
 
 What Arm D leaves open, in the order it is worth doing:
 
-1. **Repeat at several seeds.** `n = 1`. The similarity differences against Arm B
-   are inside single-run variance, and that comparison is also length-confounded.
+1. **Repeat at several seeds.** `n = 1`. Still the largest caveat on every number
+   above — the instrument is fixed, the sample size is not.
 2. **Test `requires-escalation` with a brief where a persona loses.** It needs an
    overruling to have anything to do.
 3. **Test the concern-reveal path**, which means creating pressure to ask a
    stakeholder *why* — nothing in a run currently does.
-4. **Score dismissals by reading, not regex.** The `DISMISSAL` phrase list was
-   written against the original arms' idiom and Arm D's drop from 0.333 to 0.133
-   may be partly instrument.
+4. **Close the divergence gap to Arm B, or explain it.** The gap is real. The
+   obvious hypothesis is that hand-written prose varies sentence *rhythm* per
+   persona while a shared renderer produces structurally similar blocks for
+   everyone. If that is the cause, per-persona render variation would test it.
 5. **Run with cognition ON**, which no arm has ever done — the interaction most
    likely to surprise.
+6. **Hand-label arms A and C** for dismissal, so all four rates rest on a reading
+   rather than two of four.
