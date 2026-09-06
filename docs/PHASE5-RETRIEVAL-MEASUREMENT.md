@@ -234,6 +234,70 @@ numbers.
   test asserts a persona cannot cross slices) but on a run with many personas some
   scan effort is wasted.
 
+## Unsupported-claim disclosure (5g)
+
+The recall numbers say a persona often has no supporting passage. Nothing in the
+transcript said so: a grounded claim and an ungrounded one looked identical to
+whoever reads the conversation, with `document_refs` visible only in the event
+log. So when retrieval runs and returns nothing, the persona is now asked to say
+so in its own voice.
+
+**The wording is about PROVENANCE, not evidentiary support**, and that distinction
+is the whole design. The engine knows only "nothing was retrieved". It does *not*
+know the corpus lacks support — at 0.82 recall the passage often exists and was
+simply missed, so "no documentation supports this" would be **false roughly one
+time in five**. An honesty feature that lies is worse than none. The shipped
+wording therefore says "nothing in front of you", which is true by construction.
+
+### Choosing the wording by measurement, and getting the instrument wrong twice
+
+Three wordings were A/B'd live on a run where one persona has documents and the
+other has none (so retrieval reliably returns nothing for that persona):
+
+| wording | what the model actually produced |
+|---|---|
+| conditional — *"if you make a factual claim…"* | implicit only: *"I've been in enough customer conversations…"* — sounds experienced, never states absence |
+| **directive** — *"say so explicitly, in your own words"* | **explicit, varied, in character: "I don't have the actual specs in front of me"** |
+| directive + example phrase | explicit, but echoed the example near-verbatim — the stock-phrase tic the design set out to avoid |
+
+**The directive wording ships.** Two measurement mistakes are worth recording,
+because both nearly produced a wrong decision:
+
+1. **A regex scored compliance 0/3 for every wording.** It was looking for
+   "don't have a document/source"; the model said "I don't have the *specs* in
+   front of me". The feature was working and the detector was blind. This is the
+   same failure that nearly shipped the harmful query tuning: trusting an
+   instrument that was never validated.
+2. **An LLM judge then scored every wording 100%.** A negative control (5 hand-
+   written cases with known answers) showed it scores **4/5**, wrongly crediting
+   "I've closed enough deals to know…" as disclosing absence. It is lenient in
+   exactly the direction that inflates the numbers, so those 100% figures are an
+   upper bound, and the conditional arm — whose hedges were of precisely that
+   experiential-but-not-absence kind — is the one most likely over-credited.
+
+The decision was therefore made by **reading the generated text**, with the two
+instruments used only to locate what to read. Verified end to end: 3/3 turns with
+no retrieved passage disclosed absence, in three different phrasings, while the
+persona that *did* have passages cited them by name and never hedged spuriously.
+
+An unforced bonus: one turn produced *"I haven't seen that distribution
+constraints doc you're referencing"* — the persona correctly noticing it cannot
+see another persona's slice, which makes the SQL-level scoping legible inside the
+conversation.
+
+### Honest limits
+
+- **n = 2-3 disclosure turns per arm, one topic, one model.** Directional, not a
+  rate. No compliance percentage should be quoted from this.
+- **It is a prompt request, not a gate.** A model can ignore it; the
+  `document.unsupported` event is the authoritative record and a test asserts the
+  event fires even when the model does not comply.
+- **The inverse inference is unsound.** An un-hedged turn does *not* mean the claim
+  is supported — a persona can hold a passage and still say something it does not
+  back. The signal is one-directional on purpose, and no positive "this is
+  documented" marker was added, because the engine cannot verify that.
+- Default OFF (`disclose_unsupported: false`).
+
 ## Verdict
 
 **The design doc's stated trigger for moving to vectors has been met.** It said:

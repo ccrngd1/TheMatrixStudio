@@ -29,6 +29,7 @@ from matrix_studio.documents import ingest_file
 from matrix_studio.retrieval import (
     embed_pending_chunks,
     format_documents_block,
+    format_unsupported_block,
     retrieve_for_turn,
 )
 from matrix_studio.state import (
@@ -176,6 +177,7 @@ async def _generate_response(
     retrieved_memories: Optional[List["MemoryItem"]] = None,
     open_threads: Optional[List["PendingThread"]] = None,
     retrieved_passages: Optional[List[Any]] = None,
+    disclose_unsupported: bool = False,
 ) -> Dict[str, Any]:
     """
     Generate a response from the selected speaker.
@@ -239,9 +241,16 @@ async def _generate_response(
     # this is NOT gated on cognition — attaching background material to a persona
     # is useful with cognition off, so the block is appended in both branches
     # below. The passages shown here are the turn's causal document_refs.
-    documents_block = (
-        format_documents_block(retrieved_passages) if retrieved_passages else ""
-    )
+    # Phase 5g: when retrieval ran and returned nothing, optionally ask the
+    # persona to flag that it is speaking unsourced. ``disclose_unsupported`` is
+    # only ever True when retrieval was actually attempted, so an empty block here
+    # cannot be confused with "retrieval is turned off".
+    if retrieved_passages:
+        documents_block = format_documents_block(retrieved_passages)
+    elif disclose_unsupported:
+        documents_block = format_unsupported_block()
+    else:
+        documents_block = ""
 
     if cognition_on:
         # Compose the JSON schema from the enabled cognition sub-features so the
@@ -939,10 +948,27 @@ async def _run_turns(
                             "total_chars": sum(len(p.content) for p in passages),
                         },
                     )
+                elif retrieval.disclose_unsupported:
+                    # Retrieval ran and found nothing. Record it so the transcript
+                    # claim and the event log agree — the log is authoritative,
+                    # since the in-prompt request is something a model can ignore.
+                    await emit(
+                        turn=turn,
+                        seq=next_seq(),
+                        event_type="document.unsupported",
+                        agent_name=speaker_name,
+                        payload={"speaker": speaker_name, "query": doc_query},
+                    )
+            # Only ask for a disclosure when retrieval genuinely ran and came back
+            # empty; a retrieval-off run must be byte-for-byte unchanged.
+            disclose = bool(
+                retrieval_on and not passages and retrieval.disclose_unsupported
+            )
             response_data = await _generate_response(
                 speaker_name, speaker, topic, conversation, settings,
                 model=model, cognition=cognition, retrieved_memories=retrieved,
                 open_threads=open_threads, retrieved_passages=passages,
+                disclose_unsupported=disclose,
             )
 
             # Phase 4a: pre-emit priority-hierarchy validation gate. The
@@ -1025,6 +1051,7 @@ async def _run_turns(
                         # is of the utterance, not of the retrieval, so re-querying
                         # would change the causal context mid-turn.
                         retrieved_passages=passages,
+                        disclose_unsupported=disclose,
                     )
 
             # Update conversation

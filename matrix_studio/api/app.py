@@ -93,6 +93,8 @@ class RetrievalConfigModel(BaseModel):
     mode: str = Field(default="fts")
     embedding_model: str = ""
     rrf_k: int = Field(default=60, ge=1)
+    # Phase 5g: ask the persona to flag in-voice when retrieval found nothing.
+    disclose_unsupported: bool = False
     # Experimental, DEFAULT OFF: measured harmful in
     # docs/PHASE5-RETRIEVAL-MEASUREMENT.md (recall fell on all three arms).
     term_limit: int = Field(default=0, ge=0)

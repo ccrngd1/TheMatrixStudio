@@ -466,6 +466,42 @@ async def retrieve_for_turn(
     return apply_budget(rows[:k], max_chars), query
 
 
+UNSUPPORTED_BLOCK = (
+    "\n\nYou have NO source material in front of you for this turn. Say so "
+    "explicitly, in your own words and in character, before or while making your "
+    "point — that you are going from your own experience here rather than from "
+    "anything documented. Do not invent a citation or name a document you were "
+    "not given."
+)
+
+
+def format_unsupported_block() -> str:
+    """Prompt text for "retrieval ran and found nothing".
+
+    The wording is deliberately about PROVENANCE ("nothing in front of you"), not
+    about evidentiary support. The engine knows only that no passage was
+    retrieved; it does NOT know that the corpus lacks support, and at the measured
+    recall a supporting passage often exists and was simply missed. Asserting "no
+    documentation supports this" would therefore be false a substantial fraction
+    of the time — an honesty feature that lies is worse than none.
+
+    "In your own words and in character" is load-bearing too: a fixed injected
+    sentence would break character for a persona written brash or one that
+    dismisses citations, which is a character-consistency violation under the
+    priority hierarchy.
+
+    This exact wording was chosen by live A/B against two alternatives (see
+    ``docs/PHASE5-RETRIEVAL-MEASUREMENT.md``). A softer *conditional* phrasing
+    ("if you make a factual claim...") produced only implicit hedges — the model
+    sounded experienced without ever stating that it lacked a source. Adding an
+    example phrase to this wording worked too, but the model echoed the example
+    near-verbatim, which is the stock-phrase tic this design set out to avoid.
+    A directive with no example produced explicit absence statements in the
+    model's own words, so that is what ships.
+    """
+    return UNSUPPORTED_BLOCK
+
+
 def format_documents_block(passages: Sequence[RetrievedPassage]) -> str:
     """Render retrieved passages for the system prompt.
 

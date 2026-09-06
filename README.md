@@ -221,6 +221,21 @@ Vector retrieval degrades rather than fails: if `sqlite-vec` is missing or the
 embedding provider errors, the turn falls back to lexical search and the run
 continues.
 
+**Unsupported-claim disclosure** (`disclose_unsupported`, default off). When
+retrieval runs and finds nothing, the persona is asked to say so in its own voice
+— so the transcript distinguishes a grounded claim from an ungrounded one, not
+just the event log:
+
+> *"I don't have the profiling data in front of me, so I'm working from what
+> customers are telling me in the field, but…"*
+
+The wording is deliberately about **provenance** ("nothing in front of you"), not
+evidentiary support: the engine only knows nothing was retrieved, and at measured
+recall the supporting passage often exists and was simply missed — so claiming
+"no documentation supports this" would be wrong about one time in five. Each
+occurrence also emits a `document.unsupported` event, which is the authoritative
+record since a model can ignore a prompt request.
+
 **Scoping is enforced in SQL, not asked for in a prompt.** A document attached to
 `Dana` is retrievable only by Dana; `persona_name: null` (set via the API) makes
 it cast-wide. Retrieved chunk ids are recorded as `document_refs` on
