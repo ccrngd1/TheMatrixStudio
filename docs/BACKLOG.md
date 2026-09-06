@@ -294,12 +294,18 @@ batch of activations the way the entailment set was labelled.
 
 ## Open — features
 
-- **No UI for structured personas.** The dossier API returns `structured` (Phase 6)
-  and `frontend/src/types.ts` declares it, but nothing renders it — a run's
-  convictions are only visible via the API or the event log. **The reason this was
-  deferred no longer applies:** it was blocked on the absent Node toolchain, which is
-  now installed and green (typecheck, build, 18 tests). This is simply unbuilt, and it
-  is now buildable *and* testable.
+- ~~**No UI for structured personas.**~~ BUILT 2026-09-06. The Dossier now has a
+  **Convictions** section: role, positions with their firmness badge and named exit
+  condition, `formed_by`, `optimises_for` / `will not weigh` / `persuaded_by`, and
+  formative events with their lessons. Defended positions are visually distinguished
+  from negotiable ones, and a defended position with **no** exit condition is flagged
+  in amber as unfalsifiable — an authoring gap only the operator can fix.
+
+  The leakage guard is the important part and is **mutation-tested**: a test feeds the
+  component a payload that *does* contain `underlying_concern` and `validity` and
+  asserts neither is displayed. Deliberately breaking the component to render the
+  concern makes that test fail, so it is not vacuous. 22 frontend tests (was 18).
+
 - **Weighted hybrid fusion.** `hybrid` beats every mode on well-formed queries but
   loses to pure `vector` on conversational ones, because equal-weight RRF lets a
   weak lexical ranking drag down a strong semantic one. `reciprocal_rank_fusion`

@@ -58,6 +58,13 @@ export function Dossier({ agent, feed, runId, onClose }: Props) {
   const retrievals = dossier?.document_retrievals ?? []
   const retrievedChars = retrievals.reduce((sum, r) => sum + (r.total_chars ?? 0), 0)
 
+  // Phase 6. Null for a run that used no structured personas, which is the normal
+  // case since the feature is off by default.
+  const structured = dossier?.structured ?? null
+  const viewpoints = structured?.viewpoints ?? []
+  const prefs = structured?.preferences
+  const formative = structured?.background?.formative_events ?? []
+
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-black/50" onClick={onClose}>
       <div
@@ -183,6 +190,114 @@ export function Dossier({ agent, feed, runId, onClose }: Props) {
                 </div>
               ))}
             </div>
+          </Section>
+        )}
+
+        {/* Phase 6: the convictions this persona was seeded with.
+            Rendered ONLY from what the dossier API returns, which deliberately
+            omits `underlying_concern` and `validity`.
+
+            `underlying_concern` must never appear here even if a future backend
+            regression started sending it: the whole design is that the real worry
+            behind a position gets DRAWN OUT in conversation, and an operator who
+            can read it off a panel has been handed the answer. The type does not
+            declare those fields, so rendering them would not compile — that is the
+            guard, and Dossier.test.tsx asserts it against a payload that includes
+            them anyway. */}
+        {structured && (
+          <Section title={`Convictions${structured.role ? ` · ${structured.role}` : ''}`}>
+            {viewpoints.length > 0 ? (
+              <div className="space-y-2">
+                {viewpoints.map((vp, i) => {
+                  const defended = vp.firmness !== 'negotiable'
+                  const shifts = vp.evidence_that_shifts ?? []
+                  return (
+                    <div
+                      key={i}
+                      className={`rounded border p-2 text-sm ${
+                        defended ? 'border-matrix-accent/40' : 'border-matrix-border'
+                      }`}
+                    >
+                      <div className="mb-1 flex items-center gap-2">
+                        <span
+                          className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                            defended
+                              ? 'bg-matrix-accent/20 text-matrix-accent'
+                              : 'bg-slate-700/40 text-slate-400'
+                          }`}
+                        >
+                          {vp.firmness}
+                        </span>
+                      </div>
+                      <p className="text-slate-200">{vp.position}</p>
+                      {vp.formed_by && (
+                        <p className="mt-1 text-xs text-slate-500">
+                          <span className="text-slate-600">formed by: </span>
+                          {vp.formed_by}
+                        </p>
+                      )}
+                      {shifts.length > 0 ? (
+                        <div className="mt-1 text-xs text-slate-400">
+                          <span className="text-slate-600">would change their mind: </span>
+                          {shifts.join('; ')}
+                        </div>
+                      ) : (
+                        defended && (
+                          // An authoring gap worth surfacing rather than hiding: a
+                          // defended position with no exit condition is unfalsifiable,
+                          // and the operator is the only one who can fix it.
+                          <div className="mt-1 text-xs text-amber-500/80">
+                            no exit condition named — this position cannot be moved by
+                            evidence
+                          </div>
+                        )
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            ) : (
+              <p className="text-sm text-slate-500">
+                No positions were authored for this persona.
+              </p>
+            )}
+
+            {prefs && (prefs.optimises_for?.length || prefs.dismisses?.length || prefs.persuaded_by?.length) ? (
+              <dl className="mt-2 space-y-1 text-xs">
+                {!!prefs.optimises_for?.length && (
+                  <div>
+                    <dt className="inline text-slate-600">optimises for: </dt>
+                    <dd className="inline text-slate-400">{prefs.optimises_for.join('; ')}</dd>
+                  </div>
+                )}
+                {!!prefs.dismisses?.length && (
+                  <div>
+                    <dt className="inline text-slate-600">will not weigh: </dt>
+                    <dd className="inline text-slate-400">{prefs.dismisses.join('; ')}</dd>
+                  </div>
+                )}
+                {!!prefs.persuaded_by?.length && (
+                  <div>
+                    <dt className="inline text-slate-600">persuaded by: </dt>
+                    <dd className="inline text-slate-400">{prefs.persuaded_by.join('; ')}</dd>
+                  </div>
+                )}
+              </dl>
+            ) : null}
+
+            {formative.length > 0 && (
+              <div className="mt-2 space-y-1">
+                {formative.map((ev, i) => (
+                  <div key={i} className="text-xs text-slate-400">
+                    <span className="text-slate-600">{ev.year ? `${ev.year}: ` : ''}</span>
+                    {ev.event}
+                    {ev.lesson && (
+                      <span className="text-slate-500"> → {ev.lesson}</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </Section>
         )}
 
