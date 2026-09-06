@@ -71,4 +71,107 @@ describe('Dossier', () => {
     // The "why did it say that?" affordance is present for a captured run.
     expect(screen.getByText('why?')).toBeInTheDocument()
   })
+
+  // ------------------------------------------------------------------
+  // Phase 6 — convictions, and the leakage guard that matters most
+  // ------------------------------------------------------------------
+
+  const structuredPayload = {
+    role: 'Head of Distribution',
+    background: {
+      tenure_years: 9,
+      formative_events: [
+        { year: 2023, event: 'A quickstart needing a vector database', lesson: 'Extra services cost you users' },
+      ],
+    },
+    preferences: {
+      optimises_for: ['time-to-first-run'],
+      dismisses: ['retrieval answer quality'],
+      persuaded_by: ['a clean-machine install'],
+    },
+    viewpoints: [
+      {
+        position: 'No feature may add a stateful external service',
+        formed_by: 'The 2023 product that stalled at the install step',
+        firmness: 'firm' as const,
+        evidence_that_shifts: ['an embedded index that is a file'],
+      },
+    ],
+  }
+
+  const baseDossier = {
+    run_id: 'r1', agent: 'Ada', persona: 'A cautious ethicist', goals: ['Raise risks'],
+    memory_stream: [], beliefs: [], relationships: {},
+    tokens_in: 10, tokens_out: 5, cost_usd: 0.001, portrait_b64: null,
+  }
+
+  it('renders convictions with firmness and the exit condition', async () => {
+    ;(api.getDossier as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...baseDossier, structured: structuredPayload,
+    })
+    render(<Dossier agent={agent} feed={feed} runId="r1" onClose={() => {}} />)
+
+    await waitFor(() =>
+      expect(screen.getByText('No feature may add a stateful external service')).toBeInTheDocument(),
+    )
+    expect(screen.getByText('firm')).toBeInTheDocument()
+    expect(screen.getByText(/an embedded index that is a file/)).toBeInTheDocument()
+    expect(screen.getByText(/The 2023 product that stalled/)).toBeInTheDocument()
+    expect(screen.getByText(/time-to-first-run/)).toBeInTheDocument()
+    expect(screen.getByText(/retrieval answer quality/)).toBeInTheDocument()
+    expect(screen.getByText(/Extra services cost you users/)).toBeInTheDocument()
+  })
+
+  it('NEVER renders a withheld concern or a validity note, even if the API sends them', async () => {
+    // The backend strips both fields. This asserts the UI is a second line of
+    // defence rather than trusting that: drawing the real concern out in
+    // conversation is the whole exercise, and an operator who can read it off a
+    // panel has been handed the answer. `validity` is the operator's private
+    // calibration note and must never be displayed either.
+    ;(api.getDossier as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...baseDossier,
+      structured: {
+        ...structuredPayload,
+        viewpoints: [
+          {
+            ...structuredPayload.viewpoints[0],
+            underlying_concern: 'I OWN THE FAILURE WHEN A CUSTOMER NEVER GETS A WORKING RUN',
+            validity: 'overgeneralised',
+          },
+        ],
+      },
+    })
+    render(<Dossier agent={agent} feed={feed} runId="r1" onClose={() => {}} />)
+
+    await waitFor(() =>
+      expect(screen.getByText('No feature may add a stateful external service')).toBeInTheDocument(),
+    )
+    expect(screen.queryByText(/I OWN THE FAILURE/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/overgeneralised/i)).not.toBeInTheDocument()
+  })
+
+  it('flags a defended position with no exit condition as unfalsifiable', async () => {
+    // An authoring gap the operator is the only one who can fix, so it is surfaced
+    // rather than hidden.
+    ;(api.getDossier as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...baseDossier,
+      structured: {
+        viewpoints: [
+          { position: 'Security signs off first', firmness: 'requires-escalation' as const },
+        ],
+      },
+    })
+    render(<Dossier agent={agent} feed={feed} runId="r1" onClose={() => {}} />)
+
+    await waitFor(() => expect(screen.getByText('requires-escalation')).toBeInTheDocument())
+    expect(screen.getByText(/no exit condition named/i)).toBeInTheDocument()
+  })
+
+  it('renders nothing for a run that used no structured personas', async () => {
+    ;(api.getDossier as ReturnType<typeof vi.fn>).mockResolvedValue({ ...baseDossier })
+    render(<Dossier agent={agent} feed={feed} runId="r1" onClose={() => {}} />)
+
+    await waitFor(() => expect(screen.getByText('A cautious ethicist')).toBeInTheDocument())
+    expect(screen.queryByText(/Convictions/i)).not.toBeInTheDocument()
+  })
 })
