@@ -48,7 +48,7 @@ def arms(mod):
 # The Phase 6 arms' permitted deviations, enumerated. Anything outside these fails.
 ARM_D = "arm-d-shipped"
 # D, E and F share a cast and differ ONLY in config.personas.dismissal_rule.
-STRUCTURED_ARMS = (ARM_D, "arm-e-mandatory", "arm-f-blunt")
+STRUCTURED_ARMS = (ARM_D, "arm-e-mandatory", "arm-f-blunt", "arm-g-cognition")
 ARM_D_CONFIG_KEYS = {"personas"}
 ARM_D_CAST_KEYS = {"structured"}
 # The variant each arm must carry. A drift here would make an arm silently test
@@ -58,7 +58,12 @@ EXPECTED_RULES = {
     ARM_D: "retuned",
     "arm-e-mandatory": "mandatory",
     "arm-f-blunt": "blunt",
+    # G's variable is cognition, so it reuses the shipped default wording.
+    "arm-g-cognition": "mandatory",
 }
+# Arm G is the only arm that turns cognition ON. Enumerated rather than waived, so a
+# second arm quietly enabling it would fail.
+COGNITION_ARM = "arm-g-cognition"
 
 
 def test_all_arms_built(arms):
@@ -84,7 +89,13 @@ def test_arms_differ_only_in_persona_string(arms):
             f"{name}: unexpected config keys {sorted(extra_config)}"
         )
         shared = {k: v for k, v in arm["config"].items() if k in reference["config"]}
-        assert shared == reference["config"], f"{name}: shared config differs"
+        if name == COGNITION_ARM:
+            # G's whole point is cognition ON; everything else must still match.
+            assert shared.pop("cognition") == {"enabled": True}
+            expected = {k: v for k, v in reference["config"].items() if k != "cognition"}
+            assert shared == expected, f"{name}: shared config differs beyond cognition"
+        else:
+            assert shared == reference["config"], f"{name}: shared config differs"
 
         assert [c["name"] for c in arm["cast"]] == [
             c["name"] for c in reference["cast"]
@@ -111,7 +122,18 @@ def test_rule_variant_arms_differ_only_in_the_rule(arms):
         assert cast == reference, f"{name}: cast differs from {ARM_D}"
     rules = {a: arms[a]["config"]["personas"]["dismissal_rule"] for a in STRUCTURED_ARMS}
     assert rules == EXPECTED_RULES, rules
-    assert len(set(rules.values())) == len(rules), "two arms share a variant"
+    # D/E/F must each carry a DISTINCT wording — they are the wording experiment.
+    # G deliberately shares E's wording because its variable is cognition.
+    wording_arms = [a for a in STRUCTURED_ARMS if a != COGNITION_ARM]
+    assert len({rules[a] for a in wording_arms}) == len(wording_arms)
+
+
+def test_only_arm_g_enables_cognition(arms):
+    """Cognition was OFF in all nine runs before Arm G. If another arm switched it on,
+    every comparison against those nine would silently gain a second variable."""
+    for name, arm in arms.items():
+        on = bool(arm["config"].get("cognition", {}).get("enabled"))
+        assert on == (name == COGNITION_ARM), f"{name}: cognition enabled={on}"
 
 
 def test_rule_variants_produce_genuinely_different_prompts(arms):
@@ -128,7 +150,9 @@ def test_rule_variants_produce_genuinely_different_prompts(arms):
             parse_structured(member["structured"]),
             dismissal_rule=arms[name]["config"]["personas"]["dismissal_rule"],
         )
-    assert len(set(rendered.values())) == len(STRUCTURED_ARMS)
+    # G renders identically to E by design (same wording); D and F must differ.
+    assert len(set(rendered.values())) == len(STRUCTURED_ARMS) - 1
+    assert rendered["arm-g-cognition"] == rendered["arm-e-mandatory"]
     # Each arm's own wording, spot-checked by a phrase unique to it.
     assert "not on your attention" in rendered[ARM_D]
     assert "MUST say plainly" in rendered["arm-e-mandatory"]
@@ -280,7 +304,13 @@ def test_underlying_concern_is_marked_as_withheld(arms):
             assert "do NOT volunteer this" in member["persona"]
 
 
-def test_cognition_disabled_in_every_arm(arms):
-    """Cognition would confound the variable under test."""
-    for arm in arms.values():
-        assert arm["config"]["cognition"]["enabled"] is False
+def test_cognition_disabled_in_every_arm_except_g(arms):
+    """Cognition confounds the persona variable, so the original arms hold it off.
+
+    Arm G is the deliberate exception — measuring that interaction IS its purpose —
+    and it is named rather than skipped, so a third arm enabling cognition fails
+    here. See also test_only_arm_g_enables_cognition.
+    """
+    for name, arm in arms.items():
+        expected = name == COGNITION_ARM
+        assert arm["config"]["cognition"]["enabled"] is expected, name

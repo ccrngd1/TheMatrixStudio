@@ -19,6 +19,7 @@ differs only in each persona's ``persona`` string:
                       dismissal rule (control prose + `structured` + the flag)
     arm-e-mandatory   same, with the CANDIDATE re-tune (declining required)
     arm-f-blunt       same, with Arm B's BLUNT wording — isolates rule vs rendering
+    arm-g-cognition   arm-e-mandatory + cognition ON (memory + reflection)
 
 ``underlyingConcern`` is present in B and C but the persona is instructed to
 withhold it unless asked why a position is held — per the stakeholder-review
@@ -742,7 +743,7 @@ def structured_payload_for(member: Dict[str, Any]) -> Dict[str, Any]:
 def build_arm(kind: str) -> Dict[str, Any]:
     cast: List[Dict[str, Any]] = []
     for member in CAST:
-        if kind in ("control", "shipped", "mandatory", "blunt"):
+        if kind in ("control", "shipped", "mandatory", "blunt", "cognition"):
             # Arm D uses the CONTROL prose, not Arm B's rendered structure. That
             # is what isolates the variable: D vs A asks whether the Phase 6
             # feature helps at all, and D vs B asks whether the engine's rendering
@@ -755,14 +756,18 @@ def build_arm(kind: str) -> Dict[str, Any]:
             "persona": persona,
             "goals": list(member["goals"]),
         }
-        if kind in ("shipped", "mandatory", "blunt"):
+        if kind in ("shipped", "mandatory", "blunt", "cognition"):
             entry["structured"] = structured_payload_for(member)
         cast.append(entry)
 
     # Phase 6 dismissal-rule variants. Arms E and F differ from Arm D ONLY in
     # config.personas.dismissal_rule — same prose, same structured data — which is
     # what makes the rule the single variable. See docs/PHASE6-DISMISSAL-RETUNE.md.
-    RULE_BY_KIND = {"shipped": "retuned", "mandatory": "mandatory", "blunt": "blunt"}
+    RULE_BY_KIND = {
+        "shipped": "retuned", "mandatory": "mandatory", "blunt": "blunt",
+        # Arm G reuses the SHIPPED default rule; its variable is cognition, not wording.
+        "cognition": "mandatory",
+    }
 
     config = json.loads(json.dumps(CONFIG))
     if kind in RULE_BY_KIND:
@@ -773,6 +778,11 @@ def build_arm(kind: str) -> Dict[str, Any]:
             "enabled": True,
             "dismissal_rule": RULE_BY_KIND[kind],
         }
+    if kind == "cognition":
+        # The ONE difference from Arm E. Cognition's own DEFAULTS, not tuned: the
+        # question is what a user actually gets when they switch it on, not what a
+        # best case looks like. reflection_every stays at 4.
+        config["cognition"] = {"enabled": True}
     return {"topic": TOPIC, "cast": cast, "config": config}
 
 
@@ -795,6 +805,12 @@ ARMS = {
     # answers "was it the rule or the rendering?". `dismissal_rule: off` cannot
     # express this, because it drops the `dismisses` list too.
     "arm-f-blunt": "blunt",
+    # G: Arm E plus cognition. Differs from E in `config.cognition` ONLY, so the
+    # interaction between convictions and memory/reflection is the single variable.
+    # All nine runs before this one held cognition OFF, so the configuration a real
+    # user is most likely to enable had never been tried.
+    # See docs/PHASE6-COGNITION-INTERACTION.md.
+    "arm-g-cognition": "cognition",
 }
 
 
