@@ -238,6 +238,93 @@ Callable at every meaningful budget (102-187 tokens): **B < D < C**, and **D < A
 Not callable: **A vs C** — that pair flips with the budget and is inside the
 instrument's resolution.
 
+### Repeats: n = 3 on B and D, and most of the story does not survive
+
+Arms B and D were each run **three times** (`arm-*.run2.json`, `.run3.json`). The
+engine has no seed parameter — runs differ only through sampling at
+`LITELLM_TEMPERATURE` — so these are *repeats*, not seeds, and no reproducibility
+is implied.
+
+Within-arm spread, cross-speaker similarity at a common token volume:
+
+| Arm | per-run | spread |
+|---|---|---|
+| B structured | 0.1117, 0.1183, 0.1289 | **0.0172** |
+| D shipped | 0.1325, 0.1404, 0.1441 | 0.0116 |
+
+**The largest within-arm spread (0.0172) exceeds most between-arm gaps.** Applying
+that as a noise floor:
+
+| Comparison | gap | verdict |
+|---|---|---|
+| Cross-speaker: A vs D | 0.0133 | **below noise** |
+| Cross-speaker: B vs D | 0.0123 | **below noise** |
+| Accommodation rate: B vs D | 0.045 (noise 0.200) | **below noise** |
+| Citation rate: B vs D | 0.111 (noise 0.266) | **below noise** |
+| Mean turn length: B vs D | 157 chars (noise 275) | **below noise** |
+| **Dismissal rate: B vs D** | **0.289 (noise 0.200)** | **CALLABLE** |
+
+So both conclusions drawn from the single run — that Arm D beats the prose control
+on divergence, and that it falls short of Arm B — are **unsupported**. So is the
+37%-longer-turns observation that the whole length-normalisation analysis was built
+around: turn length varies more between runs of one arm than between arms. (The
+metric's length *bias* is still real and still demonstrated by truncation; what is
+not established is that Arm D is a more verbose arm.)
+
+This also vindicates the original experiment's own caveat, which said the smaller
+differences were "well within what one re-run could reverse". They were, including
+its headline 0.183-vs-0.160 divergence result.
+
+### The one callable finding is negative: the retune suppressed dismissal
+
+| Arm | dismissal rate per run |
+|---|---|
+| B structured | 0.400, 0.333, 0.333 |
+| D shipped | 0.200, **0.000**, **0.000** |
+
+**Two of three Arm D runs contain no dismissal at all.** That is not a regex
+artifact — a deliberately broad idiom sweep (`not mine`, `not my problem/call`,
+`your call`, `their job`, `stay in my lane`, `not for me to`, `outside my`,
+`beyond my remit`, `leave that to`, …) finds nothing of any form in either run.
+
+This inverts the earlier reading. "Fewer, better-formed dismissals is the retune
+working as designed" was based on run 1, where the rate was 0.200 and the
+dismissals were well-shaped. Across three runs the rate is **0.067**, which is the
+*control's* rate — the arm with no `dismisses` field authored at all.
+
+`dismisses` was the highest-value field in the premise validation, raising the
+dismissal rate five-fold (0.067 → 0.333). **The re-tuned rule appears to have given
+that back.** The three prohibitions ("do not repeat a dismissal", "do not answer a
+challenge by restating your own position", "never let declining to weigh something
+be your whole turn") plausibly dominate the one instruction to actually decline.
+
+**Confounded, and worth stating:** Arm D differs from Arm B in *two* ways — content
+rendered from data rather than hand-written prose, **and** the retuned rule. So the
+suppression could in principle come from either. The prior strongly favours the
+rule: Arm B's prose said *"Ignore the things you consider not your problem, even
+when they are objectively valid concerns"*, while the shipped rule says a persona
+*"must still engage"* and may decline only *"once, briefly"*. Isolating it needs a
+variant carrying the structured data with Arm B's blunt wording, which the current
+`dismissal_rule` flag cannot express (setting it false drops the `dismisses` list
+entirely).
+
+### The headline win did not replicate
+
+| Arm | participants who changed position | …driven by new evidence |
+|---|---|---|
+| B structured | 1, 0, 0 | 0, 0, 0 |
+| D shipped | **2**, 0, 0 | **2**, 0, 0 |
+
+"First arm to produce evidence-driven position change — 2 of 2" was a **single-run
+result**. Runs 2 and 3 produced none. The two changes in run 1 were genuine when
+read — one fired on its exact `evidence_that_shifts` — but they are not a property
+of the arm.
+
+Also unexplained: `distinct_positions` fell to **3** in Arm D runs 2 and 3, against
+5 in every other run ever scored. That breaks a ceiling which had held across all
+four arms, and it is the one thing here pointing at a possible real downside of
+rendered structure. Judge variance at n=3 is unknown, so it is flagged, not claimed.
+
 ### Blind judge
 
 Four arms, relabelled `transcript_1..4` and shuffled under seed 7. Arm D drew
@@ -254,7 +341,7 @@ the control.
 | Talking past each other *(0-5, lower better)* | 2 | **1** | 4 | 2 |
 | Specificity *(0-5, higher better)* | 5 | 5 | 5 | 5 |
 
-### The clear win: evidence-driven position change
+### Run 1 in detail (superseded by the repeats above — kept because the reading is still informative)
 
 **No arm had ever produced one.** Arm B had a single position change with zero
 attributable to new evidence; A and C had none at all. Arm D produced **two, both
@@ -275,7 +362,7 @@ artifact:
 This is the single behaviour `firmness` + `evidence_that_shifts` were added to
 produce, and it is the one result here that is unambiguous.
 
-### The retune held: Arm C's failure did not reproduce
+### Run 1: Arm C's failure mode did not reproduce
 
 Talking-past came back at **2** — equal to the control, versus Arm C's 4 — and
 within-speaker similarity at 0.1938 versus C's 0.2177. The parallel-monologue
@@ -283,7 +370,7 @@ collapse that made Arm C unshippable did not happen with the same `dismisses`
 lists present. Accommodation landed at 0.400, identical to Arm B and well below
 the control's 0.667.
 
-### Divergence: one correction in each direction
+### Run 1 divergence, and why length normalisation was still needed
 
 Fixing the instrument moved this result **both ways**, and both corrections matter
 more than the original reading did.
@@ -366,22 +453,31 @@ inert in practice — carried, never surfaced. Recorded in `docs/BACKLOG.md`.
 
 ### Honest verdict
 
-Phase 6 beats the prose control on divergence, reproduces Arm B's accommodation
-benefit, avoids Arm C's failure mode, and is the **first arm to produce
-evidence-driven position change** — the specific behaviour it was built for.
+**Phase 6's measured case is largely unsupported at n = 3, and the one callable
+result is against it.**
 
-It does **not** reach Arm B's divergence, and that gap survives length
-normalisation, so hand-written prose structure is genuinely better at making
-speakers sound different than the same content rendered from data. Its dismissal
-rate is half Arm B's, which reading suggests is the retune working (fewer, better
-formed) rather than the behaviour going missing — but that reading is a judgment,
-not a measurement.
+What survives:
 
-So: ship it on for panels where you want positions defended and genuinely
-revisable, and do not claim it makes a cast *more* divergent than careful prose.
-The original run's caveat applies unchanged — **n = 1 per arm on a
-non-deterministic model** — and several differences here are inside what one
-re-run could reverse.
+- **Nothing about divergence.** A-vs-D and B-vs-D gaps are both below one arm's own
+  run-to-run spread. Phase 6 is neither better nor worse than the prose control on
+  the experiment's headline metric, as far as this can tell.
+- **Nothing about accommodation, citation rate, or turn length.** All below noise.
+- **The evidence-driven position change did not replicate** — 2 in run 1, 0 in runs
+  2 and 3. It was the single best argument for the feature and it was a fluke.
+- **Dismissal is suppressed, and this IS callable.** 0.067 across three runs against
+  Arm B's 0.355, with two runs at exactly zero. That is the control's rate. The
+  re-tuned rule appears to have removed the behaviour `dismisses` exists to produce.
+
+So the position to hold: **the schema and the honesty properties are sound and
+tested** — withholding works, scoping works, nothing leaks, convictions survive a
+fork, and it is off by default. The *behavioural* case for turning it on is not
+established, and the re-tuned dismissal rule needs re-tuning again, in the other
+direction.
+
+This is not the same as "structured personas do not work". Arm B — the same content
+as hand-written prose, with a blunt dismissal instruction — remains the arm with the
+strongest measured behaviour, and its `dismisses` rate holds up across three runs.
+What is unsupported is that the *shipped rendering plus the retune* reproduces it.
 
 ## What is NOT claimed
 
@@ -421,19 +517,25 @@ so the original three-arm comparison stays reproducible on its own.
 
 ## Next
 
-What Arm D leaves open, in the order it is worth doing:
+1. **Re-tune the retune.** The one callable finding. The three prohibitions
+   plausibly overwhelm the single instruction to decline; two of three runs produced
+   no dismissal at all. Needs a wording that preserves "engage with the substance"
+   without erasing "and this is not mine to weigh".
+2. **Isolate rule-versus-rendering.** The suppression is confounded: Arm D changes
+   both the wording and the delivery. A variant carrying the structured data with
+   Arm B's blunt wording would separate them, and the current `dismissal_rule` flag
+   cannot express it (false drops the `dismisses` list entirely).
+3. **Explain `distinct_positions` falling to 3** in Arm D runs 2 and 3, against 5 in
+   every other run ever scored. The only signal here pointing at a real downside of
+   rendered structure.
+4. **Raise n before trusting anything else.** Arms A and C are still n = 1, so their
+   own noise is unmeasured and the noise floor used against them is borrowed from B.
+5. **`requires-escalation` and the concern-reveal path remain untested** — neither
+   had a trigger in any of the three runs.
+6. **Run with cognition ON**, which no arm has done.
 
-1. **Repeat at several seeds.** `n = 1`. Still the largest caveat on every number
-   above — the instrument is fixed, the sample size is not.
-2. **Test `requires-escalation` with a brief where a persona loses.** It needs an
-   overruling to have anything to do.
-3. **Test the concern-reveal path**, which means creating pressure to ask a
-   stakeholder *why* — nothing in a run currently does.
-4. **Close the divergence gap to Arm B, or explain it.** The gap is real. The
-   obvious hypothesis is that hand-written prose varies sentence *rhythm* per
-   persona while a shared renderer produces structurally similar blocks for
-   everyone. If that is the cause, per-persona render variation would test it.
-5. **Run with cognition ON**, which no arm has ever done — the interaction most
-   likely to surprise.
-6. **Hand-label arms A and C** for dismissal, so all four rates rest on a reading
-   rather than two of four.
+**Methodological note worth carrying to any future arm:** at 15 turns and 5
+personas, this harness cannot resolve differences below roughly **0.02** in
+cross-speaker similarity or **0.2** in the rate metrics. Several published
+conclusions — including the original experiment's headline — sit inside that band.
+Either raise n, lengthen runs, or stop reporting differences that small.
