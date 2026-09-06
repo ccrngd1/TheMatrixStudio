@@ -292,6 +292,100 @@ batch of activations the way the entailment set was labelled.
 
 ---
 
+## Open — new capability: consultable non-participants
+
+### Non-participant SMEs you can query
+**Status:** OPEN — never built, and never previously recorded, which is why this entry
+exists.
+
+Every way of asking a question today targets someone **already in the conversation**.
+Aside conversations (Phase 1.5, `CreateThreadModel.target`) accept `analyst`,
+`persona` or `room` — the analyst reasons over the transcript, and the other two are
+participants. There is no notion of a person who was *not* in the room, holds their own
+documents, and can be consulted without joining the discussion.
+
+**Why it matters.** A five-stakeholder panel arguing about retrieval quality contains
+nobody who actually knows how FTS5 behaves — they argue from priors. That is visible in
+the real transcripts: personas repeatedly demand a measurement rather than knowing an
+answer. A consultable SME injects grounded fact instead of a sixth opinion.
+
+**Most of the machinery already exists:**
+
+| piece | state |
+|---|---|
+| Documents scoped to a named persona | built (Phase 5) |
+| A question-and-answer path outside the main turn loop | built (Phase 1.5 asides) |
+| Provenance for "X told me and pointed at Y" | built (Phase 5i — `via` already models exactly this hop) |
+| A cast member excluded from speaker selection | **missing** |
+
+So the gap is narrow: a flag on the persona plus a filter in `_select_next_speaker`,
+reusing the aside path for the query. The provenance model needs no change — this is
+the situation the attributed-hearsay design was written for, and the README's own
+justification is literally *"an SME shows you a document, you report back"*
+(`README.md:245`).
+
+**Design questions to settle first, not during:**
+
+- Does an SME's answer enter the transcript as a turn, or as an aside that a
+  participant must then *relay* (making it second-hand and citable as such)? The second
+  is more faithful to the citation model and keeps the SME out of turn order.
+- Can a participant consult an SME mid-run on its own initiative, or only the operator
+  between turns? Agent-initiated consultation is a new causal path and would need to
+  appear in the event log to stay auditable.
+- Does the SME hold convictions (Phase 6) or only knowledge? An SME with `dismisses`
+  is arguably a sixth stakeholder wearing a lab coat.
+
+**Revisit trigger:** none needed — this is a standing capability gap with a clear
+motivation. It is small enough to build and the honesty machinery already covers it.
+
+### SME web search
+**Status:** OPEN — wanted, and it conflicts with two existing invariants that have to
+be resolved rather than ignored.
+
+The ask: an SME should be able to search the web, not only attached documents and
+knowledge bases.
+
+**The value is real** and it is the same argument as above, sharpened: attached
+documents answer *"what did we decide"*, web search answers *"what is actually true
+about FTS5"*. A panel that can consult current fact is a different tool from one that
+can only re-read its own corpus.
+
+**Two genuine conflicts, both with things this project has deliberately committed to:**
+
+1. **Event-sourced replay assumes fixed inputs.** Every turn's causal inputs are
+   recorded so a run can be replayed and branched (`document_refs`, `memory_refs`,
+   `thread_refs`). A web result is not a fixed input: the page changes, the ranking
+   changes, the URL 404s. Replaying a run a month later would feed the personas
+   *different facts* while claiming to reproduce the run. The obvious resolution is to
+   **snapshot fetched content into the event log and treat it exactly like an ingested
+   document** — which makes it auditable, replayable, and subject to the existing
+   citation provenance. That also means the design is "web fetch as an ingestion
+   source", not "live search per turn", and that framing should be settled before any
+   code.
+2. **The single-node, no-external-service distribution constraint.**
+   `PROJECT-SPEC.md` §8.2 leans on SQLite precisely for a *distributable single-node
+   tool*, and today the only outbound network calls are the LLM and embedding
+   providers — both already BYO-key and already optional. A search API adds a third
+   provider, a third key, and a third failure mode. It must be **off by default and
+   degrade to "no search available"**, the way `[documents]` and `[vectors]` extras do.
+
+**Provenance needs a new kind.** `citations.py` models `firsthand` / `secondhand` /
+`mention` / `unverified`. A web-sourced claim is none of those: the SME did read it, so
+it is first-hand *to the SME*, but the source is not something any participant can
+re-open with confidence. It likely needs its own kind carrying the URL **and the fetch
+timestamp**, so a reader can tell "this was true when fetched" from "this is in our
+documents". Without that distinction, web claims would inherit the credibility of
+attached documents, which is exactly the kind of quiet upgrade the citation work exists
+to prevent.
+
+**Also unresolved:** whether search results are subject to the Phase 5 retrieval budget
+(they should be — `max_chars` is the feature, not a safety valve), and whether the
+existing off-topic similarity guard applies to fetched content.
+
+**Revisit trigger:** none needed for wanting it. But it should not start until the
+replay question above has an answer, because retrofitting auditability onto a live-fetch
+design would mean rewriting it.
+
 ## Open — features
 
 - ~~**No UI for structured personas.**~~ BUILT 2026-09-06. The Dossier now has a
