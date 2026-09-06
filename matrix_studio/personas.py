@@ -51,16 +51,22 @@ of getting it wrong are now measured:
 |---|---|
 | **blunt** — *"Ignore the things you consider not your problem"* (Arm C) | Dismissals fire reliably, but the discussion collapses into parallel monologues: talking-past **4**/5, within-speaker similarity up 37% |
 | **retuned** — Phase 6 as first shipped | Talking-past back to 2, but dismissal **suppressed to 0.067** across three runs — the *control's* rate — with two runs producing none at all |
+| **blunt, rendered** — the same wording through this renderer | **0.000 across three runs.** Arm B's prose gets 0.355 from these exact words |
+| **mandatory** — the shipped default | **0.333** dismissal (matching Arm B) with talking-past **1.00**, the best engagement score of any arm |
 
-The retuned version failed because it contained one clause telling the persona to
-decline and six telling it to engage or constraining how it declines, three of
-those being prohibitions aimed at the dismissal rather than at the evasion.
+Those four points give one rule, and it generalises past this field:
 
-So the rule is a **named variant** (``DISMISSAL_RULES``), not a boolean. ``blunt``
-and ``retuned`` are retained verbatim so both negative results stay reproducible;
-``mandatory`` is the current candidate, which makes declining *required* rather
-than permitted and cuts the prohibitions to the one that targets Arm C's actual
-failure. See ``docs/PHASE6-DISMISSAL-RETUNE.md`` for the pre-registered criterion.
+> **A rendered instruction must REQUIRE AN UTTERANCE, not license an omission.**
+
+``blunt`` and ``retuned`` both *permit* declining; ``mandatory`` demands it. Arm B
+got away with a permission only because its hand-written prose wrapped that
+sentence in a block of conduct imperatives, which supplied force the sentence
+lacks on its own.
+
+So the rule is a **named variant** (``DISMISSAL_RULES``), not a boolean, and both
+failing wordings are retained verbatim so their negative results stay reproducible.
+The criterion was pre-registered before any wording existed:
+``docs/PHASE6-DISMISSAL-RETUNE.md``.
 
 Pure functions and pydantic models only: no LLM, no database, no state.
 """
@@ -376,10 +382,27 @@ _HOLDING_RULE = (
 #   retuned   Phase 6 as first shipped. Talking-past back to 2, but dismissal
 #             suppressed to 0.067 across three runs — the CONTROL's rate — with two
 #             runs containing none at all.
-#   mandatory The current candidate. See `_RULE_MANDATORY`.
+#   mandatory The SHIPPED default. Measured at n=3: dismissal 0.333 (matching Arm B's
+#             0.355) with talking-past 1.00 — the best engagement score of any arm.
+#             Pre-registered criterion, both conditions passed:
+#             docs/PHASE6-DISMISSAL-RETUNE.md.
 #
-# `retuned` is kept verbatim so that negative result stays reproducible; a test
-# locks its text for the same reason.
+# `retuned` and `blunt` are kept verbatim so both negative results stay reproducible;
+# tests lock their text for the same reason.
+#
+# THE GENERAL LESSON, measured across four data points and worth applying to any
+# rendered persona instruction that wants a VISIBLE behaviour:
+#
+#   The instruction must REQUIRE AN UTTERANCE, not license an omission.
+#
+#     blunt     "Ignore the things you consider not your problem"   -> 0.000 rendered
+#     retuned   "say once, briefly, that it is not yours to weigh"  -> 0.067
+#     mandatory "you MUST say plainly ... every time ... not optional" -> 0.333
+#
+# Arm B got away with `blunt` at 0.355 only because its hand-written prose put that
+# sentence inside a five-item HOW YOU BEHAVE block of conduct imperatives, which
+# supplied the mandatory force the sentence itself lacks. Rendered without that
+# frame, the permission reading wins and the model defaults to silence.
 DISMISSAL_RULES = ("mandatory", "retuned", "blunt", "off")
 
 # Accepted for backward compatibility with the boolean field this replaced.
@@ -387,7 +410,16 @@ _BOOL_RULES = {True: "mandatory", False: "off"}
 
 
 def _rule_blunt(items: str) -> str:
-    """Arm B / Arm C's wording. Produces dismissals reliably and monologues too."""
+    """Arm B / Arm C's wording. RETAINED VERBATIM — do not edit.
+
+    Reliable in Arm B's hand-written prose (0.355) and a total failure through this
+    renderer: **0.000 across three runs**, zero dismissal idiom of any form. It is
+    a permission to not engage, and rendered without Arm B's surrounding conduct
+    imperatives the permission reading wins.
+
+    Kept because it is the isolation arm — it is what proved the rendering is not a
+    blanket blocker (``mandatory`` works through it) while Arm B's exact wording is.
+    """
     return (
         f"What you do not weigh: {items}.\n"
         "Judge every proposal only against what you optimise for. Ignore the things "
@@ -421,8 +453,9 @@ def _rule_retuned(items: str) -> str:
 
 
 def _rule_mandatory(items: str) -> str:
-    """The candidate re-tune. Four changes from ``retuned``, each targeting the
-    measured cause:
+    """The shipped default. Four changes from ``retuned``, each targeting the
+    measured cause, and it passed a pre-registered two-condition criterion at n=3
+    (dismissal 0.333 vs Arm B's 0.355; talking-past 1.00, the best of any arm):
 
     1. **Declining is REQUIRED, not permitted.** ``retuned`` says a persona "may"
        decline once, briefly; a permission is satisfiable by silence, and silence is
