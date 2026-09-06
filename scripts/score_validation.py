@@ -23,6 +23,9 @@ told which arm is "the new one" will find it better.
 Usage:
     scripts/score_validation.py /tmp/mss_val            # deterministic only
     scripts/score_validation.py /tmp/mss_val --judge    # + blind LLM judge
+
+Arm D (Phase 6) is scored when present and skipped when not, so the original
+three-arm comparison remains reproducible on its own.
 """
 
 from __future__ import annotations
@@ -41,7 +44,13 @@ ARM_FILES = {
     "A_control": "arm-a-control.json",
     "B_structured": "arm-b-structured.json",
     "C_grounded": "arm-c-grounded.json",
+    # Phase 6: Arm B's content as structured DATA + the re-tuned dismissal rule.
+    # Optional so the original three-arm comparison still scores on its own.
+    "D_shipped": "arm-d-shipped.json",
 }
+
+# Arms whose absence is not an error (added after the original experiment ran).
+OPTIONAL_ARMS = {"D_shipped"}
 
 # Phrases that concede ground or align the speaker with someone else. High rates
 # mean the cast is harmonising, which is the failure mode under investigation.
@@ -253,13 +262,16 @@ def main() -> int:
     for label, filename in ARM_FILES.items():
         path = args.results_dir / filename
         if not path.exists():
+            if label in OPTIONAL_ARMS:
+                print(f"note: skipping {label} (no {filename})", file=sys.stderr)
+                continue
             print(f"missing result file: {path}", file=sys.stderr)
             return 1
         arms[label] = json.loads(path.read_text())["conversation"]
 
     det = {label: score_arm(conv) for label, conv in arms.items()}
 
-    labels = list(ARM_FILES)
+    labels = [l for l in ARM_FILES if l in arms]
     metrics = [
         ("cross_speaker_similarity", "cross-speaker similarity (LOWER = more divergent)"),
         ("within_speaker_similarity", "within-speaker similarity"),

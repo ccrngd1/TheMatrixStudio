@@ -23,8 +23,15 @@ bump was 0.4.0 (Phase 4).
 ### Changed
 - An unknown `firmness` is **rejected**, not silently downgraded — 422 at the API boundary (`PersonaModel.structured` is typed as the real model, not a loose dict), raised at run start from the CLI. The block is parsed even when the feature is off, so a typo surfaces immediately rather than the day someone enables the flag.
 
+### Measured - Phase 6 (Arm D, live, 2026-09-06)
+- **Fourth validation arm** added to `scripts/build_validation_arms.py` and `scripts/score_validation.py`: `arm-d-shipped` is the control prose + a `structured` block + `personas.enabled`, deliberately *not* Arm B's rendered persona string (reusing that would measure the hand-written prose and the engine's rendering at once). Arm D is the only arm that legitimately differs in `config`, so the byte-identity test now enumerates its two permitted extra keys by set difference rather than skipping it. Scored when present, skipped when absent, so the original three-arm comparison stays reproducible.
+- **Result: mixed.** First arm ever to produce **evidence-driven position change — 2 of 2** (previous best: Arm B with 1 change, 0 evidence-driven); one fires exactly on its `evidence_that_shifts`. Arm C's parallel-monologue failure did **not** reproduce (talking-past 2 vs C's 4). Accommodation 0.400, matching Arm B, well below the control's 0.667.
+- **But worse than Arm B on divergence** (cross-speaker similarity 0.1895 vs 0.1597), and that comparison is **confounded**: Arm D's turns are 37% longer and the metric is Jaccard token overlap, so length inflates it. Not separable at n = 1. Arm B's hand-written prose still wins on raw divergence.
+- **Two properties could not be tested.** `requires-escalation` never fired because the room never overruled the persona holding it. The withheld concern was never drawn out because nobody asked why — zero verbatim leaks (withholding works), zero "why" questions in 15 turns. The second is a **design finding**, not just a measurement gap: nothing in a run creates pressure to ask a stakeholder why, so `underlying_concern` may be inert in practice.
+- Cost: $0.0719 run + $0.0207 judge. Five follow-ups recorded in `docs/BACKLOG.md`, led by "repeat at several seeds" — `n = 1` on a non-deterministic model.
+
 ### Not claimed
-- **Phase 6 has not been measured against a live model.** The tests prove wiring, scoping and non-leakage; they cannot prove the retuned dismissal rule fixes what Arm C broke. The measured gains behind the feature come from an arm whose personas were hand-written *prose*. `docs/PHASE5-PREMISE-VALIDATION.md` also found **no** increase in distinct positions or specificity — its own caveats suggest that null is unmeasured rather than disproven. Tracked in `docs/BACKLOG.md`.
+- The premise validation's null result is **unchanged**: Arm D also scored 5 distinct positions and 5/5 specificity. A fourth arm at the same ceiling is more evidence the metric cannot express a gain, not evidence there is none.
 
 ## [0.4.0] - 2026-07-19
 

@@ -15,6 +15,8 @@ differs only in each persona's ``persona`` string:
     arm-a-control     prose persona (what the engine ships with today)
     arm-b-structured  + dismisses / formedBy / firmness / evidenceThatShifts
     arm-c-grounded    + verbatim source excerpts the persona may cite
+    arm-d-shipped     Arm B's content as Phase 6 STRUCTURED DATA + the re-tuned
+                      dismissal rule (control prose + `structured` + the flag)
 
 ``underlyingConcern`` is present in B and C but the persona is instructed to
 withhold it unless asked why a position is held — per the stakeholder-review
@@ -712,23 +714,66 @@ def render_structured(member: Dict[str, Any], *, with_sources: bool) -> str:
     return "\n".join(out)
 
 
+def structured_payload_for(member: Dict[str, Any]) -> Dict[str, Any]:
+    """The Phase 6 ``structured`` block for a cast member.
+
+    Arm D feeds the SAME authored content as Arm B, but as data for the engine to
+    render rather than as prose baked into the persona string. ``validity`` is
+    carried through deliberately: Phase 6 accepts it and guarantees it is never
+    rendered, and ``test_validation_arms.py`` asserts it does not leak — which is
+    a stronger check than simply omitting it here.
+
+    ``sources`` is dropped: it belongs to Arm C, which was measured as a failure,
+    and Phase 6 has no field for it (retrieval is Phase 5's job, not a persona's).
+    """
+    return {
+        "role": member["role"],
+        "background": json.loads(json.dumps(member.get("background", {}))),
+        "preferences": json.loads(json.dumps(member.get("preferences", {}))),
+        "viewpoints": [
+            {k: v for k, v in vp.items() if k != "sources"}
+            for vp in member.get("viewpoints", [])
+        ],
+    }
+
+
 def build_arm(kind: str) -> Dict[str, Any]:
     cast: List[Dict[str, Any]] = []
     for member in CAST:
-        if kind == "control":
+        if kind in ("control", "shipped"):
+            # Arm D uses the CONTROL prose, not Arm B's rendered structure. That
+            # is what isolates the variable: D vs A asks whether the Phase 6
+            # feature helps at all, and D vs B asks whether the engine's rendering
+            # reproduces what hand-written prose structure achieved.
             persona = member["prose"]
         else:
             persona = render_structured(member, with_sources=(kind == "grounded"))
-        cast.append(
-            {"name": member["name"], "persona": persona, "goals": list(member["goals"])}
-        )
-    return {"topic": TOPIC, "cast": cast, "config": json.loads(json.dumps(CONFIG))}
+        entry = {
+            "name": member["name"],
+            "persona": persona,
+            "goals": list(member["goals"]),
+        }
+        if kind == "shipped":
+            entry["structured"] = structured_payload_for(member)
+        cast.append(entry)
+
+    config = json.loads(json.dumps(CONFIG))
+    if kind == "shipped":
+        # The ONLY config difference between any two arms. Arm D has to differ
+        # here — the feature under test is gated behind this flag — so the
+        # byte-identity test permits exactly this key and nothing else.
+        config["personas"] = {"enabled": True}
+    return {"topic": TOPIC, "cast": cast, "config": config}
 
 
 ARMS = {
     "arm-a-control": "control",
     "arm-b-structured": "structured",
     "arm-c-grounded": "grounded",
+    # Phase 6. Arm B's content as STRUCTURED DATA plus the re-tuned dismissal
+    # rule, which Arm B never had. Arm B's numbers justify the Phase 6 design;
+    # they do not describe the Phase 6 build, and this arm is what closes that gap.
+    "arm-d-shipped": "shipped",
 }
 
 
