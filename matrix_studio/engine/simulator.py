@@ -62,6 +62,27 @@ logger = logging.getLogger(__name__)
 # Configure litellm logging
 litellm.suppress_debug_info = True
 
+# Drop provider-unsupported sampling params instead of erroring.
+#
+# Measured 2026-09-06: `bedrock/global.anthropic.claude-sonnet-5` accepts ONLY
+# temperature=1, so every call raised UnsupportedParamsError and the engine wrote
+# the error text into the transcript AS THE CHARACTER'S SPEECH:
+#
+#   "[Error generating response: litellm.UnsupportedParamsError: ... does not
+#    support temperature=0.7. Only temperature=1 is supported.]"
+#
+# The engine passes temperature from settings (0.7), 0.3 for speaker selection and
+# 0.0 for the validation gate and reflection, so a model with parameter
+# restrictions failed on every path at once. "Provider-agnostic" is a stated
+# project goal (PROJECT-SPEC §7); assuming every model accepts our sampling
+# params is not provider-agnostic.
+#
+# Dropping is the right trade here: a slightly different temperature is a far
+# smaller loss than a run of error strings, and the alternative — per-model
+# capability tables in this codebase — is exactly the provider coupling LiteLLM
+# exists to avoid.
+litellm.drop_params = True
+
 
 async def _select_next_speaker(
     topic: str,

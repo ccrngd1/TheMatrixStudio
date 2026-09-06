@@ -139,3 +139,27 @@ def test_naming_extract_json_delegates():
         "name": "trusted-robot"
     }
     assert naming_extract("garbage") is None
+
+
+# --------------------------------------------------------------------------
+# Sibling defect from the same session: provider parameter restrictions
+# --------------------------------------------------------------------------
+
+
+def test_litellm_drop_params_is_enabled():
+    """`bedrock/global.anthropic.claude-sonnet-5` accepts ONLY temperature=1, and the
+    engine passes 0.7 (settings), 0.3 (speaker selection) and 0.0 (validation gate,
+    reflection). Without drop_params every call raised UnsupportedParamsError and the
+    engine wrote the error text into the transcript AS THE CHARACTER'S SPEECH.
+
+    Asserted here rather than trusted, because the symptom is a whole run of error
+    strings and the cause is one missing line at import time.
+    """
+    import litellm
+
+    import matrix_studio.engine.simulator  # noqa: F401  (sets the flag at import)
+
+    assert litellm.drop_params is True, (
+        "litellm.drop_params is off; models with parameter restrictions will fail "
+        "every call and their error text will be stored as dialogue"
+    )
