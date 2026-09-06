@@ -67,10 +67,35 @@ ATTRIBUTION_CUES = (
     "required", "documents", "documented", "cites", "notes", "noted",
     "makes clear", "establishes", "mandates", "defines", "sets out",
     "lays out", "spells out", "in line with", "as written in", "backs",
+    # Added after reading real output: the model uses these freely and the
+    # original list missed them, so genuine assertions were scored as mentions.
+    "mentions", "mentioned", "is explicit", "explicitly", "describes",
+    "described", "covers", "records", "recorded", "reports", "acknowledges",
+    "admits", "warns", "recommends", "concludes", "claims", "asserts",
+    "indicates", "suggests", "outlines", "flags",
+)
+
+# A bracketed citation — "[spec.md #3]" — is the exact form the retrieval prompt
+# teaches for supporting a claim, so using it IS an assertion about the document
+# regardless of nearby wording. This matters because the commonest real style is
+# TRAILING: "snapshots are full per-turn, not deltas [readme.md #37]." There is no
+# cue word anywhere near the label, so cue proximity alone scored those as
+# harmless mentions and the gate under-fired on them.
+BRACKETED_RE = re.compile(r"\[[^\]\[]*?\.(?:md|markdown|txt|text|pdf|docx)[^\]\[]*?\]", re.I)
+
+# ...except a markdown link, "[spec.md](spec.md)", which is just a reference and
+# was observed in genuinely non-attributive use ("whoever has [x](x) open").
+MARKDOWN_LINK_RE = re.compile(
+    r"\[[^\]\[]*?\.(?:md|markdown|txt|text|pdf|docx)[^\]\[]*?\]\s*\(", re.I
 )
 
 # How much text either side of the label to inspect for an attribution cue.
 CUE_WINDOW = 90
+
+# Disclaimers are checked in a TIGHTER window than cues. A disclaimer anywhere
+# within the wide cue window let an unrelated "I haven't read X" elsewhere in the
+# sentence suppress the check on a different document — an evasion surface.
+DISCLAIMER_WINDOW = 45
 
 # Phrases that explicitly disclaim first-hand access. These make a mention
 # honest even next to an attribution cue, because the speaker is not claiming to
@@ -139,8 +164,16 @@ class CitationContext:
         return cls(own=own, own_ordinals=own_ordinals, by_speaker=by_speaker)
 
 
-def _window(text: str, start: int, end: int) -> str:
-    return text[max(0, start - CUE_WINDOW):end + CUE_WINDOW].lower()
+def _window(text: str, start: int, end: int, size: int = CUE_WINDOW) -> str:
+    return text[max(0, start - size):end + size].lower()
+
+
+def _is_bracketed(text: str, start: int, end: int) -> bool:
+    """Whether this label sits inside a citation bracket that is not a markdown link."""
+    near = text[max(0, start - 4):min(len(text), end + 4)]
+    if MARKDOWN_LINK_RE.search(near):
+        return False
+    return bool(BRACKETED_RE.search(near))
 
 
 def analyse_citations(
@@ -164,9 +197,16 @@ def analyse_citations(
         raw_ordinal = match.group("ordinal")
         ordinal = int(raw_ordinal) if raw_ordinal is not None else None
         near = _window(utterance, match.start(), match.end())
+        close = _window(utterance, match.start(), match.end(), DISCLAIMER_WINDOW)
 
-        disclaimed = any(d in near for d in DISCLAIMERS)
-        attributive = (not disclaimed) and any(cue in near for cue in ATTRIBUTION_CUES)
+        disclaimed = any(d in close for d in DISCLAIMERS)
+        # Either an explicit cue nearby, or the bracketed citation form the prompt
+        # teaches for backing a claim (which is commonly used TRAILING, with no cue
+        # word at all).
+        asserted = any(cue in near for cue in ATTRIBUTION_CUES) or _is_bracketed(
+            utterance, match.start(), match.end()
+        )
+        attributive = asserted and not disclaimed
 
         # First-hand: the speaker actually retrieved this document this turn.
         if title in context.own:
