@@ -80,7 +80,9 @@ docker run --rm -p 8000:8000 --env-file .env -v $(pwd)/data:/app/data matrix-stu
 # 4. Open http://localhost:8000 and load an example
 ```
 
-**NOTE:** Docker build has NOT been verified in this environment (unavailable). If it fails, please report an issue.
+**Verified** on Amazon Linux 2023 with Docker 25.0.14: the image builds and the
+container serves the API and UI on port 8000. No credentials are baked into the image —
+pass them at runtime with `--env-file .env` as above.
 
 ## Configuration
 
@@ -610,9 +612,10 @@ pip install -e ".[dev]"
 # hardcoded number here would be stale by the next commit.
 pytest
 
-# Frontend (18 tests)
+# Frontend (18 tests) — needs Node 18+
 cd frontend
-npm run build
+npm ci
+npm run build          # tsc -b && vite build
 NODE_ENV=test npx vitest run
 ```
 
