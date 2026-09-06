@@ -17,6 +17,8 @@ differs only in each persona's ``persona`` string:
     arm-c-grounded    + verbatim source excerpts the persona may cite
     arm-d-shipped     Arm B's content as Phase 6 STRUCTURED DATA + the re-tuned
                       dismissal rule (control prose + `structured` + the flag)
+    arm-e-mandatory   same, with the CANDIDATE re-tune (declining required)
+    arm-f-blunt       same, with Arm B's BLUNT wording — isolates rule vs rendering
 
 ``underlyingConcern`` is present in B and C but the persona is instructed to
 withhold it unless asked why a position is held — per the stakeholder-review
@@ -740,7 +742,7 @@ def structured_payload_for(member: Dict[str, Any]) -> Dict[str, Any]:
 def build_arm(kind: str) -> Dict[str, Any]:
     cast: List[Dict[str, Any]] = []
     for member in CAST:
-        if kind in ("control", "shipped"):
+        if kind in ("control", "shipped", "mandatory", "blunt"):
             # Arm D uses the CONTROL prose, not Arm B's rendered structure. That
             # is what isolates the variable: D vs A asks whether the Phase 6
             # feature helps at all, and D vs B asks whether the engine's rendering
@@ -753,16 +755,24 @@ def build_arm(kind: str) -> Dict[str, Any]:
             "persona": persona,
             "goals": list(member["goals"]),
         }
-        if kind == "shipped":
+        if kind in ("shipped", "mandatory", "blunt"):
             entry["structured"] = structured_payload_for(member)
         cast.append(entry)
 
+    # Phase 6 dismissal-rule variants. Arms E and F differ from Arm D ONLY in
+    # config.personas.dismissal_rule — same prose, same structured data — which is
+    # what makes the rule the single variable. See docs/PHASE6-DISMISSAL-RETUNE.md.
+    RULE_BY_KIND = {"shipped": "retuned", "mandatory": "mandatory", "blunt": "blunt"}
+
     config = json.loads(json.dumps(CONFIG))
-    if kind == "shipped":
+    if kind in RULE_BY_KIND:
         # The ONLY config difference between any two arms. Arm D has to differ
         # here — the feature under test is gated behind this flag — so the
         # byte-identity test permits exactly this key and nothing else.
-        config["personas"] = {"enabled": True}
+        config["personas"] = {
+            "enabled": True,
+            "dismissal_rule": RULE_BY_KIND[kind],
+        }
     return {"topic": TOPIC, "cast": cast, "config": config}
 
 
@@ -773,7 +783,18 @@ ARMS = {
     # Phase 6. Arm B's content as STRUCTURED DATA plus the re-tuned dismissal
     # rule, which Arm B never had. Arm B's numbers justify the Phase 6 design;
     # they do not describe the Phase 6 build, and this arm is what closes that gap.
+    #
+    # MEASURED at n = 3: dismissal suppressed to 0.067 (the CONTROL's rate), two of
+    # three runs producing none at all. Arms E and F exist to fix and diagnose that.
     "arm-d-shipped": "shipped",
+    # E: the candidate re-tune. Declining is REQUIRED rather than permitted, and
+    # the three prohibitions are cut to the one that targets Arm C's real failure.
+    "arm-e-mandatory": "mandatory",
+    # F: Arm B's blunt wording with Phase 6's structured rendering. This is the
+    # ISOLATION arm — Arm D changed the wording AND the delivery at once, so F
+    # answers "was it the rule or the rendering?". `dismissal_rule: off` cannot
+    # express this, because it drops the `dismisses` list too.
+    "arm-f-blunt": "blunt",
 }
 
 

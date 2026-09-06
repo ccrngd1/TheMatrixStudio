@@ -42,19 +42,25 @@ prompt away from every other participant and destroy that. So the split is a
 correctness requirement, not a token optimisation, and
 ``tests/test_personas.py`` locks it.
 
-## The re-tuned dismissal rule
+## The dismissal rule has two measured failure modes
 
-The experiment's recommendation was explicit: ship this **with the dismissal rule
-re-tuned**, because Arm C showed personas retreating into repetitive parallel
-monologues (talking-past 4/5, within-speaker similarity up 37%) once a hard
-"judge only against your own priorities" rule met a large source block. Each
-persona became a broken record reciting its own corpus.
+`dismisses` is the highest-value field and the hardest to word, because both ways
+of getting it wrong are now measured:
 
-So the rule rendered here separates two things Arm C conflated: what you let
-change your **priorities** (nothing, for a dismissed concern) versus what you owe
-the **substance** of a challenge (a direct answer, always). It also forbids the
-specific observed failures — repeating a dismissal, answering a challenge by
-restating your own position, and spending a whole turn declining to engage.
+| Wording | Result |
+|---|---|
+| **blunt** — *"Ignore the things you consider not your problem"* (Arm C) | Dismissals fire reliably, but the discussion collapses into parallel monologues: talking-past **4**/5, within-speaker similarity up 37% |
+| **retuned** — Phase 6 as first shipped | Talking-past back to 2, but dismissal **suppressed to 0.067** across three runs — the *control's* rate — with two runs producing none at all |
+
+The retuned version failed because it contained one clause telling the persona to
+decline and six telling it to engage or constraining how it declines, three of
+those being prohibitions aimed at the dismissal rather than at the evasion.
+
+So the rule is a **named variant** (``DISMISSAL_RULES``), not a boolean. ``blunt``
+and ``retuned`` are retained verbatim so both negative results stay reproducible;
+``mandatory`` is the current candidate, which makes declining *required* rather
+than permitted and cuts the prohibitions to the one that targets Arm C's actual
+failure. See ``docs/PHASE6-DISMISSAL-RETUNE.md`` for the pre-registered criterion.
 
 Pure functions and pydantic models only: no LLM, no database, no state.
 """
@@ -214,7 +220,9 @@ class StructuredPersona(BaseModel):
     # Rendering
     # ------------------------------------------------------------------
 
-    def render_private(self, *, withhold_concerns: bool = True, dismissal_rule: bool = True) -> str:
+    def render_private(
+        self, *, withhold_concerns: bool = True, dismissal_rule: Any = "mandatory"
+    ) -> str:
         """The block appended to this persona's OWN system prompt.
 
         Second person, because it is read by the model as instructions about
@@ -305,8 +313,10 @@ class StructuredPersona(BaseModel):
                     f"any of this freely:\n{lines}"
                 )
 
-        if dismissal_rule and pref.dismisses:
-            parts.append(_dismissal_rule(pref.dismisses))
+        if pref.dismisses:
+            rule = _dismissal_rule(pref.dismisses, normalise_dismissal_rule(dismissal_rule))
+            if rule:
+                parts.append(rule)
 
         return "\n\n" + "\n\n".join(parts)
 
@@ -356,16 +366,47 @@ _HOLDING_RULE = (
 )
 
 
-def _dismissal_rule(dismisses: List[str]) -> str:
-    """The re-tuned dismissal rule.
+# Dismissal-rule variants. This is a named choice rather than on/off because the
+# two failure modes are measured and sit on either side of the target, and
+# separating "the wording is wrong" from "the rendering is wrong" requires
+# emitting different wordings against the same structured data:
+#
+#   blunt     Arm C / Arm B's wording. Dismissal rate 0.467 (C) but the discussion
+#             collapsed into parallel monologues, talking-past 4/5.
+#   retuned   Phase 6 as first shipped. Talking-past back to 2, but dismissal
+#             suppressed to 0.067 across three runs — the CONTROL's rate — with two
+#             runs containing none at all.
+#   mandatory The current candidate. See `_RULE_MANDATORY`.
+#
+# `retuned` is kept verbatim so that negative result stays reproducible; a test
+# locks its text for the same reason.
+DISMISSAL_RULES = ("mandatory", "retuned", "blunt", "off")
 
-    Arm C of the premise validation shipped the naive version — judge only
-    against your own priorities — and personas retreated into parallel
-    monologues (talking-past 4/5). The retune keeps the priority constraint and
-    drops the attention constraint, then forbids the three specific shapes the
-    failure took.
+# Accepted for backward compatibility with the boolean field this replaced.
+_BOOL_RULES = {True: "mandatory", False: "off"}
+
+
+def _rule_blunt(items: str) -> str:
+    """Arm B / Arm C's wording. Produces dismissals reliably and monologues too."""
+    return (
+        f"What you do not weigh: {items}.\n"
+        "Judge every proposal only against what you optimise for. Ignore the things "
+        "you consider not your problem, even when they are objectively valid concerns."
+    )
+
+
+def _rule_retuned(items: str) -> str:
+    """Phase 6 as first shipped. RETAINED VERBATIM — do not edit.
+
+    Measured at n = 3 as suppressing dismissal to 0.067 (two runs of three produced
+    none). Kept so that result stays reproducible, and locked by a test: editing
+    this text would silently invalidate a recorded measurement.
+
+    The diagnosis, for reference: one clause instructs the persona to decline and
+    six tell it to engage or constrain how it declines, three of those being
+    prohibitions aimed at the dismissal rather than at the evasion. The single
+    permission — "say once, briefly" — is also the weakest phrasing here.
     """
-    items = "; ".join(dismisses)
     return (
         f"What you do not weigh: {items}.\n"
         "That is a limit on your PRIORITIES, not on your attention. When someone "
@@ -377,6 +418,72 @@ def _dismissal_rule(dismisses: List[str]) -> str:
         "by restating your own position. Never let declining to weigh something be "
         "your whole turn."
     )
+
+
+def _rule_mandatory(items: str) -> str:
+    """The candidate re-tune. Four changes from ``retuned``, each targeting the
+    measured cause:
+
+    1. **Declining is REQUIRED, not permitted.** ``retuned`` says a persona "may"
+       decline once, briefly; a permission is satisfiable by silence, and silence is
+       what two of three runs produced. This says "you must say so, every time".
+    2. **Three prohibitions cut to one.** Only the whole-turn prohibition targets
+       Arm C's actual failure (turns spent entirely declining). The other two —
+       don't repeat a dismissal, don't answer by restating your position — were
+       aimed at the dismissal itself and are the likeliest suppressors.
+    3. **The requirement comes first.** In ``retuned`` it is buried mid-paragraph,
+       surrounded by its own restrictions.
+    4. **Engaging and declining are separate blocks.** Crammed into one paragraph,
+       the engagement clauses read as a hedge on the declining clause.
+    """
+    return (
+        f"What you do not weigh: {items}.\n"
+        "When someone argues from one of those concerns, you MUST say plainly that it "
+        "is not yours to weigh. Every time it comes up. Naming it is not rudeness and "
+        "it is not optional — the others need to know where your remit ends, and "
+        "staying silent about it leaves them guessing.\n"
+        "Then, in the same turn, engage with the substance anyway: answer the factual "
+        "or technical part of what they said, and put their point in its strongest "
+        "form. Declining to weigh something is not declining to think about it.\n"
+        "The one thing to avoid: never let declining be your whole turn. Say what is "
+        "not yours, then say what is."
+    )
+
+
+_RULE_RENDERERS = {
+    "blunt": _rule_blunt,
+    "retuned": _rule_retuned,
+    "mandatory": _rule_mandatory,
+}
+
+
+def _dismissal_rule(dismisses: List[str], variant: str = "mandatory") -> str:
+    """Render the named dismissal-rule variant, or ``""`` for ``off``."""
+    if variant == "off" or not dismisses:
+        return ""
+    renderer = _RULE_RENDERERS.get(variant)
+    if renderer is None:
+        raise ValueError(
+            f"dismissal rule variant must be one of {list(DISMISSAL_RULES)}, got {variant!r}"
+        )
+    return renderer("; ".join(dismisses))
+
+
+def normalise_dismissal_rule(value: Any) -> str:
+    """Coerce a config value to a variant name.
+
+    Accepts the booleans the field used to be so existing run configs and stored
+    snapshots keep working: ``True`` means "render the current default rule" and
+    ``False`` means "no rule and no list", which is what they meant before.
+    """
+    if isinstance(value, bool):
+        return _BOOL_RULES[value]
+    v = str(value)
+    if v not in DISMISSAL_RULES:
+        raise ValueError(
+            f"dismissal_rule must be one of {list(DISMISSAL_RULES)} (or a bool), got {value!r}"
+        )
+    return v
 
 
 def parse_structured(raw: Any) -> Optional[StructuredPersona]:
@@ -400,7 +507,7 @@ def effective_persona(
     *,
     enabled: bool = True,
     withhold_concerns: bool = True,
-    dismissal_rule: bool = True,
+    dismissal_rule: Any = "mandatory",
 ) -> str:
     """The persona text for a speaker's own system prompt.
 

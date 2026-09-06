@@ -116,7 +116,11 @@ class PersonaConfigModel(BaseModel):
 
     enabled: bool = False
     withhold_concerns: bool = True
-    dismissal_rule: bool = True
+    # Named variant: mandatory | retuned | blunt | off. Booleans still accepted
+    # (True -> "mandatory", False -> "off") so existing API clients keep working.
+    # Typed loosely here and validated by PersonaConfig, so an unknown name is a
+    # 422 rather than a silent fallback to the default wording.
+    dismissal_rule: Any = "mandatory"
 
 
 class RunConfigModel(BaseModel):
