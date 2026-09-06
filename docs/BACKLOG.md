@@ -339,52 +339,99 @@ justification is literally *"an SME shows you a document, you report back"*
 motivation. It is small enough to build and the honesty machinery already covers it.
 
 ### SME web search
-**Status:** OPEN — wanted, and it conflicts with two existing invariants that have to
-be resolved rather than ignored.
+**Status:** OPEN — design settled, not built. The architecture question is answered by
+the project's own existing seam; the open work is the two pieces that seam does not
+cover.
 
-The ask: an SME should be able to search the web, not only attached documents and
-knowledge bases.
+The ask: an SME should be able to search the web, not only attached documents.
 
-**The value is real** and it is the same argument as above, sharpened: attached
-documents answer *"what did we decide"*, web search answers *"what is actually true
-about FTS5"*. A panel that can consult current fact is a different tool from one that
-can only re-read its own corpus.
+**The replay conflict is resolved, by decision (operator, 2026-09-06):** anything found
+online is **brought down into the SME's own document repo and knowledge base**, so it is
+referenced later and on replay exactly like any other attached document. That makes
+search a **URL-discovery mechanism**, not a live per-turn lookup, and it means the
+event-sourcing invariant is preserved rather than worked around — replaying a run reads
+the ingested snapshot, not the live page.
 
-**Two genuine conflicts, both with things this project has deliberately committed to:**
+#### Use LiteLLM's `search()`, not a chosen vendor
 
-1. **Event-sourced replay assumes fixed inputs.** Every turn's causal inputs are
-   recorded so a run can be replayed and branched (`document_refs`, `memory_refs`,
-   `thread_refs`). A web result is not a fixed input: the page changes, the ranking
-   changes, the URL 404s. Replaying a run a month later would feed the personas
-   *different facts* while claiming to reproduce the run. The obvious resolution is to
-   **snapshot fetched content into the event log and treat it exactly like an ingested
-   document** — which makes it auditable, replayable, and subject to the existing
-   citation provenance. That also means the design is "web fetch as an ingestion
-   source", not "live search per turn", and that framing should be settled before any
-   code.
-2. **The single-node, no-external-service distribution constraint.**
-   `PROJECT-SPEC.md` §8.2 leans on SQLite precisely for a *distributable single-node
-   tool*, and today the only outbound network calls are the LLM and embedding
-   providers — both already BYO-key and already optional. A search API adds a third
-   provider, a third key, and a third failure mode. It must be **off by default and
-   degrade to "no search available"**, the way `[documents]` and `[vectors]` extras do.
+`litellm.search()` / `asearch()` already exist and take the same shape as the
+completion and embedding calls this project already routes through LiteLLM:
 
-**Provenance needs a new kind.** `citations.py` models `firsthand` / `secondhand` /
-`mention` / `unverified`. A web-sourced claim is none of those: the SME did read it, so
-it is first-hand *to the SME*, but the source is not something any participant can
-re-open with confidence. It likely needs its own kind carrying the URL **and the fetch
-timestamp**, so a reader can tell "this was true when fetched" from "this is in our
-documents". Without that distinction, web claims would inherit the credibility of
-attached documents, which is exactly the kind of quiet upgrade the citation work exists
-to prevent.
+```python
+litellm.search(query=..., search_provider=..., max_results=...,
+               search_domain_filter=[...], api_key=..., api_base=...)
+# -> SearchResponse.results[].{title, url, snippet, date}
+```
 
-**Also unresolved:** whether search results are subject to the Phase 5 retrieval budget
-(they should be — `max_chars` is the feature, not a safety valve), and whether the
-existing off-topic similarity guard applies to fetched content.
+Nineteen providers are supported, including **both** candidates that were being weighed
+— `SEARXNG` and `AGENTCORE` (Bedrock) — plus `TAVILY`, `BRAVE`, `DUCKDUCKGO`, `EXA_AI`,
+`FIRECRAWL`, `PERPLEXITY`, `SERPER`, `GOOGLE_PSE` and others.
 
-**Revisit trigger:** none needed for wanting it. But it should not start until the
-replay question above has an answer, because retrofitting auditability onto a live-fetch
-design would mean rewriting it.
+So *"SearXNG or Bedrock?"* is **not an architecture decision** — it is one config value,
+exactly as `LITELLM_MODEL` and `RetrievalConfig.embedding_model` already are. Copy that
+precedent. It also means the choice does not have to be right on the first attempt,
+which matters: this project was bitten twice in one session by assuming a provider's
+behaviour (fenced JSON, temperature restrictions), and hard-coding a search vendor
+would be the same mistake with a larger blast radius.
+
+**Perplexica: rejected, on design grounds rather than cost.** It is SearXNG plus an LLM
+*synthesis* layer, and synthesis is the one thing this design must not have — it would
+answer the question *for* the SME, bypassing the persona's own reasoning and returning
+prose rather than a citable source. The entire citation-provenance model assumes a
+persona read a **source**, not that a tool handed it a conclusion. It also adds a second
+container on top of SearXNG for negative value here.
+
+#### What is actually missing
+
+Discovery is the only new step in the pipeline; everything after it is built:
+
+```
+litellm.search()  ->  urls  ->  fetch  ->  extract  ->  chunk  ->  add_document(persona)  ->  retrieval
+    MISSING            ok      MISSING     documents.py   built        Phase 5                built
+```
+
+1. **HTML extraction.** `documents.py` supports `.txt .md .pdf .docx` and **not HTML**
+   (verified). Needs `trafilatura`, or readability + BeautifulSoup, behind a **`[web]`
+   extra** — the same pattern as `[documents]` and `[vectors]`, so the base install
+   stays light per `PROJECT-SPEC.md` §7.
+2. **The fetch itself.** Today the only outbound calls are LLM and embedding providers.
+   Fetching arbitrary URLs is a new class of egress and needs a timeout, a response
+   size cap, and content-type checking before anything is written to the corpus.
+
+**Worth measuring rather than assuming:** `search()` takes `max_tokens_per_page`, so
+some providers return page *content* and not merely snippets. Where they do, the separate
+fetch step may be unnecessary. That is per-provider and should be measured, not guessed.
+
+#### Shape to build
+
+A `SearchConfig` mirroring `RetrievalConfig`: `enabled: false`, `provider: ""`,
+`max_results`, `domain_filter`, and a hard cap on pages ingested per query. **Off by
+default, degrading to "no search available"**, so a run without it is byte-identical to
+today — the standing convention for every optional capability here
+(`cognition`, `retrieval`, `personas` all work this way).
+
+#### Still open
+
+- **Provenance needs a new kind.** A web-sourced claim is none of `firsthand` /
+  `secondhand` / `mention` / `unverified`: first-hand to the SME, but the source is not
+  something a participant can reliably re-open. It needs the URL **and the fetch
+  timestamp**, or web claims silently inherit the credibility of attached documents —
+  the exact quiet upgrade the Phase 5i citation work exists to prevent. Note that once
+  content is ingested per the decision above, later *retrieval* of it is ordinary
+  first-hand document retrieval; the distinct kind is needed for the **origin**, which
+  should be recorded on the document rather than on each citation.
+- Whether fetched content is subject to the Phase 5 per-turn `max_chars` budget. It
+  should be — that budget is the feature, not a safety valve.
+- Whether the off-topic similarity guard (`min_similarity`) applies to fetched content,
+  which is likely to be noisier than curated documents.
+- A search API is a third provider, key and failure mode alongside the LLM and embedding
+  providers. That is acceptable as an opt-in extra, but the **single-node,
+  no-external-service** constraint (`PROJECT-SPEC.md` §8.2) means it must never appear
+  in the quickstart.
+
+**Revisit trigger:** none needed for wanting it. The design above is settled enough to
+start from; the first thing to write is the fetch-and-ingest path, because that is what
+makes any provider choice reversible.
 
 ## Open — features
 
