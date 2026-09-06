@@ -439,6 +439,52 @@ async def run_judge(
     return {mapping[b]: r for b, r in zip(blind, results)}, mapping
 
 
+def within_arm_variance(
+    runs: Dict[str, List[List[Dict[str, Any]]]]
+) -> Dict[str, Any]:
+    """Cross-speaker similarity for each repeat run of each arm, and its spread.
+
+    Scored at a token budget common to EVERY run of EVERY arm, for the same reason
+    the between-arm comparison is: a spread computed at different volumes per run
+    would measure verbosity variation, not behavioural variation.
+
+    ``spread`` is max - min rather than a standard deviation. With two or three
+    runs a standard deviation implies a distribution nobody has evidence for, and
+    the question being asked is blunt: is the between-arm gap bigger than the
+    range one arm covers on its own?
+    """
+    all_streams = {
+        label: [speaker_streams(conv) for conv in convs] for label, convs in runs.items()
+    }
+    budget = min(
+        len(st)
+        for per_run in all_streams.values()
+        for per_speaker in per_run
+        for st in per_speaker.values()
+    )
+    out: Dict[str, Any] = {}
+    for label, per_run in all_streams.items():
+        per_run_scores = []
+        for streams in per_run:
+            sp = sorted(streams)
+            vals = [
+                truncated_jaccard(streams[a], streams[b], budget)
+                for a, b in combinations(sp, 2)
+            ]
+            per_run_scores.append(round(sum(vals) / len(vals), 4) if vals else 0.0)
+        out[label] = {
+            "per_run": per_run_scores,
+            "mean": round(sum(per_run_scores) / len(per_run_scores), 4),
+            "spread": (
+                round(max(per_run_scores) - min(per_run_scores), 4)
+                if len(per_run_scores) > 1
+                else None
+            ),
+            "budget_tokens": budget,
+        }
+    return out
+
+
 def fmt_table(rows: List[List[str]]) -> str:
     widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
     out = []
@@ -458,16 +504,30 @@ def main() -> int:
     ap.add_argument("--json-out", type=Path, default=None)
     args = ap.parse_args()
 
-    arms: Dict[str, List[Dict[str, Any]]] = {}
+    # Repeat runs. `arm-d-shipped.json` is run 1; `arm-d-shipped.run2.json`,
+    # `.run3.json` and so on are repeats. The engine has NO seed parameter — these
+    # differ only through sampling at LITELLM_TEMPERATURE — so they are "repeats",
+    # not "seeds", and the write-up must not imply a reproducibility that does not
+    # exist.
+    runs: Dict[str, List[List[Dict[str, Any]]]] = {}
     for label, filename in ARM_FILES.items():
-        path = args.results_dir / filename
-        if not path.exists():
+        stem = filename[: -len(".json")]
+        paths = [args.results_dir / filename] + sorted(
+            args.results_dir.glob(f"{stem}.run*.json")
+        )
+        found = [p for p in paths if p.exists()]
+        if not found:
             if label in OPTIONAL_ARMS:
                 print(f"note: skipping {label} (no {filename})", file=sys.stderr)
                 continue
-            print(f"missing result file: {path}", file=sys.stderr)
+            print(f"missing result file: {args.results_dir / filename}", file=sys.stderr)
             return 1
-        arms[label] = json.loads(path.read_text())["conversation"]
+        runs[label] = [json.loads(p.read_text())["conversation"] for p in found]
+
+    # Run 1 of each arm is the representative transcript for the per-arm tables and
+    # the judge; the repeats drive the variance report below.
+    arms: Dict[str, List[Dict[str, Any]]] = {l: r[0] for l, r in runs.items()}
+    repeat_counts = {l: len(r) for l, r in runs.items()}
 
     det = {label: score_arm(conv) for label, conv in arms.items()}
     norm = normalised_similarity(arms)
@@ -507,6 +567,56 @@ def main() -> int:
         "  the same arm truncated to 300-char turns scores 0.105 and at full length\n"
         "  0.160, with identical speakers and positions."
     )
+    report: Dict[str, Any] = {"deterministic": det, "length_normalised": norm}
+
+    # WITHIN-ARM VARIANCE. The point of repeat runs is not a more precise number;
+    # it is knowing which differences are larger than the noise. A between-arm gap
+    # smaller than the within-arm spread is not a finding, and saying so is the
+    # only thing that stops "more runs" from producing more confident nonsense.
+    var = within_arm_variance(runs)
+    report_variance = any(c > 1 for c in repeat_counts.values())
+    if report_variance:
+        vrows = [["arm", "runs", "cross-speaker (per run)", "spread"]]
+        for l in labels:
+            v = var[l]
+            vrows.append([
+                l, str(repeat_counts[l]),
+                ", ".join(f"{x:.4f}" for x in v["per_run"]),
+                f"{v['spread']:.4f}" if v["spread"] is not None else "n/a (1 run)",
+            ])
+        print("\n\nWITHIN-ARM VARIANCE (repeat runs of the same arm)\n")
+        print(fmt_table(vrows))
+        noise = max(
+            (v["spread"] for v in var.values() if v["spread"] is not None), default=None
+        )
+        if noise is not None:
+            print(f"\n  Largest observed within-arm spread: {noise:.4f}")
+            unresolved = []
+            for x, y in combinations(labels, 2):
+                gap = abs(
+                    norm["arms"][x]["cross_speaker_similarity_norm"]
+                    - norm["arms"][y]["cross_speaker_similarity_norm"]
+                )
+                if gap < noise:
+                    unresolved.append(f"{x} vs {y}  (gap {gap:.4f} < noise {noise:.4f})")
+            if unresolved:
+                print(
+                    "\n  BELOW NOISE — these gaps are smaller than one arm's own\n"
+                    "  run-to-run variation, so they are not differences:\n"
+                    + "\n".join(f"    {u}" for u in unresolved)
+                )
+            else:
+                print("\n  All between-arm gaps exceed the observed within-arm spread.")
+    else:
+        print(
+            "\n\n  n = 1 per arm: no within-arm variance measured, so NO gap below\n"
+            "  can be distinguished from run-to-run noise. Add repeats as\n"
+            "  <arm>.run2.json to resolve this."
+        )
+
+    report["within_arm_variance"] = var
+    report["repeat_counts"] = repeat_counts
+
     if norm["ordering_FLIPS_for"]:
         print(
             "\n  NOT CALLABLE — cross-speaker ordering flips with the token budget for:\n"
@@ -520,7 +630,7 @@ def main() -> int:
             + "\n".join(f"    {p}" for p in norm["ordering_stable_for"])
         )
 
-    report: Dict[str, Any] = {"deterministic": det, "length_normalised": norm}
+
 
     if args.judge:
         model = args.model

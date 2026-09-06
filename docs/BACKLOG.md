@@ -23,44 +23,53 @@ Phase 6; see below.)*
 
 ## Measured, with open follow-ups
 
-### Phase 6 structured personas: Arm D result
-**Status:** MEASURED 2026-09-06, instrument fixed and re-scored the same day.
+### Phase 6 structured personas: Arm D at n = 3 — mostly unsupported
+**Status:** MEASURED 2026-09-06 at n = 3 on arms B and D. One callable finding, and
+it is **negative**.
 
-Arm D ran live at $0.0719 + $0.0207 judge. Full analysis in
-`docs/PHASE6-STRUCTURED-PERSONAS.md` §*Measured: Arm D*.
+Full analysis: `docs/PHASE6-STRUCTURED-PERSONAS.md` §*Repeats*. Cost: 7 live runs
++ judges, ~$0.45 total.
 
-**Won:** first arm to produce **evidence-driven position change — 2 of 2**
-(previous best: Arm B, 1 change, 0 evidence-driven); one fires on its exact
-`evidence_that_shifts`. **More divergent than the prose control** (0.1478 vs
-0.1611 normalised, stable at every budget). Arm C's parallel-monologue failure did
-not reproduce (talking-past 2 vs 4). Accommodation 0.400, matching Arm B against
-the control's 0.667.
+Within-arm spread turned out to exceed most between-arm gaps (B cross-speaker
+0.1117-0.1289, spread **0.0172**). Consequences:
 
-**Lost:** less divergent than **Arm B** (0.1478 vs 0.1355), and this **survives**
-length normalisation. Hand-written prose structure genuinely beats the same content
-rendered from data. Least-repetitive arm is the *control*.
+- **Below noise, therefore not findings:** divergence vs the control (gap 0.0133),
+  divergence vs Arm B (0.0123), accommodation rate (0.045 vs noise 0.200), citation
+  rate, and mean turn length. The "Arm D writes 37% longer turns" observation that
+  motivated the whole length-normalisation exercise is itself within run-to-run
+  variation.
+- **Did not replicate:** "first arm to produce evidence-driven position change,
+  2 of 2" was a single run. Runs 2 and 3 produced zero.
+- **CALLABLE, and against the feature:** dismissal rate 0.067 across three D runs
+  against Arm B's 0.355 (gap 0.289 > noise 0.200). **Two of three runs contain no
+  dismissal of any kind**, verified with a deliberately broad idiom sweep, not the
+  patched regex. 0.067 is the *control's* rate — the arm with no `dismisses`
+  authored. The re-tuned rule appears to have given back the five-fold gain that
+  made `dismisses` the premise validation's highest-value field.
 
-Two instrument defects were found and fixed en route, both of which had already
-changed a published conclusion — see the entry below.
+Open, in priority order:
 
-Still open, in priority order:
+1. **Re-tune the retune.** Its three prohibitions plausibly overwhelm the single
+   instruction to decline. Needs wording that keeps "engage with the substance"
+   without erasing "this is not mine to weigh".
+2. **Isolate rule vs rendering.** Arm D changes both wording and delivery, so the
+   suppression is confounded. Needs a variant with the structured data and Arm B's
+   blunt wording; `dismissal_rule: false` cannot express it (it drops the
+   `dismisses` list too).
+3. **Explain `distinct_positions` falling to 3** in D runs 2 and 3 against 5 in
+   every other run ever scored — the only signal pointing at a real downside of
+   rendered structure.
+4. **Arms A and C are still n = 1**, so their own noise is unmeasured and the floor
+   applied to them is borrowed from B.
+5. **`requires-escalation` and the concern-reveal path** had no trigger in any of
+   the three runs.
+6. **Cognition ON** has never been run in any arm.
 
-1. **Repeat at several seeds.** `n = 1`. The instrument is fixed; the sample size
-   is not. Largest remaining caveat on every number above.
-2. **`requires-escalation` is untested.** Never fired because Priya was never
-   overruled — the room agreed with her. Needs a brief engineered so a persona
-   loses.
-3. **The concern-reveal path is untested, and that is a design finding.** Zero
-   verbatim leaks (withholding works), but zero "why do you…" questions in 15
-   turns, so the concern was never drawn out. **Nothing in a run creates pressure
-   to ask a stakeholder why**, so `underlying_concern` may be inert in practice.
-4. **Close or explain the divergence gap to Arm B.** Hypothesis worth testing:
-   hand-written prose varies sentence rhythm per persona, while one shared renderer
-   emits structurally similar blocks for everyone. Per-persona render variation
-   would test it.
-5. **Cognition ON has never been run in any arm.**
-6. **Hand-label arms A and C for dismissal**, so all four rates rest on a reading
-   rather than two of four.
+**Resolution floor for this harness:** at 15 turns and 5 personas it cannot resolve
+differences below ~**0.02** in cross-speaker similarity or ~**0.2** in the rate
+metrics. Several previously published conclusions — including the original
+experiment's headline 0.183-vs-0.160 — sit inside that band. Raise n, lengthen runs,
+or stop reporting differences that small.
 
 ### Premise-validation scorer: instrument defects found and fixed
 **Status:** FIXED 2026-09-06, locked by `tests/test_validation_scoring.py`.
