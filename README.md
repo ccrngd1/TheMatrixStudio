@@ -398,14 +398,24 @@ still answer the substance of a challenge directly and state the other side's po
 at its strongest before setting it aside, may not repeat a dismissal, and may not
 spend a whole turn declining to engage.
 
-**Honest limitation.** The measured gains behind this feature — accommodation rate
-down 40%, dismissal rate up five-fold, lowest cross-speaker similarity, the only
-arm where anyone changed position — come from that experiment's Arm B, whose
-personas were hand-written *prose*. The same content as structured data, with the
-retuned rule, has **not** been measured against a live model. The same experiment
-also found **no** increase in distinct positions or specificity, which its own
-caveats suggest is unmeasured rather than disproven. See
-`docs/PHASE6-STRUCTURED-PERSONAS.md`.
+**Measured, and mixed.** A fourth arm (`examples/validation/arm-d-shipped.json`) ran
+this feature live against the same brief and metrics as the original three. It is
+the **first arm to produce evidence-driven position change — 2 of 2** (previous
+best: 1 change, 0 evidence-driven), which is the specific behaviour `firmness` +
+`evidence_that_shifts` exist for, and Arm C's parallel-monologue failure did **not**
+reproduce (talking-past 2 vs 4). But it is **worse than Arm B on divergence**
+(cross-speaker similarity 0.1895 vs 0.1597), and that comparison is confounded by
+turn length — Arm D's turns are 37% longer and the metric is token overlap, so Arm
+B's hand-written prose still wins there.
+
+Two properties had no trigger in that run and remain **untested**:
+`requires-escalation` (the room never overruled the persona holding it) and the
+concern-reveal path (nobody asked "why" in 15 turns — withholding held, with zero
+verbatim leaks, but nothing draws the concern out). The premise validation's null
+result on distinct positions and specificity is unchanged.
+
+`n = 1` on a non-deterministic model. Full numbers and the five open follow-ups:
+`docs/PHASE6-STRUCTURED-PERSONAS.md` and `docs/BACKLOG.md`.
 
 ### Avatar Generation
 
@@ -616,8 +626,8 @@ npm run dev
 - ✅ **Phase 3:** Release polish — cost guards, BYO-key readiness, examples, docs, hygiene (v0.3.0)
 - ✅ **Phase 4:** Deeper cognition & steering — priority-hierarchy validation gate, pending-thread ledger, structured output view, adaptive pressure (experimental) (v0.4.0)
 - ✅ **Phase 5:** Per-persona document retrieval — FTS5 + optional `sqlite-vec` embeddings, per-call context budget, retrieval inspection endpoint, unsupported-claim disclosure, citation provenance (unreleased)
-- ✅ **Phase 6:** Structured personas — convictions with firmness + exit conditions, `dismisses` with a re-tuned engagement rule, withheld underlying concerns (unreleased)
-- **Next:** Measure Phase 6 against a live model — a fourth validation arm ("Arm B as shipped") on the same brief and metrics
+- ✅ **Phase 6:** Structured personas — convictions with firmness + exit conditions, `dismisses` with a re-tuned engagement rule, withheld underlying concerns; measured live as Arm D, mixed result (unreleased)
+- **Next:** Repeat Arm D at several seeds — `n = 1`, and the divergence comparison is length-confounded
 - **Future:** Embedding-based *memory* retrieval (document retrieval shipped in Phase 5), multi-modal inputs, hosted deployment
 
 **Open work is indexed in [`docs/BACKLOG.md`](docs/BACKLOG.md)** — including what was
