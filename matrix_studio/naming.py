@@ -21,6 +21,8 @@ import litellm
 
 from matrix_studio.settings import get_settings
 
+from matrix_studio.jsonio import extract_json_object
+
 logger = logging.getLogger(__name__)
 
 # A valid codename is exactly two lowercase words joined by a single hyphen.
@@ -95,18 +97,9 @@ def _extract_json(raw: str) -> Optional[Dict[str, Any]]:
         raw = raw.strip("`")
         if raw.lower().startswith("json"):
             raw = raw[4:]
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        pass
-    # Fall back to the first {...} block.
-    match = re.search(r"\{.*\}", raw, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group(0))
-        except json.JSONDecodeError:
-            return None
-    return None
+    # Shared tolerant parser — see matrix_studio/jsonio.py for why this handling
+    # is centralised rather than reimplemented per call site.
+    return extract_json_object(raw)
 
 
 async def _ask_llm_for_name(

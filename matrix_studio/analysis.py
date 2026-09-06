@@ -29,6 +29,8 @@ import litellm
 
 from matrix_studio.settings import get_settings
 
+from matrix_studio.jsonio import extract_json_object
+
 logger = logging.getLogger(__name__)
 
 # The standard structured-summary field set. `overview` is always produced; the
@@ -113,36 +115,17 @@ def format_transcript(conversation: List[Dict[str, Any]]) -> str:
 
 
 def _extract_json(text: str) -> Optional[Dict[str, Any]]:
+    """Kept as a thin alias so existing callers and tests are undisturbed.
+
+    The implementation moved to ``matrix_studio.jsonio`` after the same defect —
+    a model fencing its JSON — was found to have silently disabled cognition and
+    the Phase 4a validation gate, which had never learned the lesson this
+    function encoded. One implementation now, so it cannot be learned twice and
+    missed elsewhere.
     """
-    Best-effort parse of a JSON object from a model reply. Handles a bare object
-    and a ```json fenced block. Returns None if nothing parseable is found.
-    """
-    if not text:
-        return None
-    # Try direct parse first.
-    try:
-        obj = json.loads(text)
-        return obj if isinstance(obj, dict) else None
-    except json.JSONDecodeError:
-        pass
-    # Try a fenced block or the first {...} span.
-    fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-    candidate = fence.group(1) if fence else None
-    if candidate is None:
-        brace = re.search(r"\{.*\}", text, re.DOTALL)
-        candidate = brace.group(0) if brace else None
-    if candidate is None:
-        return None
-    try:
-        obj = json.loads(candidate)
-        return obj if isinstance(obj, dict) else None
-    except json.JSONDecodeError:
-        return None
+    return extract_json_object(text)
 
 
-# --------------------------------------------------------------------------- #
-# Summary generation.
-# --------------------------------------------------------------------------- #
 def _summary_system_prompt(
     fields: List[str],
     focus: Optional[str],
