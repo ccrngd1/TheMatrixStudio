@@ -93,6 +93,8 @@ class RetrievalConfigModel(BaseModel):
     mode: str = Field(default="fts")
     embedding_model: str = ""
     rrf_k: int = Field(default=60, ge=1)
+    # Phase 5h: absolute cosine floor for vector/hybrid (off-topic guard, 0 = off).
+    min_similarity: float = Field(default=0.15, ge=0.0, le=1.0)
     # Phase 5g: ask the persona to flag in-voice when retrieval found nothing.
     disclose_unsupported: bool = False
     # Experimental, DEFAULT OFF: measured harmful in

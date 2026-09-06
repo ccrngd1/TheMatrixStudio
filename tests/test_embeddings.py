@@ -345,7 +345,7 @@ async def test_vector_mode_falls_back_to_lexical_when_embedding_fails(vdb):
         chunks=["egress inspection provides auditable evidence"], persona_name="A",
     )
     with patch("litellm.aembedding", side_effect=_fake_embedding(fail_on=("",))):
-        passages, query = await retrieve_for_turn(
+        passages, query, _rej = await retrieve_for_turn(
             vdb, "r1", "A", "egress inspection evidence", conversation=[],
             k=3, max_chars=900, mode="vector",
         )
@@ -359,7 +359,7 @@ async def test_vector_mode_without_the_extension_uses_lexical(vdb, monkeypatch):
         run_id="r1", title="a.md",
         chunks=["egress inspection provides auditable evidence"], persona_name="A",
     )
-    passages, _ = await retrieve_for_turn(
+    passages, _query, _rej = await retrieve_for_turn(
         vdb, "r1", "A", "egress inspection evidence", conversation=[],
         k=3, max_chars=900, mode="hybrid",
     )
@@ -381,7 +381,7 @@ async def test_hybrid_mode_returns_fused_results(vdb):
     with patch("litellm.aembedding", side_effect=_fake_embedding((1.0, 0.0))), \
          patch("litellm.completion_cost", return_value=0.0):
         await embed_pending_chunks(vdb, "r1")
-        passages, query = await retrieve_for_turn(
+        passages, query, _rej = await retrieve_for_turn(
             vdb, "r1", "A", "egress inspection evidence", conversation=[],
             k=3, max_chars=900, mode="hybrid",
         )
@@ -427,3 +427,148 @@ async def test_empty_embedding_model_resolves_to_the_default(vdb):
     assert seen, "no embedding call was made"
     assert all(m == DEFAULT_EMBEDDING_MODEL for m in seen), seen
     assert "" not in seen
+
+
+# --------------------------------------------------------------------------
+# Phase 5h: absolute similarity floor (off-topic guard)
+# --------------------------------------------------------------------------
+
+
+def test_distance_to_cosine_endpoints():
+    from matrix_studio.embeddings import distance_to_cosine
+    assert distance_to_cosine(0.0) == pytest.approx(1.0)       # identical
+    assert distance_to_cosine(2 ** 0.5) == pytest.approx(0.0)  # orthogonal
+    assert distance_to_cosine(2.0) == pytest.approx(-1.0)      # opposed
+
+
+def test_is_unit_norm_and_normalise():
+    from matrix_studio.embeddings import is_unit_norm, normalise
+    assert is_unit_norm([1.0, 0.0, 0.0])
+    assert not is_unit_norm([3.0, 4.0])
+    assert not is_unit_norm([])
+    assert is_unit_norm(normalise([3.0, 4.0]))
+    assert normalise([0.0, 0.0]) == [0.0, 0.0]  # zero vector unchanged, no crash
+
+
+def _vrow(chunk_id, distance):
+    return {
+        "chunk_id": chunk_id, "document_id": "d1", "title": "t.md",
+        "ordinal": chunk_id, "content": f"c{chunk_id}", "score": distance,
+    }
+
+
+def test_floor_rejects_only_below_threshold():
+    from matrix_studio.retrieval import apply_similarity_floor
+    # distances -> cosines: 1.0 -> 0.50, 1.3 -> 0.155, 1.414 -> ~0.0
+    rows = [_vrow(1, 1.0), _vrow(2, 1.3), _vrow(3, 1.4142)]
+    kept, rejected = apply_similarity_floor(rows, 0.15)
+    assert [r["chunk_id"] for r in kept] == [1, 2]
+    assert rejected == 1
+
+
+def test_floor_can_reject_everything():
+    """The whole point: unlike the relative filter, this CAN return nothing."""
+    from matrix_studio.retrieval import apply_similarity_floor
+    kept, rejected = apply_similarity_floor([_vrow(1, 1.4142)], 0.15)
+    assert kept == [] and rejected == 1
+
+
+def test_floor_disabled_at_zero_keeps_everything():
+    from matrix_studio.retrieval import apply_similarity_floor
+    rows = [_vrow(1, 1.9)]
+    kept, rejected = apply_similarity_floor(rows, 0.0)
+    assert kept == rows and rejected == 0
+
+
+def test_floor_surfaces_cosine_for_audit():
+    from matrix_studio.retrieval import apply_similarity_floor
+    kept, _ = apply_similarity_floor([_vrow(1, 1.0)], 0.15)
+    assert kept[0]["cosine"] == pytest.approx(0.5, abs=1e-3)
+
+
+def test_floor_on_empty_rows():
+    from matrix_studio.retrieval import apply_similarity_floor
+    assert apply_similarity_floor([], 0.15) == ([], 0)
+
+
+def test_default_floor_admits_the_lowest_measured_genuine_hit():
+    """Calibration: the weakest correct retrieval measured scored cosine 0.228.
+
+    The default floor must sit below it with margin, or the guard would start
+    discarding real hits — which is what the calibration showed no threshold can
+    do safely (hits 0.228-0.870 overlap misses 0.166-0.699).
+    """
+    from matrix_studio.retrieval import apply_similarity_floor
+    from matrix_studio.state import RetrievalConfig
+
+    floor = RetrievalConfig().min_similarity
+    assert floor == 0.15
+    assert floor < 0.228, "default floor would reject the weakest measured hit"
+    # A row at that measured cosine must survive. cos=0.228 -> d=sqrt(2*(1-.228))
+    d = (2 * (1 - 0.228)) ** 0.5
+    kept, rejected = apply_similarity_floor([_vrow(1, d)], floor)
+    assert kept and rejected == 0
+
+
+def test_floor_is_not_a_relevance_filter():
+    """Documented negative result, locked so nobody "improves" it upward.
+
+    Measured misses reached cosine 0.699 — above the median hit (0.506). A floor
+    set to catch wrong-passage retrieval necessarily discards correct ones, so a
+    high default would trade real recall for nothing.
+    """
+    from matrix_studio.retrieval import apply_similarity_floor
+    d_of = lambda cos: (2 * (1 - cos)) ** 0.5
+    a_miss_that_scored_high = _vrow(1, d_of(0.699))
+    a_hit_that_scored_low = _vrow(2, d_of(0.228))
+    kept, _ = apply_similarity_floor(
+        [a_miss_that_scored_high, a_hit_that_scored_low], 0.15
+    )
+    assert len(kept) == 2, "the floor cannot and must not separate these"
+
+
+@requires_vec
+async def test_floor_skipped_for_non_unit_vectors(vdb, caplog):
+    """Applying the cosine conversion to unnormalised vectors would be meaningless."""
+    if not vdb.vec_available:
+        pytest.skip("sqlite-vec could not be loaded in this environment")
+    await vdb.add_document(
+        run_id="r1", title="a.md",
+        chunks=["egress inspection provides auditable evidence"], persona_name="A",
+    )
+    # A provider returning a non-unit vector (norm 5).
+    with patch("litellm.aembedding", side_effect=_fake_embedding((3.0, 4.0))), \
+         patch("litellm.completion_cost", return_value=0.0):
+        await embed_pending_chunks(vdb, "r1")
+        with caplog.at_level("WARNING"):
+            passages, _q, rejected = await retrieve_for_turn(
+                vdb, "r1", "A", "egress inspection", conversation=[],
+                k=3, max_chars=900, mode="vector", min_similarity=0.9,
+            )
+    # A 0.9 floor would reject everything if wrongly applied; it must be skipped.
+    assert rejected == 0
+    assert any("non-unit" in r.message for r in caplog.records)
+
+
+@requires_vec
+async def test_floor_rejection_is_reported_to_the_caller(vdb):
+    if not vdb.vec_available:
+        pytest.skip("sqlite-vec could not be loaded in this environment")
+    await vdb.add_document(
+        run_id="r1", title="a.md", chunks=["alpha", "beta"], persona_name="A",
+    )
+    pending = await vdb.chunks_missing_vectors("r1")
+    # Store unit vectors orthogonal to the query, i.e. cosine ~0.
+    await vdb.store_chunk_vectors(
+        "r1",
+        [(pending[0]["chunk_id"], [0.0, 1.0]), (pending[1]["chunk_id"], [0.0, 1.0])],
+        "m",
+    )
+    with patch("litellm.aembedding", side_effect=_fake_embedding((1.0, 0.0))), \
+         patch("litellm.completion_cost", return_value=0.0):
+        passages, _q, rejected = await retrieve_for_turn(
+            vdb, "r1", "A", "alpha beta", conversation=[],
+            k=3, max_chars=900, mode="vector", min_similarity=0.15,
+        )
+    assert rejected == 2, "orthogonal matches should have been floored"
+    assert passages == [], "nothing should survive an orthogonal-only result set"
