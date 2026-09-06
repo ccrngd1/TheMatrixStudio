@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { useEffect, useState } from 'react'
 import { api } from '../api'
+import { Hint } from '../components/Hint'
 
 interface Props {
   onStarted: (runId: string) => void
@@ -192,6 +193,13 @@ export function NewRunForm({ onStarted, onCancel }: Props) {
       <div className="mt-4 flex flex-wrap items-center gap-4">
         <label className="flex items-center gap-2 text-sm text-slate-300">
           Max messages
+          <Hint label="max messages">
+            Turn budget for the run. Cost scales roughly linearly with it — one turn is
+            two model calls. With five personas, 15 turns gives each about three turns,
+            which is often too few for a position to be challenged and held; 30 gives
+            about six. Longer runs also make rate-style measurements more meaningful,
+            since a single turn is a smaller fraction of the total.
+          </Hint>
           <input
             type="number"
             min={1}
@@ -204,10 +212,22 @@ export function NewRunForm({ onStarted, onCancel }: Props) {
         <label className="flex items-center gap-2 text-sm text-slate-300">
           <input type="checkbox" checked={avatars} onChange={(e) => setAvatars(e.target.checked)} />
           Generate avatars
+          <Hint label="generate avatars">
+            Anime-style portraits for each persona, generated once before the run via
+            Stability SD3.5 on Bedrock. Purely cosmetic and entirely optional: it adds an
+            image call per persona, and if it fails or no image provider is configured the
+            cards fall back to initials without affecting the run.
+          </Hint>
         </label>
         {models.length > 0 && (
           <label className="flex items-center gap-2 text-sm text-slate-300">
             Model
+            <Hint label="model">
+              Which model drives every persona, the moderator and the analyst. This is not
+              only a cost/quality dial — models differ in ways that change behaviour, and
+              measured differences here have been large. Worth re-checking a run's
+              behaviour after switching rather than assuming it carries over.
+            </Hint>
             <select
               value={model}
               onChange={(e) => setModel(e.target.value)}
@@ -229,7 +249,15 @@ export function NewRunForm({ onStarted, onCancel }: Props) {
           onClick={() => setSummaryOpen((o) => !o)}
           className="flex w-full items-center justify-between text-left text-sm font-semibold text-slate-300"
         >
-          <span>Summary options</span>
+          <span className="flex items-center gap-2">
+            Summary options
+            <Hint label="summary options">
+              A post-run analyst pass over the finished transcript: consensus, dissenters,
+              key ideas, open questions. Useful when you care about the conclusions more
+              than the conversation. Costs one extra call at the end, and you can always
+              generate it later from the run page instead.
+            </Hint>
+          </span>
           <span className="text-xs text-slate-500">
             {summaryEnabled ? 'auto-summary on' : 'auto-summary off'} {summaryOpen ? '▲' : '▼'}
           </span>
@@ -266,7 +294,17 @@ export function NewRunForm({ onStarted, onCancel }: Props) {
           onClick={() => setCognitionOpen((o) => !o)}
           className="flex w-full items-center justify-between text-left text-sm font-semibold text-slate-300"
         >
-          <span>Cognition (introspectable engine)</span>
+          <span className="flex items-center gap-2">
+            Cognition (introspectable engine)
+            <Hint label="cognition">
+              Turn this on when you want to know <em>why</em> an agent said something, not
+              just what it said. Each turn additionally produces a first-person rationale
+              and the goal it served, which is what powers the dossier and the "why did it
+              say that?" trace. Costs roughly 20-40% more tokens per turn, and measurably
+              shortens turns (agents spend fewer characters on the utterance itself). Leave
+              it off for a fast, cheap conversation.
+            </Hint>
+          </span>
           <span className="text-xs text-slate-500">
             {cognitionEnabled ? 'on' : 'off'} {cognitionOpen ? '▲' : '▼'}
           </span>
@@ -292,21 +330,46 @@ export function NewRunForm({ onStarted, onCancel }: Props) {
                 <input type="checkbox" checked={cogMemory} disabled={!cognitionEnabled}
                   onChange={(e) => setCogMemory(e.target.checked)} />
                 Memory stream
+                <Hint label="memory stream">
+                  Each agent records what it just learned or decided, and its most relevant
+                  memories are fed back into later turns. This is what gives an agent
+                  continuity — it can refer to what someone committed to eight turns ago
+                  instead of starting fresh each time. Expect roughly one memory per turn.
+                </Hint>
               </label>
               <label className="flex items-center gap-2 text-sm text-slate-300">
                 <input type="checkbox" checked={cogReflect} disabled={!cognitionEnabled}
                   onChange={(e) => setCogReflect(e.target.checked)} />
                 Reflection (every 4 turns)
+                <Hint label="reflection">
+                  Every fourth turn, the speaker condenses its recent memories into a
+                  higher-level belief. Measured effect: reflections tend to <em>harden</em> a
+                  position rather than erode it, so this is worth enabling when you want
+                  participants who dig in rather than drift toward agreement. Costs one
+                  extra call each time it fires.
+                </Hint>
               </label>
               <label className="flex items-center gap-2 text-sm text-slate-300">
                 <input type="checkbox" checked={cogGoals} disabled={!cognitionEnabled}
                   onChange={(e) => setCogGoals(e.target.checked)} />
                 Dynamic goals
+                <Hint label="dynamic goals">
+                  Lets an agent rewrite its own goal list mid-run when the conversation
+                  genuinely changes what it wants. Enable it to watch priorities shift under
+                  pressure; leave it off if you need each agent to keep pursuing the same
+                  thing so runs stay comparable.
+                </Hint>
               </label>
               <label className="flex items-center gap-2 text-sm text-slate-300">
                 <input type="checkbox" checked={cogRelationships} disabled={!cognitionEnabled}
                   onChange={(e) => setCogRelationships(e.target.checked)} />
                 Relationships
+                <Hint label="relationships">
+                  Each agent maintains a one-line stance toward every other participant, and
+                  updates it as the conversation goes. Useful when the interpersonal dynamic
+                  is the thing you are studying — who trusts whom, who has written whom off.
+                  Shown in the dossier.
+                </Hint>
               </label>
             </div>
           </div>
