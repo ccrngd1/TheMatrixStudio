@@ -50,10 +50,14 @@ ARM_FILES = {
     # Phase 6 dismissal-rule variants (docs/PHASE6-DISMISSAL-RETUNE.md).
     "E_mandatory": "arm-e-mandatory.json",
     "F_blunt": "arm-f-blunt.json",
+    # Arm G (cognition ON) is scored in its OWN results directory against a 30-turn
+    # Arm E baseline — never mixed with the 15-turn runs, which would make turn count
+    # a second variable. See docs/PHASE6-COGNITION-INTERACTION.md.
+    "G_cognition": "arm-g-cognition.json",
 }
 
 # Arms whose absence is not an error (added after the original experiment ran).
-OPTIONAL_ARMS = {"D_shipped", "E_mandatory", "F_blunt"}
+OPTIONAL_ARMS = {"D_shipped", "E_mandatory", "F_blunt", "G_cognition"}
 
 # Phrases that concede ground or align the speaker with someone else. High rates
 # mean the cast is harmonising, which is the failure mode under investigation.
