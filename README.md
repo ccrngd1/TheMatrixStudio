@@ -520,10 +520,16 @@ npm run dev
 - ✅ **Phase 2c:** Agent cognition — memory stream, reflection, relationships, dynamic goals, why-trace
 - ✅ **Phase 3:** Release polish — cost guards, BYO-key readiness, examples, docs, hygiene (v0.3.0)
 - ✅ **Phase 4:** Deeper cognition & steering — priority-hierarchy validation gate, pending-thread ledger, structured output view, adaptive pressure (experimental) (v0.4.0)
-- **Future:** Embedding-based memory retrieval, multi-modal inputs, hosted deployment
+- ✅ **Phase 5:** Per-persona document retrieval — FTS5 + optional `sqlite-vec` embeddings, per-call context budget, retrieval inspection endpoint, unsupported-claim disclosure, citation provenance (unreleased)
+- **Next:** Structured personas — validated in `docs/PHASE5-PREMISE-VALIDATION.md` but not yet built
+- **Future:** Embedding-based *memory* retrieval (document retrieval shipped in Phase 5), multi-modal inputs, hosted deployment
+
+**Open work is indexed in [`docs/BACKLOG.md`](docs/BACKLOG.md)** — including what was
+deliberately rejected after measurement, so it is not retried on intuition.
 
 ## Documentation
 
+- `docs/BACKLOG.md` — Open, deferred and rejected work, each with a revisit trigger
 - `docs/PROJECT-SPEC.md` — Full ideation/architecture spec
 - `docs/PHASE3-REQUIREMENTS.md` — Phase 3 (release polish) acceptance criteria
 - `docs/PHASE2C-REQUIREMENTS.md` — Phase 2c (cognition) spec

@@ -231,3 +231,85 @@ def test_citation_label_formatting():
 def test_context_build_is_case_insensitive():
     c = ctx(own=[("Spec.MD", 0)])
     assert kinds("Per spec.md #0, fine.", context=c) == [("spec.md", "firsthand")]
+
+
+# --------------------------------------------------------------------------
+# Regression: cases taken verbatim from real generated output.
+#
+# The first cue-proximity heuristic under-fired on the commonest style the model
+# actually uses — a TRAILING bracketed citation with no cue word anywhere near
+# it — so genuine assertions were scored as harmless mentions and the gate missed
+# them. These lock the observed shapes.
+# --------------------------------------------------------------------------
+
+
+def test_trailing_bracketed_citation_is_attributive():
+    """Observed: "...not deltas [readme.md #37]." No cue word at all."""
+    c = ctx(own=[("readme.md", 37)])
+    got = analyse_citations(
+        "I see that snapshots are actually full per-turn, not deltas "
+        "[readme.md #37].", "Dana", CAST, c,
+    )
+    assert got[0].attributive is True, "trailing bracketed citation missed"
+    assert got[0].kind == "firsthand"
+
+
+def test_trailing_bracketed_citation_of_an_unheld_document_is_a_violation():
+    """The same style, but the document belongs to someone else — the failure
+    class Stage 1 exists to catch, in the style the model actually writes."""
+    c = ctx(own=[("spec.md", 0)], prior=[("Priya", "readme.md")])
+    got = analyse_citations(
+        "We log memory formation and goal updates [readme.md #37], but we do not "
+        "capture which beliefs fed which decisions.", "Dana", CAST, c,
+    )
+    assert got[0].kind == "unverified"
+    assert citation_violation(got) is not None
+
+
+def test_markdown_link_form_is_not_attributive():
+    """Observed: "whoever has [phase4-report.md](phase4-report.md) open should
+    search..." — a pointer, not an assertion."""
+    c = ctx(own=(), prior=[("Priya", "phase4-report.md")])
+    got = analyse_citations(
+        "So here is what I need: whoever has [phase4-report.md](phase4-report.md) "
+        "open should search for those two strings.", "Dana", CAST, c,
+    )
+    assert got[0].attributive is False
+    assert citation_violation(got) is None
+
+
+def test_newly_added_cues_are_recognised():
+    c = ctx(own=[("report.md", 29)])
+    for phrasing in (
+        "report.md #29 mentions the untested paths.",
+        "report.md #29 is explicit about what was not tested.",
+        "report.md #29 describes the limitation plainly.",
+        "report.md #29 acknowledges the gap.",
+    ):
+        got = analyse_citations(phrasing, "Dana", CAST, c)
+        assert got and got[0].attributive is True, phrasing
+
+
+def test_a_distant_disclaimer_does_not_suppress_the_check():
+    """Evasion surface: a disclaimer about ANOTHER document, far from the label,
+    used to switch the check off entirely."""
+    c = ctx(own=[("spec.md", 0)], prior=[("Priya", "report.md")])
+    utterance = (
+        "I haven't seen the changelog anyone keeps citing, and separately I want "
+        "to note that the measurement work here was thorough and careful, so "
+        "report.md #4 specifies that vectors are required."
+    )
+    got = analyse_citations(utterance, "Dana", CAST, c)
+    offender = [x for x in got if x.title == "report.md"][0]
+    assert offender.attributive is True, "a distant disclaimer suppressed the check"
+    assert offender.kind == "unverified"
+
+
+def test_a_close_disclaimer_still_suppresses():
+    c = ctx(own=(), prior=[("Priya", "report.md")])
+    got = analyse_citations(
+        "I haven't read report.md #4, so I cannot say what it specifies.",
+        "Dana", CAST, c,
+    )
+    assert got[0].attributive is False
+    assert citation_violation(got) is None

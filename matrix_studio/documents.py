@@ -88,6 +88,12 @@ def normalise_text(raw: str) -> str:
     text = re.sub(r"(\w)-\n(\w)", r"\1\2", text)
     # Protect paragraph breaks, flatten single newlines into spaces, restore.
     text = re.sub(r"\n{2,}", "\x00", text)
+    # Markdown structure lines — list items, headings, table rows — are their own
+    # units, not continuations of the line above. Without this a bullet list
+    # collapses into one enormous paragraph and gets split mid-item, producing
+    # chunks that open on a fragment ("...never rewritten in place - **Pending
+    # Threads**..."). Same failure mode as an unaligned overlap tail.
+    text = re.sub(r"\n(?=[ \t]*(?:[-*+][ \t]|\d+[.)][ \t]|#{1,6}[ \t]|\|))", "\x00", text)
     text = text.replace("\n", " ")
     text = text.replace("\x00", "\n\n")
     # Collapse runs of horizontal whitespace. The NFKC pass above has already
@@ -96,6 +102,29 @@ def normalise_text(raw: str) -> str:
     # Trim each paragraph and drop empties.
     paragraphs = [p.strip() for p in text.split("\n\n")]
     return "\n\n".join(p for p in paragraphs if p)
+
+
+def _sentence_aligned_tail(text: str, overlap: int) -> str:
+    """The trailing ``overlap`` characters of ``text``, snapped to a sentence start.
+
+    A naive ``text[-overlap:]`` cuts mid-sentence, which produced a real failure:
+    a chunk that began ``". This is a correctness requirement, not hardening."``
+    had lost the antecedent of "This", and a persona quoted it verbatim and
+    inferred the OPPOSITE of what the source meant. Measured on one real document,
+    90% of chunks began mid-sentence.
+
+    So the tail starts after the first sentence boundary inside the window. If the
+    window contains no boundary, NO overlap is carried: a fragment that cannot be
+    read on its own is worse than a missing one, because retrieval surfaces it as
+    quotable evidence.
+    """
+    if overlap <= 0 or not text:
+        return ""
+    window = text[-overlap:]
+    match = re.search(r"(?<=[.!?])\s+", window)
+    if match:
+        return window[match.end():].lstrip()
+    return ""
 
 
 def chunk_text(
@@ -166,10 +195,10 @@ def chunk_text(
             current = f"{current}\n\n{unit}"
         else:
             chunks.append(current)
-            # Carry the previous chunk's tail forward unconditionally. See the
-            # docstring: overlap is additive to chunk_chars precisely so that a
-            # near-chunk-sized paragraph still gets boundary context.
-            tail = current[-overlap:].lstrip() if overlap else ""
+            # Carry the previous chunk's tail forward. See the docstring: overlap
+            # is additive to chunk_chars precisely so that a near-chunk-sized
+            # paragraph still gets boundary context.
+            tail = _sentence_aligned_tail(current, overlap)
             current = f"{tail}\n\n{unit}" if tail else unit
     if current:
         chunks.append(current)

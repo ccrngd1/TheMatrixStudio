@@ -73,12 +73,53 @@ def test_chunk_ordinals_are_sequential():
 
 
 def test_chunk_overlap_carries_trailing_context():
-    """A passage on a boundary must be findable from the following chunk too."""
-    a = "alpha " * 40
+    """A passage on a boundary must be findable from the following chunk too.
+
+    The carried tail starts at a SENTENCE boundary, so the source text needs
+    sentences for overlap to be possible at all.
+    """
+    a = " ".join(f"Alpha statement number {i} about egress." for i in range(8))
+    b = " ".join(f"Bravo statement number {i} about tokens." for i in range(8))
+    chunks = chunk_text(f"{a}\n\n{b}", chunk_chars=300, overlap=120)
+    assert len(chunks) >= 2
+    assert any("Alpha" in c.content for c in chunks[1:]), (
+        "overlap did not carry prior context forward"
+    )
+
+
+def test_overlap_tail_never_starts_mid_sentence():
+    """A chunk that begins mid-sentence has lost the antecedent of its own words.
+
+    This caused a real failure: a chunk beginning ". This is a correctness
+    requirement, not hardening." was quoted verbatim by a persona which then
+    inferred the OPPOSITE of the source's meaning, because "This" referred to
+    something the chunk boundary had removed.
+    """
+    text = "\n\n".join(
+        " ".join(f"Sentence {j} of paragraph {i} discussing retrieval design."
+                 for j in range(6))
+        for i in range(12)
+    )
+    chunks = chunk_text(text, chunk_chars=400, overlap=120)
+    assert len(chunks) > 2
+    for c in chunks:
+        opening = c.content.lstrip()
+        assert not opening.startswith((".", ",", ";", ":", ")")), (
+            f"chunk #{c.ordinal} opens on a dangling fragment: {opening[:60]!r}"
+        )
+        assert opening[0].isupper() or opening[0] in "#*-`0123456789[", (
+            f"chunk #{c.ordinal} opens mid-sentence: {opening[:60]!r}"
+        )
+
+
+def test_overlap_is_dropped_when_no_sentence_boundary_is_available():
+    """A deliberate trade: a fragment that cannot be read alone is worse than a
+    missing one, because retrieval presents it as quotable evidence."""
+    a = "alpha " * 40   # no sentence boundaries at all
     b = "bravo " * 40
     chunks = chunk_text(f"{a.strip()}\n\n{b.strip()}", chunk_chars=300, overlap=100)
     assert len(chunks) >= 2
-    assert "alpha" in chunks[1].content, "overlap did not carry prior context forward"
+    assert "alpha" not in chunks[1].content
 
 
 def test_chunk_zero_overlap_has_no_carryover():
