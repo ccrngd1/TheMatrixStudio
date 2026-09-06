@@ -402,11 +402,14 @@ spend a whole turn declining to engage.
 this feature live against the same brief and metrics as the original three. It is
 the **first arm to produce evidence-driven position change — 2 of 2** (previous
 best: 1 change, 0 evidence-driven), which is the specific behaviour `firmness` +
-`evidence_that_shifts` exist for, and Arm C's parallel-monologue failure did **not**
-reproduce (talking-past 2 vs 4). But it is **worse than Arm B on divergence**
-(cross-speaker similarity 0.1895 vs 0.1597), and that comparison is confounded by
-turn length — Arm D's turns are 37% longer and the metric is token overlap, so Arm
-B's hand-written prose still wins there.
+`evidence_that_shifts` exist for; it is **more divergent than the prose control**;
+and Arm C's parallel-monologue failure did not reproduce (talking-past 2 vs 4).
+
+It does **not** reach Arm B's divergence, and that gap survives length
+normalisation — hand-written prose structure is genuinely better at making speakers
+sound different than the same content rendered from data. So this is worth turning
+on for panels where you want positions defended and genuinely revisable; it is not
+a claim that it beats careful prose.
 
 Two properties had no trigger in that run and remain **untested**:
 `requires-escalation` (the room never overruled the persona holding it) and the
@@ -414,7 +417,8 @@ concern-reveal path (nobody asked "why" in 15 turns — withholding held, with z
 verbatim leaks, but nothing draws the concern out). The premise validation's null
 result on distinct positions and specificity is unchanged.
 
-`n = 1` on a non-deterministic model. Full numbers and the five open follow-ups:
+`n = 1` on a non-deterministic model. Full numbers, the two measurement-instrument
+defects found and fixed en route, and the six open follow-ups:
 `docs/PHASE6-STRUCTURED-PERSONAS.md` and `docs/BACKLOG.md`.
 
 ### Avatar Generation
@@ -627,7 +631,7 @@ npm run dev
 - ✅ **Phase 4:** Deeper cognition & steering — priority-hierarchy validation gate, pending-thread ledger, structured output view, adaptive pressure (experimental) (v0.4.0)
 - ✅ **Phase 5:** Per-persona document retrieval — FTS5 + optional `sqlite-vec` embeddings, per-call context budget, retrieval inspection endpoint, unsupported-claim disclosure, citation provenance (unreleased)
 - ✅ **Phase 6:** Structured personas — convictions with firmness + exit conditions, `dismisses` with a re-tuned engagement rule, withheld underlying concerns; measured live as Arm D, mixed result (unreleased)
-- **Next:** Repeat Arm D at several seeds — `n = 1`, and the divergence comparison is length-confounded
+- **Next:** Repeat Arm D at several seeds (`n = 1`), and close or explain its divergence gap to Arm B
 - **Future:** Embedding-based *memory* retrieval (document retrieval shipped in Phase 5), multi-modal inputs, hosted deployment
 
 **Open work is indexed in [`docs/BACKLOG.md`](docs/BACKLOG.md)** — including what was

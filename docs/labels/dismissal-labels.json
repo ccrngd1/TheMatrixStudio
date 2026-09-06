@@ -1,0 +1,38 @@
+{
+  "what": "Hand labels for whether a turn contains a DISMISSAL — the speaker explicitly declining to WEIGH a concern that belongs to someone else (the `dismisses` field firing). Not 'disagreed with', not 'prioritised differently'.",
+  "why": "Arm D's dismissal rate fell to 0.133 from Arm B's 0.333 and I could not tell whether that was behaviour or the regex missing idiom it was not written against (scripts/score_validation.py DISMISSAL was authored against the ORIGINAL arms). Labelled by reading, which is how this project has resolved every previous instrument dispute.",
+  "labeller": "assistant, reading full turns; borderline cases recorded as 'soft' and counted separately rather than folded in either direction",
+  "date": "2026-09-06",
+  "arms": {
+    "arm-b-structured": {
+      "clear": [
+        {"turn": 2,  "speaker": "Marcus", "quote": "that's not the problem I'm solving for—that's yours to own"},
+        {"turn": 3,  "speaker": "Priya",  "quote": "I'm not going to weigh install complexity or per-run cost—those aren't mine to solve for"},
+        {"turn": 4,  "speaker": "Tomas",  "quote": "I don't care about the demo working or the agent's reasoning being philosophically sound"},
+        {"turn": 5,  "speaker": "Simone", "quote": "I'm going to be direct about what I'm not weighing ... Those aren't mine to solve"},
+        {"turn": 9,  "speaker": "Priya",  "quote": "that's their job to own ... that's not my veto", "regex_missed": true},
+        {"turn": 10, "speaker": "Marcus", "quote": "it's not mine to answer, and I need to stay in my lane here"}
+      ],
+      "soft": [
+        {"turn": 7, "speaker": "Dana", "quote": "I need to pull this back to what I actually own", "note": "reframing toward her own remit rather than declining to weigh; not counted"}
+      ]
+    },
+    "arm-d-shipped": {
+      "clear": [
+        {"turn": 7,  "speaker": "Dana", "quote": "that's a real risk and it matters. But that's not my problem to solve"},
+        {"turn": 9,  "speaker": "Dana", "quote": "that's your call to make with Priya and Marcus, not mine", "regex_missed": true},
+        {"turn": 12, "speaker": "Dana", "quote": "those are real problems, but they're not mine to solve first"}
+      ],
+      "soft": [
+        {"turn": 4, "speaker": "Dana", "quote": "Simone's right ... and I'm not dismissing it. But here's what I actually care about", "note": "explicitly disclaims dismissing, then prioritises her own concern. Genuinely borderline; not counted."}
+      ]
+    }
+  },
+  "result": {
+    "arm-b-structured": {"hand_clear": 6, "hand_rate": 0.4, "regex": 5, "regex_rate": 0.333},
+    "arm-d-shipped": {"hand_clear": 3, "hand_rate": 0.2, "regex": 2, "regex_rate": 0.133},
+    "finding": "The regex under-counts BOTH arms by exactly one turn, so the B-vs-D gap is REAL, not an instrument artifact: 0.400 vs 0.200 by hand against 0.333 vs 0.133 by regex. Arm D genuinely dismisses about half as often as Arm B.",
+    "qualitative": "The more important difference is SHAPE, which no rate captures. Arm B's dismissals are bare ('I don't care about the demo working'). Arm D's are attached to substantive engagement ('Marcus and Priya are right that ... that's a real risk and it matters. But that's not my problem to solve'). That is precisely what the re-tuned rule asks for — engage with the substance, then decline once — so a lower rate of better-formed dismissals is the predicted outcome, not a regression.",
+    "missed_idiom": "Bare possessive 'not mine' without a following infinitive, 'their job to own', and 'your call to make ... not mine'. Patterns added to DISMISSAL; this file is the ground truth they were checked against."
+  }
+}

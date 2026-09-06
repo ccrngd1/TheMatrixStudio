@@ -81,6 +81,16 @@ DISMISSAL = [
     r"\bi'?m not (going to )?(weigh|weighing)\b",
     r"\bnot going to pretend\b.{0,40}\bmine\b",
     r"\bi don'?t care about\b",
+    # Added after HAND-LABELLING arms B and D (docs/labels/dismissal-labels.json).
+    # The list above was written against the ORIGINAL arms and missed one genuine
+    # dismissal in each of B and D — both bare-possessive forms with no following
+    # infinitive, which the `not mine to` / `yours to own` patterns cannot reach.
+    # Labelling first, then patching, is deliberate: the label file is the ground
+    # truth these were checked against, so the patterns were not tuned until the
+    # rate they produce matched a reading.
+    r"\bnot mine\b",
+    r"\btheir (job|problem|call) to (own|solve|answer|make)\b",
+    r"\byour call to make\b",
 ]
 
 # Evidence the speaker is pointing at a real artefact rather than asserting.
@@ -109,18 +119,84 @@ STOPWORDS = set(
 )
 
 
-def tokens(text: str) -> set:
-    return {
+def token_list(text: str) -> List[str]:
+    """Content tokens in order, WITH repeats.
+
+    Repeats are kept because the length-normalised measures below subsample the
+    token *stream*: the counterfactual we want is "what if this speaker had
+    written less", not "what if their vocabulary were smaller".
+    """
+    return [
         w
         for w in re.findall(r"[a-z0-9$%.\-]+", text.lower())
         if w not in STOPWORDS and len(w) > 2
-    }
+    ]
+
+
+def tokens(text: str) -> set:
+    return set(token_list(text))
 
 
 def jaccard(a: set, b: set) -> float:
     if not a or not b:
         return 0.0
     return len(a & b) / len(a | b)
+
+
+# --------------------------------------------------------------------------
+# Length normalisation
+#
+# Raw Jaccard on token SETS is monotonically increasing in text length, which
+# makes it unusable for comparing arms whose turn lengths differ. Measured on one
+# arm by truncating every turn and re-scoring:
+#
+#     turns truncated to  300 chars -> cross-speaker 0.1051
+#                         500       -> 0.1336
+#                         800       -> 0.1434
+#                         full (962)-> 0.1597
+#
+# Same arm, same speakers, same positions: the number tracks length, not
+# divergence. The mechanism is vocabulary growth — more text means more distinct
+# words, and more chance that any given word appears in both speakers.
+#
+# This mattered concretely: Arm D (Phase 6) has 1318-char turns against Arm B's
+# 962 and scored "worse" on divergence, so that comparison could not be read.
+#
+# TWO FIXES WERE TRIED AND REJECTED, recorded so they are not retried:
+#
+#   1. Subsample each speaker's token STREAM to a fixed count. Equalises token
+#      count but not vocabulary size — a short stream repeats a small vocabulary
+#      while a long one spreads over a large one. A length effect survived
+#      (0.298 vs 0.243 on a fixture whose true overlap was identical).
+#   2. Subsample each speaker's VOCABULARY to a fixed size. Worse (0.287 vs
+#      0.145): drawing N words from vocabularies of genuinely different sizes
+#      changes the chance of drawing the shared ones, so equal sample sizes do
+#      not rescue unequal populations.
+#   3. TF-cosine instead of Jaccard, on the theory that frequency vectors are
+#      scale-invariant. Also length-sensitive (0.235 -> 0.392 under the same
+#      truncation sweep), so it is not a fix either.
+#
+# What actually works is the boring thing: compare at EQUAL TEXT VOLUME. Truncate
+# every speaker's token stream to a common budget, then apply the original metric.
+# Deterministic, no sampling, no seed, and it answers the exact question — "if
+# every arm had produced the same amount of text, how similar would the speakers
+# be?"
+#
+# The budget remains a free parameter, so `normalised_similarity` also reports
+# which orderings survive changing it. A normalised number is still a number
+# produced by a choice.
+
+
+def truncated_jaccard(stream_a: List[str], stream_b: List[str], budget: int) -> float:
+    """Jaccard between the first ``budget`` tokens of each stream.
+
+    Returns 0.0 when either stream is shorter than ``budget``: the caller picks a
+    budget every speaker can meet, and silently comparing unequal volumes is the
+    bug being fixed.
+    """
+    if budget <= 0 or len(stream_a) < budget or len(stream_b) < budget:
+        return 0.0
+    return jaccard(set(stream_a[:budget]), set(stream_b[:budget]))
 
 
 def count_hits(text: str, patterns: List[str]) -> int:
@@ -174,6 +250,130 @@ def score_arm(conv: List[Dict[str, Any]]) -> Dict[str, Any]:
         "mean_turn_chars": round(sum(len(m["content"]) for m in conv) / n),
         "turns_per_speaker": {s: len(by_speaker[s]) for s in speakers},
     }
+
+
+def speaker_streams(conv: List[Dict[str, Any]]) -> Dict[str, List[str]]:
+    """Each speaker's full token stream, and each speaker's per-turn streams."""
+    out: Dict[str, List[str]] = {}
+    for m in conv:
+        out.setdefault(m["speaker"], []).extend(token_list(m["content"]))
+    return out
+
+
+def turn_streams(conv: List[Dict[str, Any]]) -> Dict[str, List[List[str]]]:
+    out: Dict[str, List[List[str]]] = {}
+    for m in conv:
+        out.setdefault(m["speaker"], []).append(token_list(m["content"]))
+    return out
+
+
+def normalised_similarity(
+    arms: Dict[str, List[Dict[str, Any]]]
+) -> Dict[str, Any]:
+    """Length-normalised cross- and within-speaker similarity for every arm.
+
+    Must see ALL arms at once: the point is that every comparison uses the same
+    token budget, and the largest budget every speaker in every arm can meet is
+    not knowable from one arm. That is why this is not part of ``score_arm``.
+
+    The budgets are reported alongside the numbers, because a budget is part of
+    the measurement — a reader who does not know it cannot compare these figures
+    to anything else.
+    """
+    streams = {label: speaker_streams(conv) for label, conv in arms.items()}
+    turns = {label: turn_streams(conv) for label, conv in arms.items()}
+
+    # Budgets are token COUNTS: the largest volume every speaker (and every turn)
+    # in every arm can supply, so nothing is compared against a shorter sample.
+    cross_budget = min(
+        len(st) for per_speaker in streams.values() for st in per_speaker.values()
+    )
+    within_budget = min(
+        len(t)
+        for per_speaker in turns.values()
+        for tlist in per_speaker.values()
+        for t in tlist
+    )
+
+    # Budget robustness. A normalised number is still a number produced by a
+    # choice, and this one has a free parameter. Measured: the A-vs-D ordering
+    # FLIPS between budget 100 and 140, while B-lowest and C-highest hold at every
+    # budget. So the honest output is which orderings survive the parameter, not a
+    # single ranking presented as fact. Having just replaced one metric for hiding
+    # a confound, shipping its replacement without this check would repeat the
+    # mistake in a new place.
+    # Budgets BELOW ~100 tokens are excluded. Measured: at 40-80 tokens the arm
+    # ordering scrambles completely (C<A<B<D at 40, D<A<B<C at 61 and 80) and then
+    # settles from 102 upward. Eighty content tokens is a couple of sentences per
+    # speaker — too little text for vocabulary overlap to mean anything — so
+    # including them manufactures instability rather than detecting it. Getting
+    # this wrong initially made every pair look uncallable and hid a real result.
+    MIN_MEANINGFUL_BUDGET = 100
+    fractions = (0.55, 0.7, 0.85, 1.0)
+    out_stability: Dict[str, Any] = {}
+    for frac in fractions:
+        b = int(cross_budget * frac)
+        if b < MIN_MEANINGFUL_BUDGET:
+            continue
+        ranking = {}
+        for label in arms:
+            sp = sorted(streams[label])
+            vals = [
+                truncated_jaccard(streams[label][x], streams[label][y], b)
+                for x, y in combinations(sp, 2)
+            ]
+            ranking[label] = sum(vals) / len(vals) if vals else 0.0
+        out_stability[str(b)] = sorted(ranking, key=lambda k: ranking[k])
+
+    if not out_stability:
+        # Every candidate budget was below the meaningfulness floor: the arms are
+        # too short to compare at all. Say so rather than emitting a ranking.
+        out_stability["insufficient_text"] = sorted(arms)
+
+    stable_pairs, unstable_pairs = [], []
+    for x, y in combinations(sorted(arms), 2):
+        orders = {
+            tuple(o.index(x) < o.index(y) for _ in (0,))[0]
+            for o in out_stability.values()
+        }
+        (stable_pairs if len(orders) == 1 else unstable_pairs).append(f"{x} vs {y}")
+
+    out: Dict[str, Any] = {
+        "cross_budget_tokens": cross_budget,
+        "within_budget_tokens": within_budget,
+        "method": "equal-volume truncation (deterministic; no sampling)",
+        "arms": {},
+        "budget_sensitivity": out_stability,
+        "ordering_stable_for": stable_pairs,
+        "ordering_FLIPS_for": unstable_pairs,
+    }
+
+    for label in arms:
+        speakers = sorted(streams[label])
+        cross = [
+            truncated_jaccard(streams[label][a], streams[label][b], cross_budget)
+            for a, b in combinations(speakers, 2)
+        ]
+        within = []
+        for sp in speakers:
+            tl = turns[label][sp]
+            if len(tl) < 2:
+                continue
+            pairs = [
+                truncated_jaccard(a, b, within_budget)
+                for a, b in combinations(tl, 2)
+            ]
+            if pairs:
+                within.append(sum(pairs) / len(pairs))
+        out["arms"][label] = {
+            "cross_speaker_similarity_norm": round(
+                sum(cross) / len(cross) if cross else 0.0, 4
+            ),
+            "within_speaker_similarity_norm": round(
+                sum(within) / len(within) if within else 0.0, 4
+            ),
+        }
+    return out
 
 
 JUDGE_SCHEMA = """{
@@ -270,11 +470,12 @@ def main() -> int:
         arms[label] = json.loads(path.read_text())["conversation"]
 
     det = {label: score_arm(conv) for label, conv in arms.items()}
+    norm = normalised_similarity(arms)
 
     labels = [l for l in ARM_FILES if l in arms]
     metrics = [
-        ("cross_speaker_similarity", "cross-speaker similarity (LOWER = more divergent)"),
-        ("within_speaker_similarity", "within-speaker similarity"),
+        ("cross_speaker_similarity", "cross-speaker similarity RAW (length-biased)"),
+        ("within_speaker_similarity", "within-speaker similarity RAW (length-biased)"),
         ("accommodation_rate", "accommodation rate (LOWER = less harmonising)"),
         ("dismissal_rate", "dismissal rate (dismisses field firing)"),
         ("citation_rate", "citation rate (points at real sources)"),
@@ -286,7 +487,40 @@ def main() -> int:
     print("DETERMINISTIC (no model in the loop)\n")
     print(fmt_table(rows))
 
-    report: Dict[str, Any] = {"deterministic": det}
+    # The RAW similarity rows above are retained only so previously published
+    # numbers stay reproducible. They rise with turn length regardless of
+    # divergence, so cross-arm comparison must use the normalised rows.
+    nrows = [["metric (length-normalised)"] + labels]
+    for key, desc in (
+        ("cross_speaker_similarity_norm", "cross-speaker similarity (LOWER = more divergent)"),
+        ("within_speaker_similarity_norm", "within-speaker similarity (LOWER = less repetitive)"),
+    ):
+        nrows.append([desc] + [str(norm["arms"][l][key]) for l in labels])
+    print(
+        f"\n\nLENGTH-NORMALISED (equal token volume: {norm['cross_budget_tokens']} "
+        f"per speaker, {norm['within_budget_tokens']} per turn; "
+        "deterministic)\n"
+    )
+    print(fmt_table(nrows))
+    print(
+        "\n  Use these rows to compare arms. The RAW rows above are length-biased:\n"
+        "  the same arm truncated to 300-char turns scores 0.105 and at full length\n"
+        "  0.160, with identical speakers and positions."
+    )
+    if norm["ordering_FLIPS_for"]:
+        print(
+            "\n  NOT CALLABLE — cross-speaker ordering flips with the token budget for:\n"
+            + "\n".join(f"    {p}" for p in norm["ordering_FLIPS_for"])
+            + "\n  These pairs are within the instrument's resolution. Do not rank them."
+        )
+    if norm["ordering_stable_for"]:
+        print(
+            "\n  Stable across every budget tried "
+            f"({', '.join(sorted(norm['budget_sensitivity']))} tokens):\n"
+            + "\n".join(f"    {p}" for p in norm["ordering_stable_for"])
+        )
+
+    report: Dict[str, Any] = {"deterministic": det, "length_normalised": norm}
 
     if args.judge:
         model = args.model
