@@ -187,12 +187,34 @@ async def test_enabled_puts_convictions_in_the_speakers_own_prompt(db):
     assert "What would change your mind: an embedded index" in dana
 
 
-async def test_enabled_renders_the_retuned_dismissal_rule(db):
+async def test_enabled_renders_the_default_dismissal_rule(db):
+    """Default variant is `mandatory` — declining is required, not permitted."""
     prompts = await _run(db, "dismiss", personas={"enabled": True})
     dana = "\n".join(_speaker_prompts(prompts, "Dana"))
     assert "What you do not weigh: retrieval answer quality" in dana
-    assert "not on your attention" in dana
-    assert "Never let declining to weigh something be your whole turn" in dana
+    assert "MUST say plainly that it is not yours to weigh" in dana
+    assert "never let declining be your whole turn" in dana
+
+
+async def test_the_rule_variant_reaches_the_prompt(db):
+    """The variant is a measurement lever, so it has to actually change the prompt
+    — an arm that silently rendered the default wording would test nothing."""
+    prompts = await _run(
+        db, "blunt", personas={"enabled": True, "dismissal_rule": "blunt"}
+    )
+    dana = "\n".join(_speaker_prompts(prompts, "Dana"))
+    assert "Ignore the things you consider not your problem" in dana
+    assert "MUST say plainly" not in dana
+
+
+async def test_rule_off_drops_the_dismisses_list_too(db):
+    prompts = await _run(
+        db, "ruleoff", personas={"enabled": True, "dismissal_rule": "off"}
+    )
+    dana = "\n".join(_speaker_prompts(prompts, "Dana"))
+    assert "What you do not weigh" not in dana
+    # ...but the rest of the structured persona is still there
+    assert "No feature may add a stateful external service" in dana
 
 
 async def test_structure_does_not_bleed_into_another_personas_prompt(db):
@@ -266,7 +288,7 @@ async def test_persona_structured_event_records_the_seeding_without_private_fiel
     assert [e["agent"] for e in events] == ["Dana"], "only cast members with structure"
     payload = events[0]["payload"]
     assert payload["withhold_concerns"] is True
-    assert payload["dismissal_rule"] is True
+    assert payload["dismissal_rule"] == "mandatory"
     flat = json.dumps(payload)
     assert "stateful external service" in flat
     assert DANA_CONCERN not in flat

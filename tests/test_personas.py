@@ -185,18 +185,13 @@ def test_holding_rule_is_absent_when_there_are_no_viewpoints():
 # --------------------------------------------------------------------------
 
 
-def test_dismissal_rule_constrains_priorities_not_attention():
-    """Arm C shipped the naive version and personas retreated into parallel
-    monologues (talking-past 4/5). The retune must keep the priority limit and
-    drop the attention limit."""
-    out = build().render_private()
-    assert "retrieval answer quality" in out
+def test_retuned_variant_is_retained_verbatim():
+    """`retuned` is Phase 6 as first shipped, MEASURED at n=3 as suppressing
+    dismissal to the control's rate. Its text is locked because editing it would
+    silently invalidate a recorded negative result."""
+    out = build().render_private(dismissal_rule="retuned")
     assert "not on your attention" in out
     assert "answer the factual or technical part of it directly" in out
-
-
-def test_dismissal_rule_forbids_the_three_observed_failure_shapes():
-    out = build().render_private()
     for forbidden in (
         "Do not repeat a dismissal you have already made",
         "Do not answer a challenge by restating your own position",
@@ -205,12 +200,89 @@ def test_dismissal_rule_forbids_the_three_observed_failure_shapes():
         assert forbidden in out, forbidden
 
 
-def test_dismissal_rule_can_be_switched_off_for_measurement():
-    out = build().render_private(dismissal_rule=False)
+def test_blunt_variant_is_arm_b_wording():
+    """`blunt` exists to isolate the rule from the rendering: it holds the Phase 6
+    rendering fixed and restores the wording that produced Arm B's dismissal rate.
+    `off` cannot express this, because it drops the `dismisses` list too."""
+    out = build().render_private(dismissal_rule="blunt")
+    assert "Ignore the things you consider not your problem" in out
+    assert "retrieval answer quality" in out
+    # None of the retuned version's engagement clauses.
     assert "not on your attention" not in out
-    # the dismissed items themselves go with it — the list without the rule is
-    # exactly the Arm C configuration, and shipping that by accident is the risk
+
+
+def test_mandatory_variant_requires_declining_rather_than_permitting_it():
+    """The candidate re-tune. `retuned` said a persona *may* decline "once,
+    briefly" — a permission is satisfiable by silence, and silence is what two of
+    three measured runs produced."""
+    out = build().render_private(dismissal_rule="mandatory")
+    assert "MUST say plainly that it is not yours to weigh" in out
+    assert "Every time it comes up" in out
+    assert "not optional" in out
+
+
+def test_mandatory_variant_still_requires_engaging_with_the_substance():
+    """The retune must not become `blunt`. Arm C's monologues came from dropping
+    the engagement requirement, so it has to survive."""
+    out = build().render_private(dismissal_rule="mandatory")
+    assert "engage with the substance anyway" in out
+    assert "put their point in its strongest form" in out
+    assert "not declining to think about it" in out
+
+
+def test_mandatory_variant_keeps_only_the_prohibition_that_targets_arm_c():
+    """Three prohibitions cut to one. The other two were aimed at the dismissal
+    itself and are the likeliest suppressors; only the whole-turn one targets Arm
+    C's measured failure (turns spent entirely declining)."""
+    out = build().render_private(dismissal_rule="mandatory")
+    assert "never let declining be your whole turn" in out
+    assert "Do not repeat a dismissal" not in out
+    assert "Do not answer a challenge by restating" not in out
+
+
+def test_every_variant_names_the_dismissed_items():
+    for variant in ("mandatory", "retuned", "blunt"):
+        out = build().render_private(dismissal_rule=variant)
+        assert "retrieval answer quality" in out, variant
+
+
+def test_off_variant_drops_the_rule_and_the_list():
+    out = build().render_private(dismissal_rule="off")
     assert "What you do not weigh" not in out
+    assert "retrieval answer quality" not in out
+
+
+def test_booleans_are_still_accepted_for_backward_compatibility():
+    """Configs and stored snapshots written against the previous boolean field must
+    keep working: True meant "render the rule", False meant "no rule, no list"."""
+    from matrix_studio.personas import normalise_dismissal_rule
+
+    assert normalise_dismissal_rule(True) == "mandatory"
+    assert normalise_dismissal_rule(False) == "off"
+    assert build().render_private(dismissal_rule=True) == build().render_private(
+        dismissal_rule="mandatory"
+    )
+    assert build().render_private(dismissal_rule=False) == build().render_private(
+        dismissal_rule="off"
+    )
+
+
+def test_unknown_variant_is_rejected_not_defaulted():
+    """A typo'd variant silently falling back to the default would make a
+    measurement arm quietly test the wrong wording — the exact class of error this
+    re-tune exists to correct."""
+    from matrix_studio.personas import normalise_dismissal_rule
+
+    with pytest.raises(ValueError):
+        normalise_dismissal_rule("gentle")
+    with pytest.raises(ValueError):
+        build().render_private(dismissal_rule="gentle")
+
+
+def test_the_three_variants_are_genuinely_different_texts():
+    """Guard against two variants collapsing into the same experiment."""
+    texts = {v: build().render_private(dismissal_rule=v) for v in ("mandatory", "retuned", "blunt")}
+    assert len(set(texts.values())) == 3
 
 
 def test_no_dismissal_rule_when_nothing_is_dismissed():
@@ -315,7 +387,15 @@ def test_persona_config_defaults_to_off():
     cfg = PersonaConfig()
     assert cfg.enabled is False
     assert cfg.withhold_concerns is True
-    assert cfg.dismissal_rule is True
+    assert cfg.dismissal_rule == "mandatory"
+
+
+def test_persona_config_coerces_and_validates_the_rule_variant():
+    assert PersonaConfig(dismissal_rule=True).dismissal_rule == "mandatory"
+    assert PersonaConfig(dismissal_rule=False).dismissal_rule == "off"
+    assert PersonaConfig(dismissal_rule="blunt").dismissal_rule == "blunt"
+    with pytest.raises(ValidationError):
+        PersonaConfig(dismissal_rule="gentle")
 
 
 def test_persona_config_from_missing_or_invalid_block():

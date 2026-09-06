@@ -237,12 +237,33 @@ class PersonaConfig(BaseModel):
     withhold_concerns: bool = Field(
         default=True, description="Keep `underlying_concern` unsaid until asked"
     )
-    # The re-tuned dismissal rule from Arm C's failure analysis. On by default
-    # because `dismisses` without it is the exact configuration that produced
-    # parallel monologues; off only for measuring that difference again.
-    dismissal_rule: bool = Field(
-        default=True, description="Render the re-tuned dismissal rule alongside `dismisses`"
+    # Which dismissal-rule wording to render alongside `dismisses`. A NAMED variant
+    # rather than on/off, because both failure modes are measured and sit on either
+    # side of the target:
+    #   blunt     -> dismissals reliably, but parallel monologues (Arm C, talk-past 4/5)
+    #   retuned   -> talk-past back to 2, but dismissal suppressed to the CONTROL's
+    #                rate of 0.067 across 3 runs, two of them with none at all
+    #   mandatory -> the current candidate; see matrix_studio/personas.py
+    #   off       -> no rule AND no `dismisses` list
+    # Booleans are still accepted (True -> "mandatory", False -> "off") so configs
+    # and snapshots written against the previous boolean field keep working.
+    dismissal_rule: str = Field(
+        default="mandatory",
+        description="Dismissal rule wording: mandatory | retuned | blunt | off (bool accepted)",
     )
+
+    @field_validator("dismissal_rule", mode="before")
+    @classmethod
+    def _check_dismissal_rule(cls, v: Any) -> str:
+        """Coerce bool -> variant name and reject unknown names.
+
+        Rejecting rather than defaulting: a typo'd variant silently falling back to
+        the default would make a measurement arm quietly test the wrong wording,
+        which is exactly the class of error this whole re-tune exists to correct.
+        """
+        from .personas import normalise_dismissal_rule
+
+        return normalise_dismissal_rule(v)
 
     @classmethod
     def from_config(cls, config: Optional[Dict[str, Any]]) -> "PersonaConfig":

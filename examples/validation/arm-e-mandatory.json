@@ -308,7 +308,7 @@
     },
     "personas": {
       "enabled": true,
-      "dismissal_rule": "retuned"
+      "dismissal_rule": "mandatory"
     }
   }
 }
