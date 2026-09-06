@@ -30,7 +30,7 @@ from matrix_studio.citations import (
     provenance_payload,
 )
 from matrix_studio.settings import get_settings
-from matrix_studio.documents import ingest_file
+from matrix_studio.documents import ingest_file, ingest_text
 from matrix_studio.jsonio import extract_json_object
 from matrix_studio.retrieval import (
     embed_pending_chunks,
@@ -783,11 +783,19 @@ async def _ingest_cast_documents(
     emit: Callable[..., Awaitable[None]],
     next_seq: Callable[[], int],
 ) -> int:
-    """Ingest ``documents`` declared on cast members into the run's index.
+    """Ingest cast-declared background documents into the run's index.
 
-    A cast entry may carry ``"documents": ["./background/spec.pdf", ...]``. Each
-    path is extracted, chunked and indexed scoped to that persona, so the CLI and
-    example files work without going through the API.
+    Two sources, because the two callers cannot use the same one:
+
+    - ``"documents": ["./background/spec.pdf", ...]`` — SERVER-readable paths, for
+      CLI and example-file workflows.
+    - ``"document_texts": [{"title": ..., "text": ...}]`` — inline content, which is
+      the only thing a **browser** can supply: it has no access to server paths, and
+      the existing upload endpoint only exists after a run has been created, by which
+      time turn 1 has already been generated. Cast documents must be indexed before
+      the first turn to be usable at all, so they have to arrive with the request.
+
+    Both are extracted, chunked and indexed scoped to that persona.
 
     Emits ``document.ingested`` per document (or ``document.failed`` with the
     reason) so the operator can see what a persona actually has, and returns the
@@ -799,6 +807,62 @@ async def _ingest_cast_documents(
         paths = member.get("documents") or []
         if isinstance(paths, str):
             paths = [paths]
+
+        # Inline documents first: they cost no file I/O and cannot fail on a missing
+        # path, so a browser-authored run is never blocked by a bad path elsewhere in
+        # the cast.
+        for n, entry in enumerate(member.get("document_texts") or [], start=1):
+            if not isinstance(entry, dict):
+                continue
+            text = str(entry.get("text") or "")
+            if not text.strip():
+                continue
+            title = str(entry.get("title") or "").strip() or f"pasted-{n}.txt"
+            try:
+                doc = ingest_text(text, title=title)
+                doc_id = await db.add_document(
+                    run_id=run_id,
+                    title=doc.title,
+                    chunks=[c.content for c in doc.chunks],
+                    persona_name=persona_name,
+                    source_path=None,
+                    media_type=doc.media_type,
+                    char_count=doc.char_count,
+                )
+                ingested += 1
+                await emit(
+                    turn=0,
+                    seq=next_seq(),
+                    event_type="document.ingested",
+                    agent_name=persona_name,
+                    payload={
+                        "document_id": doc_id,
+                        "persona_name": persona_name,
+                        "title": doc.title,
+                        "media_type": doc.media_type,
+                        "char_count": doc.char_count,
+                        "chunk_count": len(doc.chunks),
+                        "source": "inline",
+                    },
+                )
+                logger.info(
+                    "Ingested inline %s for %s (%d chunks, %d chars)",
+                    doc.title, persona_name, len(doc.chunks), doc.char_count,
+                )
+            except Exception as exc:  # noqa: BLE001 - ingestion must never fail a run
+                logger.warning("Inline document ingestion failed for %s: %s", title, exc)
+                await emit(
+                    turn=0,
+                    seq=next_seq(),
+                    event_type="document.failed",
+                    agent_name=persona_name,
+                    payload={
+                        "persona_name": persona_name,
+                        "title": title,
+                        "source": "inline",
+                        "reason": str(exc),
+                    },
+                )
         for path in paths:
             try:
                 doc = ingest_file(path)

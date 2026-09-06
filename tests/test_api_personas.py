@@ -176,3 +176,75 @@ def test_omitting_the_personas_config_leaves_structure_inert(client):
     assert result["status"] == "complete"
     events = client.get(f"/api/runs/{ref}/events").json()["events"]
     assert not [e for e in events if e["event_type"] == "persona.structured"]
+
+
+# --------------------------------------------------------------------------
+# Browser-authored runs: inline documents and convictions from the new-run form
+# --------------------------------------------------------------------------
+
+
+def test_inline_document_texts_are_ingested_before_the_first_turn(client):
+    """A browser cannot supply server-readable paths, and the upload endpoint only
+    exists after a run is created — by which point turn 1 has been generated and
+    cast documents would be too late to matter. So inline text must arrive with the
+    create request and be indexed before generation starts."""
+    request = _request(retrieval={"enabled": True})
+    request["cast"][0]["document_texts"] = [
+        {"title": "constraints.md", "text": "The install must stay a single process. "
+         "No external service may appear in the quickstart."}
+    ]
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake):
+        ref = client.post("/api/runs", json=request).json()["run_id"]
+        _wait(client, ref)
+
+    docs = client.get(f"/api/runs/{ref}/documents").json()["documents"]
+    assert [d["title"] for d in docs] == ["constraints.md"]
+    # Scoped to the persona that declared it, not cast-wide.
+    assert docs[0]["persona_name"] == "Dana"
+
+    events = client.get(f"/api/runs/{ref}/events").json()["events"]
+    ingested = [e for e in events if e["event_type"] == "document.ingested"]
+    assert ingested, "inline document was never ingested"
+    assert ingested[0]["payload"]["source"] == "inline"
+    # Turn 0: before any turn was generated.
+    assert ingested[0]["turn"] == 0
+
+
+def test_an_untitled_inline_document_still_ingests(client):
+    """The form allows an empty title; a document must not be silently dropped for it."""
+    request = _request(retrieval={"enabled": True})
+    request["cast"][0]["document_texts"] = [{"text": "Some pasted background text here."}]
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake):
+        ref = client.post("/api/runs", json=request).json()["run_id"]
+        _wait(client, ref)
+    docs = client.get(f"/api/runs/{ref}/documents").json()["documents"]
+    assert len(docs) == 1 and docs[0]["title"]
+
+
+def test_a_blank_inline_document_is_skipped_not_failed(client):
+    """An empty textarea left behind in the form is operator noise, not an error."""
+    request = _request(retrieval={"enabled": True})
+    request["cast"][0]["document_texts"] = [{"title": "empty.md", "text": "   "}]
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake):
+        ref = client.post("/api/runs", json=request).json()["run_id"]
+        result = _wait(client, ref)
+    assert result["status"] == "complete"
+    assert client.get(f"/api/runs/{ref}/documents").json()["documents"] == []
+    events = client.get(f"/api/runs/{ref}/events").json()["events"]
+    assert not [e for e in events if e["event_type"] == "document.failed"]
+
+
+def test_a_bad_document_path_does_not_block_an_inline_one(client):
+    """Inline documents are ingested first, so one bad path elsewhere in the cast
+    cannot cost a browser-authored run its background material."""
+    request = _request(retrieval={"enabled": True})
+    request["cast"][0]["document_texts"] = [{"title": "good.md", "text": "Real content here."}]
+    request["cast"][0]["documents"] = ["/nonexistent/missing.pdf"]
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake):
+        ref = client.post("/api/runs", json=request).json()["run_id"]
+        result = _wait(client, ref)
+
+    assert result["status"] == "complete"
+    assert [d["title"] for d in client.get(f"/api/runs/{ref}/documents").json()["documents"]] == ["good.md"]
+    events = client.get(f"/api/runs/{ref}/events").json()["events"]
+    assert [e for e in events if e["event_type"] == "document.failed"], "the bad path should still be reported"

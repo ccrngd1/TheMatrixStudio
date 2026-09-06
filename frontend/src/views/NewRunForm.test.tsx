@@ -110,4 +110,115 @@ describe('NewRunForm option hints', () => {
       /every fourth turn/i,
     )
   })
+
+  // ------------------------------------------------------------------
+  // Cognition defaults, and the two config blocks that were unreachable
+  // ------------------------------------------------------------------
+
+  it('has cognition on with every sub-feature by default', () => {
+    // A run without cognition cannot answer "why did it say that?" -- the dossier
+    // and the why-trace are both empty -- so the interactive default should be on.
+    // The ENGINE default stays off (CognitionConfig) so CLI runs are unchanged.
+    renderForm()
+    for (const name of [
+      /Enable cognition/,
+      /Memory stream/,
+      /Reflection/,
+      /Dynamic goals/,
+      /Relationships/,
+    ]) {
+      expect(screen.getByRole('checkbox', { name })).toBeChecked()
+    }
+  })
+
+  it('lets a persona be given convictions and background documents', () => {
+    // Both were config-file only before this: shipped in v0.5.0 and unreachable
+    // from the UI, which made them effectively invisible to anyone not editing JSON.
+    renderForm()
+    fireEvent.click(screen.getByText(/Convictions & background documents/))
+    expect(screen.getByPlaceholderText(/No feature may add an external service/)).toBeInTheDocument()
+    expect(screen.getByPlaceholderText(/retrieval answer quality/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /paste document/ })).toBeInTheDocument()
+  })
+
+  it('explains what convictions are for, not just what the box is', () => {
+    renderForm()
+    fireEvent.click(screen.getByText(/Convictions & background documents/))
+    const tips = screen.getAllByRole('tooltip').map((t) => t.textContent ?? '')
+    // The distinction that justifies the whole feature.
+    expect(tips.some((t) => /satisfiable/.test(t) && /defended/.test(t))).toBe(true)
+    // And the one about declining to WEIGH rather than to engage.
+    expect(tips.some((t) => /decline/i.test(t) && /weigh/i.test(t))).toBe(true)
+  })
+
+  it('adds and removes pasted documents', () => {
+    renderForm()
+    fireEvent.click(screen.getByText(/Convictions & background documents/))
+    fireEvent.click(screen.getByRole('button', { name: /paste document/ }))
+    expect(screen.getByPlaceholderText(/Paste the document text here/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'remove' }))
+    expect(screen.queryByPlaceholderText(/Paste the document text here/)).not.toBeInTheDocument()
+  })
+
+  it('does not enable personas or retrieval when the cast authored neither', () => {
+    // Enabling a feature nobody configured would cost tokens for an empty prompt
+    // block, so the config must stay as small as it was before these existed.
+    renderForm()
+    fireEvent.change(screen.getByPlaceholderText(/What should the cast discuss/i), {
+      target: { value: 'a topic' },
+    })
+    fireEvent.change(screen.getByPlaceholderText('Name'), { target: { value: 'Ada' } })
+    fireEvent.change(screen.getByPlaceholderText(/Persona description/), {
+      target: { value: 'an ethicist' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Run simulation/ }))
+
+    const body = (api.createRun as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]
+    expect(body.config.personas).toBeUndefined()
+    expect(body.config.retrieval).toBeUndefined()
+    expect(body.cast[0].structured).toBeUndefined()
+  })
+
+  it('sends convictions and turns the personas feature on when authored', () => {
+    renderForm()
+    fireEvent.change(screen.getByPlaceholderText(/What should the cast discuss/i), { target: { value: 'a topic' } })
+    fireEvent.change(screen.getByPlaceholderText('Name'), { target: { value: 'Ada' } })
+    fireEvent.change(screen.getByPlaceholderText(/Persona description/), {
+      target: { value: 'an ethicist' },
+    })
+    fireEvent.click(screen.getByText(/Convictions & background documents/))
+    fireEvent.change(screen.getByPlaceholderText(/No feature may add an external service/), {
+      target: { value: '[firm] consent comes first -> a signed waiver' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Run simulation/ }))
+
+    const body = (api.createRun as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]
+    expect(body.config.personas).toEqual({ enabled: true })
+    expect(body.cast[0].structured.viewpoints[0]).toEqual({
+      position: 'consent comes first',
+      firmness: 'firm',
+      evidence_that_shifts: ['a signed waiver'],
+    })
+  })
+
+  it('sends pasted documents and turns retrieval on when authored', () => {
+    renderForm()
+    fireEvent.change(screen.getByPlaceholderText(/What should the cast discuss/i), { target: { value: 'a topic' } })
+    fireEvent.change(screen.getByPlaceholderText('Name'), { target: { value: 'Ada' } })
+    fireEvent.change(screen.getByPlaceholderText(/Persona description/), {
+      target: { value: 'an ethicist' },
+    })
+    fireEvent.click(screen.getByText(/Convictions & background documents/))
+    fireEvent.click(screen.getByRole('button', { name: /paste document/ }))
+    fireEvent.change(screen.getByPlaceholderText(/Paste the document text here/), {
+      target: { value: 'The policy requires written consent.' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Run simulation/ }))
+
+    const body = (api.createRun as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]
+    expect(body.config.retrieval).toEqual({ enabled: true })
+    expect(body.cast[0].document_texts[0].text).toMatch(/written consent/)
+    // An untitled paste still gets a usable title rather than being dropped.
+    expect(body.cast[0].document_texts[0].title).toBeTruthy()
+  })
 })
