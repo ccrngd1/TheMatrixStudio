@@ -398,3 +398,171 @@ async def test_run_with_no_documents_and_retrieval_on_is_fine(db, tmp_path):
     assert await _events(db, "nodocs", "document.retrieved") == []
     for p in prompts:
         assert "background material" not in p
+
+
+# --------------------------------------------------------------------------- #
+# (7) Phase 5g: unsupported-claim disclosure
+#
+# The signal is about PROVENANCE ("nothing in front of you"), not evidentiary
+# support — the engine only knows nothing was retrieved, and at measured recall
+# the supporting passage often exists and was simply missed.
+# --------------------------------------------------------------------------- #
+
+
+def _no_match_request(tmp_path, **retrieval):
+    """A run whose topic shares no vocabulary with the attached document, so
+    retrieval genuinely returns nothing."""
+    doc = tmp_path / "dana.md"
+    doc.write_text(DANA_TEXT)
+    cfg = {"enabled": True, "k": 3, "max_chars": 900}
+    cfg.update(retrieval)
+    return {
+        "topic": "medieval falconry glove stitching techniques",
+        "cast": [{
+            "name": "Dana", "persona": "distribution lead",
+            "goals": ["protect install"], "documents": [str(doc)],
+        }],
+        "config": {"max_messages": 1, "generate_avatars": False, "retrieval": cfg},
+    }
+
+
+async def test_disclosure_added_when_retrieval_finds_nothing(db, tmp_path):
+    prompts = []
+    with patch(
+        "matrix_studio.engine.simulator.litellm.acompletion",
+        side_effect=_make_fake(prompts, speakers=("Dana",)),
+    ):
+        await run_simulation(
+            _no_match_request(tmp_path, disclose_unsupported=True),
+            db=db, run_id="disc",
+        )
+    joined = "\n".join(prompts)
+    assert "NO source material in front of you" in joined
+    assert "in your own words and in character" in joined
+    assert "Do not invent a citation" in joined
+    # And it is recorded, so transcript and log can be reconciled.
+    events = await _events(db, "disc", "document.unsupported")
+    assert len(events) == 1
+    assert events[0]["agent"] == "Dana"
+    assert events[0]["payload"]["query"]
+
+
+async def test_disclosure_does_not_claim_the_corpus_lacks_support(db, tmp_path):
+    """The wording must not assert an absence the engine cannot verify.
+
+    At measured recall a supporting passage often exists and was simply missed,
+    so "no documentation supports this" would be false a large fraction of the
+    time — an honesty feature that lies is worse than none.
+    """
+    prompts = []
+    with patch(
+        "matrix_studio.engine.simulator.litellm.acompletion",
+        side_effect=_make_fake(prompts, speakers=("Dana",)),
+    ):
+        await run_simulation(
+            _no_match_request(tmp_path, disclose_unsupported=True),
+            db=db, run_id="wording",
+        )
+    joined = "\n".join(prompts).lower()
+    for forbidden in (
+        "no documentation supports",
+        "nothing supports this",
+        "unsupported by",
+        "your documents do not",
+    ):
+        assert forbidden not in joined, f"prompt overclaims: {forbidden!r}"
+
+
+async def test_no_disclosure_when_a_passage_was_retrieved(db, tmp_path):
+    prompts = []
+    with patch(
+        "matrix_studio.engine.simulator.litellm.acompletion",
+        side_effect=_make_fake(prompts, speakers=("Dana",)),
+    ):
+        await run_simulation(
+            _request(
+                tmp_path,
+                retrieval={"enabled": True, "k": 2, "max_chars": 900,
+                           "disclose_unsupported": True},
+            ),
+            db=db, run_id="hit",
+        )
+    joined = "\n".join(prompts)
+    assert "NO source material in front of you" not in joined
+    assert "From your own background material" in joined
+    assert await _events(db, "hit", "document.unsupported") == []
+
+
+async def test_disclosure_off_by_default(db, tmp_path):
+    prompts = []
+    with patch(
+        "matrix_studio.engine.simulator.litellm.acompletion",
+        side_effect=_make_fake(prompts, speakers=("Dana",)),
+    ):
+        await run_simulation(_no_match_request(tmp_path), db=db, run_id="off2")
+    joined = "\n".join(prompts)
+    assert "NO source material in front of you" not in joined
+    assert await _events(db, "off2", "document.unsupported") == []
+
+
+async def test_no_disclosure_when_retrieval_is_disabled(db, tmp_path):
+    """Retrieval off must stay byte-for-byte unchanged, flag or no flag.
+
+    An empty passage list means "retrieval is off" here, and must never be
+    confused with "retrieval ran and found nothing".
+    """
+    prompts = []
+    request = _no_match_request(tmp_path, disclose_unsupported=True)
+    request["config"]["retrieval"]["enabled"] = False
+    with patch(
+        "matrix_studio.engine.simulator.litellm.acompletion",
+        side_effect=_make_fake(prompts, speakers=("Dana",)),
+    ):
+        await run_simulation(request, db=db, run_id="retroff")
+    joined = "\n".join(prompts)
+    assert "NO source material in front of you" not in joined
+    assert await _events(db, "retroff", "document.unsupported") == []
+
+
+async def test_disclosure_works_with_cognition_on(db, tmp_path):
+    prompts = []
+
+    def fake(*args, **kwargs):
+        messages = kwargs["messages"]
+        text = " ".join(m["content"] for m in messages)
+        if "conversation moderator" in text:
+            return _Resp(json.dumps({"speaker": "Dana", "reason": "her turn"}))
+        prompts.append(messages[0]["content"])
+        return _Resp(json.dumps({
+            "utterance": "Speaking from experience here, not from a source.",
+            "rationale": "because", "goal_served": "none",
+        }))
+
+    request = _no_match_request(tmp_path, disclose_unsupported=True)
+    request["config"]["cognition"] = {
+        "enabled": True, "memory": False, "reflection_every": 0,
+    }
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=fake):
+        await run_simulation(request, db=db, run_id="disccog")
+    joined = "\n".join(prompts)
+    assert "NO source material in front of you" in joined
+    assert "Return ONLY a JSON object" in joined
+
+
+async def test_disclosure_is_a_prompt_request_not_a_gate(db, tmp_path):
+    """A model that ignores the request must not fail the turn.
+
+    The in-prompt line is a courtesy; document.unsupported in the event log is
+    the authoritative record.
+    """
+    with patch(
+        "matrix_studio.engine.simulator.litellm.acompletion",
+        side_effect=_make_fake([], speakers=("Dana",)),
+    ):
+        result = await run_simulation(
+            _no_match_request(tmp_path, disclose_unsupported=True),
+            db=db, run_id="ignored",
+        )
+    assert result["status"] == "complete"
+    # The mock never hedges, yet the event still records the true state.
+    assert len(await _events(db, "ignored", "document.unsupported")) == 1
