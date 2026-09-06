@@ -914,7 +914,7 @@ async def _run_turns(
             retrieval_on = bool(retrieval and retrieval.enabled and db is not None)
             passages: List[Any] = []
             if retrieval_on:
-                passages, doc_query = await retrieve_for_turn(
+                passages, doc_query, floor_rejected = await retrieve_for_turn(
                     db, run_id, speaker_name, topic, conversation,
                     k=retrieval.k, max_chars=retrieval.max_chars,
                     recent_turns=retrieval.recent_turns,
@@ -924,6 +924,7 @@ async def _run_turns(
                     mode=retrieval.mode,
                     embedding_model=retrieval.embedding_model,
                     rrf_k=retrieval.rrf_k,
+                    min_similarity=retrieval.min_similarity,
                 )
                 if passages:
                     await emit(
@@ -946,6 +947,7 @@ async def _run_turns(
                                 for p in passages
                             ],
                             "total_chars": sum(len(p.content) for p in passages),
+                            **({"floor_rejected": floor_rejected} if floor_rejected else {}),
                         },
                     )
                 elif retrieval.disclose_unsupported:
@@ -957,7 +959,14 @@ async def _run_turns(
                         seq=next_seq(),
                         event_type="document.unsupported",
                         agent_name=speaker_name,
-                        payload={"speaker": speaker_name, "query": doc_query},
+                        payload={
+                            "speaker": speaker_name,
+                            "query": doc_query,
+                            # Distinguishes "nothing matched at all" from "matched
+                            # only below the similarity floor" — different causes,
+                            # different fixes.
+                            **({"floor_rejected": floor_rejected} if floor_rejected else {}),
+                        },
                     )
             # Only ask for a disclosure when retrieval genuinely ran and came back
             # empty; a retrieval-off run must be byte-for-byte unchanged.

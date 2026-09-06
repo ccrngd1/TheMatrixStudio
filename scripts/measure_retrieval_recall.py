@@ -67,6 +67,10 @@ from matrix_studio.storage import Database  # noqa: E402
 # run_pipeline can read it without threading the value through every signature.
 EMBED_MODEL = [""]
 
+# Best-match cosine of the most recent vector query, stashed so the caller can
+# record it per result. Calibration data for the absolute score floor.
+BEST_COS = [None]
+
 GEN_PROMPT = """You are building an evaluation set for a document search system.
 
 Below is one passage from a technical document. Write TWO questions that this
@@ -211,6 +215,11 @@ async def run_pipeline(
                 k=max(k * 2, k),
             )
         if pipeline == "vector":
+            if semantic:
+                from matrix_studio.embeddings import distance_to_cosine
+                BEST_COS[0] = distance_to_cosine(float(semantic[0]["score"]))
+            else:
+                BEST_COS[0] = None
             return semantic[:k], "<embedding>"
         lexical, fts = await run_pipeline(
             db, query, max(k * 2, k), "baseline", term_limit, max_df_ratio, score_ratio
@@ -399,6 +408,7 @@ async def main() -> int:
                 for arm in arms:
                     query = queries[arm]
                     for pipeline in pipelines:
+                        BEST_COS[0] = None
                         rows, fts = await run_pipeline(
                             db, query, args.k, pipeline,
                             args.term_limit, args.max_df_ratio, args.score_ratio,
@@ -410,6 +420,7 @@ async def main() -> int:
                             "fts_query": fts,
                             "gold_chunk_id": chunk["id"],
                             "matched": len(rows),
+                            "best_cos": BEST_COS[0],
                             "overlap": lexical_overlap(query, chunk["content"]),
                             "rank": rank_of_gold(
                                 rows, chunk["id"], chunk["document_id"], chunk["ordinal"]

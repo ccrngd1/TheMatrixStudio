@@ -298,6 +298,76 @@ conversation.
   documented" marker was added, because the engine cannot verify that.
 - Default OFF (`disclose_unsupported: false`).
 
+## Absolute similarity floor (5h) — calibrated, and narrower than hoped
+
+The hazard recorded above was that retrieval always returns *something*, so a
+persona can be handed a confidently irrelevant passage. The fix proposed was an
+absolute score floor. It is now built — but calibration showed it can only do
+**half** of what was intended, and the half it cannot do is the more interesting
+one.
+
+Calibration: 180 real retrievals from the vector arm, recording the best-match
+cosine and whether the gold passage was actually found.
+
+| | n | min | p10 | median | p90 | max |
+|---|---|---|---|---|---|---|
+| **HIT** (right passage retrieved) | 137 | +0.228 | +0.344 | +0.506 | +0.693 | +0.870 |
+| **MISS** (wrong passage retrieved) | 43 | +0.166 | +0.280 | +0.426 | +0.564 | +0.699 |
+
+**The distributions overlap almost completely.** A miss reached 0.699 — above the
+*median* hit. Sweeping the threshold shows there is no knee, only a trade:
+
+| floor | hits kept | junk rejected |
+|---|---|---|
+| 0.15 | 100% | 0% |
+| 0.30 | 96% | 12% |
+| 0.35 | 90% | 21% |
+| 0.40 | 81% | 40% |
+
+So **no threshold separates a right passage from a wrong one.** A floor tuned to
+catch wrong-passage retrieval would pay real recall for it.
+
+### What the floor *can* do
+
+Genuinely off-topic queries are a different matter. Probed directly, queries with
+nothing to do with the corpus score cosine **−0.00 to +0.07** — far below the
+*lowest* observed genuine hit (0.228):
+
+| probe query | cosine |
+|---|---|
+| "measured token delta cost" | +0.43 |
+| "external service install story" | +0.39 |
+| "banana bread proofing time" | +0.07 |
+| "medieval falconry glove" | −0.00 |
+
+**The floor therefore ships as an off-topic guard, not a relevance filter**, at
+`min_similarity: 0.15` — below the weakest measured hit with margin, so its
+measured cost is **0 of 137 hits**. Note the sweep shows 0% junk rejected at 0.15;
+that is expected and not a failure, because every calibration query was *about*
+the corpus by construction. The guard's value is demonstrated by the probe, not by
+the sweep.
+
+Verified end to end on a deliberately off-topic run (falconry glove leather, with
+a distribution/cost corpus attached): the floor rejected both matches on every
+turn (`floor_rejected=2`), which produced no passages, which fired the 5g
+disclosure, and all three personas stated the absence in their own words —
+*"I don't have any reference materials in front of me for this one, so I'm working
+purely from what I've seen on the job."* Without the floor, vector search would
+have offered a cost-observations passage as background for a falconry question.
+
+### Limits
+
+- **BM25 gets no floor.** Equally relevant queries scored −0.677 and −3.760 in the
+  same corpus; the scale is query-dependent, so no fixed value transfers. `fts`
+  mode is unguarded, though it does naturally return nothing for queries whose
+  vocabulary is absent from the corpus.
+- **Wrong-passage retrieval remains undetected.** This is measured, not assumed,
+  and a test locks it so the default is not "improved" upward on intuition.
+- **Only valid for unit-norm embeddings.** Titan Embed v2 is exactly unit-norm
+  (verified); a provider that is not would make the cosine conversion meaningless,
+  so the floor is skipped with a warning rather than misapplied.
+- One corpus, one embedding model, one run.
+
 ## Verdict
 
 **The design doc's stated trigger for moving to vectors has been met.** It said:

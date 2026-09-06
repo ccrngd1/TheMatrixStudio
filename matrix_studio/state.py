@@ -140,6 +140,23 @@ class RetrievalConfig(BaseModel):
         default=60, ge=1,
         description="Reciprocal Rank Fusion constant for hybrid mode",
     )
+    # Phase 5h: absolute similarity floor for vector/hybrid, as COSINE (1.0 =
+    # identical, 0.0 = unrelated). Calibrated in
+    # docs/PHASE5-RETRIEVAL-MEASUREMENT.md over 180 real retrievals.
+    #
+    # It is an OFF-TOPIC GUARD, not a relevance filter, and the distinction is
+    # measured rather than assumed: correct and incorrect retrievals overlap
+    # almost completely (hits 0.228-0.870, misses 0.166-0.699), so no threshold
+    # can tell a right passage from a wrong one. What IS cleanly separable is a
+    # query with nothing to do with the corpus at all, which scores ~0.0-0.07.
+    #
+    # 0.15 sits below the lowest observed genuine hit (0.228) with margin, so it
+    # costs 0 of 137 measured hits while still rejecting unrelated queries.
+    # Set 0.0 to disable.
+    min_similarity: float = Field(
+        default=0.15, ge=0.0, le=1.0,
+        description="Reject vector matches below this cosine (0 = off; off-topic guard)",
+    )
     # Phase 5g: when retrieval ran and found nothing, ask the persona to say — in
     # its own voice — that it is speaking from experience rather than a source.
     # Deliberately about PROVENANCE, not evidentiary support: the engine knows

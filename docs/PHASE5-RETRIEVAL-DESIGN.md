@@ -304,5 +304,26 @@ Both were fixed, and neither was visible in the mocked tests:
    well-formed queries but loses to pure `vector` on conversational ones, because
    equal-weight RRF lets a weak lexical ranking drag down a strong semantic one.
 
-   Still open: an **absolute** score floor (zero-result rate is 0.000 in every
-   mode, so retrieval never reports "nothing found"), and weighted hybrid fusion.
+6. **5g/5h** ✅ DONE — the two honesty gaps the measurement exposed.
+
+   *5g in-band disclosure:* when retrieval runs and returns nothing, the persona
+   is asked to say so in its own voice, so the TRANSCRIPT distinguishes a grounded
+   claim from an ungrounded one (previously visible only in the event log).
+   Deliberately about provenance ("nothing in front of you"), never about
+   evidentiary support — the engine cannot know the corpus lacks support, and at
+   0.82 recall claiming so would be wrong ~1 time in 5. Wording chosen by live
+   A/B, default OFF.
+
+   *5h absolute similarity floor:* calibrated over 180 real retrievals, and it can
+   only do half of what was hoped. Correct and incorrect retrievals overlap almost
+   completely (hits 0.228-0.870, misses 0.166-0.699), so **no threshold separates a
+   right passage from a wrong one** — that is measured, and locked by a test.
+   Genuinely off-topic queries DO separate (cosine ~0.0-0.07), so it ships as an
+   **off-topic guard** at `min_similarity: 0.15` — below the weakest measured hit,
+   costing 0 of 137 hits. `fts` gets no floor: BM25 scale is query-dependent.
+
+   The two compose: floor rejects everything -> no passages -> disclosure fires ->
+   the persona states the absence. Verified end to end.
+
+   Still open: **wrong-passage retrieval remains undetected** (measured as not
+   separable by score), and weighted hybrid fusion.
