@@ -50,6 +50,8 @@ from typing import Any, Dict, List, Optional
 
 import litellm
 
+from matrix_studio.jsonio import extract_json_object
+
 logger = logging.getLogger(__name__)
 
 # §4a priority order, highest first. Checks run in this order and report the
@@ -264,7 +266,18 @@ than a legitimate deliberate echo). Respond with ONLY a JSON object:
         )
         response = await litellm.acompletion(**kwargs)
         raw = response.choices[0].message.content.strip()
-        parsed = json.loads(raw)
+        # Tolerant parse. A bare json.loads here meant the gate silently dropped
+        # EVERY heuristic suspicion against a model that fences its JSON: the
+        # JSONDecodeError hit the fail-open handler below and became
+        # violation: False, so the selective confirmation had never confirmed
+        # anything. See matrix_studio/jsonio.py.
+        parsed = extract_json_object(raw)
+        if parsed is None:
+            logger.warning(
+                "Validation LLM confirm returned unparseable output (suspicion dropped): %r",
+                raw[:200],
+            )
+            return {"violation": False, "tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0}
         violation = bool(parsed.get("violation", False))
         usage = response.usage
         tokens_in = usage.prompt_tokens if usage else 0
