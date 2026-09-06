@@ -10,6 +10,8 @@ from typing import Any, Dict, List, Optional
 import uuid
 from pydantic import BaseModel, Field, field_validator
 
+from .personas import StructuredPersona
+
 
 class MemoryItem(BaseModel):
     """A single memory item in an agent's memory stream."""
@@ -50,6 +52,13 @@ class AgentState(BaseModel):
     schema_version: str = Field(default="1.0.0", description="Schema version for migration")
     name: str = Field(description="Agent name")
     persona: str = Field(description="Agent persona/system message")
+    # Phase 6: optional structured identity — background, preferences (including
+    # `dismisses`) and viewpoints with firmness. Additive to `persona`, never a
+    # replacement: prose carries voice, structure carries commitments. None for
+    # every pre-Phase-6 run and snapshot, so stored snapshots still parse.
+    structured: Optional[StructuredPersona] = Field(
+        default=None, description="Structured persona: convictions, not just goals (Phase 6)"
+    )
     memory_stream: List[MemoryItem] = Field(default_factory=list, description="Agent's memory")
     goals: List[str] = Field(default_factory=list, description="Current goals")
     relationships: Dict[str, str] = Field(default_factory=dict, description="Relationships to other agents")
@@ -200,6 +209,45 @@ class RetrievalConfig(BaseModel):
     def from_config(cls, config: Optional[Dict[str, Any]]) -> "RetrievalConfig":
         """Parse from a run ``config`` dict. Missing/invalid -> disabled default."""
         raw = (config or {}).get("retrieval")
+        if not isinstance(raw, dict):
+            return cls()
+        return cls(**{k: v for k, v in raw.items() if k in cls.model_fields})
+
+
+class PersonaConfig(BaseModel):
+    """Phase 6 structured-persona flags (per-run, read from ``config['personas']``).
+
+    Deliberately NOT part of ``CognitionConfig``, for the same reason
+    ``RetrievalConfig`` is not: convictions are useful with cognition off, and the
+    premise validation that justified this feature ran with cognition **off** in
+    all three arms, so that is the configuration the evidence actually covers.
+
+    Defaults reproduce pre-Phase-6 behavior exactly: with ``enabled`` False, any
+    ``structured`` block on a cast member is ignored and every prompt is
+    byte-identical to before.
+    """
+
+    type: str = Field(default="PersonaConfig", description="Type discriminator")
+    schema_version: str = Field(default="1.0.0", description="Schema version")
+    enabled: bool = Field(default=False, description="Master switch for structured personas")
+    # When False the underlying concern is rendered as freely sayable. Default
+    # True because withholding it is the point: per the source spec, drawing the
+    # real concern out of a stakeholder is the skill being exercised, and a
+    # concern volunteered in turn 1 cannot be drawn out.
+    withhold_concerns: bool = Field(
+        default=True, description="Keep `underlying_concern` unsaid until asked"
+    )
+    # The re-tuned dismissal rule from Arm C's failure analysis. On by default
+    # because `dismisses` without it is the exact configuration that produced
+    # parallel monologues; off only for measuring that difference again.
+    dismissal_rule: bool = Field(
+        default=True, description="Render the re-tuned dismissal rule alongside `dismisses`"
+    )
+
+    @classmethod
+    def from_config(cls, config: Optional[Dict[str, Any]]) -> "PersonaConfig":
+        """Parse from a run ``config`` dict. Missing/invalid -> disabled default."""
+        raw = (config or {}).get("personas")
         if not isinstance(raw, dict):
             return cls()
         return cls(**{k: v for k, v in raw.items() if k in cls.model_fields})

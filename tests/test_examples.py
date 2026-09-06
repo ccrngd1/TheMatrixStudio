@@ -111,6 +111,39 @@ async def test_example_runs_with_mocked_engine(example_path, monkeypatch, tmp_pa
     await db.close()
 
 
+def test_structured_personas_example_parses_and_stays_calibrated():
+    """Phase 6. Two properties, both from the premise validation's method:
+
+    1. Every ``structured`` block parses under the real model — the example is the
+       schema's documentation, so a stale example is a broken contract.
+    2. The firmest positions are NOT uniformly the soundest. If firmness
+       correlated with correctness the operator could win by reflexively
+       conceding to whoever pushed hardest, and the panel would teach nothing.
+    """
+    from matrix_studio.personas import parse_structured
+
+    with open(EXAMPLES_DIR / "structured-personas.json") as f:
+        data = json.load(f)
+
+    assert data["config"]["personas"]["enabled"] is True
+
+    firm_validities, negotiable_validities = [], []
+    for member in data["cast"]:
+        sp = parse_structured(member["structured"])
+        assert sp is not None, member["name"]
+        assert sp.viewpoints, f"{member['name']} has no positions to defend"
+        for vp in sp.viewpoints:
+            (firm_validities if vp.is_defended else negotiable_validities).append(vp.validity)
+
+    assert firm_validities, "no defended positions — nothing would be argued for"
+    assert any(v != "sound" for v in firm_validities), (
+        "every firmly-held position is sound; firmness is leaking correctness"
+    )
+    assert "sound" in negotiable_validities, (
+        "no sound position is negotiable; conceding would always be correct"
+    )
+
+
 def test_design_review_example_has_cognition():
     """
     The design-review example specifically demonstrates cognition enabled.

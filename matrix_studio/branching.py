@@ -34,12 +34,14 @@ import time
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from matrix_studio.engine import resume_simulation
+from matrix_studio.personas import parse_structured
 from matrix_studio.engine.simulator import OnEvent
 from matrix_studio.naming import generate_run_name
 from matrix_studio.settings import get_settings
 from matrix_studio.state import (
     AgentState,
     CognitionConfig,
+    PersonaConfig,
     PendingThread,
     RetrievalConfig,
     SimSnapshot,
@@ -118,6 +120,9 @@ async def reconstruct_at_turn(
             name=persona["name"],
             persona=persona.get("persona", ""),
             goals=persona.get("goals", []),
+            # Phase 6: reconstruct structured personas from the stored cast, so a
+            # branch's personas hold the same convictions the parent's did.
+            structured=parse_structured(persona.get("structured")),
         )
         agents[agent.name] = agent
 
@@ -408,6 +413,11 @@ async def execute_branch(
         cognition=cognition,
         pending_threads=pending_threads,
         retrieval=retrieval,
+        # Phase 6: a branch keeps the parent's structured personas. Convictions
+        # are exactly the state a "what if they had held firm" branch is asking
+        # about, so losing them at the fork would make the branch answer a
+        # different question than the one asked.
+        personas=PersonaConfig.from_config(branch_config),
     )
 
 
@@ -554,4 +564,6 @@ async def resume_run_in_place(
         # Phase 5: an in-place resume keeps its own documents — they are already
         # attached to this run_id, so nothing needs copying.
         retrieval=RetrievalConfig.from_config(resume_cfg),
+        # Phase 6: same for structured personas — the run's own config.
+        personas=PersonaConfig.from_config(resume_cfg),
     )

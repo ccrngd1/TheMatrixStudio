@@ -36,6 +36,7 @@ from matrix_studio import analysis, service
 from matrix_studio.api.manager import RunManager, TERMINAL_EVENTS, event_row_to_wire
 from matrix_studio.documents import ExtractionError, ingest_file, ingest_text
 from matrix_studio.naming import generate_run_name
+from matrix_studio.personas import StructuredPersona, structured_payload
 from matrix_studio.retrieval import (
     apply_budget,
     build_fts_query,
@@ -63,6 +64,11 @@ class PersonaModel(BaseModel):
     # request contract — an undeclared field is silently dropped, which would
     # make cast-level attachment work from the CLI but not through the API.
     documents: List[str] = Field(default_factory=list)
+    # Phase 6: structured identity — background, preferences (incl. `dismisses`),
+    # viewpoints with firmness. Typed as the real model rather than a loose dict so
+    # a bad `firmness` is a 422 at the API boundary instead of a run-start crash.
+    # Same contract lesson as `documents` above: an undeclared field is dropped.
+    structured: Optional[StructuredPersona] = None
 
 
 class CognitionConfigModel(BaseModel):
@@ -104,6 +110,15 @@ class RetrievalConfigModel(BaseModel):
     score_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
+class PersonaConfigModel(BaseModel):
+    """Phase 6 per-run structured personas. Omitted -> disabled, in which case a
+    cast member's ``structured`` block never reaches a prompt."""
+
+    enabled: bool = False
+    withhold_concerns: bool = True
+    dismissal_rule: bool = True
+
+
 class RunConfigModel(BaseModel):
     max_messages: Optional[int] = None
     generate_avatars: Optional[bool] = None
@@ -112,6 +127,9 @@ class RunConfigModel(BaseModel):
     cognition: Optional[CognitionConfigModel] = None
     # Phase 5: optional document retrieval. Independent of cognition.
     retrieval: Optional[RetrievalConfigModel] = None
+    # Phase 6: optional structured personas. Omitted -> disabled, and any
+    # `structured` block on a cast member is ignored (pre-Phase-6 prompts).
+    personas: Optional[PersonaConfigModel] = None
 
 
 class SummaryConfigModel(BaseModel):
@@ -722,6 +740,13 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             "pending_threads": agent_threads,
             "documents": attached,
             "document_retrievals": drew_on,
+            # Phase 6: the convictions this persona was seeded with, minus the
+            # operator's private fields (`validity`, `underlying_concern`). None
+            # for a run that used no structured personas. Deliberately NOT the
+            # withheld concern: the dossier is a UI surface, and showing the real
+            # worry there would let an operator read off the answer to the thing
+            # the panel is supposed to draw out in conversation.
+            "structured": structured_payload(agent.structured),
             "relationships": agent.relationships,
             "tokens_in": agent.total_tokens_in,
             "tokens_out": agent.total_tokens_out,

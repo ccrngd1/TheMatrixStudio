@@ -273,6 +273,30 @@ export interface DossierRetrieval {
   }[]
 }
 
+// Phase 6 structured persona, as the dossier returns it. Mirrors
+// `matrix_studio/personas.py` MINUS the two operator-private fields.
+export interface StructuredViewpoint {
+  position: string
+  formed_by?: string
+  firmness: 'negotiable' | 'firm' | 'non-negotiable' | 'requires-escalation'
+  evidence_that_shifts?: string[]
+}
+
+export interface StructuredPersona {
+  role?: string
+  background?: {
+    tenure_years?: number | null
+    prior_roles?: string[]
+    formative_events?: { year?: number | null; event: string; lesson?: string }[]
+  }
+  preferences?: {
+    optimises_for?: string[]
+    dismisses?: string[]
+    persuaded_by?: string[]
+  }
+  viewpoints?: StructuredViewpoint[]
+}
+
 export interface AgentDossier {
   run_id: string
   agent: string
@@ -284,6 +308,11 @@ export interface AgentDossier {
   // Phase 5. Optional so a dossier from an older backend still parses.
   documents?: DossierDocument[]
   document_retrievals?: DossierRetrieval[]
+  // Phase 6. Null for a run that used no structured personas. The backend has
+  // already stripped `underlying_concern` and `validity` — both are private to
+  // the operator by design, so they are absent from this type on purpose rather
+  // than by omission. No UI renders this yet (see docs/BACKLOG.md).
+  structured?: StructuredPersona | null
   tokens_in: number
   tokens_out: number
   cost_usd: number
