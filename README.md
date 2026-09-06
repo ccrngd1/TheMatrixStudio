@@ -22,6 +22,7 @@ TheMatrix Simulation Studio is a standalone tool for running multi-agent convers
 - **Checkpointing & Branching** — Every turn is checkpointed; branch from any point to create "what-if" timelines with different interventions
 - **Interventions** — Inject messages, edit goals, add/remove personas, continue discussions, promote aside conversations into the main timeline, or apply adaptive pressure (experimental, opt-in)
 - **Agent Cognition** (Phase 2c, optional) — Agents form memories, reflect periodically, track relationships, and explain their reasoning ("why did they say that?")
+- **Structured Personas** (Phase 6, optional) — Personas hold *convictions*, not just goals: formative events, what they refuse to weigh, and positions with a firmness level and a named exit condition. The real concern behind each position is withheld until someone draws it out
 - **Consistency Validation** (Phase 4a) — A pre-emit gate checks each turn against the priority hierarchy (coherence / causality / continuity / agency / character consistency) and regenerates violations; model output is never rewritten in place
 - **Pending Threads** (Phase 4b, optional) — A setups-&-payoffs ledger: agents plant threads that causally feed into later turns, with dangling-thread surfacing in the dossier
 - **Structured Turn View** (Phase 4d, optional) — Narrative / Consequences / Updated State / Possibilities projection of any turn, sourced only from real events
@@ -322,6 +323,90 @@ and at 10³-10⁴ chunks exhaustive search costs 0.57 ms against a 4-7 s turn), 
 `docs/PHASE5-RETRIEVAL-MEASUREMENT.md` for the recall numbers behind the mode
 recommendation.
 
+### Phase 6: Structured Personas
+
+Goals are **satisfiable** — a persona holding one can be talked into any plan
+that satisfies it. Structured personas add the missing axis: *what I believe and
+will not give up.* Convictions are defended; goals are traded.
+
+Off by default. Add a `structured` block to a cast member and turn the feature on:
+
+```json
+{
+  "config": { "personas": { "enabled": true } },
+  "cast": [{
+    "name": "Dana",
+    "persona": "Head of distribution. Pragmatic, protective of the install story.",
+    "goals": ["Protect the five-minute time-to-first-run"],
+    "structured": {
+      "role": "Head of Distribution & Packaging",
+      "background": {
+        "tenure_years": 9,
+        "formative_events": [{
+          "year": 2023,
+          "event": "A quickstart that required standing up a separate vector database",
+          "lesson": "Every extra service costs you users before they see it work"
+        }]
+      },
+      "preferences": {
+        "optimises_for": ["time-to-first-run"],
+        "dismisses": ["retrieval answer quality", "research novelty"],
+        "persuaded_by": ["a working install on a clean machine"]
+      },
+      "viewpoints": [{
+        "position": "No feature may add a stateful external service to the default install",
+        "underlying_concern": "I own the failure when a customer never reaches a working run",
+        "formed_by": "The 2023 product that stalled at the install step",
+        "firmness": "firm",
+        "evidence_that_shifts": ["an embedded index that is a file, not a service"],
+        "validity": "sound"
+      }]
+    }
+  }]
+}
+```
+
+`persona` and `structured` are **additive, not alternatives**: prose carries voice,
+structure carries commitments.
+
+| Config | Default | Effect |
+|---|---|---|
+| `personas.enabled` | `false` | Master switch. Off ⇒ `structured` blocks are ignored and prompts are byte-identical to pre-Phase-6 |
+| `personas.withhold_concerns` | `true` | Keep `underlying_concern` unsaid until someone asks |
+| `personas.dismissal_rule` | `true` | Render the re-tuned engagement rule alongside `dismisses` |
+
+`firmness` is `negotiable` | `firm` | `non-negotiable` | `requires-escalation`. An
+unknown value is **rejected** (422 from the API) rather than silently downgraded —
+a typo'd `non_negotiable` becoming `negotiable` would quietly remove the defence
+the field exists to provide. A `firm`-or-above position with an empty
+`evidence_that_shifts` is an unfalsifiable wall, so the prompt tells the persona
+to say so if pressed rather than invent a condition it was never given.
+
+**Two fields are private and stay private.** `underlying_concern` reaches only its
+own persona's prompt — never the moderator's cast list, never the event log, never
+the dossier — because *drawing the real concern out is the exercise*, and a concern
+volunteered on turn 1 cannot be drawn out. `validity` reaches no prompt at all: it
+is an operator calibration note (are the firmest positions also the soundest? they
+should not be), used for scoring after a run.
+
+**Why the dismissal rule is worded the way it is.** This feature comes from the
+three-arm experiment in `docs/PHASE5-PREMISE-VALIDATION.md`, which found the naive
+"judge only against your own priorities" rule degraded discussion into repetitive
+parallel monologues (talking-past 4/5, cross-speaker similarity *worse* than the
+control). The shipped rule limits **priorities, not attention**: a persona must
+still answer the substance of a challenge directly and state the other side's point
+at its strongest before setting it aside, may not repeat a dismissal, and may not
+spend a whole turn declining to engage.
+
+**Honest limitation.** The measured gains behind this feature — accommodation rate
+down 40%, dismissal rate up five-fold, lowest cross-speaker similarity, the only
+arm where anyone changed position — come from that experiment's Arm B, whose
+personas were hand-written *prose*. The same content as structured data, with the
+retuned rule, has **not** been measured against a live model. The same experiment
+also found **no** increase in distinct positions or specificity, which its own
+caveats suggest is unmeasured rather than disproven. See
+`docs/PHASE6-STRUCTURED-PERSONAS.md`.
+
 ### Avatar Generation
 
 ```bash
@@ -434,15 +519,24 @@ matrix-sim-studio/
 │   ├── api/               # FastAPI app + WebSocket stream + run manager
 │   ├── static/            # Built frontend assets (from Vite build)
 │   ├── settings.py        # Configuration management
-│   ├── state.py           # Pydantic state models (AgentState, CognitionConfig, SimSnapshot)
+│   ├── state.py           # Pydantic state models (AgentState, *Config, SimSnapshot)
+│   ├── personas.py        # Structured personas — convictions & rendering (Phase 6)
+│   ├── validation.py      # Priority-hierarchy pre-emit gate (Phase 4a)
+│   ├── pressure.py        # Adaptive-pressure intervention (Phase 4c, experimental)
+│   ├── structured_view.py # Narrative/Consequences/State/Possibilities view (Phase 4d)
+│   ├── documents.py       # Document extraction + chunking (Phase 5)
+│   ├── retrieval.py       # Query building, budget, fusion, prompt blocks (Phase 5)
+│   ├── embeddings.py      # Embedding calls + serialisation (Phase 5f)
+│   ├── citations.py       # Citation provenance: first/second-hand (Phase 5i)
 │   ├── avatar.py          # Avatar generation (Stability SD3.5 on Bedrock)
 │   ├── analysis.py        # Post-run summary + aside conversations (Phase 1.5)
 │   ├── branching.py       # Branch primitive (Phase 2a/2b)
 │   ├── naming.py          # Memorable run codename generation
-│   └── __main__.py        # CLI entrypoint (run / serve subcommands)
+│   └── __main__.py        # CLI entrypoint (run / serve / docs subcommands)
 ├── frontend/              # React + Vite + TypeScript + Tailwind UI
 ├── examples/              # Example simulation configs
-├── tests/                 # Backend test suite (194 tests)
+├── scripts/               # Measurement harnesses (recall, validation arms, scoring)
+├── tests/                 # Backend test suite (all mocked; `pytest -q` for the count)
 ├── docs/                  # Documentation
 ├── pyproject.toml         # Package configuration
 ├── Dockerfile             # Multi-stage container (frontend build + Python app)
@@ -488,7 +582,8 @@ pip install -e ".[dev]"
 ### Run Tests
 
 ```bash
-# Backend (194 tests, all mocked)
+# Backend — all mocked, no live LLM calls. `pytest -q` prints the count; a
+# hardcoded number here would be stale by the next commit.
 pytest
 
 # Frontend (18 tests)
@@ -521,7 +616,8 @@ npm run dev
 - ✅ **Phase 3:** Release polish — cost guards, BYO-key readiness, examples, docs, hygiene (v0.3.0)
 - ✅ **Phase 4:** Deeper cognition & steering — priority-hierarchy validation gate, pending-thread ledger, structured output view, adaptive pressure (experimental) (v0.4.0)
 - ✅ **Phase 5:** Per-persona document retrieval — FTS5 + optional `sqlite-vec` embeddings, per-call context budget, retrieval inspection endpoint, unsupported-claim disclosure, citation provenance (unreleased)
-- **Next:** Structured personas — validated in `docs/PHASE5-PREMISE-VALIDATION.md` but not yet built
+- ✅ **Phase 6:** Structured personas — convictions with firmness + exit conditions, `dismisses` with a re-tuned engagement rule, withheld underlying concerns (unreleased)
+- **Next:** Measure Phase 6 against a live model — a fourth validation arm ("Arm B as shipped") on the same brief and metrics
 - **Future:** Embedding-based *memory* retrieval (document retrieval shipped in Phase 5), multi-modal inputs, hosted deployment
 
 **Open work is indexed in [`docs/BACKLOG.md`](docs/BACKLOG.md)** — including what was
@@ -530,6 +626,8 @@ deliberately rejected after measurement, so it is not retried on intuition.
 ## Documentation
 
 - `docs/BACKLOG.md` — Open, deferred and rejected work, each with a revisit trigger
+- `docs/PHASE6-STRUCTURED-PERSONAS.md` — Phase 6 design: why concerns are withheld, and the re-tuned dismissal rule
+- `docs/PHASE5-PREMISE-VALIDATION.md` — The three-arm experiment that justified Phase 6 (including its negative result)
 - `docs/PROJECT-SPEC.md` — Full ideation/architecture spec
 - `docs/PHASE3-REQUIREMENTS.md` — Phase 3 (release polish) acceptance criteria
 - `docs/PHASE2C-REQUIREMENTS.md` — Phase 2c (cognition) spec

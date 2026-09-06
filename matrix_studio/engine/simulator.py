@@ -37,12 +37,19 @@ from matrix_studio.retrieval import (
     format_unsupported_block,
     retrieve_for_turn,
 )
+from matrix_studio.personas import (
+    effective_persona,
+    parse_structured,
+    public_persona,
+    structured_payload,
+)
 from matrix_studio.state import (
     THREAD_TYPES,
     AgentState,
     CognitionConfig,
     MemoryItem,
     PendingThread,
+    PersonaConfig,
     RetrievalConfig,
     SimSnapshot,
 )
@@ -63,6 +70,7 @@ async def _select_next_speaker(
     settings,
     model: Optional[str] = None,
     cognition: Optional[CognitionConfig] = None,
+    personas: Optional[PersonaConfig] = None,
 ) -> tuple[str, Optional[str]]:
     """
     Use LLM to select the next speaker.
@@ -79,15 +87,30 @@ async def _select_next_speaker(
             selection prompt/call is byte-for-byte the pre-2c behavior and the
             returned reason is None. When enabled the moderator also returns a
             one-line reason (captured into the speaker.selected event).
+        personas: Phase 6 structured-persona config. Only the PUBLIC summary of a
+            structured persona reaches this prompt — see below.
 
     Returns:
         ``(selected_agent_name, reason_or_None)``
     """
     agent_names = list(agents.keys())
+    personas_on = bool(personas and personas.enabled)
 
-    # Build selection prompt
+    # Build selection prompt.
+    #
+    # Phase 6: this uses `public_persona`, NOT the speaker's own persona text. The
+    # moderator prompt is the one place every persona's description appears at
+    # once, so rendering the private block here would put each persona's withheld
+    # `underlying_concern` one prompt away from the whole cast — destroying the
+    # thing it exists for (drawing the concern out is the skill being exercised).
+    # What the moderator gets is role + what they optimise for, which is what the
+    # room can see anyway and is genuinely useful for choosing who speaks next.
     personas_desc = "\n".join(
-        [f"- {name}: {agents[name].persona}" for name in agent_names]
+        [
+            f"- {name}: "
+            + public_persona(agents[name].persona, agents[name].structured, enabled=personas_on)
+            for name in agent_names
+        ]
     )
 
     recent_conv = conversation[-10:] if len(conversation) > 10 else conversation
@@ -183,6 +206,7 @@ async def _generate_response(
     open_threads: Optional[List["PendingThread"]] = None,
     retrieved_passages: Optional[List[Any]] = None,
     disclose_unsupported: bool = False,
+    personas: Optional[PersonaConfig] = None,
 ) -> Dict[str, Any]:
     """
     Generate a response from the selected speaker.
@@ -211,6 +235,20 @@ async def _generate_response(
     goals_dynamic = bool(cognition_on and cognition.goals_dynamic)
     relationships_on = bool(cognition_on and cognition.relationships)
     threads_on = bool(cognition_on and cognition.threads)
+    personas_on = bool(personas and personas.enabled)
+
+    # Phase 6: the speaker's own persona text, with its structured identity —
+    # background, formative lessons, positions with firmness, the re-tuned
+    # dismissal rule — appended. Returns `agent.persona` unchanged when the
+    # feature is off or the cast member declared no structured block, so the
+    # prompt is byte-identical to pre-Phase-6 in both cases.
+    persona_text = effective_persona(
+        agent.persona,
+        agent.structured,
+        enabled=personas_on,
+        withhold_concerns=bool(personas.withhold_concerns) if personas else True,
+        dismissal_rule=bool(personas.dismissal_rule) if personas else True,
+    )
 
     # Build context for the agent
     recent_conv = conversation[-20:] if len(conversation) > 20 else conversation
@@ -302,7 +340,7 @@ async def _generate_response(
                 "unresolved-threads list above and ONLY if this turn genuinely closes them."
             )
         schema_line = "{" + ", ".join(fields) + "}"
-        system_message = f"""{agent.persona}
+        system_message = f"""{persona_text}
 
 You are participating in a conversation about: {topic}
 
@@ -314,7 +352,7 @@ Return ONLY a JSON object of the form:
 {schema_line}
 The rationale must be your genuine reason for this specific turn; do not invent facts.{extra_instr}"""
     else:
-        system_message = f"""{agent.persona}
+        system_message = f"""{persona_text}
 
 You are participating in a conversation about: {topic}
 
@@ -523,6 +561,7 @@ async def run_simulation(
     generate_avatars_flag = config.get("generate_avatars", settings.enable_avatars)
     cognition = CognitionConfig.from_config(config)
     retrieval = RetrievalConfig.from_config(config)
+    personas_cfg = PersonaConfig.from_config(config)
     run_name = request.get("name")
     run_description = request.get("description")
 
@@ -576,13 +615,21 @@ async def run_simulation(
             except Exception as cb_err:  # noqa: BLE001 - live emit must never break a run
                 logger.warning("on_event callback failed for %s: %s", event_type, cb_err)
 
-    # Initialize agents
+    # Initialize agents.
+    #
+    # Phase 6: a cast member may carry a `structured` block (background,
+    # preferences, viewpoints). It is parsed ALWAYS, not only when the feature is
+    # enabled, so that a malformed block — a typo'd `firmness`, say — fails loudly
+    # at run start instead of being silently ignored until someone turns the flag
+    # on and wonders why nothing changed. Whether it reaches a prompt is
+    # `personas_cfg.enabled`'s decision, made later in _generate_response.
     agents: Dict[str, AgentState] = {}
     for persona in cast:
         agent = AgentState(
             name=persona["name"],
             persona=persona["persona"],
             goals=persona.get("goals", []),
+            structured=parse_structured(persona.get("structured")),
         )
         agents[agent.name] = agent
 
@@ -605,6 +652,29 @@ async def run_simulation(
         event_type="sim.started",
         payload={"topic": topic, "agent_count": len(agents)},
     )
+
+    # Phase 6: record which convictions the run was seeded with, once, at turn 0.
+    # Emitted only when the feature is actually on, so an event's presence means
+    # the structure reached the prompts rather than merely sitting in the cast.
+    # `structured_payload` strips `validity` and `underlying_concern` — both are
+    # private to the operator by design, and the event log is exported and rendered.
+    if personas_cfg.enabled:
+        for agent in agents.values():
+            payload = structured_payload(agent.structured)
+            if payload is None:
+                continue
+            await _emit(
+                turn=0,
+                seq=_next_seq(),
+                event_type="persona.structured",
+                agent_name=agent.name,
+                payload={
+                    "agent_name": agent.name,
+                    "structured": payload,
+                    "withhold_concerns": personas_cfg.withhold_concerns,
+                    "dismissal_rule": personas_cfg.dismissal_rule,
+                },
+            )
 
     # Generate avatars in parallel. Phase 0 generated them serially before the
     # loop and blocked on all of them; here we still gather() them but emit an
@@ -676,6 +746,7 @@ async def run_simulation(
         model=config.get("model") or None,
         cognition=cognition,
         retrieval=retrieval,
+        personas=personas_cfg,
     )
 
 
@@ -834,6 +905,7 @@ async def _run_turns(
     cognition: Optional[CognitionConfig] = None,
     pending_threads: Optional[List[PendingThread]] = None,
     retrieval: Optional[RetrievalConfig] = None,
+    personas: Optional[PersonaConfig] = None,
 ) -> Dict[str, Any]:
     """
     Shared turn loop + completion/failure handling for both a fresh run and a
@@ -878,7 +950,7 @@ async def _run_turns(
             # Phase 1: Select next speaker
             speaker_name, selection_reason = await _select_next_speaker(
                 topic, agents, conversation, last_speaker, settings,
-                model=model, cognition=cognition,
+                model=model, cognition=cognition, personas=personas,
             )
 
             # speaker.selected payload is additive-only: the reason key appears
@@ -990,7 +1062,7 @@ async def _run_turns(
                 speaker_name, speaker, topic, conversation, settings,
                 model=model, cognition=cognition, retrieved_memories=retrieved,
                 open_threads=open_threads, retrieved_passages=passages,
-                disclose_unsupported=disclose,
+                disclose_unsupported=disclose, personas=personas,
             )
 
             # Phase 4a: pre-emit priority-hierarchy validation gate. The
@@ -1082,6 +1154,7 @@ async def _run_turns(
                         # would change the causal context mid-turn.
                         retrieved_passages=passages,
                         disclose_unsupported=disclose,
+                        personas=personas,
                     )
 
             # Update conversation
@@ -1758,6 +1831,7 @@ async def resume_simulation(
     cognition: Optional[CognitionConfig] = None,
     pending_threads: Optional[List[PendingThread]] = None,
     retrieval: Optional[RetrievalConfig] = None,
+    personas: Optional[PersonaConfig] = None,
 ) -> Dict[str, Any]:
     """
     Phase 2a branch primitive — RESUME generating forward from a checkpoint.
@@ -1887,4 +1961,5 @@ async def resume_simulation(
         cognition=cognition,
         pending_threads=pending_threads,
         retrieval=retrieval,
+        personas=personas,
     )

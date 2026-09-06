@@ -16,25 +16,55 @@ with evidence) · **BLOCKED** (waiting on something external) · **REJECTED**
 
 ## Validated but unbuilt
 
-### Structured personas (premise-validation Arm B)
-**Status:** OPEN — highest-value unbuilt item.
+*(Empty. Structured personas — the only entry this section ever held — shipped as
+Phase 6; see below.)*
 
-`docs/PHASE5-PREMISE-VALIDATION.md` ran a three-arm experiment and concluded
-**"PROCEED with structured personas (Arm B)"**: `dismisses` / `formedBy` /
-`firmness` / `evidenceThatShifts` cut the accommodation rate 40%, produced the
-lowest cross-speaker similarity *and* the best engagement score of any arm, and
-was the only arm in which any participant changed position.
+---
 
-That verdict was never acted on — Phase 5 went to document retrieval instead. The
-engine still has no axis for *"what I believe and won't give up"*: goals are
-satisfiable, convictions are defended.
+## Built, not yet measured
 
-Also recorded there: ship this **with the dismissal rule re-tuned**, because Arm C
-showed personas retreating into repetitive parallel monologues (talking-past 4/5)
-when a hard "judge only against your own priorities" rule met a large always-present
-source block.
+### Phase 6 structured personas: live-model measurement
+**Status:** OPEN — the honest next step for the feature just built.
 
-**Revisit trigger:** none needed — this is a standing recommendation with evidence.
+Phase 6 shipped the premise validation's Arm B recommendation
+(`docs/PHASE6-STRUCTURED-PERSONAS.md`): convictions with `firmness` +
+`evidence_that_shifts`, `dismisses` with the **re-tuned** engagement rule, and
+withheld `underlying_concern`. `tests/test_personas.py`,
+`tests/test_structured_persona_engine.py` and `tests/test_api_personas.py` prove
+the wiring, the per-persona scoping and the non-leakage by reading real prompts.
+
+What they cannot prove is behaviour. Specifically unmeasured:
+
+- Does the retuned dismissal rule keep the dismissal rate's *benefit* (0.333 vs
+  the control's 0.067) without Arm C's talking-past cost (4/5)?
+- Does `requires-escalation` produce escalation rather than agreement when a
+  persona is overruled?
+- Does the withheld concern get *drawn out* — and only when asked?
+- Interaction with cognition **on**, which the experiment never tested (it was off
+  in all three arms).
+
+The harness already exists: `scripts/build_validation_arms.py`,
+`scripts/score_validation.py --judge`, ~$0.06 per 15-turn arm. This is a fourth
+arm ("Arm B as shipped") on the same brief and metrics.
+
+**Revisit trigger:** none needed. Phase 5 saw live runs contradict mocked
+expectations three separate times, so this is not a formality. Note the original
+run's caveat applies to any comparison: `n = 1` per arm on a non-deterministic
+model.
+
+### Phase 6: no validation gate for abandoned convictions
+**Status:** OPEN (deliberately not built yet).
+
+The obvious 4a-style gate would flag a persona conceding a `firm`-or-above
+position when nothing on its `evidence_that_shifts` list appeared in the
+conversation — the structured-persona analogue of `citation_integrity`. Not built,
+because "conceded a position" is a degree judgment and a false positive would
+regenerate a *good* turn where a persona legitimately changed its mind. Same
+reasoning that deferred entailment checking below.
+
+**Revisit trigger:** the live measurement above shows convictions being abandoned
+at a measurable rate despite the prompt rule. If built, recommend **flag-only**
+first, like the entailment note below.
 
 ---
 
@@ -126,6 +156,11 @@ batch of activations the way the entailment set was labelled.
 
 ## Open — features
 
+- **No UI for structured personas.** The dossier API returns `structured` (Phase 6)
+  and `frontend/src/types.ts` declares it, but nothing renders it — a run's
+  convictions are only visible via the API or the event log. Deliberate: the Node
+  toolchain is absent here (see *Blocked*), so any component would ship
+  unverified.
 - **Weighted hybrid fusion.** `hybrid` beats every mode on well-formed queries but
   loses to pure `vector` on conversational ones, because equal-weight RRF lets a
   weak lexical ranking drag down a strong semantic one. `reciprocal_rank_fusion`
@@ -163,10 +198,10 @@ batch of activations the way the entailment set was labelled.
   Note: `PHASE4-REPORT.md` §5 says pushes fail in this environment and Phase 4's
   commits are unpushed. That is now **stale** — `origin/master` contains the Phase 4
   release, so it was pushed at some point after that report was written.
-- **Frontend verification.** The Phase 5c Dossier/types changes were reviewed by
-  eye but never typechecked or covered by the 18 frontend tests: this machine has
-  no Node toolchain (`npm`/`npx` absent, `frontend/node_modules` absent). Needs
-  `tsc -b` and `vitest` on a machine with Node.
+- **Frontend verification.** The Phase 5c and Phase 6 Dossier/types changes were
+  reviewed by eye but never typechecked or covered by the 18 frontend tests: this
+  machine has no Node toolchain (`npm`/`npx` absent, `frontend/node_modules`
+  absent). Needs `tsc -b` and `vitest` on a machine with Node.
 - **Docker build.** Never verified in any environment used so far (noted in README
   since Phase 3).
 
@@ -174,8 +209,11 @@ batch of activations the way the entailment set was labelled.
 
 ## Housekeeping
 
-- **CHANGELOG has no Phase 5 section.** 14 commits are unreleased; no version bump
-  from 0.4.0.
+- **CHANGELOG has no Phase 5 section.** Phase 6 is written up under
+  `[Unreleased]`; Phase 5 — the larger of the two — is still missing. The last
+  version bump was **0.4.0 (Phase 4)**, so everything since is unreleased. Stated
+  as a condition rather than a commit count, for the reason under *Push to origin*
+  below.
 - **README roadmap** now lists Phase 5 (fixed), but the four screenshot
   placeholders remain `TODO`.
 - **`PROJECT-SPEC.md` §4a is stale** — it says the priority hierarchy is "a design

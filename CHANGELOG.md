@@ -5,6 +5,27 @@ All notable changes to TheMatrix Simulation Studio are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Phases 5 and 6 are complete in the working tree but not released; the last version
+bump was 0.4.0 (Phase 4).
+
+### Added - Phase 6 (Structured Personas)
+- **Convictions, not just goals.** Cast members may carry a `structured` block — `background.formative_events[].lesson`, `preferences.optimises_for` / `dismisses` / `persuaded_by`, and `viewpoints[]` with `position` / `formed_by` / `firmness` / `evidence_that_shifts` / `underlying_concern`. Goals are *satisfiable*, so a persona holding one can be talked into any plan satisfying it; convictions are *defended*. Additive to the `persona` prose string, never a replacement. New module `matrix_studio/personas.py` (pure models + rendering: no LLM, no database, no state), new `AgentState.structured`, new `PersonaConfig` (`config.personas`). Off by default: with `enabled` false a `structured` block is ignored and prompts are **byte-identical** to pre-Phase-6, asserted by diffing real prompts rather than inspecting the renderer.
+- **`underlying_concern` is withheld, enforced by the code path.** Two renderings: `render_private()` for the speaker's own system prompt, `render_public()` (role + `optimises_for`, one line) for the moderator's persona list. The moderator prompt is the one place every persona appears at once, so rendering the private block there would put each withheld concern one prompt away from the whole cast — and drawing that concern out is the exercise. Also stripped from the `persona.structured` event and the dossier API (both are exported/rendered surfaces). Tests scan *every* prompt in a real run.
+- **`validity` reaches no prompt at all** — an operator calibration note (are the firmest positions also the soundest? they should not be), used only for post-run scoring. `tests/test_examples.py` asserts the shipped example stays calibrated.
+- **Re-tuned dismissal rule**, which was the premise validation's explicit ship condition. Arm C's naive "judge only against your own priorities" rule degraded discussion into repetitive parallel monologues (talking-past 4/5, within-speaker similarity +37%, cross-speaker similarity *worse than control*). The shipped rule limits **priorities, not attention**: answer the substance of a challenge directly, state the other side at its strongest, then decline *once*. Three prohibitions matching the three observed failure shapes, each test-locked. `dismissal_rule: false` reproduces the Arm C configuration for re-measurement and takes the `dismisses` list with it, so that configuration cannot be reached by accident.
+- **`requires-escalation` firmness** kept rather than narrowed away: it says the speaker lacks the *authority* to concede, so being overruled produces "I'll have to take this further", not agreement — the one firmness level giving a persona something honest to do other than agree or repeat itself.
+- **A defended position with no exit condition is named as such** in the prompt ("you have not named anything that would change your mind … do not invent a condition you do not have"), because silence lets the model either stonewall or fabricate. Found by reading a real rendered prompt.
+- **New event:** `persona.structured` (turn 0, per cast member with structure, emitted only when the feature is on). **New dossier field:** `structured`. **New example:** `examples/structured-personas.json` — the validated Arm B cast in the shipped schema. **New doc:** `docs/PHASE6-STRUCTURED-PERSONAS.md`.
+- Convictions survive a fork (`reconstruct_at_turn` seeds `structured` from the stored cast, private fields included) and an in-place resume.
+
+### Changed
+- An unknown `firmness` is **rejected**, not silently downgraded — 422 at the API boundary (`PersonaModel.structured` is typed as the real model, not a loose dict), raised at run start from the CLI. The block is parsed even when the feature is off, so a typo surfaces immediately rather than the day someone enables the flag.
+
+### Not claimed
+- **Phase 6 has not been measured against a live model.** The tests prove wiring, scoping and non-leakage; they cannot prove the retuned dismissal rule fixes what Arm C broke. The measured gains behind the feature come from an arm whose personas were hand-written *prose*. `docs/PHASE5-PREMISE-VALIDATION.md` also found **no** increase in distinct positions or specificity — its own caveats suggest that null is unmeasured rather than disproven. Tracked in `docs/BACKLOG.md`.
+
 ## [0.4.0] - 2026-07-19
 
 ### Added - Phase 4 (Deeper Cognition & Steering)
