@@ -2,6 +2,16 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
 import { Hint } from '../components/Hint'
+import { buildStructured } from '../lib/convictions'
+
+function blankPersona(): DraftPersona {
+  return { name: '', persona: '', goals: '', positions: '', dismisses: '', documents: [] }
+}
+
+interface DraftDoc {
+  title: string
+  text: string
+}
 
 interface Props {
   onStarted: (runId: string) => void
@@ -12,6 +22,16 @@ interface DraftPersona {
   name: string
   persona: string
   goals: string // newline/semicolon separated in the form
+  // Phase 6 convictions, authored as plain text rather than a nested form.
+  // One position per line, optional `[firmness]` prefix and `-> what would change
+  // your mind`. A structured editor for four nested fields would be a worse
+  // authoring experience than a line of text, and this parses losslessly into the
+  // shape the API already accepts.
+  positions: string
+  dismisses: string // one concern per line
+  // Phase 5 background documents, pasted inline. The browser cannot supply
+  // server-readable paths, so inline text is the only workable browser flow.
+  documents: DraftDoc[]
 }
 
 const EXAMPLE = {
@@ -34,7 +54,7 @@ const EXAMPLE = {
 
 export function NewRunForm({ onStarted, onCancel }: Props) {
   const [topic, setTopic] = useState('')
-  const [cast, setCast] = useState<DraftPersona[]>([{ name: '', persona: '', goals: '' }])
+  const [cast, setCast] = useState<DraftPersona[]>([blankPersona()])
   const [maxMessages, setMaxMessages] = useState(10)
   const [avatars, setAvatars] = useState(false)
   const [name, setName] = useState('')
@@ -43,13 +63,18 @@ export function NewRunForm({ onStarted, onCancel }: Props) {
   const [summaryOpen, setSummaryOpen] = useState(false)
   const [summaryEnabled, setSummaryEnabled] = useState(true)
   const [summaryFocus, setSummaryFocus] = useState('')
-  // Phase 2c cognition options (collapsed; off by default = classic behavior).
+  // Phase 2c cognition options. ON by default with every sub-feature, because a
+  // run without cognition cannot answer "why did it say that?" — the dossier and
+  // the why-trace are both empty — and that introspection is the point of the tool.
+  // The engine default stays OFF (see CognitionConfig) so programmatic and CLI runs
+  // are unchanged; this is a UI default for the interactive path, where the extra
+  // 20-40% token cost is a deliberate, visible trade for something you can inspect.
   const [cognitionOpen, setCognitionOpen] = useState(false)
-  const [cognitionEnabled, setCognitionEnabled] = useState(false)
+  const [cognitionEnabled, setCognitionEnabled] = useState(true)
   const [cogMemory, setCogMemory] = useState(true)
   const [cogReflect, setCogReflect] = useState(true)
-  const [cogGoals, setCogGoals] = useState(false)
-  const [cogRelationships, setCogRelationships] = useState(false)
+  const [cogGoals, setCogGoals] = useState(true)
+  const [cogRelationships, setCogRelationships] = useState(true)
   const [model, setModel] = useState('')
   const [models, setModels] = useState<{ id: string; label: string }[]>([])
   const [suggesting, setSuggesting] = useState(false)
@@ -79,25 +104,41 @@ export function NewRunForm({ onStarted, onCancel }: Props) {
 
   const loadExample = () => {
     setTopic(EXAMPLE.topic)
-    setCast(EXAMPLE.cast.map((c) => ({ ...c })))
+    setCast(EXAMPLE.cast.map((c) => ({ ...blankPersona(), ...c })))
     setMaxMessages(12)
   }
 
   const updatePersona = (i: number, patch: Partial<DraftPersona>) =>
     setCast((prev) => prev.map((p, idx) => (idx === i ? { ...p, ...patch } : p)))
 
+  const anyConvictions = cast.some((c) => buildStructured(c) !== undefined)
+  const anyDocuments = cast.some((c) => c.documents.some((d) => d.text.trim()))
+
   const submit = async () => {
     setError(null)
     const validCast = cast
       .filter((c) => c.name.trim() && c.persona.trim())
-      .map((c) => ({
-        name: c.name.trim(),
-        persona: c.persona.trim(),
-        goals: c.goals
-          .split(/[\n;]+/)
-          .map((g) => g.trim())
-          .filter(Boolean),
-      }))
+      .map((c) => {
+        const structured = buildStructured(c)
+        const docs = c.documents.filter((d) => d.text.trim())
+        return {
+          name: c.name.trim(),
+          persona: c.persona.trim(),
+          goals: c.goals
+            .split(/[\n;]+/)
+            .map((g) => g.trim())
+            .filter(Boolean),
+          ...(structured ? { structured } : {}),
+          ...(docs.length
+            ? {
+                document_texts: docs.map((d, n) => ({
+                  title: d.title.trim() || `pasted-${n + 1}.txt`,
+                  text: d.text,
+                })),
+              }
+            : {}),
+        }
+      })
     if (!topic.trim() || validCast.length === 0) {
       setError('A topic and at least one persona (name + persona) are required.')
       return
@@ -119,6 +160,12 @@ export function NewRunForm({ onStarted, onCancel }: Props) {
                 relationships: cogRelationships,
               }
             : undefined,
+          // Only sent when the cast actually authored the relevant content, so a
+          // plain run's config stays as small as it was before these features
+          // existed. Enabling a feature nobody configured would cost tokens for
+          // an empty prompt block.
+          personas: anyConvictions ? { enabled: true } : undefined,
+          retrieval: anyDocuments ? { enabled: true } : undefined,
         },
         model: model || undefined,
         name: name.trim() || undefined,
@@ -380,7 +427,7 @@ export function NewRunForm({ onStarted, onCancel }: Props) {
         <div className="mb-2 flex items-center justify-between">
           <h2 className="text-sm font-semibold text-slate-300">Cast</h2>
           <button
-            onClick={() => setCast((p) => [...p, { name: '', persona: '', goals: '' }])}
+            onClick={() => setCast((p) => [...p, blankPersona()])}
             className="rounded border border-matrix-border px-2 py-1 text-xs hover:border-matrix-accent"
           >
             + Add persona
@@ -419,6 +466,120 @@ export function NewRunForm({ onStarted, onCancel }: Props) {
                 rows={2}
                 className="mt-2 w-full rounded border border-matrix-border bg-matrix-bg p-2 text-sm"
               />
+
+              {/* Phase 6 convictions and Phase 5 documents. Both optional and both
+                  collapsed, because a two-persona coffee-shop chat should not have to
+                  scroll past them — but discoverable, which they were not at all
+                  before: they existed only in hand-written config files. */}
+              <details className="mt-2 rounded border border-matrix-border/60 p-2">
+                <summary className="cursor-pointer text-xs font-semibold text-slate-400">
+                  Convictions &amp; background documents{' '}
+                  <span className="font-normal text-slate-600">(optional)</span>
+                </summary>
+
+                <label className="mt-2 flex items-center gap-2 text-xs text-slate-400">
+                  Positions this persona defends
+                  <Hint label="positions">
+                    Goals are <em>satisfiable</em> — an agent will accept any plan that meets
+                    one. Convictions are <em>defended</em>. One per line. Optionally prefix{' '}
+                    <code>[firm]</code>, <code>[non-negotiable]</code> or{' '}
+                    <code>[requires-escalation]</code>, and add{' '}
+                    <code>-&gt; what would change their mind</code>. Without a firmness tag a
+                    position is negotiable and will shift on a good argument.
+                  </Hint>
+                </label>
+                <textarea
+                  value={p.positions}
+                  onChange={(e) => updatePersona(i, { positions: e.target.value })}
+                  placeholder={'[firm] No feature may add an external service -> an embedded index that is a file\nShip this quarter'}
+                  rows={3}
+                  className="mt-1 w-full rounded border border-matrix-border bg-matrix-bg p-2 font-mono text-xs"
+                />
+
+                <label className="mt-2 flex items-center gap-2 text-xs text-slate-400">
+                  Will not weigh
+                  <Hint label="will not weigh">
+                    Concerns this persona declines to <em>weigh</em> — not to engage with. It
+                    still has to answer the substance of a challenge, then say once that the
+                    concern is not its to weigh. This is what stops five personas politely
+                    agreeing with each other; measured as the highest-value field of the lot.
+                    One per line.
+                  </Hint>
+                </label>
+                <textarea
+                  value={p.dismisses}
+                  onChange={(e) => updatePersona(i, { dismisses: e.target.value })}
+                  placeholder={'retrieval answer quality\nshipping schedule'}
+                  rows={2}
+                  className="mt-1 w-full rounded border border-matrix-border bg-matrix-bg p-2 text-xs"
+                />
+
+                <div className="mt-3 flex items-center gap-2">
+                  <span className="text-xs font-semibold text-slate-400">
+                    Background documents
+                  </span>
+                  <Hint label="background documents">
+                    Text only this persona can draw on. It is indexed and retrieved a few
+                    passages at a time, so a long document does not sit in the prompt on every
+                    call — that context budget is the whole point of the feature. The persona
+                    cites what it actually retrieved, and the dossier shows which passages it
+                    used.
+                  </Hint>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      updatePersona(i, {
+                        documents: [...p.documents, { title: '', text: '' }],
+                      })
+                    }
+                    className="ml-auto rounded border border-matrix-border px-2 py-0.5 text-[11px] hover:border-matrix-accent"
+                  >
+                    + paste document
+                  </button>
+                </div>
+                {p.documents.map((d, di) => (
+                  <div key={di} className="mt-2 rounded border border-matrix-border/60 p-2">
+                    <div className="flex items-center gap-2">
+                      <input
+                        value={d.title}
+                        onChange={(e) =>
+                          updatePersona(i, {
+                            documents: p.documents.map((x, xi) =>
+                              xi === di ? { ...x, title: e.target.value } : x,
+                            ),
+                          })
+                        }
+                        placeholder="title (e.g. distribution-constraints.md)"
+                        className="w-full rounded border border-matrix-border bg-matrix-bg p-1 text-xs"
+                      />
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updatePersona(i, {
+                            documents: p.documents.filter((_, xi) => xi !== di),
+                          })
+                        }
+                        className="text-[11px] text-slate-500 hover:text-red-400"
+                      >
+                        remove
+                      </button>
+                    </div>
+                    <textarea
+                      value={d.text}
+                      onChange={(e) =>
+                        updatePersona(i, {
+                          documents: p.documents.map((x, xi) =>
+                            xi === di ? { ...x, text: e.target.value } : x,
+                          ),
+                        })
+                      }
+                      placeholder="Paste the document text here"
+                      rows={4}
+                      className="mt-1 w-full rounded border border-matrix-border bg-matrix-bg p-2 text-xs"
+                    />
+                  </div>
+                ))}
+              </details>
             </div>
           ))}
         </div>

@@ -55,6 +55,13 @@ STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 # --------------------------------------------------------------------------- #
 # Request/response models (documentation + light validation only)
 # --------------------------------------------------------------------------- #
+class InlineDocumentModel(BaseModel):
+    """A background document supplied as text in the create-run request."""
+
+    title: Optional[str] = None
+    text: str
+
+
 class PersonaModel(BaseModel):
     name: str
     persona: str
@@ -69,6 +76,11 @@ class PersonaModel(BaseModel):
     # a bad `firmness` is a 422 at the API boundary instead of a run-start crash.
     # Same contract lesson as `documents` above: an undeclared field is dropped.
     structured: Optional[StructuredPersona] = None
+    # Inline background documents, ingested at run start exactly like `documents`
+    # paths are. Declared because a BROWSER cannot supply server-readable paths, and
+    # the upload endpoint only exists once a run has been created — by which point
+    # turn 1 is already generated and cast documents would be too late to matter.
+    document_texts: List["InlineDocumentModel"] = Field(default_factory=list)
 
 
 class CognitionConfigModel(BaseModel):

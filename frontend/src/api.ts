@@ -41,8 +41,37 @@ async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
 
 export interface CreateRunBody {
   topic: string
-  cast: { name: string; persona: string; goals: string[] }[]
-  config: { max_messages?: number; generate_avatars?: boolean; cognition?: CognitionSettings }
+  cast: {
+    name: string
+    persona: string
+    goals: string[]
+    // Phase 6 convictions. Only the fields the browser can author: the withheld
+    // `underlying_concern` and the operator-private `validity` are deliberately
+    // absent here, not merely unused.
+    structured?: {
+      viewpoints: {
+        position: string
+        firmness: string
+        evidence_that_shifts?: string[]
+      }[]
+      preferences?: { dismisses: string[] }
+    }
+    // Phase 5 background documents pasted inline. The cast-level `documents` field
+    // takes SERVER-readable paths, which a browser cannot supply, so inline text is
+    // the only workable browser flow — and it must be sent at creation, because the
+    // engine ingests cast documents before turn 1.
+    document_texts?: { title: string; text: string }[]
+  }[]
+  config: {
+    max_messages?: number
+    generate_avatars?: boolean
+    cognition?: CognitionSettings
+    // Phase 6 / Phase 5. Sent only when the cast actually authored the relevant
+    // content; enabling a feature nobody configured would cost tokens for an empty
+    // prompt block.
+    personas?: { enabled: boolean; withhold_concerns?: boolean; dismissal_rule?: string }
+    retrieval?: { enabled: boolean; mode?: string; k?: number; max_chars?: number }
+  }
   model?: string
   name?: string
   description?: string
