@@ -90,6 +90,11 @@ First time cognition has been run in any measurement arm. Six runs at 30 turns o
 - **Reflections reinforce convictions rather than eroding them**, contrary to the second pre-registered worry.
 - **Instrument caveat:** the `ACCOMMODATION` / `DISMISSAL` phrase lists were hand-validated against Haiku at 15 turns. Rates from this experiment must **not** be compared to the 15-turn numbers, and the pre-registered ≥0.30 dismissal criterion does not transfer across turn counts. Within-experiment comparisons are unaffected.
 
+### Verified - the two long-standing "never verified" gaps are closed
+- **Frontend typecheck, build and tests, run for the first time.** Node 18.20.8 installed; `tsc --noEmit` typechecks **29 source files with zero errors** — including the Phase 5c and Phase 6 Dossier/types changes that had only ever been reviewed by eye — `npm run build` succeeds, and **all 18 vitest tests pass**.
+- **Docker build verified for the first time in any environment**, having carried a "NOT been verified" warning in the README since Phase 3. The image builds (`matrix_sim_studio-0.5.0`) and the container serves end to end: `/api/health`, `/api/runs`, `/api/models` all 200, plus the built UI at `/` with the same JS asset hash as the local build. Docker was in fact already installed on the development machine — the blocker was that nobody had run it.
+- **No credentials are baked into the image.** No `.env` inside it, and the only credential-shaped string in its filesystem is the README's placeholder `AWS_BEARER_TOKEN_BEDROCK=your_bearer_token`. Worth checking now that the image is something people may actually run.
+
 ### Still not established (Phase 6 behaviour, n = 3)
 - Divergence, accommodation, citation rate and turn length differences are all **below** the harness's noise floor. Within-arm spread (0.0172 on cross-speaker similarity) exceeds the between-arm gaps. Even "Arm D writes 37% longer turns" — which motivated the length-normalisation work — is within run-to-run variation.
 - The early "evidence-driven position change, 2 of 2" **did not replicate** (0 in both repeats; noisy across the rule arms too).

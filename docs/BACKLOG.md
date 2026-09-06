@@ -264,9 +264,10 @@ batch of activations the way the entailment set was labelled.
 
 - **No UI for structured personas.** The dossier API returns `structured` (Phase 6)
   and `frontend/src/types.ts` declares it, but nothing renders it — a run's
-  convictions are only visible via the API or the event log. Deliberate: the Node
-  toolchain is absent here (see *Blocked*), so any component would ship
-  unverified.
+  convictions are only visible via the API or the event log. **The reason this was
+  deferred no longer applies:** it was blocked on the absent Node toolchain, which is
+  now installed and green (typecheck, build, 18 tests). This is simply unbuilt, and it
+  is now buildable *and* testable.
 - **Weighted hybrid fusion.** `hybrid` beats every mode on well-formed queries but
   loses to pure `vector` on conversational ones, because equal-weight RRF lets a
   weak lexical ranking drag down a strong semantic one. `reciprocal_rank_fusion`
@@ -292,14 +293,22 @@ batch of activations the way the entailment set was labelled.
 - ~~**Push to origin.**~~ RESOLVED 2026-09-06. `origin/master` is current, and
   `v0.4.0` / `v0.5.0` are tagged and pushed. The `PHASE4-REPORT.md` §5 claim that
   pushes fail in this environment is stale and stays stale.
-- **Frontend verification.** The Phase 5c and Phase 6 Dossier/types changes were
-  reviewed by eye but never typechecked or covered by the 18 frontend tests: this
-  machine has no Node toolchain (`npm`/`npx` absent, `frontend/node_modules`
-  absent). Needs `tsc -b` and `vitest` on a machine with Node.
-- **Docker build.** Never verified in any environment used so far (noted in README
-  since Phase 3).
+- ~~**Frontend verification.**~~ RESOLVED 2026-09-06. Node 18.20.8 / npm 10.8.2
+  installed from `dnf`. `tsc --noEmit` typechecks **29 source files with zero errors**,
+  including the Phase 5c and Phase 6 Dossier/types changes that had only ever been
+  reviewed by eye. `npm run build` succeeds; **all 18 vitest tests pass** (7 files).
+- ~~**Docker build.**~~ RESOLVED 2026-09-06 — verified for the first time in any
+  environment. Docker 25.0.14 was *already installed* here; the blocker was that nobody
+  had run it, not that it was missing. `docker build` succeeds and produces
+  `matrix_sim_studio-0.5.0`. The container serves end to end: `/api/health` 200,
+  `/api/runs` 200, `/api/models` 200, and the built UI at `/` with the same JS asset
+  hash as the local build. `readiness` correctly reports no provider keys when none are
+  passed.
 
----
+  Also checked, since the image is now something people may actually run: **no
+  credentials are baked in.** No `.env` in the image, and the only credential-shaped
+  string anywhere in its filesystem is the README's placeholder
+  `AWS_BEARER_TOKEN_BEDROCK=your_bearer_token`.
 
 ## Housekeeping
 
