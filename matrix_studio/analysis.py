@@ -83,7 +83,10 @@ async def _acompletion(
         model=resolved_model,
         messages=messages,
         temperature=temperature,
-        max_tokens=max_tokens or settings.litellm_max_tokens,
+        # Falls back to the SUMMARY budget, not the per-turn one. A turn is 2-4
+        # sentences; an analysis of a whole transcript is not, and sharing
+        # litellm_max_tokens truncated a real 24-turn summary mid-value.
+        max_tokens=max_tokens or settings.summary_max_tokens,
     )
     content = response.choices[0].message.content or ""
     usage = getattr(response, "usage", None)
