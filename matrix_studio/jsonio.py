@@ -40,13 +40,26 @@ spread, so this is now one implementation that all of them use.
 Because the failure is "the model added something around the JSON", and a fence is
 only the commonest form of that. Prose before or after the object is just as likely,
 so the last resort is the widest ``{...}`` span rather than a fence-specific rule.
+
+## Truncation repair
+
+The other real-world failure is the reply being **cut off** at ``max_tokens``, which
+leaves valid JSON that simply stops mid-value. Measured twice in this project: a
+five-persona wizard draft, and a run summary where four of five fields were complete
+and only the last was clipped — and in both cases a strict parse returned nothing at
+all, so complete data was discarded because later data was missing.
+
+So the last resort before giving up is to close the object at the last complete
+key/value pair. That yields a *partial* object, which is the honest outcome: the
+caller gets the fields the model actually finished. Raising the token budget is the
+real fix for any given caller; this stops a budget being a total failure.
 """
 
 from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 # A fenced block, with or without a language tag: ```json { ... } ``` or ``` { ... } ```
 _FENCE_RE = re.compile(r"```(?:[a-zA-Z0-9_-]+)?\s*(\{.*?\})\s*```", re.DOTALL)
@@ -76,7 +89,64 @@ def extract_json_object(text: Optional[str]) -> Optional[Dict[str, Any]]:
             continue
         if isinstance(obj, dict):
             return obj
-    return None
+
+    # Everything failed; the commonest remaining cause is truncation.
+    return repair_truncated_object(text)
+
+
+def repair_truncated_object(text: str) -> Optional[Dict[str, Any]]:
+    """Recover the complete leading fields of a JSON object cut off mid-value.
+
+    Finds the last point at which the object was structurally complete — a ``,`` or a
+    closing bracket at depth 1 — truncates there, closes any still-open brackets, and
+    parses. Returns ``None`` when nothing complete precedes the cut.
+
+    The result is deliberately PARTIAL rather than padded with empty values. A caller
+    that receives four of five fields can see which one is missing; one handed five
+    fields where the fifth is a silent blank cannot.
+    """
+    if not text:
+        return None
+    start = text.find("{")
+    if start < 0:
+        return None
+    body = text[start:]
+
+    # Track structure, remembering the last position where a top-level member ended.
+    stack: List[str] = []
+    in_string = False
+    escaped = False
+    cut = -1
+    for i, ch in enumerate(body):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch in "{[":
+            stack.append(ch)
+        elif ch in "}]":
+            if stack:
+                stack.pop()
+            if len(stack) == 1:
+                cut = i + 1  # a nested value just closed at top level
+        elif ch == "," and len(stack) == 1:
+            cut = i  # a top-level member just ended
+
+    if cut <= 0:
+        return None
+    # Rebuild: everything up to the cut, plus the closers still owed. Depth at `cut`
+    # is 1 by construction, so a single "}" closes it.
+    try:
+        obj = json.loads(body[:cut].rstrip().rstrip(",") + "}")
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return obj if isinstance(obj, dict) else None
 
 
 def _candidates(text: str):
