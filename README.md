@@ -325,6 +325,43 @@ and at 10³-10⁴ chunks exhaustive search costs 0.57 ms against a 4-7 s turn), 
 `docs/PHASE5-RETRIEVAL-MEASUREMENT.md` for the recall numbers behind the mode
 recommendation.
 
+### Importing a conversation setup
+
+The new-run screen can load a conversation from a JSON file — **Import a setup**, then
+choose a file or paste the JSON. It loads into the form rather than starting a run, so
+you can add convictions or turn on cognition before pressing Run.
+
+The format is **exactly what the run API accepts**, so anything you can run, a file can
+describe, and the two cannot drift apart. Only `topic` and each persona's `name` and
+`persona` are required:
+
+```json
+{
+  "topic": "The decision under discussion, stated in full.",
+  "cast": [{ "name": "Dana", "persona": "Cautious head of delivery.", "goals": [] }]
+}
+```
+
+Everything else is optional, and this is where a bare setup becomes a useful one:
+
+| Field | Where | What it adds |
+|---|---|---|
+| `structured.viewpoints[]` | per persona | Convictions — `position`, `firmness`, `evidence_that_shifts`, and the withheld `underlying_concern` |
+| `structured.preferences.dismisses` | per persona | What they decline to *weigh* — the field measured as highest-value |
+| `document_texts[]` | per persona | Background documents as inline `{title, text}` |
+| `config` | top level | `max_messages`, `cognition`, `personas`, `retrieval` |
+| `name`, `description` | top level | Run codename and one-liner |
+
+`examples/import-augmented.json` is a complete worked example: eight stakeholders with
+convictions, withheld concerns, differing `dismisses`, and cognition enabled. It is
+generated from a bare setup so the two stay in step.
+
+**Two things it will tell you rather than hide.** A persona missing a `name` or
+`persona`, or a duplicate name, is skipped **with a warning naming it** — a duplicate
+would otherwise collide silently in the engine and drop a persona at run start. And
+`documents` (server file *paths*) cannot be read by a browser, so those are reported as
+skipped with the paths listed, rather than vanishing.
+
 ### Phase 6: Structured Personas
 
 Goals are **satisfiable** — a persona holding one can be talked into any plan
