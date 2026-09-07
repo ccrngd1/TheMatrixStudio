@@ -9,7 +9,7 @@
  * without one.
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { NewRunForm } from './NewRunForm'
 import { api } from '../api'
 
@@ -17,6 +17,7 @@ vi.mock('../api', () => ({
   api: {
     createRun: vi.fn(),
     getModels: vi.fn().mockResolvedValue({ models: [] }),
+    suggestPersonas: vi.fn(),
     suggestName: vi.fn().mockResolvedValue({ name: 'trusted-robot', description: 'x' }),
   },
 }))
@@ -220,5 +221,144 @@ describe('NewRunForm option hints', () => {
     expect(body.cast[0].document_texts[0].text).toMatch(/written consent/)
     // An untitled paste still gets a usable title rather than being dropped.
     expect(body.cast[0].document_texts[0].title).toBeTruthy()
+  })
+
+  // ------------------------------------------------------------------
+  // Persona wizard
+  // ------------------------------------------------------------------
+
+  const drafted = {
+    cast: [
+      {
+        name: 'Dana',
+        persona: 'Pragmatic, protective of the install story.',
+        goals: ['Protect time-to-first-run'],
+        structured: {
+          role: 'Head of Distribution',
+          preferences: { dismisses: ['retrieval answer quality', 'research novelty'] },
+          viewpoints: [
+            {
+              position: 'No feature may add an external service',
+              firmness: 'firm',
+              evidence_that_shifts: ['an embedded index that is a file'],
+              underlying_concern: 'I own it when a customer never gets a working run',
+            },
+          ],
+        },
+      },
+    ],
+    count: 1,
+  }
+
+  it('cannot be run without a brief', () => {
+    renderForm()
+    expect(screen.getByRole('button', { name: /Draft cast/ })).toBeDisabled()
+  })
+
+  it('fills the cast from the drafted personas, convictions included', async () => {
+    ;(api.suggestPersonas as ReturnType<typeof vi.fn>).mockResolvedValue(drafted)
+    renderForm()
+    fireEvent.change(screen.getByPlaceholderText(/deciding whether to move/), {
+      target: { value: 'Should we move to SaaS?' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Draft cast/ }))
+
+    await waitFor(() =>
+      expect(screen.getByDisplayValue('Dana')).toBeInTheDocument(),
+    )
+    // The convictions arrive in the line format the editor uses, so they are
+    // immediately editable rather than opaque.
+    expect(
+      screen.getByDisplayValue(
+        '[firm] No feature may add an external service -> an embedded index that is a file',
+      ),
+    ).toBeInTheDocument()
+    // Asserted on the value rather than via getByDisplayValue, which normalises
+    // whitespace and so cannot distinguish a newline-separated list from a spaced one.
+    expect(
+      (screen.getByPlaceholderText(/retrieval answer quality/) as HTMLTextAreaElement).value,
+    ).toBe('retrieval answer quality\nresearch novelty')
+  })
+
+  it('round-trips a drafted cast back into a valid run payload', async () => {
+    // The draft is only useful if submitting it works without further editing.
+    ;(api.suggestPersonas as ReturnType<typeof vi.fn>).mockResolvedValue(drafted)
+    renderForm()
+    fireEvent.change(screen.getByPlaceholderText(/deciding whether to move/), {
+      target: { value: 'Should we move to SaaS?' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Draft cast/ }))
+    await waitFor(() => expect(screen.getByDisplayValue('Dana')).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: /Run simulation/ }))
+
+    const body = (api.createRun as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]
+    expect(body.cast[0].name).toBe('Dana')
+    expect(body.cast[0].structured.viewpoints[0]).toEqual({
+      position: 'No feature may add an external service',
+      firmness: 'firm',
+      evidence_that_shifts: ['an embedded index that is a file'],
+    })
+    expect(body.config.personas).toEqual({ enabled: true })
+  })
+
+  it('uses the brief as the topic when the topic is still empty', async () => {
+    // Retyping the same sentence into two boxes is pure friction.
+    ;(api.suggestPersonas as ReturnType<typeof vi.fn>).mockResolvedValue(drafted)
+    renderForm()
+    fireEvent.change(screen.getByPlaceholderText(/deciding whether to move/), {
+      target: { value: 'Should we move to SaaS?' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Draft cast/ }))
+    await waitFor(() =>
+      expect(screen.getByDisplayValue('Should we move to SaaS?')).toBeInTheDocument(),
+    )
+  })
+
+  it('does not overwrite a topic the operator already wrote', async () => {
+    ;(api.suggestPersonas as ReturnType<typeof vi.fn>).mockResolvedValue(drafted)
+    renderForm()
+    fireEvent.change(screen.getByPlaceholderText(/What should the cast discuss/i), {
+      target: { value: 'my own careful topic' },
+    })
+    fireEvent.change(screen.getByPlaceholderText(/deciding whether to move/), {
+      target: { value: 'a throwaway brief' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Draft cast/ }))
+    await waitFor(() => expect(screen.getByDisplayValue('Dana')).toBeInTheDocument())
+    expect(screen.getByDisplayValue('my own careful topic')).toBeInTheDocument()
+  })
+
+  it('shows the failure reason instead of silently doing nothing', async () => {
+    // The operator's fallback is to rephrase or write the cast by hand, so they
+    // need to know which.
+    ;(api.suggestPersonas as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('The model did not return a usable cast. Try rephrasing the brief.'),
+    )
+    renderForm()
+    fireEvent.change(screen.getByPlaceholderText(/deciding whether to move/), {
+      target: { value: 'x' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Draft cast/ }))
+    await waitFor(() =>
+      expect(screen.getByText(/Try rephrasing the brief/)).toBeInTheDocument(),
+    )
+  })
+
+  it('does not send the withheld concern to the run, even though the wizard drafts it', async () => {
+    // The wizard generates `underlying_concern` because it is the hardest field to
+    // author and the operator is meant to see it. But the form's line editor does not
+    // carry it, so it must not appear in the payload — that keeps the authorable
+    // surface honest rather than smuggling a field the operator never reviewed.
+    ;(api.suggestPersonas as ReturnType<typeof vi.fn>).mockResolvedValue(drafted)
+    renderForm()
+    fireEvent.change(screen.getByPlaceholderText(/deciding whether to move/), {
+      target: { value: 'Should we move to SaaS?' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Draft cast/ }))
+    await waitFor(() => expect(screen.getByDisplayValue('Dana')).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: /Run simulation/ }))
+
+    const body = (api.createRun as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]
+    expect(JSON.stringify(body)).not.toMatch(/underlying_concern|never gets a working run/)
   })
 })

@@ -111,6 +111,45 @@ export function NewRunForm({ onStarted, onCancel }: Props) {
   const updatePersona = (i: number, patch: Partial<DraftPersona>) =>
     setCast((prev) => prev.map((p, idx) => (idx === i ? { ...p, ...patch } : p)))
 
+  // Persona wizard. Authoring assistance only: it fills the form, and the operator
+  // edits and submits. Nothing it returns starts a run by itself.
+  const [wizardBrief, setWizardBrief] = useState('')
+  const [wizardCount, setWizardCount] = useState(5)
+  const [wizardBusy, setWizardBusy] = useState(false)
+  const [wizardError, setWizardError] = useState<string | null>(null)
+
+  const runWizard = async () => {
+    setWizardError(null)
+    setWizardBusy(true)
+    try {
+      const res = await api.suggestPersonas(wizardBrief.trim(), wizardCount, model || undefined)
+      // REPLACES the cast rather than appending. A wizard that appends to whatever
+      // is already there leaves a half-authored persona mixed into a drafted panel,
+      // which is worse than either.
+      setCast(
+        res.cast.map((c) => ({
+          name: c.name,
+          persona: c.persona,
+          goals: (c.goals || []).join('\n'),
+          positions: (c.structured?.viewpoints || [])
+            .map((v) => {
+              const shifts = (v.evidence_that_shifts || []).join('; ')
+              return `[${v.firmness}] ${v.position}${shifts ? ` -> ${shifts}` : ''}`
+            })
+            .join('\n'),
+          dismisses: (c.structured?.preferences?.dismisses || []).join('\n'),
+          documents: [],
+        })),
+      )
+      // The topic is usually the brief, and retyping it is pure friction.
+      if (!topic.trim()) setTopic(wizardBrief.trim())
+    } catch (e) {
+      setWizardError(e instanceof Error ? e.message : 'The wizard failed. Try rephrasing.')
+    } finally {
+      setWizardBusy(false)
+    }
+  }
+
   const anyConvictions = cast.some((c) => buildStructured(c) !== undefined)
   const anyDocuments = cast.some((c) => c.documents.some((d) => d.text.trim()))
 
@@ -420,6 +459,54 @@ export function NewRunForm({ onStarted, onCancel }: Props) {
               </label>
             </div>
           </div>
+        )}
+      </div>
+
+      {/* Persona wizard. Sits above the cast because it REPLACES it — putting it
+          below would imply it adds to what you have already typed. */}
+      <div className="mt-5 rounded-lg border border-matrix-accent/30 bg-matrix-accent/5 p-3">
+        <div className="flex items-center gap-2">
+          <h2 className="text-sm font-semibold text-slate-300">Draft a cast for me</h2>
+          <Hint label="draft a cast">
+            Describe the situation in a sentence or two and this drafts a panel of
+            stakeholders who would genuinely disagree — including the convictions,
+            which are the fiddly part to write by hand. It is a <em>draft you edit</em>:
+            nothing runs until you press Run, and every field below stays editable.
+            It deliberately does not make the firmest positions the correct ones, so
+            you cannot win the discussion by agreeing with whoever pushes hardest.
+          </Hint>
+        </div>
+        <textarea
+          value={wizardBrief}
+          onChange={(e) => setWizardBrief(e.target.value)}
+          placeholder="e.g. We're deciding whether to move our on-prem product to a hosted SaaS model next year."
+          rows={2}
+          className="mt-2 w-full rounded border border-matrix-border bg-matrix-bg p-2 text-sm"
+        />
+        <div className="mt-2 flex items-center gap-3">
+          <label className="flex items-center gap-2 text-xs text-slate-400">
+            Stakeholders
+            <input
+              type="number"
+              min={2}
+              max={7}
+              value={wizardCount}
+              onChange={(e) => setWizardCount(Number(e.target.value))}
+              className="w-16 rounded border border-matrix-border bg-matrix-bg p-1 text-xs"
+            />
+          </label>
+          <button
+            type="button"
+            onClick={runWizard}
+            disabled={wizardBusy || !wizardBrief.trim()}
+            className="rounded border border-matrix-accent px-3 py-1 text-xs font-semibold text-matrix-accent hover:bg-matrix-accent/10 disabled:opacity-40"
+          >
+            {wizardBusy ? 'Drafting…' : '✨ Draft cast'}
+          </button>
+          <span className="text-[11px] text-slate-500">Replaces the cast below.</span>
+        </div>
+        {wizardError && (
+          <p className="mt-2 text-xs text-red-400">{wizardError}</p>
         )}
       </div>
 
