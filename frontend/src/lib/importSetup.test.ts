@@ -1,20 +1,27 @@
 // SPDX-License-Identifier: Apache-2.0
 /**
- * Setup-import tests, anchored on the REAL sample file at `data/sampleImport.json`.
+ * Setup-import tests, anchored on real files rather than invented fixtures.
  *
- * That file is the contract: it is what the operator actually has, and it exercises
- * the shape that matters — long prose personas, `goals: []`, no config, eight of them.
- * A test built from an invented fixture would not have caught that empty goals arrays
- * and absent config are the normal case rather than the edge case.
+ * `examples/import-minimal.json` is a verbatim copy of the operator's own bare setup:
+ * long prose personas carrying embedded direction, `goals: []`, no config, eight of
+ * them. It is what surfaced that empty goals arrays and absent config are the NORMAL
+ * case rather than the edge case.
+ *
+ * `examples/import-augmented.json` is the same cast with convictions, withheld
+ * concerns, differing dismisses and cognition on — the reference for the full format.
+ *
+ * Both live in `examples/` deliberately. An earlier version read from
+ * `data/sampleImport.json`, which is gitignored, so the suite would have failed on a
+ * fresh clone — the fixtures have to be tracked to be fixtures.
  */
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { ImportError, parseSetup } from './importSetup'
 
-const SAMPLE = readFileSync(join(__dirname, '../../../data/sampleImport.json'), 'utf8')
+const SAMPLE = readFileSync(join(__dirname, '../../../examples/import-minimal.json'), 'utf8')
 
-describe('the real sample file', () => {
+describe('the minimal setup (bare shape)', () => {
   it('loads every persona with its prose intact', () => {
     const setup = parseSetup(SAMPLE)
     expect(setup.cast).toHaveLength(8)
