@@ -484,3 +484,52 @@ def test_api_request_contract_carries_documents_and_retrieval(client, tmp_path):
     kinds = {e["event_type"] for e in events["events"]}
     assert "document.ingested" in kinds
     assert "document.retrieved" in kinds
+
+
+# --------------------------------------------------------------------------
+# SPA cache policy
+#
+# Not a performance nit — an observed hard failure. Vite emits content-hashed
+# bundles and deletes old ones on rebuild. index.html was served with an etag but
+# no Cache-Control, so a browser reused a cached shell pointing at a bundle that no
+# longer existed: the page hung blank with nothing in the network log to explain it.
+# Most likely to bite on upgrade, where a new image sits behind the same URL.
+# --------------------------------------------------------------------------
+
+
+def test_the_html_shell_is_never_cached(client, tmp_path):
+    """The shell names the current bundle, so a stale copy names a deleted one."""
+    from matrix_studio.api import app as app_mod
+
+    static = tmp_path / "static"
+    (static / "assets").mkdir(parents=True)
+    (static / "index.html").write_text('<script src="/assets/index-AAAAAAAA.js"></script>')
+    (static / "assets" / "index-AAAAAAAA.js").write_text("console.log(1)")
+
+    with patch.object(app_mod, "STATIC_DIR", static):
+        with TestClient(app_mod.create_app(db_path=str(tmp_path / "t.db"))) as c:
+            r = c.get("/")
+            assert r.status_code == 200
+            cc = r.headers.get("cache-control", "")
+            assert "no-cache" in cc, f"shell is cacheable: {cc!r}"
+
+            # A deep link falls back to the shell and must carry the same policy.
+            deep = c.get("/some/client/route")
+            assert "no-cache" in deep.headers.get("cache-control", "")
+
+
+def test_hashed_assets_are_cached_immutably(client, tmp_path):
+    """Safe precisely BECAUSE the filename changes when the content does — and it is
+    what makes the no-cache shell cheap rather than a per-load download."""
+    from matrix_studio.api import app as app_mod
+
+    static = tmp_path / "static"
+    (static / "assets").mkdir(parents=True)
+    (static / "index.html").write_text("<html></html>")
+    (static / "assets" / "index-BBBBBBBB.js").write_text("console.log(2)")
+
+    with patch.object(app_mod, "STATIC_DIR", static):
+        with TestClient(app_mod.create_app(db_path=str(tmp_path / "t.db"))) as c:
+            r = c.get("/assets/index-BBBBBBBB.js")
+            assert r.status_code == 200
+            assert "immutable" in r.headers.get("cache-control", "")

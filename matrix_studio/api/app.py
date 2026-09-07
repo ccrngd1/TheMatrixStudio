@@ -22,6 +22,7 @@ from server-side settings/env (Phase 0 .env). Full BYO-key browser UX is Phase 3
 
 import json
 import logging
+import re
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -1474,22 +1475,57 @@ def _mount_static(app: FastAPI) -> None:
     """
     index_file = STATIC_DIR / "index.html"
 
-    if index_file.exists():
+    # Cache policy for a hashed-asset build. Getting this wrong is not a
+    # performance nit, it is a hard failure, and it was observed:
+    #
+    #   Vite emits content-hashed bundles (index-CyGdWPwT.js) and rewrites
+    #   index.html to point at the current one. Old bundles are deleted on rebuild.
+    #   FileResponse sent `etag` and `last-modified` but NO `Cache-Control`, so a
+    #   browser was free to reuse a cached index.html — which referenced a bundle
+    #   that no longer existed. The shell loaded, the module 404'd, and the page
+    #   hung blank with nothing in the network log to explain it.
+    #
+    # So: the HTML shell must always be revalidated, and the hashed assets can be
+    # cached forever precisely BECAUSE their names change when their content does.
+    # This matters most on upgrade — a new image with the same URL is exactly the
+    # situation that serves a stale shell.
+    INDEX_CACHE = {"Cache-Control": "no-cache, must-revalidate"}
+    ASSET_CACHE = {"Cache-Control": "public, max-age=31536000, immutable"}
+
+    if index_file.exists():  # noqa: C901
         assets_dir = STATIC_DIR / "assets"
         if assets_dir.exists():
-            app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
+            # A StaticFiles mount takes precedence over the catch-all below, so the
+            # immutable header has to be set on the mount itself — setting it in the
+            # fallback route silently did nothing, which a test caught.
+            class _ImmutableStatic(StaticFiles):
+                def file_response(self, *args: Any, **kwargs: Any):  # type: ignore[override]
+                    response = super().file_response(*args, **kwargs)
+                    response.headers.update(ASSET_CACHE)
+                    return response
+
+            app.mount("/assets", _ImmutableStatic(directory=str(assets_dir)), name="assets")
 
         @app.get("/")
         async def _index() -> FileResponse:
-            return FileResponse(str(index_file))
+            return FileResponse(str(index_file), headers=INDEX_CACHE)
 
         @app.get("/{full_path:path}")
         async def _spa(full_path: str) -> FileResponse:
             # Serve real static files when they exist, else SPA-fallback.
             candidate = STATIC_DIR / full_path
             if candidate.is_file():
-                return FileResponse(str(candidate))
-            return FileResponse(str(index_file))
+                # Content-hashed filenames are safe to cache immutably; anything
+                # else (favicon, manifest) gets the conservative shell policy.
+                immutable = "/assets/" in f"/{full_path}" or bool(
+                    re.search(r"-[A-Za-z0-9_-]{8,}\.(js|css|woff2?)$", full_path)
+                )
+                return FileResponse(
+                    str(candidate), headers=ASSET_CACHE if immutable else INDEX_CACHE
+                )
+            # SPA fallback serves the shell, so it takes the shell's policy — a
+            # cached deep link pointing at a dead bundle is the same failure.
+            return FileResponse(str(index_file), headers=INDEX_CACHE)
     else:
         @app.get("/")
         async def _placeholder() -> JSONResponse:
