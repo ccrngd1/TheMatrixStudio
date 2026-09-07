@@ -297,6 +297,8 @@ describe('NewRunForm option hints', () => {
       position: 'No feature may add an external service',
       firmness: 'firm',
       evidence_that_shifts: ['an embedded index that is a file'],
+      // Carried through, not dropped — see the dedicated test below.
+      underlying_concern: 'I own it when a customer never gets a working run',
     })
     expect(body.config.personas).toEqual({ enabled: true })
   })
@@ -344,11 +346,10 @@ describe('NewRunForm option hints', () => {
     )
   })
 
-  it('does not send the withheld concern to the run, even though the wizard drafts it', async () => {
-    // The wizard generates `underlying_concern` because it is the hardest field to
-    // author and the operator is meant to see it. But the form's line editor does not
-    // carry it, so it must not appear in the payload — that keeps the authorable
-    // surface honest rather than smuggling a field the operator never reviewed.
+  it('persists the withheld concern through to the run payload', async () => {
+    // It is withheld from the CONVERSATION, not from the operator. An earlier version
+    // dropped it at submit, which discarded the field at exactly the point the wizard
+    // made it usable.
     ;(api.suggestPersonas as ReturnType<typeof vi.fn>).mockResolvedValue(drafted)
     renderForm()
     fireEvent.change(screen.getByPlaceholderText(/deciding whether to move/), {
@@ -359,6 +360,40 @@ describe('NewRunForm option hints', () => {
     fireEvent.click(screen.getByRole('button', { name: /Run simulation/ }))
 
     const body = (api.createRun as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]
-    expect(JSON.stringify(body)).not.toMatch(/underlying_concern|never gets a working run/)
+    expect(body.cast[0].structured.viewpoints[0].underlying_concern).toBe(
+      'I own it when a customer never gets a working run',
+    )
+  })
+
+  it('shows the drafted concern in its own field, marked as withheld', async () => {
+    ;(api.suggestPersonas as ReturnType<typeof vi.fn>).mockResolvedValue(drafted)
+    renderForm()
+    fireEvent.change(screen.getByPlaceholderText(/deciding whether to move/), {
+      target: { value: 'x' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Draft cast/ }))
+    await waitFor(() =>
+      expect(
+        screen.getByDisplayValue('I own it when a customer never gets a working run'),
+      ).toBeInTheDocument(),
+    )
+    expect(screen.getByText(/really behind them — withheld/)).toBeInTheDocument()
+    // The hint has to explain that the persona will not volunteer it, or an operator
+    // reasonably assumes it gets said.
+    const tips = screen.getAllByRole('tooltip').map((t) => t.textContent ?? '')
+    expect(tips.some((t) => /not volunteer it/.test(t))).toBe(true)
+  })
+
+  it('never sends validity, which is the operator-private field', async () => {
+    ;(api.suggestPersonas as ReturnType<typeof vi.fn>).mockResolvedValue(drafted)
+    renderForm()
+    fireEvent.change(screen.getByPlaceholderText(/deciding whether to move/), {
+      target: { value: 'x' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Draft cast/ }))
+    await waitFor(() => expect(screen.getByDisplayValue('Dana')).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: /Run simulation/ }))
+    const body = (api.createRun as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]
+    expect(JSON.stringify(body)).not.toMatch(/validity/)
   })
 })

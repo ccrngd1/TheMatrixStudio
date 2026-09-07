@@ -93,3 +93,47 @@ describe('parseList', () => {
     expect(parseList('a\nb; c\n\n ; d ')).toEqual(['a', 'b', 'c', 'd'])
   })
 })
+
+describe('withheld concerns', () => {
+  it('attaches concerns to positions by line index', () => {
+    const out = buildStructured({
+      positions: '[firm] a\n[negotiable] b',
+      dismisses: '',
+      concerns: 'worry about a\nworry about b',
+    })
+    expect(out!.viewpoints[0].underlying_concern).toBe('worry about a')
+    expect(out!.viewpoints[1].underlying_concern).toBe('worry about b')
+  })
+
+  it('keeps a blank line as a gap rather than sliding concerns up', () => {
+    // The failure this guards: a concern left empty for position 1 attaching itself
+    // to position 2, giving a persona the wrong private motive for the wrong stance.
+    const out = buildStructured({
+      positions: '[firm] a\n[firm] b',
+      dismisses: '',
+      concerns: '\nworry about b',
+    })
+    expect(out!.viewpoints[0]).not.toHaveProperty('underlying_concern')
+    expect(out!.viewpoints[1].underlying_concern).toBe('worry about b')
+  })
+
+  it('omits the field entirely when no concern is given', () => {
+    const out = buildStructured({ positions: '[firm] a', dismisses: '', concerns: '' })
+    expect(out!.viewpoints[0]).not.toHaveProperty('underlying_concern')
+  })
+
+  it('ignores concerns beyond the number of positions', () => {
+    const out = buildStructured({
+      positions: 'a',
+      dismisses: '',
+      concerns: 'one\ntwo\nthree',
+    })
+    expect(out!.viewpoints).toHaveLength(1)
+    expect(out!.viewpoints[0].underlying_concern).toBe('one')
+  })
+
+  it('does not create a viewpoint from a concern alone', () => {
+    // A concern with no position is meaningless — it is the worry BEHIND a position.
+    expect(buildStructured({ positions: '', dismisses: '', concerns: 'a worry' })).toBeUndefined()
+  })
+})

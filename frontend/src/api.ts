@@ -63,14 +63,16 @@ export interface CreateRunBody {
     name: string
     persona: string
     goals: string[]
-    // Phase 6 convictions. Only the fields the browser can author: the withheld
-    // `underlying_concern` and the operator-private `validity` are deliberately
-    // absent here, not merely unused.
+    // Phase 6 convictions. `validity` is deliberately absent — it is the operator's
+    // private calibration note and is never rendered into any prompt.
     structured?: {
       viewpoints: {
         position: string
         firmness: string
         evidence_that_shifts?: string[]
+        // Withheld from the conversation, NOT from the operator: the persona knows it
+        // and says it only when asked why it holds the position.
+        underlying_concern?: string
       }[]
       preferences?: { dismisses: string[] }
     }
