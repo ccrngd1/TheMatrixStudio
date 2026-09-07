@@ -17,10 +17,17 @@
  *   wrongly marked firm becomes an immovable wall.
  * - Everything after `->` is the exit condition (`evidence_that_shifts`),
  *   semicolon-separated for more than one.
- * - `underlying_concern` is deliberately NOT authorable here. It is the withheld
- *   field, and offering it on a screen this casual would invite filling it in without
- *   realising it changes what the persona will say when pressed. It stays a
- *   config-file capability until there is a UI that can explain it properly.
+ * - `underlying_concern` IS authorable, in its own field rather than crammed into the
+ *   line. One concern per line, matched to positions **by index** — which is exactly
+ *   how the engine already renders them into the prompt ("numbered to match"), so the
+ *   two representations agree.
+ *
+ *   It gets its own box because it is prose about personal stakes, not a clause, and
+ *   because it needs a label explaining that it is withheld. An earlier version
+ *   dropped it entirely on the theory that a casual form would invite filling it in
+ *   without understanding the consequence; the wizard now generates it *with* that
+ *   explanation, which removes the objection. Throwing the field away at submit was
+ *   discarding it at exactly the point it became usable.
  */
 
 export const FIRMNESS = ['negotiable', 'firm', 'non-negotiable', 'requires-escalation'] as const
@@ -30,6 +37,8 @@ export interface ParsedViewpoint {
   position: string
   firmness: Firmness
   evidence_that_shifts?: string[]
+  /** Withheld from the conversation; the persona knows it and only says it if asked. */
+  underlying_concern?: string
 }
 
 const FIRMNESS_RE = /^\s*\[([^\]]+)\]\s*/
@@ -90,12 +99,23 @@ export function parseList(text: string): string[] {
 export function buildStructured(input: {
   positions: string
   dismisses: string
+  concerns?: string
 }): { viewpoints: ParsedViewpoint[]; preferences?: { dismisses: string[] } } | undefined {
   const viewpoints = parsePositions(input.positions)
   const dismisses = parseList(input.dismisses)
-  if (!viewpoints.length && !dismisses.length) return undefined
+
+  // Concerns attach to positions BY INDEX — line 1 to position 1 — mirroring the
+  // engine's own "numbered to match" rendering. Split on newline only, keeping blank
+  // lines as gaps: otherwise a concern left empty for position 2 would slide onto
+  // position 3 and attach the wrong worry to the wrong stance.
+  const concerns = (input.concerns ?? '').split('\n').map((c) => c.trim())
+  const withConcerns = viewpoints.map((vp, i) =>
+    concerns[i] ? { ...vp, underlying_concern: concerns[i] } : vp,
+  )
+
+  if (!withConcerns.length && !dismisses.length) return undefined
   return {
-    viewpoints,
+    viewpoints: withConcerns,
     ...(dismisses.length ? { preferences: { dismisses } } : {}),
   }
 }

@@ -5,7 +5,7 @@ import { Hint } from '../components/Hint'
 import { buildStructured } from '../lib/convictions'
 
 function blankPersona(): DraftPersona {
-  return { name: '', persona: '', goals: '', positions: '', dismisses: '', documents: [] }
+  return { name: '', persona: '', goals: '', positions: '', concerns: '', dismisses: '', documents: [] }
 }
 
 interface DraftDoc {
@@ -28,6 +28,9 @@ interface DraftPersona {
   // authoring experience than a line of text, and this parses losslessly into the
   // shape the API already accepts.
   positions: string
+  // Withheld concerns, one per line, matched to `positions` BY INDEX — the same
+  // "numbered to match" pairing the engine uses when it renders them.
+  concerns: string
   dismisses: string // one concern per line
   // Phase 5 background documents, pasted inline. The browser cannot supply
   // server-readable paths, so inline text is the only workable browser flow.
@@ -136,6 +139,11 @@ export function NewRunForm({ onStarted, onCancel }: Props) {
               const shifts = (v.evidence_that_shifts || []).join('; ')
               return `[${v.firmness}] ${v.position}${shifts ? ` -> ${shifts}` : ''}`
             })
+            .join('\n'),
+          // Index-aligned with positions above, including blanks, so a persona with a
+          // concern on its second position only does not have it slide onto the first.
+          concerns: (c.structured?.viewpoints || [])
+            .map((v) => v.underlying_concern || '')
             .join('\n'),
           dismisses: (c.structured?.preferences?.dismisses || []).join('\n'),
           documents: [],
@@ -581,6 +589,28 @@ export function NewRunForm({ onStarted, onCancel }: Props) {
                   placeholder={'[firm] No feature may add an external service -> an embedded index that is a file\nShip this quarter'}
                   rows={3}
                   className="mt-1 w-full rounded border border-matrix-border bg-matrix-bg p-2 font-mono text-xs"
+                />
+
+                <label className="mt-2 flex items-center gap-2 text-xs text-amber-500/80">
+                  What is really behind them — withheld
+                  <Hint label="withheld concerns">
+                    The real worry under each position, usually personal stakes: what it
+                    costs <em>them</em> if they are wrong. One per line,{' '}
+                    <strong>matched to the positions above by line number</strong>.
+                    <br />
+                    <br />
+                    The persona knows this and it shapes what it argues for, but it will
+                    not volunteer it — it comes out only if someone asks why it holds the
+                    position. Drawing it out is the exercise, which is why it never
+                    appears in the moderator's view, the event log or the dossier.
+                  </Hint>
+                </label>
+                <textarea
+                  value={p.concerns}
+                  onChange={(e) => updatePersona(i, { concerns: e.target.value })}
+                  placeholder={'I own the failure when a customer never reaches a working run'}
+                  rows={2}
+                  className="mt-1 w-full rounded border border-amber-600/30 bg-matrix-bg p-2 text-xs"
                 />
 
                 <label className="mt-2 flex items-center gap-2 text-xs text-slate-400">
