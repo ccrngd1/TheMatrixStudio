@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
 import type { Persona, SimEvent } from '../types'
 import { deriveState, initialState } from '../lib/simState'
+import { Hint } from './Hint'
 import { CastBoard } from './CastBoard'
 import { ConversationFeed } from './ConversationFeed'
 
@@ -27,8 +28,11 @@ export function Scrubber({ runId, maxTurn, cast, defaultBudget, models = [], def
   const [events, setEvents] = useState<SimEvent[]>([])
   const [turn, setTurn] = useState(maxTurn)
   const [loading, setLoading] = useState(true)
-  const [showIntervene, setShowIntervene] = useState(false)
-  const [mutKind, setMutKind] = useState<string>('inject_message')
+  // 'none' means a plain fork: same state, no change applied. It is the default
+  // because forking as-is is the safe, common action, and because the previous UI
+  // presented "Branch" and "Intervene" as two sibling ACTIONS when they are one
+  // operation — a fork, optionally with one change. That framing was the confusion.
+  const [mutKind, setMutKind] = useState<string>('none')
   const [injectSpeaker, setInjectSpeaker] = useState('')
   const [injectContent, setInjectContent] = useState('')
   // Model for the intervention branch; defaults to the page's selected model.
@@ -60,6 +64,7 @@ export function Scrubber({ runId, maxTurn, cast, defaultBudget, models = [], def
   const castNames = Object.keys(state.agents)
 
   const buildMutation = (): Record<string, unknown> | undefined => {
+    if (mutKind === 'none') return undefined
     if (mutKind === 'inject_message')
       return {
         kind: 'inject_message',
@@ -83,8 +88,10 @@ export function Scrubber({ runId, maxTurn, cast, defaultBudget, models = [], def
     return undefined
   }
 
-  const handleBranch = (withMutation: boolean) =>
-    onBranch(turn, withMutation ? buildMutation() : undefined, branchModel || undefined)
+  // One action, whether or not a change is attached. `buildMutation()` returns
+  // undefined for 'none', which the caller already treats as a plain fork.
+  const handleBranch = () => onBranch(turn, buildMutation(), branchModel || undefined)
+  const changing = mutKind !== 'none'
 
   return (
     <div className="flex h-full flex-col">
@@ -100,24 +107,42 @@ export function Scrubber({ runId, maxTurn, cast, defaultBudget, models = [], def
           <input type="range" min={0} max={maxTurn} value={turn} aria-label="checkpoint turn"
             onChange={(e) => setTurn(Number(e.target.value))}
             className="flex-1 min-w-[120px] accent-matrix-accent" />
-          <button onClick={() => handleBranch(false)} disabled={branching}
-            title="Fork a new run from this turn — original preserved"
+          <button onClick={handleBranch} disabled={branching}
+            title={changing
+              ? 'Fork a new run from this turn with your change applied — this run is never modified'
+              : 'Fork a new run from this turn, unchanged — this run is never modified'}
             className="whitespace-nowrap rounded bg-matrix-accent px-3 py-1 text-sm font-semibold text-matrix-bg hover:bg-sky-400 disabled:opacity-40">
-            {branching ? 'Branching…' : '⑂ Branch from here'}
-          </button>
-          <button onClick={() => setShowIntervene((v) => !v)}
-            title="Branch with an intervention applied at this turn"
-            className={`whitespace-nowrap rounded border px-3 py-1 text-sm ${showIntervene ? 'border-matrix-accent text-matrix-accent' : 'border-matrix-border text-slate-400 hover:border-sky-500 hover:text-sky-400'}`}>
-            ⚡ Intervene
+            {branching ? 'Branching…' : changing ? '⑂ Branch with change' : '⑂ Branch from here'}
           </button>
         </div>
 
-        {showIntervene && (
-          <div className="mt-3 rounded border border-matrix-border bg-matrix-bg p-3 text-sm space-y-2">
+        {/* Always shown. There is no separate "intervene" mode: a branch either
+            carries a change or it does not, and hiding the selector behind a second
+            button made them look like rival actions. */}
+        <div className="mt-3 rounded border border-matrix-border bg-matrix-bg p-3 text-sm space-y-2">
             <div className="flex flex-wrap items-center gap-2">
-              <label className="text-xs text-slate-400">Mutation</label>
-              <select value={mutKind} onChange={(e) => setMutKind(e.target.value)}
+              {/* htmlFor/id rather than a wrapping label: the select sits outside the
+                  label so the Hint can follow the text, and without the association it
+                  had NO accessible name at all — a screen reader announced an unlabelled
+                  combobox. Caught by a test looking it up by name. */}
+              <label htmlFor="scrubber-change-kind" className="flex items-center gap-2 text-xs text-slate-400">
+                Change at this turn
+                <Hint label="change at this turn">
+                  Branching always forks a <strong>new</strong> run: it replays this one up
+                  to the selected turn, then generates forward. The original is never
+                  touched.
+                  <br />
+                  <br />
+                  With <em>none</em>, the fork starts from identical state — so any
+                  difference comes purely from the model, answering “what else might have
+                  happened?”. Pick a change and it is applied <strong>once, at the fork</strong>,
+                  making it the one variable: “what if this had been different?”
+                </Hint>
+              </label>
+              <select id="scrubber-change-kind" value={mutKind}
+                onChange={(e) => setMutKind(e.target.value)}
                 className="rounded border border-matrix-border bg-matrix-panel px-2 py-1 text-xs text-slate-200">
+                <option value="none">— none (fork unchanged) —</option>
                 <option value="inject_message">💬 Inject message</option>
                 <option value="continue">▶ Continue (+N turns)</option>
                 <option value="edit_goal">🎯 Edit goal</option>
@@ -125,6 +150,23 @@ export function Scrubber({ runId, maxTurn, cast, defaultBudget, models = [], def
                 <option value="remove_persona">➖ Remove persona</option>
                 <option value="adaptive_pressure">🌩 Adaptive pressure (experimental)</option>
               </select>
+              <Hint label="the change options">
+                <strong>Inject message</strong> — put words in someone's mouth as a real
+                turn; the speaker can be new (e.g. a moderator or a customer).
+                <br />
+                <strong>Continue</strong> — no change at all, just more turns. Use when a
+                discussion was cut off mid-argument.
+                <br />
+                <strong>Edit goal</strong> — replace a persona's goals. Goals are
+                satisfiable, so this redirects what they will settle for.
+                <br />
+                <strong>Add / remove persona</strong> — change who is in the room. The
+                cleanest test of whether one voice was carrying the outcome.
+                <br />
+                <strong>Adaptive pressure</strong> — one narrator-voiced world event that
+                raises the stakes. Experimental and off unless enabled server-side; it can
+                only change the <em>world</em>, never a participant's choices.
+              </Hint>
               {models.length > 0 && (
                 <>
                   <label className="ml-auto text-xs text-slate-400">Model</label>
@@ -204,17 +246,13 @@ export function Scrubber({ runId, maxTurn, cast, defaultBudget, models = [], def
                 className="w-full rounded border border-matrix-border bg-matrix-bg px-2 py-1 text-xs text-slate-200" />
             </>)}
 
-            <div className="flex justify-end">
-              <button onClick={() => handleBranch(true)} disabled={branching}
-                className="rounded bg-matrix-accent px-3 py-1 text-sm font-semibold text-matrix-bg hover:bg-sky-400 disabled:opacity-40">
-                {branching ? 'Branching…' : '⑂ Branch with intervention'}
-              </button>
-            </div>
-          </div>
-        )}
+        </div>
 
         <p className="mt-1 text-[11px] text-slate-500">
-          Viewing state as of turn {turn}. Branching forks a new run resuming from here; this run is never modified.
+          Viewing state as of turn {turn}. Branching always forks a NEW run that replays to
+          here and then generates forward — this run is never modified. With no change it
+          asks “what else might have happened from here?”; with one, “what if this had been
+          different?”
         </p>
       </div>
 
