@@ -36,6 +36,13 @@ from matrix_studio import analysis, service
 from matrix_studio.api.manager import RunManager, TERMINAL_EVENTS, event_row_to_wire
 from matrix_studio.documents import ExtractionError, ingest_file, ingest_text
 from matrix_studio.naming import generate_run_name
+from matrix_studio.persona_wizard import (
+    DEFAULT_PERSONAS,
+    MAX_PERSONAS,
+    MIN_PERSONAS,
+    WizardError,
+    suggest_cast,
+)
 from matrix_studio.personas import StructuredPersona, structured_payload
 from matrix_studio.retrieval import (
     apply_budget,
@@ -158,6 +165,14 @@ class SummaryConfigModel(BaseModel):
     # Optional custom analyst-role framing; REPLACES the default role text while
     # the non-negotiable guardrails always remain. None → default framing.
     instructions: Optional[str] = None
+
+
+class SuggestPersonasModel(BaseModel):
+    """Body for POST /api/personas/suggest — the new-run form's persona wizard."""
+
+    brief: str
+    count: int = Field(default=DEFAULT_PERSONAS, ge=MIN_PERSONAS, le=MAX_PERSONAS)
+    model: Optional[str] = None
 
 
 class CreateRunModel(BaseModel):
@@ -545,6 +560,26 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             "slug": result["slug"],
             "source": result["source"],
         }
+
+    @app.post("/api/personas/suggest")
+    async def suggest_personas(body: SuggestPersonasModel) -> Dict[str, Any]:
+        """Draft a cast of structured personas from a short brief.
+
+        AUTHORING ASSISTANCE, not simulation: the result is a draft returned to the
+        form for the operator to edit, and it never starts a run by itself. Nothing
+        here is evidence about anything — it is a template generator, which is why it
+        sits outside the engine's in-loop honesty invariants entirely.
+
+        A failure is a 502, not a 500: the model is upstream, and the operator's
+        fallback is to rephrase or write the cast by hand. They need the reason.
+        """
+        try:
+            cast = await suggest_cast(
+                brief=body.brief, count=body.count or DEFAULT_PERSONAS, model=body.model
+            )
+        except WizardError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return {"cast": cast, "count": len(cast)}
 
     @app.post("/api/runs", status_code=201)
     async def create_run(body: CreateRunModel) -> Dict[str, Any]:

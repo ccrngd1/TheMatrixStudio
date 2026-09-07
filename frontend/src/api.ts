@@ -39,6 +39,24 @@ async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>
 }
 
+/** One drafted persona from the wizard, in the same shape `createRun` accepts. */
+export interface SuggestedPersona {
+  name: string
+  persona: string
+  goals: string[]
+  structured: {
+    role?: string
+    background?: { formative_events?: { year?: number | null; event: string; lesson?: string }[] }
+    preferences?: { optimises_for?: string[]; dismisses?: string[]; persuaded_by?: string[] }
+    viewpoints: {
+      position: string
+      firmness: string
+      evidence_that_shifts?: string[]
+      underlying_concern?: string
+    }[]
+  }
+}
+
 export interface CreateRunBody {
   topic: string
   cast: {
@@ -106,6 +124,16 @@ export const api = {
     jsonFetch<CreateRunResponse>('/api/runs', {
       method: 'POST',
       body: JSON.stringify(body),
+    }),
+
+  /**
+   * Draft a cast from a short brief. AUTHORING ASSISTANCE — the result is a draft
+   * the operator edits in the form; it never starts a run by itself.
+   */
+  suggestPersonas: (brief: string, count: number, model?: string) =>
+    jsonFetch<{ cast: SuggestedPersona[]; count: number }>('/api/personas/suggest', {
+      method: 'POST',
+      body: JSON.stringify({ brief, count, model }),
     }),
 
   suggestName: (topic: string) =>
