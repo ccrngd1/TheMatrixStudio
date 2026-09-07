@@ -163,3 +163,71 @@ def test_litellm_drop_params_is_enabled():
         "litellm.drop_params is off; models with parameter restrictions will fail "
         "every call and their error text will be stored as dialogue"
     )
+
+
+# --------------------------------------------------------------------------
+# Truncation repair
+#
+# The second real-world failure mode, measured twice: a five-persona wizard draft
+# and a run summary where four of five fields were complete and only the last was
+# clipped. In both cases a strict parse returned NOTHING, so complete data was
+# discarded because later data was missing.
+# --------------------------------------------------------------------------
+
+
+def test_recovers_complete_fields_from_a_summary_cut_off_mid_string():
+    """The exact shape of the observed failure: a five-field summary whose last
+    field was clipped by max_tokens. Four complete fields must survive."""
+    truncated = (
+        '{\n  "consensus": ["a", "b"],\n  "dissenters": ["c"],\n'
+        '  "key_ideas": ["d", "e"],\n  "open_questions": ["f"],\n'
+        '  "overview": "The group examined a proposed bridge re'
+    )
+    obj = extract_json_object(truncated)
+    assert obj is not None, "complete fields were discarded because a later one was cut"
+    assert obj["consensus"] == ["a", "b"]
+    assert obj["dissenters"] == ["c"]
+    assert obj["key_ideas"] == ["d", "e"]
+    assert obj["open_questions"] == ["f"]
+    # The clipped field is ABSENT rather than blank: a caller can see what is missing,
+    # where a silent empty string would look like the model having nothing to say.
+    assert "overview" not in obj
+
+
+def test_recovers_when_a_nested_array_is_cut_mid_element():
+    obj = extract_json_object('{"a": [1, 2], "b": ["x", "yy')
+    assert obj == {"a": [1, 2]}
+
+
+def test_recovers_when_cut_immediately_after_a_complete_field():
+    obj = extract_json_object('{"a": 1, "b": 2,')
+    assert obj == {"a": 1, "b": 2}
+
+
+def test_repair_is_not_fooled_by_a_brace_inside_a_string():
+    obj = extract_json_object('{"a": "has { and } inside", "b": "cut he')
+    assert obj == {"a": "has { and } inside"}
+
+
+def test_no_complete_field_before_the_cut_returns_none():
+    """Better to report nothing than to invent a shape."""
+    assert extract_json_object('{"a": "cut immediately') is None
+    assert extract_json_object("{") is None
+
+
+def test_repair_never_fires_when_the_document_is_valid():
+    """The repair path must be a last resort — a valid document must parse whole,
+    including its final field."""
+    obj = extract_json_object('{"a": 1, "overview": "complete"}')
+    assert obj == {"a": 1, "overview": "complete"}
+
+
+def test_the_summary_has_its_own_token_budget():
+    """Regression on the root cause: the analyst summary shared the PER-TURN
+    utterance budget (2048), which a 24-turn five-field summary overflows. A turn is
+    2-4 sentences; an analysis of a transcript is not."""
+    from matrix_studio.settings import Settings
+
+    s = Settings(_env_file=None)
+    assert s.summary_max_tokens >= 8000
+    assert s.summary_max_tokens > s.litellm_max_tokens

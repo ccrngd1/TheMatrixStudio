@@ -28,6 +28,12 @@ class Settings(BaseSettings):
     )
     litellm_temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     litellm_max_tokens: int = Field(default=2048, ge=1)
+    # The analyst summary needs its OWN budget, not the per-turn utterance one.
+    # Measured: a 24-turn run's five-field structured summary overflowed 2048 and was
+    # truncated mid-value, so a strict parse returned nothing and the UI showed an
+    # empty summary with a JSON blob in the overview. A turn is 2-4 sentences; a
+    # summary is a whole analysis of the transcript. Sharing one number was the bug.
+    summary_max_tokens: int = Field(default=8000, ge=1)
 
     # Selectable models offered in the UI (new-run form + in-thread analysis /
     # branch pickers). Comma-separated model strings; env AVAILABLE_MODELS. The
