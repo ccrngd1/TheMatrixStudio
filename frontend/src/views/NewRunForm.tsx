@@ -3,38 +3,12 @@ import { useEffect, useState } from 'react'
 import { api } from '../api'
 import { Hint } from '../components/Hint'
 import { buildStructured } from '../lib/convictions'
-
-function blankPersona(): DraftPersona {
-  return { name: '', persona: '', goals: '', positions: '', concerns: '', dismisses: '', documents: [] }
-}
-
-interface DraftDoc {
-  title: string
-  text: string
-}
+import { parseSetup, ImportError } from '../lib/importSetup'
+import { blankPersona, type DraftPersona } from './newRunTypes'
 
 interface Props {
   onStarted: (runId: string) => void
   onCancel: () => void
-}
-
-interface DraftPersona {
-  name: string
-  persona: string
-  goals: string // newline/semicolon separated in the form
-  // Phase 6 convictions, authored as plain text rather than a nested form.
-  // One position per line, optional `[firmness]` prefix and `-> what would change
-  // your mind`. A structured editor for four nested fields would be a worse
-  // authoring experience than a line of text, and this parses losslessly into the
-  // shape the API already accepts.
-  positions: string
-  // Withheld concerns, one per line, matched to `positions` BY INDEX — the same
-  // "numbered to match" pairing the engine uses when it renders them.
-  concerns: string
-  dismisses: string // one concern per line
-  // Phase 5 background documents, pasted inline. The browser cannot supply
-  // server-readable paths, so inline text is the only workable browser flow.
-  documents: DraftDoc[]
 }
 
 const EXAMPLE = {
@@ -156,6 +130,44 @@ export function NewRunForm({ onStarted, onCancel }: Props) {
     } finally {
       setWizardBusy(false)
     }
+  }
+
+  // Import a conversation SETUP (a definition that has not run yet). Loads into the
+  // form rather than starting a run, because the setup files people actually have
+  // carry no convictions and no config — adding those before running is the point.
+  const [importWarnings, setImportWarnings] = useState<string[]>([])
+  const [importError, setImportError] = useState<string | null>(null)
+
+  const applySetup = (text: string) => {
+    setImportError(null)
+    setImportWarnings([])
+    try {
+      const setup = parseSetup(text)
+      setTopic(setup.topic)
+      setCast(setup.cast)
+      if (setup.name) setName(setup.name)
+      if (setup.description) setDescription(setup.description)
+      if (setup.maxMessages) setMaxMessages(setup.maxMessages)
+      if (setup.cognition) {
+        setCognitionEnabled(setup.cognition.enabled)
+        setCogMemory(setup.cognition.memory ?? true)
+        setCogReflect(setup.cognition.reflection ?? true)
+        setCogGoals(Boolean(setup.cognition.goals_dynamic))
+        setCogRelationships(Boolean(setup.cognition.relationships))
+      }
+      setImportWarnings(setup.warnings)
+    } catch (e) {
+      setImportError(
+        e instanceof ImportError || e instanceof Error
+          ? e.message
+          : 'Could not read that file.',
+      )
+    }
+  }
+
+  const onFile = async (file: File | undefined) => {
+    if (!file) return
+    applySetup(await file.text())
   }
 
   const anyConvictions = cast.some((c) => buildStructured(c) !== undefined)
@@ -467,6 +479,61 @@ export function NewRunForm({ onStarted, onCancel }: Props) {
               </label>
             </div>
           </div>
+        )}
+      </div>
+
+      {/* Import a setup file. Above the wizard and the cast, since it replaces both. */}
+      <div className="mt-5 rounded-lg border border-matrix-border p-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <h2 className="text-sm font-semibold text-slate-300">Import a setup</h2>
+          <Hint label="import a setup">
+            Load a conversation from a JSON file. The format is exactly what the run API
+            accepts — <code>{'{ "topic": ..., "cast": [{ "name", "persona", "goals" }] }'}</code>
+            — so anything you can run, a file can describe. Optional per persona:{' '}
+            <code>structured</code> for convictions and <code>document_texts</code> for
+            background. Optional at the top level: <code>config</code>,{' '}
+            <code>name</code>, <code>description</code>.
+            <br />
+            <br />
+            It loads into this form so you can add convictions or turn on cognition
+            before running. Replaces the topic and the whole cast.
+          </Hint>
+          <label className="ml-auto cursor-pointer rounded border border-matrix-border px-3 py-1 text-xs hover:border-matrix-accent">
+            Choose file…
+            <input
+              type="file"
+              accept=".json,application/json"
+              className="hidden"
+              onChange={(e) => {
+                void onFile(e.target.files?.[0])
+                // Cleared so choosing the SAME file twice re-fires change; otherwise a
+                // re-import after editing the form silently does nothing.
+                e.target.value = ''
+              }}
+            />
+          </label>
+        </div>
+        <textarea
+          onPaste={(e) => {
+            const text = e.clipboardData.getData('text')
+            if (text.trim().startsWith('{')) {
+              e.preventDefault()
+              applySetup(text)
+            }
+          }}
+          placeholder="…or paste the JSON here"
+          rows={2}
+          className="mt-2 w-full rounded border border-matrix-border bg-matrix-bg p-2 font-mono text-xs"
+        />
+        {importError && <p className="mt-2 text-xs text-red-400">{importError}</p>}
+        {importWarnings.length > 0 && (
+          // Shown rather than swallowed: an operator who pasted eight personas and got
+          // seven needs to know which one vanished and why.
+          <ul className="mt-2 list-inside list-disc text-xs text-amber-500/90">
+            {importWarnings.map((w, i) => (
+              <li key={i}>{w}</li>
+            ))}
+          </ul>
         )}
       </div>
 
