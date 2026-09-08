@@ -75,7 +75,7 @@ async def run_from_file(
     # Setup database
     db = None
     if not no_db:
-        db_path = Path(settings.data_dir) / "matrix_studio.db"
+        db_path = settings.db_file
         db = Database(str(db_path))
         await db.connect()
         logger.info(f"Using database: {db_path}")
@@ -161,7 +161,7 @@ async def _docs_action(args: argparse.Namespace) -> int:
     from matrix_studio.storage import Database
 
     settings = get_settings()
-    db = Database(str(Path(settings.data_dir) / "matrix_studio.db"))
+    db = Database(str(settings.db_file))
     await db.connect()
     try:
         run = await db.get_run_by_ref(args.run)

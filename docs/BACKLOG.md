@@ -497,3 +497,30 @@ makes any provider choice reversible.
 - **`PROJECT-SPEC.md` §4a is stale** — it says the priority hierarchy is "a design
   principle, not yet a code gate". It has been a code gate since Phase 4a, and 5i
   added `citation_integrity` to it.
+
+### Config could silently come from the wrong place: FIXED
+
+Both found on 2026-09-08, same family — a value quietly resolved against the
+process's working directory instead of the project, with no log line to reveal it.
+
+1. **Relative `DATA_DIR` resolved against cwd.** Starting the server from
+   `frontend/` made `./data` mean `frontend/data`; SQLite created a second empty
+   database and the UI truthfully reported no previous conversations while 37 runs
+   sat untouched in the real file. A cwd mistake was indistinguishable from data
+   loss. Fixed: `Settings.resolved_data_dir` / `Settings.db_file` anchor a relative
+   path to the checkout root (located by the `pyproject.toml` above the package),
+   falling back to cwd only when installed with no checkout. Absolute paths are
+   untouched, so the container's `/app/data` is unaffected. `Database.connect()`
+   now logs the absolute path plus the existing run count, and logs at WARNING
+   when it created the file. Mutation-tested: reverting to `path.resolve()` fails
+   the new test.
+
+2. **Test env isolation was order-dependent.** `clean_env` cleared the
+   `.env`-derived variables, then the `mock_analysis_llm` fixture below it imported
+   `matrix_studio.analysis` -> `litellm` -> `load_dotenv()`, which put them back.
+   The whole suite passed because litellm was already imported by collection time,
+   so `load_dotenv` never re-ran; `pytest tests/test_settings.py` alone failed.
+   Whether a test saw code defaults or the developer's local config depended on
+   which other files were selected. Fixed by importing litellm inside `clean_env`
+   before the clearing. All 47 test files now pass in isolation, verified
+   file-by-file.
