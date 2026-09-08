@@ -6,9 +6,24 @@ Settings precedence: environment variables > .env file > config.json defaults
 """
 
 import os
+from pathlib import Path
 from typing import Optional
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def project_root() -> Optional[Path]:
+    """
+    The checkout root, identified by the ``pyproject.toml`` above the package.
+
+    Returns None when the package is installed rather than run from a checkout
+    (site-packages has no ``pyproject.toml`` above it), in which case relative
+    paths keep resolving against the working directory.
+    """
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "pyproject.toml").is_file():
+            return parent
+    return None
 
 
 class Settings(BaseSettings):
@@ -113,6 +128,29 @@ class Settings(BaseSettings):
 
     # Storage
     data_dir: str = Field(default="./data", description="Directory for SQLite database")
+
+    @property
+    def resolved_data_dir(self) -> Path:
+        """
+        ``data_dir`` as an absolute path.
+
+        A relative ``data_dir`` resolves against the checkout root, NOT the working
+        directory. Measured cost of the old cwd-relative behaviour: starting the
+        server from a subdirectory silently created a second, empty database and
+        the UI reported no previous conversations — a cwd mistake was
+        indistinguishable from data loss. An absolute ``DATA_DIR`` is honoured
+        as-is, which is how the container passes ``/app/data``.
+        """
+        path = Path(self.data_dir).expanduser()
+        if path.is_absolute():
+            return path
+        root = project_root()
+        return (root / path).resolve() if root else path.resolve()
+
+    @property
+    def db_file(self) -> Path:
+        """Absolute path to the SQLite database."""
+        return self.resolved_data_dir / "matrix_studio.db"
 
     # Server settings (for Phase 1)
     matrix_port: int = Field(default=8000, ge=1, le=65535)

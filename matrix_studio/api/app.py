@@ -470,7 +470,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
     path (used by tests).
     """
     settings = get_settings()
-    resolved_db_path = db_path or str(Path(settings.data_dir) / "matrix_studio.db")
+    resolved_db_path = db_path or str(settings.db_file)
 
     db = Database(resolved_db_path)
     manager = RunManager(db)

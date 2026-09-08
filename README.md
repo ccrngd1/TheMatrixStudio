@@ -489,6 +489,13 @@ MATRIX_PORT=8000
 DATA_DIR=./data                # SQLite database location
 ```
 
+A relative `DATA_DIR` is resolved against the **checkout root**, not the working
+directory, so `matrix-studio serve` opens the same database no matter which
+subdirectory you launch it from. An absolute path is used exactly as given (this
+is how the container passes `/app/data`). Either way the server logs the absolute
+database path and its run count at startup, and warns loudly if it had to create
+a new, empty one — a missing conversation list is then one log line to diagnose.
+
 ## Cognition & Honesty Note
 
 Agent cognition (memory, reflection, relationships) is **model-generated introspection captured in-loop**, not ground truth. Agents self-report their reasoning ("why I said this"), but the model can be mistaken, confabulate, or rationalize. Treat cognition output as the agent's perspective, not fact.
