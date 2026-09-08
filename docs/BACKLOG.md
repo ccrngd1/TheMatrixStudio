@@ -524,3 +524,44 @@ process's working directory instead of the project, with no log line to reveal i
    which other files were selected. Fixed by importing litellm inside `clean_env`
    before the clearing. All 47 test files now pass in isolation, verified
    file-by-file.
+
+### Start over with an existing conversation's setup: BUILT
+
+Added 2026-09-08. The scrubber's branch controls answer "what if something had been
+different at turn N?"; nothing answered "what if the premise had been different?".
+Editing a persona's convictions, the question itself, who is in the room, or the
+background documents all require starting again, and re-typing an eight-persona cast
+by hand is enough friction that nobody does it.
+
+`GET /api/runs/{ref}/setup` returns the run's definition **shaped as a create-run
+request body** — the same schema the setup-file importer already reads, so a setup
+round-trips through either path and the two cannot drift. The scrubber's
+"✎ Start over with this setup" loads it into the new-run form for editing; submitting
+creates a fresh ROOT run (no parent, no branch turn, nothing from the transcript).
+
+Three things the export has to get right, each mutation-tested:
+
+- **Document text is rebuilt from `doc_chunks`, de-overlapped.** Chunks are stored
+  with a carried sentence-aligned tail, so concatenating them repeats every boundary.
+  Measured on two real 17-20k documents: naive joining added 4,253 and 4,859
+  duplicated characters (~24%), and re-ingesting that would compound per re-run.
+  `join_chunks()` in `documents.py` discovers the overlap per boundary rather than
+  assuming a setting, and degrades to plain concatenation on foreign chunks so it can
+  duplicate but never delete.
+- **`document_texts` replaces rather than merges.** The cast row still holds the
+  inline documents the run was created with, and those were ingested into the
+  documents table at run start; appending would double every one.
+- **Config is filtered to the create-run contract.** A branch's config carries
+  `mutation`/`imported` describing how it was derived; replaying those into a fresh
+  root run would assert a history it does not have.
+
+Known limitation, surfaced as a warning rather than papered over: **cast-wide
+documents cannot be carried.** `document_texts` is per-persona only, so a shared
+document has nowhere to go in a create-run request. Attaching it to the first persona
+would silently change who can retrieve it. Worth fixing properly by allowing
+cast-wide `document_texts` at creation.
+
+Also fixed while here: the form assigned the models-endpoint default unconditionally,
+which raced the setup load and could silently reset which model a run was billed to.
+It now only fills in a default when nothing has chosen one, tested by resolving the
+model list *after* the setup.

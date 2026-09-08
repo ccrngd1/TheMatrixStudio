@@ -4,7 +4,12 @@ import { History } from './views/History'
 import { NewRunForm } from './views/NewRunForm'
 import { LiveView } from './views/LiveView'
 
-type View = { name: 'history' } | { name: 'new' } | { name: 'run'; runId: string }
+type View =
+  | { name: 'history' }
+  // `fromRunId` prefills the form from an existing run's setup. Held in the view
+  // rather than inside the form so remounting on a different source re-loads it.
+  | { name: 'new'; fromRunId?: string }
+  | { name: 'run'; runId: string }
 
 // Minimal client-side view switching — no router dependency needed for Phase 1.
 export default function App() {
@@ -14,6 +19,8 @@ export default function App() {
     case 'new':
       return (
         <NewRunForm
+          key={view.fromRunId ?? 'blank'}
+          fromRunId={view.fromRunId}
           onStarted={(runId) => setView({ name: 'run', runId })}
           onCancel={() => setView({ name: 'history' })}
         />
@@ -24,6 +31,7 @@ export default function App() {
           runId={view.runId}
           onBack={() => setView({ name: 'history' })}
           onOpenRun={(runId) => setView({ name: 'run', runId })}
+          onStartFresh={(runId) => setView({ name: 'new', fromRunId: runId })}
         />
       )
     case 'history':
