@@ -49,6 +49,12 @@ class Database:
 
     async def connect(self):
         """Connect to database and ensure schema exists."""
+        # Whether the file pre-existed has to be sampled BEFORE connecting, since
+        # connecting creates it. It is the difference between "your runs are here"
+        # and "this is a brand-new, empty database" — see the log below.
+        resolved = Path(self.db_path).resolve()
+        pre_existing = resolved.is_file()
+
         # Ensure directory exists
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
 
@@ -68,6 +74,22 @@ class Database:
 
         # Create schema
         await self._create_schema()
+
+        # Say plainly which file is in use and how much is in it. A silently
+        # created empty database looks exactly like data loss from the UI, so the
+        # absolute path and the run count are logged at startup rather than left
+        # to be reconstructed after someone reports missing conversations.
+        cursor = await self._conn.execute("SELECT COUNT(*) FROM runs")
+        row = await cursor.fetchone()
+        run_count = row[0] if row else 0
+        if pre_existing:
+            logger.info("Database: %s (%d existing run(s))", resolved, run_count)
+        else:
+            logger.warning(
+                "Database: %s — CREATED NEW AND EMPTY (no previous conversations "
+                "will be listed). If you expected existing runs, check DATA_DIR.",
+                resolved,
+            )
 
     async def _load_vec_extension(self) -> None:
         """Load the sqlite-vec extension, tolerating every way it can be absent."""

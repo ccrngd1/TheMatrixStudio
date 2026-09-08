@@ -40,6 +40,23 @@ def clean_env(monkeypatch):
     """
     monkeypatch.setenv("_MSS_TEST_MODE", "1")
 
+    # Force litellm's import — and therefore its one-time load_dotenv() — to
+    # happen BEFORE the clearing below, not after it.
+    #
+    # Measured: with this absent, `pytest tests/test_settings.py` alone failed
+    # test_settings_defaults while the full suite passed. Clearing ran first, then
+    # the mock_analysis_llm fixture below imported matrix_studio.analysis ->
+    # litellm -> load_dotenv(), which put the developer's LITELLM_MODEL straight
+    # back into os.environ. In a whole-suite run litellm was already in
+    # sys.modules by collection time, so load_dotenv never re-ran and the
+    # clearing appeared to work. That made the isolation order-dependent: whether
+    # a test saw code defaults or local config depended on which other test files
+    # were selected.
+    try:
+        import litellm  # noqa: F401
+    except ImportError:
+        pass
+
     from matrix_studio.settings import Settings
 
     for field in Settings.model_fields:
