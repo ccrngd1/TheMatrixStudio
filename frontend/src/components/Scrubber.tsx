@@ -21,10 +21,12 @@ interface Props {
   // branch; no mutation = plain fork.
   onBranch: (fromTurn: number, mutation?: Record<string, unknown>, model?: string) => void
   branching?: boolean
+  // Open the new-run form prefilled with this run's setup. Absent = not offered.
+  onStartFresh?: () => void
 }
 
 // Checkpoint scrubber (Phase 2a+2b): read-only turn slider + Phase 2b intervention panel.
-export function Scrubber({ runId, maxTurn, cast, defaultBudget, models = [], defaultModel, onBranch, branching = false }: Props) {
+export function Scrubber({ runId, maxTurn, cast, defaultBudget, models = [], defaultModel, onBranch, branching = false, onStartFresh }: Props) {
   const [events, setEvents] = useState<SimEvent[]>([])
   const [turn, setTurn] = useState(maxTurn)
   const [loading, setLoading] = useState(true)
@@ -247,6 +249,42 @@ export function Scrubber({ runId, maxTurn, cast, defaultBudget, models = [], def
             </>)}
 
         </div>
+
+        {/* A different operation, so it is separated from the branch controls rather
+            than sitting beside them: it ignores the selected turn entirely and keeps
+            none of the transcript. Grouping it with the mutation kinds would imply it
+            is one more variation on "fork from turn N". */}
+        {onStartFresh && (
+          <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-matrix-border pt-3">
+            {/* Wrapped rather than passed directly: onClick would hand the click
+                event to a callback declared to take none, which would land in any
+                parameter added later. */}
+            <button onClick={() => onStartFresh()}
+              title="Open the new-conversation form filled in with this run's topic, cast, convictions and documents"
+              className="whitespace-nowrap rounded border border-matrix-accent/60 px-3 py-1 text-sm font-semibold text-matrix-accent hover:bg-matrix-accent/10">
+              ✎ Start over with this setup
+            </button>
+            <span className="text-xs text-slate-400">Edit everything, then run from turn 0</span>
+            <Hint label="starting over with this setup">
+              Loads this conversation's <strong>setup</strong> — topic, cast, goals,
+              convictions and documents — into the new-conversation form, where all of it
+              is editable. Submitting starts a <strong>brand-new</strong> conversation
+              from turn 0.
+              <br />
+              <br />
+              Unlike branching, the selected turn is irrelevant and{' '}
+              <strong>nothing from the transcript carries over</strong>: no messages, no
+              memories, no relationships. Use it when the thing you want to change is the
+              premise — a persona's convictions, who is in the room, the question itself,
+              or the background material — rather than what happened at some point in the
+              discussion.
+              <br />
+              <br />
+              The original run is not modified, and the new one is not recorded as a
+              branch of it.
+            </Hint>
+          </div>
+        )}
 
         <p className="mt-1 text-[11px] text-slate-500">
           Viewing state as of turn {turn}. Branching always forks a NEW run that replays to

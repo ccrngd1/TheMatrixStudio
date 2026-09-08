@@ -206,6 +206,51 @@ def chunk_text(
     return [Chunk(ordinal=i, content=c) for i, c in enumerate(chunks)]
 
 
+def _new_part(so_far: str, chunk: str) -> str:
+    """The part of ``chunk`` that is not the tail ``chunk_text`` carried into it.
+
+    ``chunk_text`` builds every chunk after the first as ``tail + "\\n\\n" + unit``,
+    where ``tail`` is a suffix of the previous chunk. So the carried region is
+    exactly the longest prefix of ``chunk`` that (a) is a suffix of the text
+    assembled so far and (b) is followed by the ``"\\n\\n"`` it was joined with.
+    Requiring the separator is what keeps this from matching an accidental one- or
+    two-character coincidence; candidates are the paragraph breaks only, which also
+    keeps the scan cheap.
+
+    If nothing matches — no overlap was carried, or these chunks came from
+    somewhere other than ``chunk_text`` — the whole chunk is new. Erring that way
+    can only duplicate text, never lose it.
+    """
+    breaks = [m.start() for m in re.finditer(r"\n\n", chunk)]
+    for k in reversed(breaks):
+        if k and so_far.endswith(chunk[:k]):
+            return chunk[k + 2:]
+    return chunk
+
+
+def join_chunks(chunks: List[str]) -> str:
+    """Reassemble ``chunk_text`` output back into the document text.
+
+    Chunks deliberately overlap, so plain concatenation repeats every boundary
+    region — on a document chunked at the defaults that is ~150 duplicated
+    characters per boundary, which would come back as visibly stuttering text if
+    a stored document were ever shown to a human or re-submitted as a setup.
+
+    Exact inverse of ``chunk_text`` for any ``chunk_chars``/``overlap``: the
+    overlap is discovered per boundary rather than assumed, so it does not need to
+    know which settings produced the chunks.
+    """
+    out = ""
+    for chunk in chunks:
+        if not out:
+            out = chunk
+            continue
+        new = _new_part(out, chunk)
+        if new:
+            out = f"{out}\n\n{new}"
+    return out
+
+
 def _extract_pdf(path: Path) -> str:
     try:
         from pypdf import PdfReader

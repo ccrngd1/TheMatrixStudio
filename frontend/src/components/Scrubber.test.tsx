@@ -161,4 +161,63 @@ describe('Scrubber', () => {
     expect(tips).toMatch(/Adaptive pressure/)
     expect(tips).toMatch(/never a participant's choices/)
   })
+
+  describe('start over with this setup', () => {
+    it('offers a separate action that does not depend on the selected turn', async () => {
+      const onStartFresh = vi.fn()
+      const onBranch = vi.fn()
+      render(
+        <Scrubber runId="r1" maxTurn={3} cast={cast} onBranch={onBranch}
+          onStartFresh={onStartFresh} />,
+      )
+      await waitFor(() => expect(screen.getByLabelText('checkpoint turn')).toBeInTheDocument())
+
+      // Move the scrubber somewhere other than the end to prove the turn is ignored.
+      fireEvent.change(screen.getByLabelText('checkpoint turn'), { target: { value: '1' } })
+      fireEvent.click(screen.getByRole('button', { name: /start over with this setup/i }))
+
+      expect(onStartFresh).toHaveBeenCalledTimes(1)
+      // No arguments: there is no turn and no mutation to carry.
+      expect(onStartFresh.mock.calls[0]).toHaveLength(0)
+      // And it is NOT a branch — the two must not be confusable.
+      expect(onBranch).not.toHaveBeenCalled()
+    })
+
+    it('is hidden when the host does not supply the handler', async () => {
+      renderScrubber()
+      await waitFor(() => expect(screen.getByLabelText('checkpoint turn')).toBeInTheDocument())
+      expect(screen.queryByRole('button', { name: /start over/i })).toBeNull()
+    })
+
+    it('is not offered as one more branch mutation kind', async () => {
+      // It replays nothing and keeps no transcript, so listing it beside the
+      // mutations would misdescribe it as a variation on "fork from turn N".
+      render(
+        <Scrubber runId="r1" maxTurn={3} cast={cast} onBranch={() => {}}
+          onStartFresh={() => {}} />,
+      )
+      await waitFor(() => expect(screen.getByLabelText('checkpoint turn')).toBeInTheDocument())
+      const options = Array.from(
+        screen.getByRole('combobox', { name: /change at this turn/i })
+          .querySelectorAll('option'),
+      ).map((o) => o.textContent ?? '')
+      expect(options.some((o) => /start over|fresh/i.test(o))).toBe(false)
+    })
+
+    it('says what does and does not carry over', async () => {
+      // The whole risk of this control is a user assuming it continues the
+      // conversation. The explanation has to rule that out explicitly.
+      render(
+        <Scrubber runId="r1" maxTurn={3} cast={cast} onBranch={() => {}}
+          onStartFresh={() => {}} />,
+      )
+      await waitFor(() => expect(screen.getByLabelText('checkpoint turn')).toBeInTheDocument())
+      const tips = screen.getAllByRole('tooltip').map((t) => t.textContent ?? '').join(' ')
+      expect(tips).toMatch(/nothing from the transcript carries over/i)
+      expect(tips).toMatch(/turn 0/)
+      // What it IS for: editing the premise.
+      expect(tips).toMatch(/convictions/i)
+      expect(tips).toMatch(/documents/i)
+    })
+  })
 })

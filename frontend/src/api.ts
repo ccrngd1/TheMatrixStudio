@@ -117,6 +117,16 @@ export const api = {
 
   getRun: (ref: string) => jsonFetch<RunDetail>(`/api/runs/${encodeURIComponent(ref)}`),
 
+  /**
+   * This run's setup, shaped as a create-run body, for starting a fresh conversation
+   * from it. Loaded into the new-run form to edit — NOT run directly, since the point
+   * is to change something before running it again.
+   */
+  getRunSetup: (ref: string) =>
+    jsonFetch<{ run_id: string; setup: CreateRunBody; warnings: string[] }>(
+      `/api/runs/${encodeURIComponent(ref)}/setup`,
+    ),
+
   getEvents: (ref: string, afterSeq = -1) =>
     jsonFetch<{ run_id: string; events: SimEvent[] }>(
       `/api/runs/${encodeURIComponent(ref)}/events?after_seq=${afterSeq}`,

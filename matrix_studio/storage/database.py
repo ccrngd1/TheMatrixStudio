@@ -1285,6 +1285,22 @@ class Database:
         async with self._conn.execute(sql, params) as cursor:
             return [dict(r) for r in await cursor.fetchall()]
 
+    async def document_text(self, document_id: str) -> str:
+        """A document's full text, rebuilt from its chunks.
+
+        ``doc_chunks`` is the source of truth for document text, and it is the only
+        place the text survives — the original upload is not retained. Chunks
+        overlap, so this goes through ``join_chunks`` rather than concatenating.
+        """
+        from matrix_studio.documents import join_chunks
+
+        async with self._conn.execute(
+            "SELECT content FROM doc_chunks WHERE document_id = ? ORDER BY ordinal",
+            (document_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return join_chunks([r[0] for r in rows])
+
     async def delete_document(self, document_id: str) -> bool:
         """Delete a document, its chunks and their index entries. Returns True if it existed."""
         async with self._conn.execute(

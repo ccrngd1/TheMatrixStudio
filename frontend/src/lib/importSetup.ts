@@ -35,6 +35,10 @@ export interface ImportedSetup {
   description?: string
   cast: DraftPersona[]
   maxMessages?: number
+  /** Model the setup names, so re-running an existing one keeps its model. */
+  model?: string
+  /** Avatar generation costs money per persona, so it is carried, not guessed. */
+  generateAvatars?: boolean
   cognition?: {
     enabled: boolean
     memory?: boolean
@@ -105,6 +109,18 @@ export function parseSetup(raw: string): ImportedSetup {
   } catch (e) {
     throw new ImportError(`That is not valid JSON: ${e instanceof Error ? e.message : e}`)
   }
+  return parseSetupObject(data)
+}
+
+/**
+ * The same load, from an already-parsed object.
+ *
+ * `GET /api/runs/{id}/setup` returns this shape over the wire, so "start fresh from
+ * this conversation" and "open a setup file" go through ONE parser. If they had
+ * separate readers, a field could be honoured from a file but dropped from a run —
+ * exactly the kind of silent asymmetry that is hard to notice in a form.
+ */
+export function parseSetupObject(data: unknown): ImportedSetup {
   if (!data || typeof data !== 'object' || Array.isArray(data)) {
     throw new ImportError('Expected a JSON object with "topic" and "cast".')
   }
@@ -172,6 +188,11 @@ export function parseSetup(raw: string): ImportedSetup {
     description: String(obj.description ?? '').trim() || undefined,
     cast,
     maxMessages: Number.isFinite(maxMessages) && maxMessages > 0 ? maxMessages : undefined,
+    model: String(obj.model ?? '').trim() || undefined,
+    // Absent stays undefined rather than false: "the file said nothing" and "the file
+    // said off" are different, and only the latter should override the form.
+    generateAvatars:
+      config.generate_avatars === undefined ? undefined : Boolean(config.generate_avatars),
     // Only returned when the file actually said something about cognition. Absent
     // means "leave the form's default alone" rather than "turn it off" — a setup file
     // written before cognition existed should not silently disable it.
