@@ -611,3 +611,69 @@ Two defects found by testing against the live server rather than only in-process
 Still open: **cast-wide uploads.** Files attach per persona only, which is also why
 the setup export cannot carry cast-wide documents. Allowing cast-wide
 `document_texts` at creation would close both.
+
+### Cast-wide documents: the case is the cost of the workaround (measured)
+
+Asked 2026-09-08: is there a good reason for a cast-wide knowledge base at all? The
+retrieval layer already treats it as first-class — both `search_documents` and
+`term_document_frequencies` scope with `persona_name = ? OR persona_name IS NULL` —
+so only the *create* path cannot express it. Measured the alternative rather than
+arguing about it.
+
+**Duplicating a shared document across the cast destroys BM25's ranking signal.**
+One shared policy document, 8 personas, one on-topic query, isolated database per
+condition (FTS statistics are global — see the next entry — so sharing one database
+between conditions confounds the comparison, which it did on the first attempt):
+
+| condition | shared doc | persona's own doc |
+|---|---|---|
+| attached cast-wide once | **−4.2821** | −0.7373 |
+| duplicated to all 8 personas | **−0.0000** | −0.0000 |
+
+(FTS5 bm25: more negative is a better match.) With the shared text in 8 of 16 chunks,
+IDF for its terms collapses and the whole query loses discriminative power — including
+for the persona's *private* document, which was never duplicated. The right passage
+still came back here, but as a **tie broken by insertion order, not by relevance**, and
+any absolute score floor would drop it. Duplication also costs 8× ingest, 8× storage,
+and 8× embedding calls in vector mode, and leaves 8 copies to edit.
+
+So the honest scope for the feature is narrow but real: **shared material too long to
+sit in the topic prompt.** Short shared context belongs in the topic, which every
+prompt already carries. And it should not become the default path — asymmetric
+knowledge is what makes a run informative, and shared documents blur attribution when
+the question is whether a persona cited *its own* evidence.
+
+Concrete change if built: allow `document_texts` (and `documents`) at the top level of
+a create-run request, alongside the per-persona lists. That also closes the setup
+export's inability to carry cast-wide documents.
+
+### BM25 scores are computed over the whole DATABASE, not the run
+
+Found 2026-09-08 while measuring the above, and more consequential than it. `bm25()`
+is evaluated by FTS5 over the entire `doc_chunks_fts` index; `c.run_id = ?` is an outer
+filter applied to already-scored rows. So a run's retrieval scores depend on what
+*other, unrelated runs* are in the same database.
+
+Identical run, documents and query; the only difference is whether an unrelated second
+run exists in the same file:
+
+| database contents | score for run A's own document |
+|---|---|
+| run A only | −0.0000 |
+| run A plus an unrelated run B | **−1.8331** |
+
+Consequences worth taking seriously:
+
+- A retrieval score is not a property of a run, so **every retrieval measurement in
+  this project is conditional on the database's history**. Comparisons across arms are
+  only sound when the arms ran against comparable corpora — that has never been
+  controlled for, and the existing Phase 5 numbers were gathered in a shared `data/`
+  database that grew between runs.
+- It also cuts the other way: a fresh database with one small document gives degenerate
+  IDF (the −0.0000 above), so early runs retrieve worse than later ones.
+- Any absolute score floor (already deferred in this backlog) is unimplementable
+  against a moving baseline.
+
+Not yet fixed. Options: a per-run FTS table, or moving to a scoring function computed
+over the run's slice. Both are larger than a patch, so this is logged rather than
+attempted.
