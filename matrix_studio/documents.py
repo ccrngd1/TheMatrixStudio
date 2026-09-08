@@ -43,6 +43,46 @@ SUPPORTED_SUFFIXES = {
 }
 
 
+# Import name of each optional extractor, keyed by the package to install. Needed
+# because the two differ for python-docx, and a capability check has to probe the
+# import name while an error message has to name the install one.
+_EXTRACTOR_IMPORTS = {"pypdf": "pypdf", "python-docx": "docx"}
+
+
+@dataclass(frozen=True)
+class FormatSupport:
+    """Whether one document format can be read by this install."""
+
+    suffix: str
+    media_type: str
+    available: bool
+    #: Package to install when unavailable; None when it works already.
+    needs: Optional[str]
+
+
+def format_support() -> List[FormatSupport]:
+    """Which document formats this install can actually read, and what is missing.
+
+    PDF and Word extraction are optional extras (the base install is a pinned
+    five-minute quickstart), so "supported by the code" and "usable right now" are
+    different questions. A UI that offers a .pdf picker on an install without pypdf
+    produces an error the operator cannot act on from the file dialog, so the answer
+    has to be available BEFORE the upload.
+    """
+    from importlib.util import find_spec
+
+    out: List[FormatSupport] = []
+    for suffix, (media_type, package) in sorted(SUPPORTED_SUFFIXES.items()):
+        if package is None:
+            available, needs = True, None
+        else:
+            available = find_spec(_EXTRACTOR_IMPORTS[package]) is not None
+            needs = None if available else package
+        out.append(FormatSupport(suffix=suffix, media_type=media_type,
+                                 available=available, needs=needs))
+    return out
+
+
 class ExtractionError(RuntimeError):
     """Raised when a document's text cannot be extracted.
 
@@ -251,12 +291,13 @@ def join_chunks(chunks: List[str]) -> str:
     return out
 
 
-def _extract_pdf(path: Path) -> str:
+def _extract_pdf(path: Path, shown: Optional[str] = None) -> str:
+    shown = shown or path.name
     try:
         from pypdf import PdfReader
     except ImportError as exc:  # pragma: no cover - exercised via monkeypatch
         raise ExtractionError(
-            f"Reading {path.name} needs the 'pypdf' package. "
+            f"Reading {shown} needs the 'pypdf' package. "
             "Install it with: pip install 'matrix-sim-studio[documents]'"
         ) from exc
     try:
@@ -265,21 +306,22 @@ def _extract_pdf(path: Path) -> str:
     except ExtractionError:
         raise
     except Exception as exc:
-        raise ExtractionError(f"Could not read PDF {path.name}: {exc}") from exc
+        raise ExtractionError(f"Could not read PDF {shown}: {exc}") from exc
 
 
-def _extract_docx(path: Path) -> str:
+def _extract_docx(path: Path, shown: Optional[str] = None) -> str:
+    shown = shown or path.name
     try:
         import docx  # python-docx
     except ImportError as exc:  # pragma: no cover - exercised via monkeypatch
         raise ExtractionError(
-            f"Reading {path.name} needs the 'python-docx' package. "
+            f"Reading {shown} needs the 'python-docx' package. "
             "Install it with: pip install 'matrix-sim-studio[documents]'"
         ) from exc
     try:
         document = docx.Document(str(path))
     except Exception as exc:
-        raise ExtractionError(f"Could not read Word file {path.name}: {exc}") from exc
+        raise ExtractionError(f"Could not read Word file {shown}: {exc}") from exc
     parts = [p.text for p in document.paragraphs]
     # Tables carry real content in specs and briefs; flatten them row-wise.
     for table in getattr(document, "tables", []):
@@ -290,52 +332,65 @@ def _extract_docx(path: Path) -> str:
     return "\n\n".join(parts)
 
 
-def _extract_plain(path: Path) -> str:
+def _extract_plain(path: Path, shown: Optional[str] = None) -> str:
+    shown = shown or path.name
     for encoding in ("utf-8", "utf-8-sig", "latin-1"):
         try:
             return path.read_text(encoding=encoding)
         except UnicodeDecodeError:
             continue
         except OSError as exc:
-            raise ExtractionError(f"Could not read {path.name}: {exc}") from exc
-    raise ExtractionError(f"Could not decode {path.name} as text")
+            raise ExtractionError(f"Could not read {shown}: {exc}") from exc
+    raise ExtractionError(f"Could not decode {shown} as text")
 
 
-def extract_text(path: Path) -> tuple[str, str]:
-    """Extract raw text from a supported file. Returns ``(text, media_type)``."""
+def extract_text(path: Path, *, display_name: Optional[str] = None) -> tuple[str, str]:
+    """Extract raw text from a supported file. Returns ``(text, media_type)``.
+
+    ``display_name`` overrides the name used in error messages; see ``ingest_file``.
+    """
+    shown = display_name or path.name
     suffix = path.suffix.lower()
     if suffix not in SUPPORTED_SUFFIXES:
         supported = ", ".join(sorted(SUPPORTED_SUFFIXES))
         raise ExtractionError(
-            f"Unsupported document type {suffix or '(none)'} for {path.name}. "
+            f"Unsupported document type {suffix or '(none)'} for {shown}. "
             f"Supported: {supported}"
         )
     media_type, _package = SUPPORTED_SUFFIXES[suffix]
     if media_type == "pdf":
-        return _extract_pdf(path), media_type
+        return _extract_pdf(path, shown), media_type
     if media_type == "docx":
-        return _extract_docx(path), media_type
-    return _extract_plain(path), media_type
+        return _extract_docx(path, shown), media_type
+    return _extract_plain(path, shown), media_type
 
 
 def ingest_file(
     path: str | Path,
     *,
     title: Optional[str] = None,
+    display_name: Optional[str] = None,
     chunk_chars: int = DEFAULT_CHUNK_CHARS,
     overlap: int = DEFAULT_CHUNK_OVERLAP,
 ) -> ExtractedDocument:
-    """Read, normalise and chunk a file on disk."""
+    """Read, normalise and chunk a file on disk.
+
+    ``display_name`` is the name used in error messages. It exists because an upload
+    is extracted from a temporary file: without it, "No extractable text in
+    tmp7_gez8qn.pdf" is what the operator sees, which names nothing they chose and is
+    useless for identifying the offending file in a multi-file upload.
+    """
     p = Path(path)
+    shown = display_name or p.name
     if not p.exists():
         raise ExtractionError(f"Document not found: {p}")
     if not p.is_file():
         raise ExtractionError(f"Not a file: {p}")
-    raw, media_type = extract_text(p)
+    raw, media_type = extract_text(p, display_name=shown)
     text = normalise_text(raw)
     if not text:
         raise ExtractionError(
-            f"No extractable text in {p.name} "
+            f"No extractable text in {shown} "
             "(a scanned PDF with no text layer would do this)"
         )
     return ExtractedDocument(

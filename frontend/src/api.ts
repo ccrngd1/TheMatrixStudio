@@ -132,6 +132,36 @@ export const api = {
       `/api/runs/${encodeURIComponent(ref)}/events?after_seq=${afterSeq}`,
     ).then((r) => r.events),
 
+  /** Which knowledge-base file types this server can read, and the size limits. */
+  getDocumentFormats: () =>
+    jsonFetch<{
+      formats: { suffix: string; media_type: string; available: boolean; needs: string | null }[]
+      max_upload_bytes: number
+      max_document_chars: number
+    }>('/api/documents/formats'),
+
+  /**
+   * Extract text from an uploaded knowledge-base file. Stores nothing: the caller
+   * submits the returned text as a persona's `document_texts`, so an uploaded file
+   * and pasted text share one ingest path — and the operator can read what was
+   * actually extracted before it becomes a persona's knowledge base.
+   *
+   * No Content-Type header: the browser must set the multipart boundary itself.
+   */
+  extractDocument: (file: File, title?: string) => {
+    const form = new FormData()
+    form.append('file', file)
+    if (title) form.append('title', title)
+    return jsonFetch<{
+      title: string
+      media_type: string
+      text: string
+      char_count: number
+      chunk_count: number
+      stored: boolean
+    }>('/api/documents/extract', { method: 'POST', body: form, headers: {} })
+  },
+
   createRun: (body: CreateRunBody) =>
     jsonFetch<CreateRunResponse>('/api/runs', {
       method: 'POST',
