@@ -487,6 +487,8 @@ AVATAR_REGION=us-west-2        # SD3.5 Large is served from us-west-2
 MATRIX_HOST=127.0.0.1
 MATRIX_PORT=8000
 DATA_DIR=./data                # SQLite database location
+MAX_UPLOAD_BYTES=10485760      # largest knowledge-base file accepted (10 MB)
+MAX_DOCUMENT_CHARS=400000      # largest extracted text from one file
 ```
 
 A relative `DATA_DIR` is resolved against the **checkout root**, not the working
