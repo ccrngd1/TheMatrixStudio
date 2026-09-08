@@ -288,6 +288,24 @@ def _parse_cast(run: Dict[str, Any]) -> List[Dict[str, Any]]:
     return parsed if isinstance(parsed, list) else []
 
 
+def _parse_config(run: Dict[str, Any]) -> Dict[str, Any]:
+    """Best-effort parse of a run row's config_json.
+
+    The counterpart _parse_cast's docstring already claimed existed. A malformed or
+    absent config yields ``{}`` rather than raising: config is descriptive metadata
+    about a run that has already happened, so a read of it should never be the thing
+    that fails a request.
+    """
+    raw = run.get("config_json")
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def _run_summary(run: Dict[str, Any]) -> Dict[str, Any]:
     """Shape a runs-table row (+ derived stats) for list/detail responses."""
     return {
@@ -659,6 +677,100 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             "summary": {"generated": generated, "imported": imported},
             "lineage": {"parent": parent, "branches": branches},
         }
+
+    @app.get("/api/runs/{ref}/setup")
+    async def get_run_setup(ref: str) -> Dict[str, Any]:
+        """This run's setup, shaped as a create-run request body.
+
+        For "start a fresh conversation from this one": the operator gets the whole
+        definition back in the new-run form, edits the topic, cast, convictions or
+        documents, and runs it as a brand-new root run. That is a different
+        operation from branching, which replays this run's events to a turn and
+        continues them — here nothing is replayed and nothing is inherited at
+        runtime.
+
+        Returning the create-run body rather than a bespoke shape is what makes it
+        editable and re-runnable with no translation layer: the same schema the
+        setup importer already reads from a file, so a setup can round-trip through
+        either path and the two cannot drift.
+
+        Document text comes from the documents table, not from the cast's original
+        ``document_texts``. The table is what the run actually had — it includes
+        documents uploaded after the run started and text extracted from
+        server-side paths, both of which the original request never contained.
+        """
+        run = await db.get_run_by_ref(ref)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+
+        cast = _parse_cast(run)
+        config = _parse_config(run)
+        warnings: List[str] = []
+
+        # Text is rebuilt per document, so a persona's background survives even
+        # though the uploaded file itself was never stored.
+        docs_by_persona: Dict[Optional[str], List[Dict[str, str]]] = {}
+        for doc in await db.list_documents(run["id"]):
+            text = await db.document_text(doc["id"])
+            if not text.strip():
+                warnings.append(
+                    f'Document "{doc["title"]}" had no recoverable text and was skipped.'
+                )
+                continue
+            docs_by_persona.setdefault(doc.get("persona_name"), []).append(
+                {"title": doc["title"], "text": text}
+            )
+
+        setup_cast: List[Dict[str, Any]] = []
+        for member in cast:
+            if not isinstance(member, dict):
+                continue
+            # `documents` (server-side paths) and `document_texts` are both dropped
+            # and rebuilt from the table: keeping them would double every inline
+            # document, since those were ingested into the table at run start.
+            trimmed = {
+                k: v for k, v in member.items()
+                if k not in ("documents", "document_texts")
+            }
+            own = docs_by_persona.get(member.get("name"))
+            if own:
+                trimmed["document_texts"] = own
+            setup_cast.append(trimmed)
+
+        # Cast-wide documents have no home in a create-run request — `document_texts`
+        # is per-persona only. Saying so is better than silently attaching them to
+        # someone, which would change who can retrieve them.
+        shared = docs_by_persona.get(None) or []
+        if shared:
+            titles = ", ".join(d["title"] for d in shared)
+            warnings.append(
+                f"{len(shared)} cast-wide document(s) could not be carried over "
+                f"({titles}): a new run can only attach documents to a named persona. "
+                "Paste them into a persona, or upload them again once the run exists."
+            )
+
+        # Only the keys the create-run contract defines. A branch or imported run's
+        # config carries extras (e.g. `imported`) that would be wrong to replay into
+        # a fresh root run.
+        setup_config = {
+            k: config[k] for k in
+            ("max_messages", "generate_avatars", "cognition", "retrieval", "personas")
+            if k in config and config[k] is not None
+        }
+
+        setup: Dict[str, Any] = {
+            "topic": run["topic"],
+            "cast": setup_cast,
+            "config": setup_config,
+        }
+        if config.get("model"):
+            setup["model"] = config["model"]
+        if run.get("name"):
+            setup["name"] = run["name"]
+        if run.get("description"):
+            setup["description"] = run["description"]
+
+        return {"run_id": run["id"], "setup": setup, "warnings": warnings}
 
     @app.get("/api/runs/{ref}/events")
     async def get_events(

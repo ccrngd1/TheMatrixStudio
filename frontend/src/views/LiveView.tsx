@@ -19,11 +19,13 @@ interface Props {
   onBack: () => void
   // Navigate to another run (used when a branch is created / lineage is clicked).
   onOpenRun?: (runId: string) => void
+  // Open the new-run form prefilled with this run's setup, to edit and run afresh.
+  onStartFresh?: (runId: string) => void
 }
 
 // The control room: cast board + live feed + cost meter + playback + dossier.
 // Works identically for a live run and a replayed completed run.
-export function LiveView({ runId, onBack, onOpenRun }: Props) {
+export function LiveView({ runId, onBack, onOpenRun, onStartFresh }: Props) {
   const [detail, setDetail] = useState<RunDetail | null>(null)
   const [cast, setCast] = useState<Persona[]>([])
   const [selected, setSelected] = useState<string | null>(null)
@@ -245,6 +247,7 @@ export function LiveView({ runId, onBack, onOpenRun }: Props) {
           defaultModel={analysisModel}
           onBranch={branchFrom}
           branching={branching}
+          onStartFresh={onStartFresh ? () => onStartFresh(runId) : undefined}
         />
       ) : (
         <>

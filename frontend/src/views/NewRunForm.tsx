@@ -3,12 +3,19 @@ import { useEffect, useState } from 'react'
 import { api } from '../api'
 import { Hint } from '../components/Hint'
 import { buildStructured } from '../lib/convictions'
-import { parseSetup, ImportError } from '../lib/importSetup'
+import { parseSetup, parseSetupObject, ImportError } from '../lib/importSetup'
 import { blankPersona, type DraftPersona } from './newRunTypes'
 
 interface Props {
   onStarted: (runId: string) => void
   onCancel: () => void
+  /**
+   * Prefill from an existing run's setup ("start fresh from this conversation").
+   * The form is the editor: everything loaded here is editable before anything runs,
+   * and submitting creates a brand-new ROOT run — this is not a branch, and the
+   * source run is not touched.
+   */
+  fromRunId?: string
 }
 
 const EXAMPLE = {
@@ -29,7 +36,7 @@ const EXAMPLE = {
   ],
 }
 
-export function NewRunForm({ onStarted, onCancel }: Props) {
+export function NewRunForm({ onStarted, onCancel, fromRunId }: Props) {
   const [topic, setTopic] = useState('')
   const [cast, setCast] = useState<DraftPersona[]>([blankPersona()])
   const [maxMessages, setMaxMessages] = useState(10)
@@ -61,7 +68,10 @@ export function NewRunForm({ onStarted, onCancel }: Props) {
   useEffect(() => {
     api.getModels().then((m) => {
       setModels(m.models)
-      setModel(m.default)
+      // Only fill in the default if nothing has chosen a model yet. A loaded setup
+      // carries its own model, and these two requests race — assigning
+      // unconditionally would silently reset it whichever way the race landed.
+      setModel((current) => current || m.default)
     }).catch(() => undefined)
   }, [])
 
@@ -138,30 +148,34 @@ export function NewRunForm({ onStarted, onCancel }: Props) {
   const [importWarnings, setImportWarnings] = useState<string[]>([])
   const [importError, setImportError] = useState<string | null>(null)
 
+  const applyParsed = (setup: ReturnType<typeof parseSetup>, extraWarnings: string[] = []) => {
+    setTopic(setup.topic)
+    setCast(setup.cast)
+    if (setup.name) setName(setup.name)
+    if (setup.description) setDescription(setup.description)
+    if (setup.maxMessages) setMaxMessages(setup.maxMessages)
+    if (setup.model) setModel(setup.model)
+    if (setup.generateAvatars !== undefined) setAvatars(setup.generateAvatars)
+    if (setup.cognition) {
+      setCognitionEnabled(setup.cognition.enabled)
+      setCogMemory(setup.cognition.memory ?? true)
+      setCogReflect(setup.cognition.reflection ?? true)
+      setCogGoals(Boolean(setup.cognition.goals_dynamic))
+      setCogRelationships(Boolean(setup.cognition.relationships))
+    }
+    setImportWarnings([...extraWarnings, ...setup.warnings])
+  }
+
+  const describeFailure = (e: unknown, fallback: string) =>
+    e instanceof ImportError || e instanceof Error ? e.message : fallback
+
   const applySetup = (text: string) => {
     setImportError(null)
     setImportWarnings([])
     try {
-      const setup = parseSetup(text)
-      setTopic(setup.topic)
-      setCast(setup.cast)
-      if (setup.name) setName(setup.name)
-      if (setup.description) setDescription(setup.description)
-      if (setup.maxMessages) setMaxMessages(setup.maxMessages)
-      if (setup.cognition) {
-        setCognitionEnabled(setup.cognition.enabled)
-        setCogMemory(setup.cognition.memory ?? true)
-        setCogReflect(setup.cognition.reflection ?? true)
-        setCogGoals(Boolean(setup.cognition.goals_dynamic))
-        setCogRelationships(Boolean(setup.cognition.relationships))
-      }
-      setImportWarnings(setup.warnings)
+      applyParsed(parseSetup(text))
     } catch (e) {
-      setImportError(
-        e instanceof ImportError || e instanceof Error
-          ? e.message
-          : 'Could not read that file.',
-      )
+      setImportError(describeFailure(e, 'Could not read that file.'))
     }
   }
 
@@ -169,6 +183,35 @@ export function NewRunForm({ onStarted, onCancel }: Props) {
     if (!file) return
     applySetup(await file.text())
   }
+
+  // "Start fresh from this conversation": load the source run's setup into the form.
+  // Deliberately loaded for EDITING rather than run directly — re-running an
+  // identical setup is what branching with no change already does, so the reason to
+  // come here is to change something first.
+  const [prefilling, setPrefilling] = useState(Boolean(fromRunId))
+  const [prefilledFrom, setPrefilledFrom] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!fromRunId) return
+    let cancelled = false
+    setPrefilling(true)
+    setImportError(null)
+    setImportWarnings([])
+    api.getRunSetup(fromRunId)
+      .then((res) => {
+        if (cancelled) return
+        applyParsed(parseSetupObject(res.setup), res.warnings)
+        setPrefilledFrom(res.setup.name || fromRunId)
+      })
+      .catch((e) => {
+        if (!cancelled) setImportError(describeFailure(e, 'Could not load that setup.'))
+      })
+      .finally(() => {
+        if (!cancelled) setPrefilling(false)
+      })
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fromRunId])
 
   const anyConvictions = cast.some((c) => buildStructured(c) !== undefined)
   const anyDocuments = cast.some((c) => c.documents.some((d) => d.text.trim()))
@@ -246,7 +289,9 @@ export function NewRunForm({ onStarted, onCancel }: Props) {
   return (
     <div className="mx-auto max-w-3xl p-6">
       <div className="mb-4 flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-slate-100">New simulation</h1>
+        <h1 className="text-2xl font-bold text-slate-100">
+          {fromRunId ? 'New simulation from an existing setup' : 'New simulation'}
+        </h1>
         <div className="flex gap-2">
           <button onClick={loadExample} className="rounded border border-matrix-border px-3 py-1 text-sm hover:border-matrix-accent">
             Load example
@@ -256,6 +301,21 @@ export function NewRunForm({ onStarted, onCancel }: Props) {
           </button>
         </div>
       </div>
+
+      {prefilling && (
+        <p className="mb-3 rounded border border-matrix-border bg-matrix-panel p-2 text-sm text-slate-300">
+          Loading the setup from that conversation…
+        </p>
+      )}
+
+      {prefilledFrom && !prefilling && (
+        <p className="mb-3 rounded border border-matrix-accent/40 bg-matrix-accent/10 p-2 text-sm text-slate-200">
+          Prefilled from <strong>{prefilledFrom}</strong>. Edit anything below — the
+          topic, the cast, their convictions, documents. Starting this creates a
+          brand-new conversation; the original is untouched and nothing from its
+          transcript carries over.
+        </p>
+      )}
 
       {error && <p className="mb-3 rounded bg-red-950/50 p-2 text-sm text-red-300">{error}</p>}
 
