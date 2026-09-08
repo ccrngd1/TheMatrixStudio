@@ -15,6 +15,17 @@ import { api } from '../api'
 
 vi.mock('../api', () => ({
   api: {
+    getDocumentFormats: vi.fn().mockResolvedValue({
+      formats: [
+        { suffix: '.txt', media_type: 'txt', available: true, needs: null },
+        { suffix: '.md', media_type: 'md', available: true, needs: null },
+        { suffix: '.pdf', media_type: 'pdf', available: true, needs: null },
+        { suffix: '.docx', media_type: 'docx', available: true, needs: null },
+      ],
+      max_upload_bytes: 10485760,
+      max_document_chars: 400000,
+    }),
+    extractDocument: vi.fn(),
     createRun: vi.fn().mockResolvedValue({ run_id: 'new-run' }),
     getModels: vi.fn().mockResolvedValue({
       models: [{ id: 'model-default', label: 'Default' }, { id: 'model-from-setup', label: 'Setup' }],

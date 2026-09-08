@@ -4,7 +4,7 @@ import { api } from '../api'
 import { Hint } from '../components/Hint'
 import { buildStructured } from '../lib/convictions'
 import { parseSetup, parseSetupObject, ImportError } from '../lib/importSetup'
-import { blankPersona, type DraftPersona } from './newRunTypes'
+import { blankPersona, type DraftDoc, type DraftPersona } from './newRunTypes'
 
 interface Props {
   onStarted: (runId: string) => void
@@ -212,6 +212,59 @@ export function NewRunForm({ onStarted, onCancel, fromRunId }: Props) {
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fromRunId])
+
+  // Knowledge-base file upload. The server extracts the text and stores nothing, so
+  // an uploaded file becomes an ordinary pasted-document entry: one ingest path, and
+  // the operator can read and correct what was extracted before running. That review
+  // step is the reason not to attach files blind — PDF extraction quality varies, and
+  // a scanned page yields nothing at all.
+  const [formats, setFormats] = useState<
+    { suffix: string; available: boolean; needs: string | null }[]
+  >([])
+  const [maxUploadBytes, setMaxUploadBytes] = useState(0)
+  const [uploading, setUploading] = useState<number | null>(null)
+  const [uploadError, setUploadError] = useState<string | null>(null)
+
+  useEffect(() => {
+    api.getDocumentFormats()
+      .then((f) => {
+        setFormats(f.formats)
+        setMaxUploadBytes(f.max_upload_bytes)
+      })
+      .catch(() => undefined)
+  }, [])
+
+  const usableFormats = formats.filter((f) => f.available).map((f) => f.suffix)
+  const missingFormats = formats.filter((f) => !f.available)
+
+  // Functional update: several files are appended one at a time, and building the
+  // next list from a captured `p.documents` would keep only the last file.
+  const appendDocuments = (i: number, docs: DraftDoc[]) =>
+    setCast((prev) =>
+      prev.map((p, idx) => (idx === i ? { ...p, documents: [...p.documents, ...docs] } : p)),
+    )
+
+  const uploadDocuments = async (i: number, files: FileList | null) => {
+    if (!files || files.length === 0) return
+    setUploadError(null)
+    setUploading(i)
+    const failures: string[] = []
+    try {
+      for (const file of Array.from(files)) {
+        try {
+          const doc = await api.extractDocument(file)
+          appendDocuments(i, [{ title: doc.title, text: doc.text }])
+        } catch (e) {
+          // Reported per file rather than aborting the batch: one unreadable PDF
+          // should not discard the files that did extract.
+          failures.push(`${file.name}: ${e instanceof Error ? e.message : 'failed'}`)
+        }
+      }
+    } finally {
+      setUploading(null)
+      if (failures.length) setUploadError(failures.join(' · '))
+    }
+  }
 
   const anyConvictions = cast.some((c) => buildStructured(c) !== undefined)
   const anyDocuments = cast.some((c) => c.documents.some((d) => d.text.trim()))
@@ -763,12 +816,50 @@ export function NewRunForm({ onStarted, onCancel, fromRunId }: Props) {
                     Background documents
                   </span>
                   <Hint label="background documents">
-                    Text only this persona can draw on. It is indexed and retrieved a few
-                    passages at a time, so a long document does not sit in the prompt on every
-                    call — that context budget is the whole point of the feature. The persona
-                    cites what it actually retrieved, and the dossier shows which passages it
-                    used.
+                    This persona's knowledge base: material only it can draw on. Upload a
+                    file or paste text. It is indexed and retrieved a few passages at a
+                    time, so a long document does not sit in the prompt on every call —
+                    that context budget is the whole point of the feature. The persona
+                    cites what it actually retrieved, and the dossier shows which passages
+                    it used.
+                    <br />
+                    <br />
+                    Uploaded files are <strong>read and converted to text</strong>, not
+                    stored — so what you see below is exactly what the persona will have.
+                    Worth a glance for PDFs, where extraction quality varies and a scanned
+                    page yields no text at all.
+                    {usableFormats.length > 0 && (
+                      <>
+                        <br />
+                        <br />
+                        Accepted here: {usableFormats.join(', ')}
+                        {maxUploadBytes > 0 &&
+                          `, up to ${Math.round(maxUploadBytes / (1024 * 1024))} MB each`}
+                        .
+                      </>
+                    )}
                   </Hint>
+                  <label
+                    className="ml-auto cursor-pointer rounded border border-matrix-border px-2 py-0.5 text-[11px] hover:border-matrix-accent"
+                    title={`Upload a knowledge-base file for ${p.name || 'this persona'}`}
+                  >
+                    {uploading === i ? 'reading…' : '⬆ upload file'}
+                    {/* A real file input, kept visually hidden rather than replaced by a
+                        button + click(): it stays keyboard-reachable and the label's text
+                        is its accessible name. */}
+                    <input
+                      type="file"
+                      multiple
+                      className="sr-only"
+                      accept={usableFormats.join(',') || undefined}
+                      disabled={uploading !== null}
+                      onChange={(e) => {
+                        void uploadDocuments(i, e.target.files)
+                        // Cleared so choosing the same file twice fires onChange again.
+                        e.target.value = ''
+                      }}
+                    />
+                  </label>
                   <button
                     type="button"
                     onClick={() =>
@@ -776,11 +867,26 @@ export function NewRunForm({ onStarted, onCancel, fromRunId }: Props) {
                         documents: [...p.documents, { title: '', text: '' }],
                       })
                     }
-                    className="ml-auto rounded border border-matrix-border px-2 py-0.5 text-[11px] hover:border-matrix-accent"
+                    className="rounded border border-matrix-border px-2 py-0.5 text-[11px] hover:border-matrix-accent"
                   >
-                    + paste document
+                    + paste text
                   </button>
                 </div>
+
+                {missingFormats.length > 0 && (
+                  <p className="mt-1 text-[11px] text-amber-400">
+                    {missingFormats.map((f) => f.suffix).join(' and ')} upload needs{' '}
+                    {[...new Set(missingFormats.map((f) => f.needs))].join(' and ')} on the
+                    server (<code>pip install 'matrix-sim-studio[documents]'</code>). Paste
+                    the text instead until then.
+                  </p>
+                )}
+
+                {uploadError && (
+                  <p className="mt-1 rounded bg-red-950/50 p-1 text-[11px] text-red-300">
+                    {uploadError}
+                  </p>
+                )}
                 {p.documents.map((d, di) => (
                   <div key={di} className="mt-2 rounded border border-matrix-border/60 p-2">
                     <div className="flex items-center gap-2">

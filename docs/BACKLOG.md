@@ -565,3 +565,49 @@ Also fixed while here: the form assigned the models-endpoint default uncondition
 which raced the setup load and could silently reset which model a run was billed to.
 It now only fills in a default when nothing has chosen one, tested by resolving the
 model list *after* the setup.
+
+### Knowledge-base file upload (txt / md / pdf / docx): BUILT
+
+Added 2026-09-08. Before this, a persona's background material could only be pasted
+as text in the browser, or given as a server-readable path from the CLI — so
+"give this persona these three PDFs" had no browser path at all.
+
+`POST /api/documents/extract` takes one uploaded file, extracts its text and returns
+it, **storing nothing**. That shape is the design decision:
+
+- A knowledge base has to be authored *before* the run exists, because the engine
+  ingests cast documents ahead of turn 1. The create-run request is JSON with a nested
+  cast, which a multipart body cannot express — so extraction is separated from
+  attachment, and the extracted text becomes an ordinary `document_texts` entry. One
+  ingest path, and it rides run creation, retrieval and the setup export unchanged.
+- The operator *sees* the extracted text before it becomes a persona's knowledge base.
+  PDF extraction quality varies and a scanned page yields nothing, so a review step is
+  worth the extra click.
+- Being run-agnostic means the same endpoint serves adding a file to an existing run.
+
+`GET /api/documents/formats` reports which formats this install can actually read.
+PDF/Word extraction stays an optional extra (the light base install is pinned in
+PROJECT-SPEC §7), so "supported by the code" and "usable right now" differ: the picker
+offers only what will work and the form names the missing package. `python-multipart`
+became a core dependency — uploading a `.txt` needs nothing else, so gating the base
+case behind an extra would be arbitrary.
+
+Guards, each mutation-tested: an extension allowlist; a streamed byte cap
+(`MAX_UPLOAD_BYTES`, default 10 MB) checked *while* reading rather than after
+buffering; an independent extracted-character cap (`MAX_DOCUMENT_CHARS`, default
+400k — a small PDF can expand enormously) that refuses rather than truncates, since a
+half-loaded knowledge base looks complete; base-name-only handling of the
+client-supplied filename; empty-file rejection; and temp-file cleanup in a `finally`.
+
+Two defects found by testing against the live server rather than only in-process:
+
+1. **Errors named the temp file, not the user's file** — "No extractable text in
+   tmp7_gez8qn.pdf". Useless, and worst in a multi-file upload where it is the only
+   clue which file failed. `ingest_file`/`extract_text` now take a `display_name`
+   threaded into every extractor message.
+2. The unit test for it had asserted only the *phrase*, so it passed. It now asserts
+   the operator's filename is present and no temp name is.
+
+Still open: **cast-wide uploads.** Files attach per persona only, which is also why
+the setup export cannot carry cast-wide documents. Allowing cast-wide
+`document_texts` at creation would close both.

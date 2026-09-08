@@ -15,6 +15,8 @@ Endpoints:
     GET    /api/name/suggest?topic=      suggested codename + description
     GET    /api/models                   selectable model string(s)
     GET    /api/health                   liveness probe
+    GET    /api/documents/formats        which file types this install can read
+    POST   /api/documents/extract        extract text from an uploaded file
 
 Keys never touch the browser — the model list and all provider credentials come
 from server-side settings/env (Phase 0 .env). Full BYO-key browser UX is Phase 3.
@@ -23,19 +25,34 @@ from server-side settings/env (Phase 0 .env). Full BYO-key browser UX is Phase 3
 import json
 import logging
 import re
+import tempfile
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import (
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from matrix_studio import analysis, service
 from matrix_studio.api.manager import RunManager, TERMINAL_EVENTS, event_row_to_wire
-from matrix_studio.documents import ExtractionError, ingest_file, ingest_text
+from matrix_studio.documents import (
+    ExtractionError,
+    format_support,
+    ingest_file,
+    ingest_text,
+)
 from matrix_studio.naming import generate_run_name
 from matrix_studio.persona_wizard import (
     DEFAULT_PERSONAS,
@@ -86,8 +103,10 @@ class PersonaModel(BaseModel):
     structured: Optional[StructuredPersona] = None
     # Inline background documents, ingested at run start exactly like `documents`
     # paths are. Declared because a BROWSER cannot supply server-readable paths, and
-    # the upload endpoint only exists once a run has been created — by which point
-    # turn 1 is already generated and cast documents would be too late to matter.
+    # a document attached after the run exists is already too late — the engine
+    # ingests cast documents before turn 1. Uploaded files land here too: they are
+    # turned into text by POST /api/documents/extract first, so a knowledge-base
+    # file and pasted text share one ingest path.
     document_texts: List["InlineDocumentModel"] = Field(default_factory=list)
 
 
@@ -677,6 +696,130 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             "summary": {"generated": generated, "imported": imported},
             "lineage": {"parent": parent, "branches": branches},
         }
+
+    # ---------------- Knowledge-base file upload (run-agnostic) ---------------- #
+    # Extraction is separated from attachment on purpose. A persona's knowledge base
+    # is authored BEFORE the run exists — the engine ingests cast documents ahead of
+    # turn 1, so "upload once the run is created" is already too late — and the
+    # create-run request is JSON with a nested cast, which a multipart body cannot
+    # express. So a file is turned into text here, the form holds it as ordinary
+    # `document_texts`, and it flows through run creation, retrieval and the setup
+    # export with no new path. Same reason /documents/extract takes no run id: it
+    # also serves adding a file to a run that already exists.
+
+    @app.get("/api/documents/formats")
+    async def document_formats() -> Dict[str, Any]:
+        """Which file types can be read here, and the size limits that apply.
+
+        Served so the picker can offer only what will work: PDF and Word extraction
+        are optional extras, and an install without them should say so in the form
+        rather than failing after the operator has chosen a file.
+        """
+        return {
+            "formats": [
+                {"suffix": f.suffix, "media_type": f.media_type,
+                 "available": f.available, "needs": f.needs}
+                for f in format_support()
+            ],
+            "max_upload_bytes": settings.max_upload_bytes,
+            "max_document_chars": settings.max_document_chars,
+        }
+
+    @app.post("/api/documents/extract")
+    async def extract_document(
+        file: UploadFile = File(..., description="A .txt/.md/.pdf/.docx file"),
+        title: Optional[str] = Form(default=None),
+    ) -> Dict[str, Any]:
+        """Extract text from an uploaded file. Stores nothing.
+
+        The response is text the caller then submits as a persona's
+        ``document_texts`` entry, which keeps this endpoint free of any run or
+        persona coupling and leaves the operator able to read and edit what was
+        extracted before it becomes a persona's knowledge base. That review step
+        matters for PDFs, where extraction quality varies and a scanned page yields
+        nothing at all.
+        """
+        # Only the base name: a client-supplied filename may contain path separators,
+        # and this value is used to pick an extractor and as the default title.
+        raw_name = Path(file.filename or "").name
+        suffix = Path(raw_name).suffix.lower()
+        supported = {f.suffix: f for f in format_support()}
+        if suffix not in supported:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Unsupported file type {suffix or '(none)'}. "
+                    f"Supported: {', '.join(sorted(supported))}"
+                ),
+            )
+        fmt = supported[suffix]
+        if not fmt.available:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Reading {suffix} files needs the '{fmt.needs}' package on the "
+                    f"server. Install it with: pip install 'matrix-sim-studio[documents]'"
+                ),
+            )
+
+        # Streamed with a running total rather than `await file.read()`: the point of a
+        # size cap is not to buffer the oversized upload first.
+        limit = settings.max_upload_bytes
+        tmp_path: Optional[Path] = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                tmp_path = Path(tmp.name)
+                total = 0
+                while chunk := await file.read(1024 * 1024):
+                    total += len(chunk)
+                    if total > limit:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=(
+                                f"{raw_name} is larger than the {limit // (1024 * 1024)} MB "
+                                "limit for a single document."
+                            ),
+                        )
+                    tmp.write(chunk)
+            if total == 0:
+                raise HTTPException(status_code=422, detail=f"{raw_name} is empty.")
+
+            try:
+                doc = ingest_file(
+                    tmp_path,
+                    title=(title or raw_name).strip() or raw_name,
+                    # Errors must name the file the operator chose, not the temp file
+                    # it was streamed into — otherwise a failure in a multi-file upload
+                    # identifies nothing.
+                    display_name=raw_name,
+                )
+            except ExtractionError as exc:
+                # Unreadable input is the client's problem, and the message names the
+                # cause (including a scanned PDF with no text layer).
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+            if len(doc.text) > settings.max_document_chars:
+                raise HTTPException(
+                    status_code=413,
+                    detail=(
+                        f"{raw_name} extracted to {len(doc.text):,} characters, over the "
+                        f"{settings.max_document_chars:,} limit for one document. Split it "
+                        "into sections and upload those separately."
+                    ),
+                )
+
+            return {
+                "title": doc.title,
+                "media_type": doc.media_type,
+                "text": doc.text,
+                "char_count": doc.char_count,
+                "chunk_count": len(doc.chunks),
+                # The uploaded file is NOT retained; the text is the whole artefact.
+                "stored": False,
+            }
+        finally:
+            if tmp_path is not None:
+                tmp_path.unlink(missing_ok=True)
 
     @app.get("/api/runs/{ref}/setup")
     async def get_run_setup(ref: str) -> Dict[str, Any]:

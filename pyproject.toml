@@ -33,6 +33,11 @@ dependencies = [
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
     "python-dotenv>=1.0.0",
+    # Required by FastAPI to parse multipart bodies, i.e. any file upload. Core
+    # rather than optional because uploading a .txt knowledge-base file needs no
+    # other package, so making it an extra would gate the base case on an install
+    # step for no reason.
+    "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]

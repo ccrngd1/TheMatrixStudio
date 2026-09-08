@@ -15,6 +15,17 @@ import { api } from '../api'
 
 vi.mock('../api', () => ({
   api: {
+    getDocumentFormats: vi.fn().mockResolvedValue({
+      formats: [
+        { suffix: '.txt', media_type: 'txt', available: true, needs: null },
+        { suffix: '.md', media_type: 'md', available: true, needs: null },
+        { suffix: '.pdf', media_type: 'pdf', available: true, needs: null },
+        { suffix: '.docx', media_type: 'docx', available: true, needs: null },
+      ],
+      max_upload_bytes: 10485760,
+      max_document_chars: 400000,
+    }),
+    extractDocument: vi.fn(),
     createRun: vi.fn(),
     getModels: vi.fn().mockResolvedValue({ models: [] }),
     suggestPersonas: vi.fn(),
@@ -139,7 +150,7 @@ describe('NewRunForm option hints', () => {
     fireEvent.click(screen.getByText(/Convictions & background documents/))
     expect(screen.getByPlaceholderText(/No feature may add an external service/)).toBeInTheDocument()
     expect(screen.getByPlaceholderText(/retrieval answer quality/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /paste document/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /paste text/ })).toBeInTheDocument()
   })
 
   it('explains what convictions are for, not just what the box is', () => {
@@ -155,7 +166,7 @@ describe('NewRunForm option hints', () => {
   it('adds and removes pasted documents', () => {
     renderForm()
     fireEvent.click(screen.getByText(/Convictions & background documents/))
-    fireEvent.click(screen.getByRole('button', { name: /paste document/ }))
+    fireEvent.click(screen.getByRole('button', { name: /paste text/ }))
     expect(screen.getByPlaceholderText(/Paste the document text here/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'remove' }))
     expect(screen.queryByPlaceholderText(/Paste the document text here/)).not.toBeInTheDocument()
@@ -210,7 +221,7 @@ describe('NewRunForm option hints', () => {
       target: { value: 'an ethicist' },
     })
     fireEvent.click(screen.getByText(/Convictions & background documents/))
-    fireEvent.click(screen.getByRole('button', { name: /paste document/ }))
+    fireEvent.click(screen.getByRole('button', { name: /paste text/ }))
     fireEvent.change(screen.getByPlaceholderText(/Paste the document text here/), {
       target: { value: 'The policy requires written consent.' },
     })

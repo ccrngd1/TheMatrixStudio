@@ -126,6 +126,26 @@ class Settings(BaseSettings):
         description="Cost warning threshold in USD (shown in UI cost meter)",
     )
 
+    # Uploaded knowledge-base files. Both caps are enforced SERVER-side, because a
+    # browser check is advice and this endpoint accepts arbitrary bytes.
+    #
+    # The byte cap bounds what a single request can make the server buffer and
+    # extract; it is checked while streaming, so an oversized upload is refused
+    # before it is held in full. The char cap bounds what one document can add to a
+    # run: text is chunked and only the top-k chunks ever reach a prompt, so a big
+    # document is legitimate — but it still costs database space and ingest time, and
+    # a PDF can expand to far more text than its byte size suggests.
+    max_upload_bytes: int = Field(
+        default=10 * 1024 * 1024,
+        ge=1024,
+        description="Largest single knowledge-base file accepted (MAX_UPLOAD_BYTES).",
+    )
+    max_document_chars: int = Field(
+        default=400_000,
+        ge=1000,
+        description="Largest extracted text accepted from one file (MAX_DOCUMENT_CHARS).",
+    )
+
     # Storage
     data_dir: str = Field(default="./data", description="Directory for SQLite database")
 
