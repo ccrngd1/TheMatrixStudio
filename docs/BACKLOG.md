@@ -612,7 +612,7 @@ Still open: **cast-wide uploads.** Files attach per persona only, which is also 
 the setup export cannot carry cast-wide documents. Allowing cast-wide
 `document_texts` at creation would close both.
 
-### Cast-wide documents: the case is the cost of the workaround (measured)
+### Cast-wide documents: WILL NOT IMPLEMENT (decided 2026-09-08)
 
 Asked 2026-09-08: is there a good reason for a cast-wide knowledge base at all? The
 retrieval layer already treats it as first-class — both `search_documents` and
@@ -643,11 +643,18 @@ prompt already carries. And it should not become the default path — asymmetric
 knowledge is what makes a run informative, and shared documents blur attribution when
 the question is whether a persona cited *its own* evidence.
 
-Concrete change if built: allow `document_texts` (and `documents`) at the top level of
-a create-run request, alongside the per-persona lists. That also closes the setup
-export's inability to carry cast-wide documents.
+**Decision: will not implement for now.** The narrow legitimate case (shared material
+too long for the topic prompt) does not justify it while the scoring it would rely on
+is not yet trustworthy — see the BM25 entry below. Note also that cast-wide attachment
+does *not* fix within-run dilution: 8 duplicated copies dilute IDF because the corpus
+genuinely contains them 8 times, which is correct behaviour, not a bug.
 
-### BM25 scores are computed over the whole DATABASE, not the run
+If revisited: allow `document_texts` (and `documents`) at the top level of a create-run
+request alongside the per-persona lists, which would also close the setup export's
+inability to carry cast-wide documents. Until then the form warns when a setup contains
+cast-wide documents rather than silently reassigning them, which is the safe behaviour.
+
+### BM25 scores were computed over the whole DATABASE, not the run: FIXED
 
 Found 2026-09-08 while measuring the above, and more consequential than it. `bm25()`
 is evaluated by FTS5 over the entire `doc_chunks_fts` index; `c.run_id = ?` is an outer
@@ -674,6 +681,57 @@ Consequences worth taking seriously:
 - Any absolute score floor (already deferred in this backlog) is unimplementable
   against a moving baseline.
 
-Not yet fixed. Options: a per-run FTS table, or moving to a scoring function computed
-over the run's slice. Both are larger than a patch, so this is logged rather than
-attempted.
+**Fixed 2026-09-08.** `search_documents` now scores in a scratch FTS5 index holding
+only the run's slice, in the `temp` schema, with the *same* tokenizer as the persistent
+index. Same ranking function over a corrected corpus — not a new one — which the tests
+pin by asserting the two agree exactly when the database holds a single run.
+
+Copying the slice per query was chosen over reimplementing BM25, which would have meant
+reimplementing the porter stemmer to agree with the index (or accepting a
+scoring/recall mismatch where a chunk found by stemming scores zero). Measured cost,
+against a model call of 1000 ms or more:
+
+| chunks in run | scoped | legacy | overhead |
+|---|---|---|---|
+| 30 | 0.57 ms | 0.23 ms | +0.34 ms |
+| 100 | 0.93 ms | 0.35 ms | +0.58 ms |
+| 400 | 3.08 ms | 0.94 ms | +2.13 ms |
+| 1500 | 10.45 ms | 3.15 ms | +7.30 ms |
+
+Linear in the run's chunk count; caching the slice would only start to matter somewhere
+north of ~10k chunks in a single run.
+
+The legacy scorer is kept as `corpus="database"` — not for use, but so the defect stays
+reproducible in a test and the difference stays measurable from
+`/api/runs/{ref}/documents/search?corpus=`, which also now reports which corpus scored
+a result (a score is only comparable to another from the same corpus).
+
+Three things this turned up on the way:
+
+- **Two behaviour changes, both improvements.** Search now reads `doc_chunks` (the
+  source of truth), so a stale or emptied `doc_chunks_fts` no longer silently makes a
+  persona's material unfindable. `reindex_documents` still matters, because
+  `term_document_frequencies` reads the persistent index — the tests were updated to
+  assert the new property rather than the old one.
+- **A transaction leak.** Writing the scratch slice opens an implicit transaction, and
+  leaving it open pinned the connection's read snapshot: a later read missed writes
+  committed elsewhere, and writers would have queued behind a lock held by a *search*.
+  Found because a whole-database search kept returning hits from an index another
+  connection had already wiped.
+- **Concurrency.** The scratch table and connection are shared, so two runs searching
+  at once could interleave one's INSERT between another's DELETE and SELECT — the
+  original bug in a harder-to-see form, and intermittent. Serialised with a lock, and
+  regression-tested with 24 concurrent searches across two runs.
+
+Still true and NOT changed by this: duplication *inside* one run dilutes IDF, because
+eight copies really are eight documents in that run's corpus. And a run with very few
+chunks has degenerate IDF (a single-chunk corpus scores -0.0000), which is correct —
+there is nothing to rank — but it means scores are only meaningful once a run has a
+real corpus.
+
+**Consequence for past work that remains open:** the existing Phase 5 retrieval numbers
+were gathered with the whole-database scorer against a `data/` database that grew
+between runs, so they are not reproducible as recorded. Anything that depended on their
+absolute values should be re-measured before being relied on; the relative comparisons
+within a single sitting are more likely to have survived, but that is an assumption, not
+a finding.

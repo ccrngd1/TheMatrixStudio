@@ -276,14 +276,20 @@ def test_reindex_reports_chunk_count_and_is_idempotent(client, run_ref):
 
 
 def test_reindex_restores_search_after_index_loss(client, run_ref, tmp_path):
-    """The rebuild path must actually recover a wiped index."""
+    """
+    The rebuild path must recover a wiped index — for the scorer that needs it.
+
+    Run-scoped scoring (the default) builds its index from ``doc_chunks``, so wiping
+    the persistent index no longer breaks it. That is a robustness gain, and it is why
+    this test drives the whole-database scorer to exercise the rebuild: otherwise there
+    would be nothing left that a lost index can break, and the reindex endpoint would
+    go untested.
+    """
     client.post(f"/api/runs/{run_ref}/documents",
                 json={"persona_name": "Dana", "title": "a.md", "text": DANA_TEXT})
-    assert client.get(
-        f"/api/runs/{run_ref}/documents/search?q=egress inspection"
-    ).json()["passages"]
+    base = f"/api/runs/{run_ref}/documents/search?q=egress inspection"
+    assert client.get(base).json()["passages"]
 
-    import asyncio
     import sqlite3
 
     # Wipe the FTS index directly, leaving doc_chunks (the source of truth) intact.
@@ -292,14 +298,32 @@ def test_reindex_restores_search_after_index_loss(client, run_ref, tmp_path):
     con.commit()
     con.close()
 
-    assert client.get(
-        f"/api/runs/{run_ref}/documents/search?q=egress inspection"
-    ).json()["passages"] == []
+    # Unaffected: it never consulted the persistent index.
+    assert client.get(base).json()["passages"], (
+        "run-scoped search should not depend on the derived index"
+    )
+    assert client.get(f"{base}&corpus=database").json()["passages"] == []
 
     assert client.post(f"/api/runs/{run_ref}/documents/reindex").json()["reindexed_chunks"] >= 1
-    assert client.get(
-        f"/api/runs/{run_ref}/documents/search?q=egress inspection"
-    ).json()["passages"], "reindex did not restore search"
+    assert client.get(f"{base}&corpus=database").json()["passages"], (
+        "reindex did not restore whole-database search"
+    )
+
+
+def test_search_reports_which_corpus_scored_it(client, run_ref):
+    """
+    A score is only comparable to another from the same corpus, so say which.
+
+    Without this the two scorers return the same field with different meanings, and a
+    number copied out of this endpoint into a measurement is unattributable.
+    """
+    client.post(f"/api/runs/{run_ref}/documents",
+                json={"persona_name": "Dana", "title": "a.md", "text": DANA_TEXT})
+    base = f"/api/runs/{run_ref}/documents/search?q=egress inspection"
+    assert client.get(base).json()["corpus"] == "run"
+    assert client.get(f"{base}&corpus=database").json()["corpus"] == "database"
+    # A typo must not silently pick a scorer.
+    assert client.get(f"{base}&corpus=wholedb").status_code == 422
 
 
 def test_reindex_unknown_run_is_404(client):

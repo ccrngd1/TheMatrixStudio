@@ -209,7 +209,15 @@ async def test_count_documents(run_db):
 # --------------------------------------------------------------------------
 
 
-async def test_reindex_rebuilds_search_from_source_of_truth(run_db):
+async def test_search_survives_a_corrupt_index_because_it_reads_the_chunks(run_db):
+    """
+    Search no longer depends on the persistent FTS index at all.
+
+    Run-scoped scoring builds a scratch index from ``doc_chunks``, which is the source
+    of truth, so a stale or emptied ``doc_chunks_fts`` cannot silently make a persona's
+    background material unfindable. Before run-scoping, this same corruption returned
+    zero results — the behaviour this test used to assert.
+    """
     await run_db.add_document(
         run_id="r1", title="spec.md",
         chunks=["egress inspection evidence", "latency and cost tradeoffs"],
@@ -221,11 +229,37 @@ async def test_reindex_rebuilds_search_from_source_of_truth(run_db):
     # Simulate a corrupt/stale index by emptying it behind the retrieval layer.
     await run_db._conn.execute("INSERT INTO doc_chunks_fts(doc_chunks_fts) VALUES('delete-all')")
     await run_db._conn.commit()
-    assert await run_db.search_documents("r1", q, "A", 5) == []
+
+    assert await run_db.search_documents("r1", q, "A", 5), (
+        "run-scoped search should read doc_chunks, not the derived index"
+    )
+    # The legacy whole-database scorer did depend on it, which is what made the
+    # rebuild path a hard prerequisite.
+    assert await run_db.search_documents("r1", q, "A", 5, corpus="database") == []
+
+
+async def test_reindex_rebuilds_the_index_that_term_selection_uses(run_db):
+    """
+    ``reindex_documents`` still matters: term_document_frequencies reads the
+    persistent index, and discriminative-term selection is built on those counts.
+    """
+    await run_db.add_document(
+        run_id="r1", title="spec.md",
+        chunks=["egress inspection evidence", "latency and cost tradeoffs"],
+        persona_name="A",
+    )
+    assert await run_db.term_document_frequencies("r1", ["egress"], "A") == {"egress": 1}
+
+    await run_db._conn.execute("INSERT INTO doc_chunks_fts(doc_chunks_fts) VALUES('delete-all')")
+    await run_db._conn.commit()
+    assert await run_db.term_document_frequencies("r1", ["egress"], "A") == {"egress": 0}
 
     indexed = await run_db.reindex_documents()
     assert indexed == 2
-    assert await run_db.search_documents("r1", q, "A", 5), "rebuild did not restore search"
+    assert await run_db.term_document_frequencies("r1", ["egress"], "A") == {"egress": 1}
+    assert await run_db.search_documents(
+        "r1", build_fts_query("egress inspection"), "A", 5, corpus="database"
+    ), "rebuild did not restore whole-database search"
 
 
 async def test_reindex_is_idempotent(run_db):

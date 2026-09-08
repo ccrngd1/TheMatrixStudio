@@ -1593,6 +1593,15 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         persona: Optional[str] = Query(default=None),
         k: int = Query(default=5, ge=1, le=50),
         max_chars: int = Query(default=2000, ge=1),
+        corpus: str = Query(
+            default="run",
+            pattern="^(run|database)$",
+            description=(
+                "BM25 statistics source. 'run' (default) scores against this run's "
+                "slice only, so a score is reproducible. 'database' is the old "
+                "whole-index behaviour, kept so the difference can be seen."
+            ),
+        ),
     ) -> Dict[str, Any]:
         """Inspect what a query retrieves, without running a simulation.
 
@@ -1615,7 +1624,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
                 "note": "No searchable terms in the query after removing stopwords.",
             }
         rows = await db.search_documents(
-            run_id=run["id"], query=fts_query, persona_name=persona, k=k
+            run_id=run["id"], query=fts_query, persona_name=persona, k=k, corpus=corpus
         )
         passages = apply_budget(rows, max_chars=max_chars)
         return {
@@ -1624,6 +1633,9 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             "fts_query": fts_query,
             "terms": extract_terms(q),
             "persona": persona,
+            # Reported because a score is only comparable to another score from the
+            # same corpus, and this is the one knob that changes what it means.
+            "corpus": corpus,
             "passages": [
                 {
                     "chunk_id": p.chunk_id,

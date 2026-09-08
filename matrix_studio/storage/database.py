@@ -8,6 +8,7 @@ Schema:
 - snapshots: full state snapshots for fast restoration
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -22,6 +23,15 @@ from matrix_studio.state import SimSnapshot
 
 logger = logging.getLogger(__name__)
 
+# Tokenizer for every FTS5 index here. Named once because the scratch index used for
+# run-scoped scoring MUST tokenize identically to the main one — if they drifted, a
+# chunk found by the main index's stemming could score zero under the scratch index.
+FTS_TOKENIZER = "porter unicode61"
+
+# Scratch FTS index used to score a single run's slice. Lives in the `temp` schema, so
+# it never touches the database file and disappears with the connection.
+_SCOPE_TABLE = "retrieval_scope"
+
 
 class Database:
     """Async SQLite database with event sourcing."""
@@ -35,6 +45,10 @@ class Database:
         """
         self.db_path = db_path
         self._conn: Optional[aiosqlite.Connection] = None
+        # Serialises the scratch-index sequence in _search_documents_run_scoped.
+        # Created here rather than on first use: two coroutines racing to create a
+        # lock each get their own, which locks nothing.
+        self._scope_lock = asyncio.Lock()
         # Set during schema creation; document retrieval degrades to "no results"
         # rather than raising if this SQLite build has no FTS5.
         self._fts5_available: bool = False
@@ -335,7 +349,7 @@ class Database:
                     content,
                     content='doc_chunks',
                     content_rowid='id',
-                    tokenize='porter unicode61'
+                    tokenize='""" + FTS_TOKENIZER + """'
                 )
             """)
             self._fts5_available = True
@@ -1346,14 +1360,112 @@ class Database:
             row = await cursor.fetchone()
             return int(row[0]) if row else 0
 
+    def _scope_sql(self, persona_name: Optional[str], alias: str = "c") -> tuple:
+        """The run-slice predicate: a persona sees its own documents plus cast-wide."""
+        if persona_name is None:
+            return "", ()
+        return f"AND ({alias}.persona_name = ? OR {alias}.persona_name IS NULL)", (persona_name,)
+
+    async def _search_documents_run_scoped(
+        self, run_id: str, query: str, persona_name: Optional[str], k: int
+    ) -> List[Dict[str, Any]]:
+        """BM25 over ONLY this run's slice, by scoring in a scratch index.
+
+        Why this exists: ``bm25()`` is computed by FTS5 over the whole index it is
+        given, and the main index holds every run in the database. ``run_id`` was only
+        an outer filter on already-scored rows, so a run's scores moved when unrelated
+        runs were added. Measured on identical run/documents/query: -0.0000 with that
+        run alone in the database, -1.8331 once an unrelated second run existed. A
+        score that depends on a neighbour is not a measurement.
+
+        Rather than reimplement BM25 (which would mean reimplementing the porter
+        stemmer to agree with the index, or accepting a scoring/recall mismatch), the
+        run's chunks are copied into a temp FTS5 index with the SAME tokenizer and
+        scored there. Identical tokenisation, exact BM25, statistics that are the run's
+        own. Runs hold well under a thousand chunks, so the copy is cheap relative to
+        the model call the retrieval feeds.
+
+        This does NOT change how duplication inside one run behaves: eight copies of a
+        document really are eight documents in that run's corpus, and diluting their
+        IDF is correct.
+        """
+        scope_sql, scope_params = self._scope_sql(persona_name)
+        # One multi-statement sequence over a shared connection and a shared scratch
+        # table: concurrent runs would otherwise interleave and score against each
+        # other's slice — the very bug being fixed, in a harder-to-see form.
+        async with self._scope_lock:
+            await self._conn.execute(
+                f"CREATE VIRTUAL TABLE IF NOT EXISTS temp.{_SCOPE_TABLE} "
+                f"USING fts5(content, tokenize='{FTS_TOKENIZER}')"
+            )
+            await self._conn.execute(f"DELETE FROM temp.{_SCOPE_TABLE}")
+            await self._conn.execute(
+                f"INSERT INTO temp.{_SCOPE_TABLE}(rowid, content) "
+                f"SELECT c.id, c.content FROM doc_chunks c "
+                f"WHERE c.run_id = ? {scope_sql}",
+                (run_id, *scope_params),
+            )
+            # Unqualified table name here: bm25() and MATCH both reject a
+            # schema-qualified name ("no such column: temp.retrieval_scope"). SQLite
+            # resolves temp first, so the bare name is the temp table.
+            async with self._conn.execute(
+                f"SELECT rowid AS chunk_id, bm25({_SCOPE_TABLE}) AS score "
+                f"FROM {_SCOPE_TABLE} WHERE {_SCOPE_TABLE} MATCH ? "
+                f"ORDER BY score ASC LIMIT ?",
+                (query, k),
+            ) as cursor:
+                scored = [(int(r[0]), float(r[1])) for r in await cursor.fetchall()]
+            # Writing to the scratch table opens an implicit transaction, and leaving
+            # it open pins this connection's read snapshot — so a later read would
+            # miss writes committed elsewhere in the meantime, and writers would queue
+            # behind a lock held by a *search*. Committing is release, not durability:
+            # the temp table is not in the database file.
+            await self._conn.commit()
+
+        if not scored:
+            return []
+
+        # Metadata for the winners, then reorder to the scored ranking: SQL IN gives no
+        # ordering guarantee, and losing the ranking would silently return the k
+        # matches in rowid order.
+        ids = [cid for cid, _ in scored]
+        placeholders = ",".join("?" * len(ids))
+        async with self._conn.execute(
+            f"""
+            SELECT c.id AS chunk_id, c.document_id, c.ordinal, c.content,
+                   d.title, d.source_path, d.media_type
+            FROM doc_chunks c JOIN documents d ON d.id = c.document_id
+            WHERE c.id IN ({placeholders})
+            """,
+            ids,
+        ) as cursor:
+            by_id = {int(r["chunk_id"]): dict(r) for r in await cursor.fetchall()}
+
+        out: List[Dict[str, Any]] = []
+        for chunk_id, score in scored:
+            row = by_id.get(chunk_id)
+            if row is None:
+                continue
+            row["score"] = score
+            out.append(row)
+        return out
+
     async def search_documents(
         self,
         run_id: str,
         query: str,
         persona_name: Optional[str] = None,
         k: int = 3,
+        corpus: str = "run",
     ) -> List[Dict[str, Any]]:
         """BM25 search over a persona's document slice, best match first.
+
+        ``corpus`` selects what BM25's statistics are drawn from:
+
+        - ``"run"`` (default) — this run's slice only, so a score is a property of the
+          run and is reproducible regardless of what else the database holds.
+        - ``"database"`` — the whole index, which is what this did before and is kept
+          only so the difference stays measurable and regression-locked.
 
         ``query`` MUST already be sanitised into FTS5 syntax by
         ``documents_retrieval.build_fts_query`` — raw conversation text contains
@@ -1365,12 +1477,22 @@ class Database:
         """
         if not self._fts5_available or not query or k <= 0:
             return []
-        if persona_name is None:
-            scope_sql = ""
-            scope_params: tuple = ()
-        else:
-            scope_sql = "AND (c.persona_name = ? OR c.persona_name IS NULL)"
-            scope_params = (persona_name,)
+        if corpus not in ("run", "database"):
+            raise ValueError(f"corpus must be 'run' or 'database', not {corpus!r}")
+        if corpus == "run":
+            try:
+                return await self._search_documents_run_scoped(
+                    run_id, query, persona_name, k
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Same contract as below: a retrieval failure degrades to "no
+                # supporting passage found", which the prompt handles honestly, rather
+                # than taking a run down.
+                logger.warning(
+                    "Run-scoped document search failed for run %s: %s", run_id, exc
+                )
+                return []
+        scope_sql, scope_params = self._scope_sql(persona_name)
         sql = f"""
             SELECT c.id AS chunk_id, c.document_id, c.ordinal, c.content,
                    d.title, d.source_path, d.media_type,
@@ -1451,12 +1573,7 @@ class Database:
         """
         if not self._fts5_available or not terms:
             return {}
-        if persona_name is None:
-            scope_sql = ""
-            scope_params: tuple = ()
-        else:
-            scope_sql = "AND (c.persona_name = ? OR c.persona_name IS NULL)"
-            scope_params = (persona_name,)
+        scope_sql, scope_params = self._scope_sql(persona_name)
         sql = f"""
             SELECT COUNT(*) FROM doc_chunks_fts
             JOIN doc_chunks c ON c.id = doc_chunks_fts.rowid
