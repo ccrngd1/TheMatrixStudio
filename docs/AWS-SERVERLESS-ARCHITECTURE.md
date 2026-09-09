@@ -8,7 +8,7 @@ their own private conversations. Serverless throughout.
 
 Dropping local run is a genuine simplification, and it changes one decision: there is
 no longer any reason for a storage abstraction with two adapters. One implementation,
-targeted at the platform. (The previous revision's §13 on ports-and-adapters is
+targeted at the platform. (The previous revision's ports-and-adapters section is
 superseded and removed.)
 
 Multi-tenancy is now the dominant constraint — larger than the serverless one. A
@@ -55,11 +55,11 @@ The other arguments for it do not survive the change of premise either:
   thousand-employee install it is immaterial next to Bedrock spend, so the strongest
   objection to a central service disappears.
 - **BM25 corpus scoping.** v0.6.0 corrected scoring so corpus statistics come from the
-  run's own slice. That fix was motivated by **measurement reproducibility** — making
-  experimental arms comparable across a database that grew between runs. It is not
-  obviously the right choice for a product: deployment-wide IDF is defensible, arguably
-  better, since a term being common across the whole corpus is genuine information about
-  how discriminative it is. See §8 for what changes and what must be re-baselined.
+  run's own slice, to make experimental arms comparable across a database that grew
+  between runs. This turned out to be the wrong axis to argue on at all: §8 settles that
+  engine retrieval must be **vector**, and cosine similarity is pairwise — there are no
+  corpus statistics to scope, contaminate or reproduce. See §8's note on why that
+  dissolves rather than resolves the question.
 - **Operational ownership.** A hand-rolled index lifecycle with rebuild-on-write is
   precisely the kind of component you do not want to hand a company to operate.
 - **An org-wide corpus is likely, not hypothetical.** "Search our documents" is the
@@ -102,7 +102,9 @@ scope every query. Instead:
 1. Partition keys are tenant-prefixed: `USER#{sub}` (see §4).
 2. On each request, the API Lambda extracts `sub` from the validated JWT and calls
    `sts:AssumeRole` for a **session-scoped role** whose policy pins
-   `dynamodb:LeadingKeys` to that user's partition, and `s3:prefix` to their prefix.
+   `dynamodb:LeadingKeys` to that user's partition, and restricts S3 object ARNs to
+   `…/{sub}/*` (with `s3:prefix` on the `ListBucket` action, which is where that
+   condition key applies).
 3. All storage access in that request uses those scoped credentials.
 
 The consequence: **a missing tenant filter in application code cannot leak data.**
@@ -132,8 +134,8 @@ each carry its own capacity and TTL policy.
 | Table | PK | SK | Notes |
 |---|---|---|---|
 | `runs` | `USER#{sub}` | `RUN#{run_id}` | The run row plus `stop_requested`, `owner_sub`, `total_cost_usd`. |
-| `events` | `RUN#{run_id}` | `{seq}` | Append-only. `get_events_after(seq)` is a Query with `SK > seq` — the existing access pattern, natively. Carries `owner_sub` for fan-out filtering. |
-| `snapshots` | `RUN#{run_id}` | `{turn}` | **Pointer only** — body in S3, see below. |
+| `events` | `USER#{sub}` | `RUN#{run_id}#{seq}` | Append-only. `get_events_after(seq)` is a Query with `SK > RUN#{id}#{seq}` — the existing access pattern, natively. User-prefixed so `LeadingKeys` reaches it; see below. |
+| `snapshots` | `USER#{sub}` | `RUN#{run_id}#{turn}` | **Pointer only** — body in S3, see below. |
 | `summaries` | `RUN#{run_id}` | `{kind}` | |
 | `threads` / `thread_messages` | `RUN#{run_id}` / `THREAD#{id}` | | |
 | `connections` | `RUN#{run_id}` | `{connection_id}` | Plus `owner_sub`. TTL for cleanup. |
@@ -144,12 +146,14 @@ each carry its own capacity and TTL policy.
 GSIs, driven by the screens that exist: `runs` by `owner_sub` + `created_at` (the
 history list), and by `owner_sub` + `status` (finding interrupted runs).
 
-Note `events` and `snapshots` are keyed by run rather than user, since a run id is an
-opaque UUID and the run's own row carries the owner. Their IAM scoping therefore comes
-from the run-level check the API does first. If that indirection feels thin — and it is
-the one place where isolation is a code path rather than a key prefix — key them
-`USER#{sub}` / `RUN#{run_id}#{seq}` instead and pay a slightly wider partition. I would
-take the stronger option for a company install.
+**Why `events` and `snapshots` are user-prefixed, not run-prefixed.** Keying them
+`RUN#{run_id}` would be the more obvious shape, and a run id is an opaque UUID whose own
+row carries the owner — so scoping *could* rest on the API checking run ownership first.
+That was the earlier draft and it is the weaker option: it makes isolation a code path
+rather than a key prefix, and it is the one table pair `LeadingKeys` would not reach. For
+a company install, take the wider partition and keep every table enforceable by
+credentials. A single run's events stay contiguous within the user's partition because the
+sort key leads with `RUN#{run_id}`.
 
 **Snapshots must go to S3, not inline.** A snapshot holds the full transcript plus
 every agent's state, including memory streams when cognition is on. DynamoDB's item
@@ -195,7 +199,7 @@ Only three things ever read document text, and none of them wants a DynamoDB ite
 | Reader | Needs | Best source |
 |---|---|---|
 | A turn (hot path) | the *k* retrieved passages | **S3 Vectors metadata** — the k-NN call already returns them, so there is no second lookup at all |
-| The lexical arm of `hybrid`, for `/documents/search` | all of a KB's chunks | **S3** — a handful of document objects (mean 11 KB each) |
+| The lexical arm of `hybrid`, for `/documents/search` | all of a KB's chunks | **S3** — a handful of document objects (mean 11 KB each), re-chunked in memory. `chunk_text()` is deterministic, so re-chunking the same normalised text reproduces the same chunks and the same `ordinal`s the vectors were built from. |
 | Setup export (`document_text`) | one whole document | **S3** — a single GET |
 
 Two consequences worth having:
@@ -293,7 +297,8 @@ testable locally and it removes a hard blocker from the migration.
 ## 5. Topology
 
 Reflects every revision in this document: **no SQLite anywhere**, DynamoDB for
-application data and chunk text, **S3 Vectors** for embeddings (retrieval is vector —
+application data and metadata only, **S3 Vectors** for embeddings and passage text
+(retrieval is vector —
 measured 22× better recall@1 than lexical on engine queries), one Step Functions
 execution per run, polling for live updates. Nothing here has an hourly capacity floor.
 
@@ -318,29 +323,31 @@ execution per run, polling for live updates. Nothing here has an hourly capacity
               ▼
  ┌────────────────────────────────┐   1. read `sub` from the verified JWT
  │  Lambda: API                   │   2. sts:AssumeRole scoped to that user
- │  FastAPI via Mangum            │      (dynamodb:LeadingKeys + s3:prefix)
+ │  FastAPI via Mangum            │      (LeadingKeys + S3 ARN prefix)
  │  container image (litellm 91MB) │   3. all storage access uses those creds
  └───┬────────────────┬───────────┘
      │                │ scoped creds
      │ StartExecution │
      ▼                ▼
  ┌───────────────┐  ┌──────────────────────────────────────────────┐
- │ Step Functions│  │  DynamoDB                                    │
- │ (§5.2)        │─▶│   runs · events · snapshots(ptr)              │
-         │  │  documents/KBs (METADATA only, no text)     │
- └───────┬───────┘  │   summaries · threads · knowledge_bases       │
-         │          │   kb_grants · connections                    │
+ │ Step Functions│  │  DynamoDB — small, mutable, key-addressed     │
+ │ (§5.2)        │─▶│   runs · events · snapshots (pointers)        │
+ └───────┬───────┘  │   summaries · threads · connections           │
+         │          │   knowledge_bases · kb_grants                 │
+         │          │   documents (METADATA only — no text)         │
          │          └──────────────────────────────────────────────┘
          │          ┌──────────────────────────────────────────────┐
-         │          │  S3  (per-user prefixes)                     │
+         │          │  S3 — large, immutable (per-user prefixes)    │
          │─────────▶│   snapshots/{sub}/{run}/{turn}.json          │
-         │          │   uploads/{sub}/{kb}/{doc}     (originals)   │
+         │          │   docs/{sub}/{kb}/{doc}.txt   (full text)     │
+         │          │   uploads/{sub}/{kb}/{doc}    (originals)     │
+         │          │   avatars/{sub}/{run}/{name}.png              │
          │          └──────────────────────────────────────────────┘
          │          ┌──────────────────────────────────────────────┐
-         │─────────▶│  S3 Vectors                                  │
-         │          │   one index per KB · chunk embeddings +      │
-         │          │   metadata {owner_sub, kb_id, chunk_id,      │
-         │          │   ordinal, PASSAGE TEXT}                     │
+         │─────────▶│  S3 Vectors — similarity search              │
+         │          │   one index per KB                           │
+         │          │   vector + metadata {owner_sub, kb_id,       │
+         │          │   doc_id, ordinal, PASSAGE TEXT}             │
          │          └──────────────────────────────────────────────┘
          │
          ▼
@@ -635,194 +642,130 @@ the right passage.)
 
 ### Rejected: OpenSearch Serverless
 
-Retained here for the reasoning. Its hourly capacity floor was the objection, and S3
-Vectors provides the same capability for this use without one. Used directly rather than
-through Bedrock Knowledge Bases, had it been chosen.
+Kept for the reasoning, not as a fallback. It has an **hourly capacity floor** billed
+whether or not anything queries, and S3 Vectors provides the k-NN and metadata filtering
+this design needs without one. Everything else about it — index-per-KB granularity,
+application-enforced document filtering — is the same trade, so the floor decides it.
 
-**Why not Knowledge Bases**, despite being Bedrock-native and more managed: it takes
-over chunking, and this codebase's chunker has measured behaviour worth keeping. Chunk
-overlap is snapped to a sentence boundary because a naive tail cut produced a real
-failure — a chunk beginning `". This is a correctness requirement, not hardening."` had
-lost the antecedent of "This", and a persona quoted it verbatim and inferred the
-**opposite** of what the source meant. On one real document 90% of chunks began
-mid-sentence before the fix. Handing chunking to a managed service discards that, and
-the failure it prevents is silent. Knowledge Bases also runs on OpenSearch Serverless
-underneath, so it does not avoid the cost floor.
+Had it been chosen, it would have been used **directly rather than via Bedrock Knowledge
+Bases**, for the reason in §8: Knowledge Bases takes over chunking, and this codebase's
+sentence-aligned overlap exists because a naive cut produced a chunk beginning
+`". This is a correctness requirement, not hardening."` — a persona quoted it and inferred
+the **opposite** of the source, with 90% of chunks starting mid-sentence before the fix.
+Knowledge Bases also runs on OpenSearch Serverless underneath, so it inherits the floor.
 
-**Isolation is the part to get right, and here it is a query filter rather than an IAM
-boundary.** OpenSearch Serverless data access policies operate at collection and index
-granularity, not per document, so per-user scoping cannot be enforced by credentials the
-way DynamoDB's `LeadingKeys` allows (§3). An index per user would restore that, but
-thousands of tiny indexes is a known anti-pattern — shard overhead, and hard limits.
+*(Guidance that used to live in this section — the search chokepoint, the outbound
+assertion, per-KB index granularity — applies to S3 Vectors and has moved to §8a and §8b,
+where it will actually be read.)*
 
-So accept a code-level boundary and make it **one auditable chokepoint** rather than a
-predicate repeated at call sites:
+### What this costs the test suite
 
-- Exactly one function may talk to the search client, and it takes the authenticated
-  subject as a required argument — there is no overload without it.
-- Every query it issues carries the `owner_sub` and `run_id` filters.
-- Enforce it with a test that greps for any other import of the search client, in the
-  same spirit as the other structural rules here. A convention nobody checks is not a
-  control.
+Retrieval tests currently run against in-process SQLite: fast, hermetic, no services. On
+S3 Vectors they cannot, and the honest options are both imperfect:
 
-For a multi-company deployment, add an index per tenant: that granularity *is*
-IAM-enforceable via data access policies, and it caps the index count at the number of
-customers rather than users or conversations.
+- **A fake vector store** — a few dozen lines doing exact cosine in memory. Adequate for
+  the *plumbing* (is the filter applied, is the scope asserted, is the ranking preserved)
+  and worthless for *quality*, since it fakes the thing being relied on.
+- **A real vector index in CI**, one per test run, torn down after. Slower and needs
+  credentials, but it is the only way a retrieval-quality test means anything.
 
-**What changes behaviourally, stated so it is not discovered later.** Corpus statistics
-become deployment-wide rather than per-run, which is the opposite of the v0.6.0 fix.
-Consequences:
-
-- Retrieval scores are no longer comparable to any number recorded in `docs/`. Every
-  absolute retrieval measurement in this repository must be re-baselined against the new
-  backend before it is cited again.
-- Scores now move as the deployment's corpus grows. That is acceptable for a product and
-  unacceptable for an experiment, so any future retrieval measurement needs a fixed
-  corpus snapshot to be meaningful.
-- Ranking quality is likely *better* for the product case and is worth measuring rather
-  than assumed — the inspection endpoint (`/documents/search`) already exists for
-  exactly this and should be used to compare before and after on a real corpus.
-
-**What comes free**, and did not before: native k-NN, so vector and hybrid retrieval no
-longer need `sqlite-vec` in a Lambda temp file; and an org-wide shared corpus can live
-in the same collection under a different index with a `scope` field, queried alongside a
-user's own documents.
-
-**The cost this adds**, honestly: the test suite currently runs retrieval against
-in-process SQLite — fast and hermetic. Against OpenSearch it needs a container in CI for
-the retrieval tests (~55 of them in `test_retrieval*.py`), or a fake, which is a fake of
-the exact scoring semantics being relied on and therefore not worth much. Budget for the
-container.
+Recommended split: the fake for the ~55 existing retrieval tests, which are about plumbing
+and scoping; plus one **quality suite** against a real index, run deliberately rather than
+on every commit, using the ground truth already built for `PHASE5-RETRIEVAL-MEASUREMENT.md`.
+That preserves the fast inner loop and keeps the measured recall numbers honest — which
+matters, because the switch from lexical to vector is exactly the kind of change a green
+plumbing suite would pass while retrieval quality silently regressed.
 
 ## 8a. How a persona's knowledge base is scoped
 
-> Retrieval is a query to S3 Vectors (§8), so the scoping below **is** a metadata filter
-> the application must get right — `LeadingKeys` does not reach it. That is why the
-> chokepoint and outbound-assertion discipline in this section matters, and why §8b
-> recommends one vector index per KB, which restores an IAM-enforceable boundary at KB
-> granularity.
-
-The mechanism is **indexed metadata fields plus filter context** — but two things about
-that deserve stating precisely, because one is a real limitation and the other is a
-design question the current model does not answer well.
+The mechanism is **vector metadata plus a filter on the k-NN query**. Two things about it
+need stating precisely: where the enforcement boundary really is, and one consequence that
+turns out to remove a problem rather than create one.
 
 ### The mechanical answer
 
-Every chunk today already carries `run_id` and a nullable `persona_name`
-(`doc_chunks`), and search scopes with `persona_name = ? OR persona_name IS NULL` —
-"this persona's own documents plus anything cast-wide". Indexed as fields, the
-document becomes:
+Every chunk today carries `run_id` and a nullable `persona_name` (`doc_chunks`), and
+search scopes with `persona_name = ? OR persona_name IS NULL` — "this persona's own
+documents plus anything cast-wide". Under the KB model (§8b) that becomes a `kb_id`, and
+each vector is stored with metadata:
 
-```json
+```jsonc
 {
-  "owner_sub":   "…",          // tenant
-  "run_id":      "…",
-  "persona_name":"Priya",      // absent = visible to the whole cast
-  "kb_id":       "…",          // see below
-  "scope":       "run",        // run | org
-  "document_id": "…", "title": "…", "ordinal": 7,
-  "content":     "…"           // the only analysed field
+  "owner_sub": "…",        // tenant — filterable
+  "kb_id":     "kb-legal", // filterable; the binding unit
+  "scope":     "run",      // run | org — filterable
+  "doc_id":    "…",
+  "ordinal":   7,
+  "text":      "…"         // the passage itself: NON-filterable metadata
 }
 ```
 
-and the query puts every scoping predicate in **`filter` context**, not `must`:
+and the query filters on the KBs the speaker is bound to:
 
-```json
-{"query": {"bool": {
-  "must":   [ {"match": {"content": "<terms>"}} ],
-  "filter": [
-    {"term": {"owner_sub": "<from the JWT>"}},
-    {"term": {"run_id": "<run>"}},
-    {"bool": {"should": [
-      {"term": {"persona_name": "Priya"}},
-      {"bool": {"must_not": {"exists": {"field": "persona_name"}}}}
-    ]}}
-  ]
-}}}
+```jsonc
+// conceptually — check the current S3 Vectors filter syntax before building
+{
+  "vector": [ /* the embedded query */ ],
+  "topK": 6,
+  "filter": {
+    "owner_sub": "<from the verified JWT>",
+    "kb_id": { "$in": ["kb-legal", "kb-migration"] }
+  }
+}
 ```
 
-`filter` rather than `must` matters for two reasons: filter clauses **do not contribute
-to the score**, so scoping cannot perturb ranking, and they are cacheable. A scoping
-predicate in `must` would silently make a persona's own documents rank differently from
-the same documents in another persona's slice.
+Two details that matter:
 
-That `should` block is the literal translation of `persona_name = ? OR persona_name IS
-NULL`. Note `must_not exists` is the correct way to express "cast-wide" — a missing
-field, not a `null` value, since a JSON null and an absent field index differently.
+- **Passage text must be non-filterable metadata.** Filterable metadata is the
+  constrained kind (tighter size limits, and it is indexed); only `owner_sub`, `kb_id` and
+  `scope` need to be filtered on. Putting the text in the filterable set would waste the
+  budget that actually needs it.
+- **Cast-wide is a binding, not a null field.** The earlier draft expressed "visible to
+  the whole cast" as an absent `persona_name`, which required an awkward
+  `must_not exists` predicate. Under §8b it is simply a KB bound at run level, so the
+  filter is the same `kb_id` `$in` clause with one more id in it. Simpler, and no
+  null-versus-absent trap.
 
-### The limitation: on Serverless, this filter is client-side
+### The consequence worth noticing: the corpus-statistics problem dissolves
 
-OpenSearch's security plugin supports **document-level security** — a role carries a
-query filter and the *cluster* enforces it, so a client cannot see documents outside its
-scope even if it forgets the predicate. That is the enforcement model you would want
-here.
+This document has argued about corpus statistics four times — v0.6.0's per-run BM25 fix,
+whether a shared index reintroduces it, whether per-KB indexes put IDF on the right unit.
+**Choosing vector retrieval ends the argument rather than settling it.** Cosine similarity
+is computed between the query vector and each chunk vector; it involves no corpus at all.
+So:
 
-**OpenSearch Serverless does not offer it.** Its data access policies are collection-
-and index-granular; there is no per-document rule. (Worth re-checking against current
-AWS capability before building — this is the kind of gap AWS closes — but assume it is
-absent.) So the filter is the application's responsibility, which is weaker than the
-`dynamodb:LeadingKeys` enforcement §3 uses for the primary datastore.
+- A score is a property of the query and the passage, nothing else. It cannot be moved by
+  another tenant's data, another conversation's data, or the deployment growing.
+- The v0.6.0 property — a score being reproducible and a property of the run — is
+  preserved **by construction**, not by scoping.
+- There is nothing to re-baseline on the engine path, and no need for a fixed corpus
+  snapshot to make a future measurement meaningful.
 
-Two mitigations, both cheap, and worth having together because this is the one boundary
-IAM cannot hold:
+The one place corpus statistics survive is the **lexical arm** of `hybrid`, used only by
+the operator-facing `/documents/search`. That is computed in-process over the documents of
+the KBs being searched (§4a), so its corpus is exactly the set asked about — scoped by
+construction there too.
 
-1. **Make the scope impossible to omit at the call site.** One value object,
-   constructible only from an authenticated principal plus a run plus a persona, and a
-   single search function that accepts nothing else. No raw-query path, no overload
-   without a scope. Backed by a test that fails if anything other than that module
-   imports the search client.
-2. **Assert on the way out.** After a search returns, verify every hit's `owner_sub`
-   and `run_id` match the requested scope; drop mismatches and raise an alarm. It costs
-   a loop over *k* hits and converts a silent cross-tenant leak into a detectable
-   error. Cheap insurance for a boundary enforced by a predicate.
+### Where the enforcement boundary is
 
-### The design question: knowledge bases should probably be first-class
+`dynamodb:LeadingKeys` (§3) does not reach a vector store: the tenant predicate is a query
+filter the application supplies, so it is application-enforced rather than
+credential-enforced. Two mitigations, worth having together because this is the one
+boundary IAM does not hold by itself:
 
-`persona_name` is a **string inside one run**, and documents are scoped
-`run_id + persona_name` (`doc_chunks`, and `documents.run_id` is a foreign key to the
-run). That means a knowledge base is not a thing — it is an attachment to one
-conversation. Two consequences that will bite a company install immediately:
+1. **Make the scope impossible to omit at the call site.** One value object, constructible
+   only from an authenticated principal plus the resolved KB bindings, and a single search
+   function that accepts nothing else — no raw-query path, no overload without a scope.
+   Backed by a test that fails if any other module imports the vector client.
+2. **Assert on the way out.** After a query returns, verify every hit's `owner_sub` and
+   `kb_id` are in the requested scope; drop mismatches and alarm. It costs a loop over *k*
+   hits and turns a silent cross-tenant disclosure into a detectable error.
 
-- **No reuse.** Giving the same three PDFs to a persona in a new conversation means
-  uploading them again, re-chunking, re-indexing and re-storing. A company with a
-  standing "Legal" or "Security" corpus will expect to define it once.
-- **Duplication multiplies within a run too.** Attaching one document to eight personas
-  stores it eight times — which is exactly the effect measured in the cast-wide
-  investigation, where duplication collapsed the document's BM25 score to zero because
-  the term appeared in 8 of 16 chunks.
-
-So model knowledge bases as their own objects and bind them to personas:
-
-| Concept | Where it lives |
-|---|---|
-| `knowledge_base` | Owned by a user or a team. Has a name, and documents. |
-| `kb_documents` / chunks | Indexed **once**, tagged `kb_id` (+ `owner_sub`, `scope`). No `run_id`. |
-| persona → KB binding | On the run's cast: `knowledge_bases: ["kb-legal", "kb-migration"]` |
-
-Retrieval then filters `kb_id` against the bindings for the speaking persona:
-
-```json
-{"filter": [
-  {"term":  {"owner_sub": "<from the JWT>"}},
-  {"terms": {"kb_id": ["kb-legal", "kb-migration"]}}
-]}
-```
-
-This is a better answer to the original question than per-run tagging, because "which
-knowledge base may this agent search" becomes an explicit, inspectable binding on the
-cast rather than a string match on a persona's display name. It also fixes three things
-at once: reuse across conversations, the duplication that distorted scoring, and the
-cast-wide case (a KB bound to every persona, stored once) that was shelved as
-`WILL NOT IMPLEMENT` partly *because* the per-run model made it costly.
-
-It does mean per-conversation ad-hoc uploads become "an implicit KB scoped to this
-run" — still one code path, with `scope: "run"` and a `kb_id` derived from the run.
-
-**One caveat to size before committing:** binding a persona to a shared KB means its
-BM25 corpus statistics are those of the whole KB, so a persona's retrieval quality now
-depends on a corpus it does not own and that other conversations also use. That is the
-right trade for a company (a shared corpus should have shared statistics) but it must be
-measured on a real KB with the inspection endpoint, not assumed.
+**And then take the boundary back** where it matters: with **one vector index per KB**
+(§8b) IAM can grant per index, so a principal's policy names the KB indexes they hold a
+grant for. The per-document filter reduces to a per-index permission, which is
+credential-enforced again. The filter still applies — defence in depth — but it stops
+being the only thing standing between two tenants.
 
 ## 8b. Sharing and reuse: documents, collections, bindings
 
@@ -872,7 +815,8 @@ The effective scope for a speaker is `run.knowledge_bases ∪ persona.knowledge_
 Run-level binding is the cast-wide case — and note it is now **cheap**, stored once,
 which removes the reason cast-wide documents were shelved as `WILL NOT IMPLEMENT`. That
 decision was made because the per-run model made a shared document cost 8× storage and
-collapsed its BM25 score to zero; neither is true here.
+collapsed its BM25 score to zero; the first is fixed by binding, and the second cannot
+happen under vector retrieval at all.
 
 **One document shared to multiple personas across conversations.** Put it in a KB, grant
 the KB to whoever needs it, bind it wherever it is wanted. Sharing and binding are
@@ -880,36 +824,36 @@ separate operations: a grant says *may* read, a binding says *does* read in this
 conversation. Both are needed, which is what stops a shared corpus leaking into
 conversations nobody intended.
 
-### Index granularity: one index per KB (escalation tier only)
+### Index granularity: one vector index per KB
 
-This is the decision that also repairs the isolation weakness §8a had to concede.
+**Recommended**, when KB count stays in the low hundreds. Two things fall out — note that
+the third reason an earlier draft gave, "corpus statistics land on the right unit", is
+**void**: with vector retrieval there are no corpus statistics (§8a).
 
-**Recommended: one vector index per knowledge base** (S3 Vectors; the same reasoning would
-apply to OpenSearch had it been chosen), when KB count stays in the low hundreds. Three things fall out at once:
+1. **Isolation becomes credential-enforceable again.** IAM can grant per index, so a
+   principal's policy names the KB indexes they hold a grant for. That restores the
+   `LeadingKeys`-grade property §8a otherwise has to concede — unavailable at *document*
+   granularity, but a KB is a coarser and far more natural boundary.
+2. **A multi-KB search is one query over several indexes**, so a persona bound to three KBs
+   does not become three round trips.
 
-1. **Isolation becomes IAM-enforceable again.** Data access policies are index-granular,
-   so a principal's policy can name the KB indexes they hold a grant for. That is the
-   `LeadingKeys`-grade enforcement §8a said was unavailable — it was unavailable at
-   *document* granularity, but a KB is a coarser and much more natural boundary. The
-   per-document filter reduces to a per-index permission.
-2. **Corpus statistics land on the right unit.** A term's discriminativeness within the
-   Legal corpus is a property of the Legal corpus, not of the whole deployment and not
-   of one conversation. This is a better answer than either extreme discussed earlier.
-3. **A multi-KB search is a native multi-index search** (`/kb-a,kb-b/_search`), so a
-   persona bound to three KBs is one query.
+**Cross-index scores are comparable, unlike the lexical case.** With BM25 this would have
+been a problem — statistics are per index, so scores from different indexes are not on the
+same scale, and OpenSearch's `dfs_query_then_fetch` exists to fix exactly that. Cosine
+similarity has no such issue: it is pairwise between the query and each vector, so a hit
+from `kb-legal` and a hit from `kb-migration` are directly rankable against each other with
+no extra round trip and no special search mode. This is the second place (after §8a) where
+choosing vector retrieval removes a problem instead of relocating it.
 
-The catch, and its fix: with several indexes, BM25 statistics are computed per index, so
-scores from different KBs are not strictly comparable — the same class of problem as the
-cross-run contamination fixed in v0.6.0, one level up. OpenSearch's
-`search_type=dfs_query_then_fetch` computes global term statistics across the searched
-indices first, which is precisely the remedy. It costs an extra round trip, which against
-a 6–13 s turn is irrelevant. **Use it, and note that a query spanning KBs and one
-scoped to a single KB will then score consistently.**
+**Fall back to one index with a `kb_id` filter** if KB count becomes unbounded — many tiny
+indexes carry per-index overhead and there are service limits to check. That trade is:
+simpler operationally, but isolation returns to being application-enforced only, so §8a's
+two mitigations become the whole boundary rather than defence in depth.
 
-**Fall back to one shared index with a `kb_id` term filter** if KB count becomes
-unbounded — thousands of small indexes is a shard-overhead anti-pattern and there are
-collection limits to check. That trade is: simpler operationally, but isolation returns
-to being a filter (§8a's mitigations apply) and IDF becomes deployment-wide.
+**To verify before building:** the per-index vector count limit, the number of indexes
+permitted per vector bucket, and whether a single query may span several indexes or must
+be fanned out. These determine whether index-per-KB is viable at the expected KB count,
+and S3 Vectors is newer than the rest of this design.
 
 ### What sharing costs the tenancy model — stated, not hidden
 
@@ -1088,7 +1032,18 @@ Concrete, from the code rather than in principle:
    250 MB unzipped limit. Use a **container image Lambda** (10 GB). Dropping litellm for
    direct `bedrock-runtime` calls would be smaller but abandons provider-agnosticism
    for no benefit here, since the target is Bedrock-only.
-7. **CloudFront must reproduce the SPA cache policy** — `index.html` no-cache, hashed
+7. **Avatars exceed the DynamoDB item limit.** `avatar.ready` carries the generated image
+   as base64 *inside the event payload* — 2.2 MB in the one real instance here, against a
+   1.2 KB mean for every other event type. On DynamoDB that is a hard write failure, so it
+   is a blocker rather than a slow path. Fix it before the port (write the image to S3, put
+   the key in the event): it is small, testable against the current backend, and it removes
+   a migration blocker for free. See §4a.
+8. **Retrieval defaults to the mode that does not work here.** `RetrievalConfig.mode`
+   defaults to `fts`, and `vector` currently requires the optional `sqlite-vec` extra plus
+   an embedding provider — so vector mode has never been the default path. On AWS it must
+   be, per §8's measurement, which also makes the embedding provider a hard dependency
+   rather than an extra.
+9. **CloudFront must reproduce the SPA cache policy** — `index.html` no-cache, hashed
    assets immutable. Its absence caused a blank-page hang fixed in v0.6.0; the same bug
    is one misconfigured cache behaviour away.
 
@@ -1145,7 +1100,13 @@ as orchestrator states; adds per-user spend caps.
 6. **Analytics.** DynamoDB serves the access patterns the UI has, but not "show me every
    run about X across the org". If that is wanted, add a DynamoDB-Streams-to-S3 path and
    query with Athena rather than distorting the operational key design.
-7. **Cost ownership.** Is Bedrock spend charged back to teams? If so, tag or attribute
+7. **Which embedding model.** Now a core decision rather than a detail, and the most
+   expensive one to reverse: its dimension count fixes the vector index configuration, so
+   changing model later means **re-embedding and re-indexing every document in the
+   deployment**. Titan Embed v2 is what the Phase 5f measurement used, so its numbers are
+   the ones that transfer. Decide it once, record it, and store the model id alongside each
+   vector so a future migration can tell what needs redoing.
+8. **Cost ownership.** Is Bedrock spend charged back to teams? If so, tag or attribute
    invocations per user from the start, since it is nearly impossible to reconstruct
    later.
 
@@ -1159,6 +1120,13 @@ per-request, so an idle deployment costs cents. Cognito charges per monthly acti
 user, and federated users are priced differently from pool-native ones; check current
 pricing for the expected headcount, as this is the one line item that scales with
 employees rather than usage.
+
+**The two stores added since the first revision are both small.** S3 Vectors is priced as
+storage plus per-query rather than provisioned capacity, which is the property that got it
+chosen over OpenSearch Serverless (§8) — at a few dozen chunks per persona the storage is
+negligible and the queries are one per turn. Embedding is measured, not estimated:
+**$0.0014** to embed a 387-chunk corpus once, and **~$0.0000001** per per-turn query
+embedding. Neither is a line item worth managing; both are worth knowing are not free.
 
 **Bedrock dominates variable cost.** Measured here: $0.05–0.06 per 16–30 turn
 conversation. For a thousand employees running one conversation a week that is roughly
