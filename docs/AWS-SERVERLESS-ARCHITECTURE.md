@@ -121,7 +121,10 @@ live-event push is a cross-tenant leak with extra steps.
 
 ---
 
-## 4. Data model (DynamoDB)
+## 4. Data model (DynamoDB tables)
+
+> What lives in DynamoDB versus S3 versus S3 Vectors, and why, is §4a. This section is
+> the DynamoDB key design only.
 
 Single-table would work, but separate tables keep the access patterns legible and let
 each carry its own capacity and TTL policy.
@@ -134,6 +137,9 @@ each carry its own capacity and TTL policy.
 | `summaries` | `RUN#{run_id}` | `{kind}` | |
 | `threads` / `thread_messages` | `RUN#{run_id}` / `THREAD#{id}` | | |
 | `connections` | `RUN#{run_id}` | `{connection_id}` | Plus `owner_sub`. TTL for cleanup. |
+| `knowledge_bases` | `KB#{kb_id}` | `META` | Name, owner. **Not** under a user partition — a shared KB is read by principals who do not own it (§8b). |
+| `kb_grants` | `KB#{kb_id}` | `PRINCIPAL#{sub\|group}` | Permission. Checked at **query** time, not only at binding time. |
+| `documents` | `KB#{kb_id}` | `DOC#{doc_id}` | **Metadata only** — title, `char_count`, `chunk_count`, media type. Text is in S3, passages in S3 Vectors (§4a). |
 
 GSIs, driven by the screens that exist: `runs` by `owner_sub` + `created_at` (the
 history list), and by `owner_sub` + `status` (finding interrupted runs).
@@ -483,7 +489,7 @@ RRF lets a noise-grade lexical ranking drag down a good semantic one.
 Cost is not the gate it was assumed to be: embedding a 231,744-character corpus (387
 chunks) measured **$0.0014**, and a per-turn query embedding ~**$0.0000001**.
 
-### Recommended: S3 Vectors for embeddings, DynamoDB for chunk text
+### Recommended: S3 Vectors for embeddings and passage text
 
 Given retrieval must be vector, a vector store is needed either way, and **S3 Vectors is
 the right one for this workload's shape** — bursty, low QPS, small-to-medium corpora,
@@ -520,8 +526,9 @@ on the way out. Where a stronger boundary is wanted, use **one vector index per 
 the same reasoning as §8b, and IAM can then grant per index rather than per document.
 
 **Keep lexical, but as the second arm.** `hybrid` is the measured best mode for the
-operator's search, so in-process BM25 over the same DynamoDB chunks stays — it is ~50
-lines, needs no service, and now serves the caller it actually helps.
+operator-facing `/documents/search`, so BM25 stays — computed in-process over the
+document text fetched from S3 (§4a), not over DynamoDB. It is ~50 lines, needs no
+service, and now serves the one caller the measurement says it helps.
 
 **Before committing**, verify against current AWS capability: supported dimensions for
 the chosen embedding model, metadata-filter expressiveness (it must express
@@ -578,8 +585,12 @@ than the context window.
 So the choice is: retrieval buys provenance and cost control; stuffing buys recall and
 simplicity. At this corpus size recall is a non-issue either way and cost is manageable
 either way, which leaves **provenance as the deciding factor** — and for a tool whose
-purpose is introspection, that is decisive. Hence in-process BM25, which keeps the trace
-at essentially zero infrastructure.
+purpose is introspection, that is decisive — retrieval stays.
+
+(This section was written when the recommendation was in-process BM25. The conclusion
+survives the correction above: retrieval wins over stuffing on provenance either way, and
+vector retrieval makes the case stronger, since it is the mode measured to actually find
+the right passage.)
 
 ---
 
@@ -646,10 +657,11 @@ container.
 
 ## 8a. How a persona's knowledge base is scoped
 
-> With in-process scoring (§8) the filter below is not a query sent to a search
-> service — it is which chunks are fetched from DynamoDB, so `LeadingKeys` enforces it
-> and the client-side-filter caveat does not apply. The OpenSearch form is retained for
-> the escalation tier.
+> Retrieval is a query to S3 Vectors (§8), so the scoping below **is** a metadata filter
+> the application must get right — `LeadingKeys` does not reach it. That is why the
+> chokepoint and outbound-assertion discipline in this section matters, and why §8b
+> recommends one vector index per KB, which restores an IAM-enforceable boundary at KB
+> granularity.
 
 The mechanism is **indexed metadata fields plus filter context** — but two things about
 that deserve stating precisely, because one is a real limitation and the other is a
@@ -833,8 +845,8 @@ conversations nobody intended.
 
 This is the decision that also repairs the isolation weakness §8a had to concede.
 
-**Recommended: one OpenSearch index per knowledge base**, when KB count stays in the low
-hundreds. Three things fall out at once:
+**Recommended: one vector index per knowledge base** (S3 Vectors; the same reasoning would
+apply to OpenSearch had it been chosen), when KB count stays in the low hundreds. Three things fall out at once:
 
 1. **Isolation becomes IAM-enforceable again.** Data access policies are index-granular,
    so a principal's policy can name the KB indexes they hold a grant for. That is the
@@ -934,10 +946,12 @@ feedback. This is the phase most likely to be under-estimated.
 
 **Phase 2 — storage port.** Replace the SQLite implementation with DynamoDB + S3. One
 implementation, no abstraction (local run is out of scope). The existing tests are the
-specification; run them against DynamoDB Local in CI. Retrieval moves to OpenSearch
-Serverless in the same phase (§8), which is the largest single behavioural change in the
-port and the one that needs a before/after quality comparison rather than a green
-test suite.
+specification; run them against DynamoDB Local in CI. Retrieval moves to S3 Vectors in
+the same phase (§8) — the largest single behavioural change in the port, and the one that
+needs a before/after quality comparison on a real corpus rather than a green test suite.
+Note this phase also switches the engine's retrieval mode from lexical to `vector`, which
+the Phase 5f measurement supports but which has never run against a live multi-user
+corpus.
 
 **Phase 3 — deploy.** Cognito + IdP federation, API Gateway with the JWT authorizer,
 scoped-role assumption, container Lambda, CloudFront/S3, polling for live updates. The
