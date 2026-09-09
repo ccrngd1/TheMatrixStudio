@@ -263,3 +263,142 @@ practical argument for §4's per-run S3 index on top of the correctness one.
 
 Verify current per-unit prices before committing; the numbers above are shapes, not
 quotes.
+
+## 13. Keeping it runnable locally
+
+The requirement is that the tool still runs on a laptop with `pip install .` and no
+AWS anything. That is a pinned constraint (`PROJECT-SPEC.md` §7 fixes a five-minute
+quickstart), not a nicety, so the mechanism has to preserve it exactly rather than
+approximate it.
+
+### The mechanism: ports and adapters, with three refinements
+
+Generic hexagonal architecture would say "define an interface for everything". That is
+wrong here in three specific ways, and getting them right is most of the value.
+
+**Refinement 1 — five narrow ports, not one 53-method interface.** The `Database`
+methods already group cleanly by concern:
+
+| Port | Methods | Second adapter needed? |
+|---|---|---|
+| `RunStore` | 13 (`create_run`, `get_run_by_ref`, `list_runs`, `update_run_status`, `truncate_after_turn`, …) | Yes — DynamoDB |
+| `EventStore` | 3 (`append_event`, `get_events`, `get_events_after`) | Yes — DynamoDB, natively (`SK > seq`) |
+| `SnapshotStore` | 3 | Yes — DynamoDB pointer + S3 body |
+| `AnalysisStore` | 7 (summaries, threads) | Yes — DynamoDB |
+| `DocumentStore` | 14 (`search_documents`, `term_document_frequencies`, `vector_search`, `reindex_documents`, …) | **No.** See below. |
+
+A single god-interface would force the FTS-shaped methods and the key-value-shaped
+methods to be satisfied by the same adapter, which is exactly the pressure that would
+push retrieval onto OpenSearch and reintroduce the bug §4 describes.
+
+**Refinement 2 — `DocumentStore` needs no second adapter, only a `BlobStore`.** Because
+§4 keeps the per-run FTS index as a SQLite file in both runtimes, the 14 retrieval
+methods have **one implementation forever**. What differs is only where the file lives:
+
+```
+BlobStore (≈4 methods: put, get, exists, delete)
+  LocalBlobStore  -> ./data/fts/{run_id}.db
+  S3BlobStore     -> s3://bucket/fts/{run_id}.db, cached in /tmp
+```
+
+That removes 14 of 53 methods from the porting effort, and it means the BM25 scoring
+— including the run-scoping fix — is byte-identical locally and on AWS. It is the
+single strongest argument for §4's choice.
+
+**Refinement 3 — the shared unit is the turn, not the loop.** Do *not* define an
+`Orchestrator` port. The two runtimes do genuinely different things: locally the loop
+*is* an `await` in a background task; on AWS the loop is delegated to a state machine
+that calls in. An interface that fits both would be a lowest common denominator that
+fits neither.
+
+Instead, extract the turn:
+
+```
+execute_turn(stores, run_id, turn) -> TurnResult      # all the logic lives here
+```
+
+and write two thin drivers over it:
+
+- **local driver** — a `while` loop in an asyncio task, checking the stop flag and the
+  cost cap between iterations. This is what `_run_turns` already is.
+- **AWS driver** — the Step Functions state machine of §3, with `CheckContinue` doing
+  the same two checks as a `Choice` state.
+
+The loop is ~30 lines. Duplicating 30 lines of loop across two drivers is far safer
+than inventing an abstraction that hides the difference, because the difference is
+real. All the behaviour that could drift lives in `execute_turn`, which is shared.
+
+**A fourth seam vanishes for free.** §6 recommends polling for live events in v1,
+because the client already supports `getEvents(ref, after_seq)`. If both runtimes poll,
+the event table *is* the transport and there is no publisher port to abstract at all.
+WebSocket then becomes an AWS-only layer added on top, not a second implementation of
+a shared interface.
+
+### The plumbing is mostly already there
+
+Two things make this much cheaper than the method count suggests:
+
+1. **`create_app()` already has a single construction point** (`api/app.py:513`,
+   `db = Database(resolved_db_path)`), parameterised for tests. That is where the
+   factory goes; nothing else constructs storage.
+2. **The engine already receives storage rather than constructing it** — `run_simulation`,
+   `_run_turns` and friends all take `db` as a parameter. They import `Database` only
+   for the type hint. So dependency injection is done; only the *type* is concrete, and
+   swapping a concrete class for a `Protocol` is a mechanical change.
+
+### Three tiers of "running it"
+
+| Tier | Storage | Loop | Needs |
+|---|---|---|---|
+| **1. Local (default, unchanged)** | SQLite file | in-process asyncio | `pip install .` — no Docker, no AWS, no emulators |
+| **2. Local AWS-shaped (opt-in)** | DynamoDB Local + MinIO | in-process asyncio | `docker compose -f docker-compose.aws-local.yml up` |
+| **3. AWS** | DynamoDB + S3 | Step Functions | deployed |
+
+Tier 1 must stay the default and must stay container-free, or the quickstart claim
+becomes false. Tier 2 exists to catch adapter bugs before deploying — it is where you
+find out that a Query returns items in an order you did not expect. Tier 2 is
+deliberately *not* the dev default: paying a docker-compose tax on every local run to
+guard against a class of bug that a parametrised test suite already catches is a bad
+trade.
+
+### How to stop the two implementations drifting
+
+This is the part that decides whether the port stays maintainable. Two implementations
+of anything rot unless the drift is made to fail a test.
+
+1. **One test suite, parametrised over adapters.** The existing 709 tests are already
+   written against `Database`'s behaviour, so they become the contract for free.
+   Parametrise the `db` fixture; default to SQLite (fast, hermetic, no containers) and
+   run the DynamoDB adapter in CI against DynamoDB Local. A test that passes on one
+   adapter and not the other is the whole point.
+2. **No runtime branching outside the factory.** One env var (`MATRIX_RUNTIME=local|aws`)
+   read in exactly one place. Enforce it with a test that greps `matrix_studio/engine/`
+   and `matrix_studio/api/` for runtime conditionals — this repo already tests structural
+   rules of that kind, and an unenforced convention is not a mechanism.
+3. **The engine imports protocols, never adapters.** Also enforceable by a test that
+   inspects imports. This is the rule that stops someone reaching for
+   `boto3.resource("dynamodb")` inside the turn logic when they are in a hurry.
+4. **Retrieval has one implementation**, so it cannot drift at all — see Refinement 2.
+
+### The cheaper alternative worth considering first
+
+All of the above is real work, and it is only justified if Lambda-style scale-to-zero
+is actually wanted. There is a materially cheaper path that keeps **exactly one code
+path and zero abstraction**:
+
+**Deploy the existing container to Fargate or App Runner, with the SQLite file on EFS.**
+One task, one writer, which is what SQLite wants. Nothing about storage, retrieval,
+orchestration, the stop flag or the live stream changes — the code that runs on AWS is
+byte-identical to the code that runs on the laptop, so "runs locally" is free rather
+than engineered.
+
+What it costs: a task running (or scaling to zero more coarsely than Lambda), EFS
+latency on every query, and a hard single-writer ceiling — so no horizontal scale and
+no concurrent multi-user. What it buys: none of §13's work, and no risk of the two
+paths diverging.
+
+For a single-operator introspection tool doing a handful of runs a day, that is
+plausibly the right answer, and the honest recommendation is to decide between them
+deliberately rather than defaulting to Lambda because "serverless" was the word used.
+Fargate and App Runner are serverless in the sense that matters — nothing to patch,
+nothing to capacity-plan.
