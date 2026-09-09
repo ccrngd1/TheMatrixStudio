@@ -1,6 +1,6 @@
 # TheMatrix Simulation Studio
 
-**Version 0.5.0** — Multi-agent conversation simulator with live control-room UI, checkpointing/branching, agent cognition, consistency validation, pending-thread ledger, per-persona document retrieval, structured personas, and non-photorealistic avatars.
+**Version 0.6.0** — Multi-agent conversation simulator with live control-room UI, checkpointing/branching, agent cognition, consistency validation, pending-thread ledger, per-persona document retrieval with uploadable knowledge bases, structured personas, stoppable runs, and non-photorealistic avatars.
 
 TheMatrix Simulation Studio is a standalone tool for running multi-agent conversation simulations. Define a topic and cast of personas, hit **Run**, and watch the conversation unfold live in a web control room. Features checkpointing, timeline branching, optional agent cognition (memory + reflection + goals), and anime-style avatar generation.
 
@@ -732,4 +732,4 @@ For issues and questions, please open an issue on GitHub.
 
 ---
 
-**Version 0.5.0** — Built with Claude Code. Phases 0-6 complete. Ready for production use with BYO API keys.
+**Version 0.6.0** — Built with Claude Code. Phases 0-6 complete. Ready for production use with BYO API keys.
