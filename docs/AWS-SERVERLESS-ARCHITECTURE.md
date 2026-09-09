@@ -152,6 +152,64 @@ of a real conversation is how a user loses work.
 
 ---
 
+## 4a. Division of labour: DynamoDB vs S3 vs S3 Vectors
+
+Three stores needs a rule, not a list. The rule is **access shape**, not data type:
+
+| Access shape | Store |
+|---|---|
+| Mutated in place, needs conditional/atomic updates | DynamoDB |
+| Ordered append + range read, with read-after-write consistency | DynamoDB |
+| Point lookup of a small item by key | DynamoDB |
+| Large, immutable, written once and read rarely | S3 |
+| Similarity search | S3 Vectors |
+
+Applied to this application, with sizes **measured from the 38 real runs** in
+`data/matrix_studio.db` rather than estimated:
+
+| Data | Measured size | Store | Why there |
+|---|---|---|---|
+| `runs` | small | DynamoDB | Mutated constantly — status, accumulated cost, `stop_requested`. Needs conditional writes and GSIs for list-by-owner. |
+| `events` | **80/run, mean 1.2 KB, max 2.4 KB** | DynamoDB | Atomic append; `get_events_after(seq)` is `Query SK > n`; polling needs read-after-write. See below. |
+| **avatar images** | **2.2 MB, base64 inside an `avatar.ready` event** | **S3** | Over DynamoDB's 400 KB item limit. Must be extracted — see below. |
+| `snapshots` | **mean 45 KB, max 2.2 MB; 1 of 619 over 400 KB** | S3 body + DynamoDB pointer | Large, immutable, write-once-read-rarely. The one oversized row proves the limit is reachable in normal use. |
+| chunk **text** | mean 749 B | DynamoDB | Point lookup by `chunk_id` after k-NN; `Query` by `kb_id` for the lexical arm. |
+| chunk **embeddings** | ~4 KB each | S3 Vectors | The only similarity-search workload. |
+| uploaded originals | MBs | S3 | Write once, read for audit ("which document did this come from"). |
+| KBs, grants, summaries, threads, connections | small | DynamoDB | Mutable, key-addressed. |
+
+### Why the event log specifically cannot live in S3
+
+This is the least negotiable placement in the design, and worth stating because "it is
+just an append-only log, put it in S3" is the obvious cheaper idea.
+
+1. **S3 has no atomic append.** One object per event means hundreds of tiny objects per
+   run and a `LIST` to enumerate them — and `LIST` is not strongly consistent, so the
+   polling path would intermittently see *gaps* in the log. One growing object means
+   read-modify-write, so two concurrent writers silently lose events. The event log is
+   the source of truth from which all state is reconstructed; losing one is
+   unrecoverable.
+2. **The access pattern is a range read.** `get_events_after(seq)` — used by polling,
+   replay and `reconstruct_at_turn` — is `Query` with `SK > n`, natively. In S3 it is a
+   `LIST` plus client-side sort.
+3. **Read-after-write matters.** The UI polls immediately after a turn lands. A strongly
+   consistent DynamoDB read returns exactly what was written.
+
+By contrast, snapshots *are* safe in S3 precisely because they are written once, never
+mutated, and addressed by a deterministic key.
+
+### One thing this analysis found: avatars must move to S3
+
+`avatar.ready` carries the generated image as base64 **inside the event payload** — 2.2 MB
+in the one real instance here. On DynamoDB that is a hard failure, not a slow path, since
+it exceeds the 400 KB item limit. It is also wrong on the current SQLite backend for a
+softer reason: it puts a megabyte of image data into the append-only log that every
+replay and every `reconstruct_at_turn` reads.
+
+The fix is the same either way: write the image to S3 and put the key in the event. Worth
+doing **before** the port rather than during it, since it is a small change that is
+testable locally and it removes a hard blocker from the migration.
+
 ## 5. Topology
 
 Reflects every revision in this document: **no SQLite anywhere**, DynamoDB for
