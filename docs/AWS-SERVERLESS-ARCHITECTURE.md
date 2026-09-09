@@ -436,6 +436,113 @@ depends on a corpus it does not own and that other conversations also use. That 
 right trade for a company (a shared corpus should have shared statistics) but it must be
 measured on a real KB with the inspection endpoint, not assumed.
 
+## 8b. Sharing and reuse: documents, collections, bindings
+
+Today one row conflates three different things: the document's **content**, the
+**collection** it belongs to, and the **grant** that says who may read it. `documents`
+has a `run_id` foreign key and a `persona_name`, so a document *is* its own grant, scoped
+to one conversation. That is why none of sharing, reuse or cast-wide visibility works
+without duplication.
+
+Separating the three makes all of it fall out:
+
+| Entity | Holds | Cardinality |
+|---|---|---|
+| `document` | The extracted text and its chunks. Indexed **once, ever**. | 1 |
+| `knowledge_base` | A named collection of documents. The unit of binding and of sharing. | 1 doc → 1 KB |
+| `kb_grant` | Which principals may read a KB (user, or Cognito group for a team). | 1 KB → N grants |
+| `binding` | On a run: which KBs a persona may search. | N personas → N KBs |
+
+**A document belongs to exactly one KB.** Not many-to-many, deliberately. Multi-KB
+membership would mean either duplicating chunks per KB — the duplication this whole
+thread has been avoiding — or carrying a `kb_ids` array and rewriting it with
+`update_by_query` on every membership change, which is a non-transactional write
+proportional to chunk count. One KB per document keeps chunks immutable after indexing.
+"This document belongs in two collections" is served by a KB of one document, bound
+twice.
+
+### The three cases, answered
+
+**Can documents be reused by personas?** Yes — reuse is binding, not copying. The
+document is indexed once; a persona in any conversation that binds its KB can search it.
+Nothing is re-chunked, re-embedded, re-stored or re-indexed.
+
+**One document shared to a whole conversation.** Two levels of binding, which generalise
+today's `persona_name = ? OR persona_name IS NULL` exactly:
+
+```jsonc
+{
+  "knowledge_bases": ["kb-migration-policy"],      // run level: every persona
+  "cast": [
+    {"name": "Priya", "knowledge_bases": ["kb-sre-runbooks"]},   // hers alone
+    {"name": "Dan",   "knowledge_bases": ["kb-board-materials"]}
+  ]
+}
+```
+
+The effective scope for a speaker is `run.knowledge_bases ∪ persona.knowledge_bases`.
+Run-level binding is the cast-wide case — and note it is now **cheap**, stored once,
+which removes the reason cast-wide documents were shelved as `WILL NOT IMPLEMENT`. That
+decision was made because the per-run model made a shared document cost 8× storage and
+collapsed its BM25 score to zero; neither is true here.
+
+**One document shared to multiple personas across conversations.** Put it in a KB, grant
+the KB to whoever needs it, bind it wherever it is wanted. Sharing and binding are
+separate operations: a grant says *may* read, a binding says *does* read in this
+conversation. Both are needed, which is what stops a shared corpus leaking into
+conversations nobody intended.
+
+### Index granularity: one index per KB
+
+This is the decision that also repairs the isolation weakness §8a had to concede.
+
+**Recommended: one OpenSearch index per knowledge base**, when KB count stays in the low
+hundreds. Three things fall out at once:
+
+1. **Isolation becomes IAM-enforceable again.** Data access policies are index-granular,
+   so a principal's policy can name the KB indexes they hold a grant for. That is the
+   `LeadingKeys`-grade enforcement §8a said was unavailable — it was unavailable at
+   *document* granularity, but a KB is a coarser and much more natural boundary. The
+   per-document filter reduces to a per-index permission.
+2. **Corpus statistics land on the right unit.** A term's discriminativeness within the
+   Legal corpus is a property of the Legal corpus, not of the whole deployment and not
+   of one conversation. This is a better answer than either extreme discussed earlier.
+3. **A multi-KB search is a native multi-index search** (`/kb-a,kb-b/_search`), so a
+   persona bound to three KBs is one query.
+
+The catch, and its fix: with several indexes, BM25 statistics are computed per index, so
+scores from different KBs are not strictly comparable — the same class of problem as the
+cross-run contamination fixed in v0.6.0, one level up. OpenSearch's
+`search_type=dfs_query_then_fetch` computes global term statistics across the searched
+indices first, which is precisely the remedy. It costs an extra round trip, which against
+a 6–13 s turn is irrelevant. **Use it, and note that a query spanning KBs and one
+scoped to a single KB will then score consistently.**
+
+**Fall back to one shared index with a `kb_id` term filter** if KB count becomes
+unbounded — thousands of small indexes is a shard-overhead anti-pattern and there are
+collection limits to check. That trade is: simpler operationally, but isolation returns
+to being a filter (§8a's mitigations apply) and IDF becomes deployment-wide.
+
+### What sharing costs the tenancy model — stated, not hidden
+
+§3's isolation rests on every partition key being prefixed `USER#{sub}`, so credentials
+can be pinned with `dynamodb:LeadingKeys`. **A shared KB breaks that**, necessarily: a
+user must read a KB owned by someone else, so KB access cannot be scoped by "your own
+partition". It needs a grant lookup, which is an authorisation *decision* rather than a
+partition constraint.
+
+This is inherent to sharing, not a flaw in the design, but it means:
+
+- KB metadata lives in its own table keyed by `KB#{kb_id}` with a grants collection, not
+  under a user partition.
+- The grant check is a real authorisation code path — so it is the second place after
+  §8a's search chokepoint that deserves a dedicated test suite, including the negative
+  cases (revoked grant, grant to a group the user has left, binding to a KB the user
+  never had a grant for).
+- Revocation must be checked at **query time**, not only at binding time. Otherwise a
+  binding created while a grant existed keeps working after it is revoked — a stale
+  binding is the obvious way this design leaks.
+
 ## 9. Live updates
 
 **Start with polling.** The client already supports `getEvents(ref, after_seq)`, so a
