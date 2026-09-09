@@ -154,43 +154,122 @@ of a real conversation is how a user loses work.
 
 ## 5. Topology
 
+Reflects every revision in this document: DynamoDB as the only datastore, **no SQLite
+and no search service**, retrieval scored in-process, one Step Functions execution per
+run, polling for live updates.
+
+### 5.1 System
+
 ```
-   employee ──▶ CloudFront ──▶ S3 (SPA)
-       │
-       │ OIDC (PKCE)          ┌──────────────┐
-       ├─────────────────────▶│   Cognito    │◀── SAML/OIDC ── company IdP
-       │                      └──────────────┘
-       │  JWT
-       ▼
+ ┌────────────┐        OIDC / PKCE          ┌──────────────┐      SAML / OIDC
+ │  employee  │◀───────────────────────────▶│   Cognito    │◀────────────────── company IdP
+ │  (browser) │                             │  user pool   │                    (Entra/Okta)
+ └──┬───┬─────┘                             └──────────────┘
+    │   │  static
+    │   └──────────────▶ CloudFront ──────▶ S3: built SPA
+    │                    (index.html no-cache · /assets/* immutable)
+    │
+    │  JWT on every /api call
+    ▼
+ ┌──────────────────────────┐
+ │  API Gateway (HTTP API)  │  JWT authorizer — unauthenticated requests
+ │                          │  never reach a Lambda
+ └────────────┬─────────────┘
+              │
+              ▼
+ ┌────────────────────────────────┐   1. read `sub` from the verified JWT
+ │  Lambda: API                   │   2. sts:AssumeRole scoped to that user
+ │  FastAPI via Mangum            │      (dynamodb:LeadingKeys + s3:prefix)
+ │  container image (litellm 91MB) │   3. all storage access uses those creds
+ └───┬────────────────┬───────────┘
+     │                │ scoped creds
+     │ StartExecution │
+     ▼                ▼
+ ┌───────────────┐  ┌──────────────────────────────────────────────┐
+ │ Step Functions│  │  DynamoDB                                    │
+ │ (§5.2)        │─▶│   runs · events · snapshots(ptr) · chunks     │
+ └───────┬───────┘  │   summaries · threads · knowledge_bases       │
+         │          │   kb_grants · connections                    │
+         │          └──────────────────────────────────────────────┘
+         │          ┌──────────────────────────────────────────────┐
+         │          │  S3  (per-user prefixes)                     │
+         │─────────▶│   snapshots/{sub}/{run}/{turn}.json          │
+         │          │   uploads/{sub}/{kb}/{doc}     (originals)   │
+         │          └──────────────────────────────────────────────┘
+         │
+         ▼
  ┌──────────────────┐
- │ API GW HTTP API  │  JWT authorizer
- └────────┬─────────┘
-          │
- ┌────────▼──────────────┐   sts:AssumeRole (scoped to USER#{sub})
- │ Lambda: API           │──────────────┐
- │ FastAPI via Mangum    │              │
- │ (container image)     │              ▼
- └───┬───────────────────┘      ┌───────────────────────┐
-     │ StartExecution           │ DynamoDB              │
-     ▼                          │  runs/events/snapshot │
- ┌──────────────────────┐       │  summaries/threads    │
- │ Step Functions       │       │  connections          │
- │ one execution per run│       └───────┬───────────────┘
- │  IngestDocuments     │               │ Streams (events)
- │  ┌────────────────┐  │       ┌───────▼────────┐
- │  │ PrepareTurn    │  │       │ Lambda: fanout │──▶ API GW WebSocket
- │  ├────────────────┤  │       │ (filters owner)│
- │  │ GenerateTurn   │──┼──▶ Bedrock            │
- │  ├────────────────┤  │       └────────────────┘
- │  │ CheckContinue  │  │       ┌────────────────────────────────┐
- │  └────────────────┘  │       │ S3 (per-user prefixes)         │
- │     loop or end      │       │  snapshots/{sub}/{run}/{turn}  │
- └──────────────────────┘       │  fts/{sub}/{run}.db            │
-                                │  uploads/{sub}/{run}/          │
-                                └────────────────────────────────┘
+ │  Bedrock         │  execution role, no keys anywhere
+ │  text + Stability│  (Stability pinned us-west-2, separate from text)
+ └──────────────────┘
+
+ Live updates (v1): the browser polls GET /api/runs/{id}/events?after_seq=N
+                    — already supported by the client, no new subsystem.
+       (v2, only if needed): DynamoDB Streams on `events` → fan-out Lambda
+                    → API Gateway WebSocket, filtered on owner_sub.
 ```
 
----
+### 5.2 The turn loop (one Step Functions Standard execution per run)
+
+```
+ StartExecution { run_id, owner_sub, from_turn, budget }
+        │
+        ▼
+ ┌───────────────────┐   only when bindings or uploads changed:
+ │ IngestDocuments   │   extract → chunk (sentence-aligned overlap)
+ │                   │   → chunks into DynamoDB, original into S3
+ └─────────┬─────────┘
+           ▼
+ ┌───────────────────┐   reconstruct_at_turn(N) from the event log
+ │ PrepareTurn       │   → agents, transcript, thread ledger
+ │                   │   → select next speaker
+ └─────────┬─────────┘
+           ▼
+ ┌───────────────────┐   Query the speaker's bound-KB chunks (one Query)
+ │ GenerateTurn      │   → BM25 in-process → top-k under max_chars
+ │                   │   → Bedrock call → Phase 4a validation gate
+ │  Retry: throttle, │   → append events (incl. document.retrieved)
+ │  validation fail  │   → snapshot: DynamoDB pointer + S3 body
+ └─────────┬─────────┘
+           ▼
+ ┌───────────────────┐
+ │ CheckContinue     │──── stop_requested (DynamoDB) ────▶  Stopped
+ │  (Choice)         │──── cost ≥ run cap or user cap ──▶  Capped
+ │                   │──── turn ≥ budget ───────────────▶  Complete
+ └─────────┬─────────┘
+           └──── else ──▶ back to PrepareTurn
+```
+
+Every terminal state writes the run's status and a final snapshot. Branch and resume are
+the same machine started with a different `from_turn`; a stop is honoured *between*
+turns, so the turn in flight is always finished and persisted.
+
+### 5.3 Documents, knowledge bases and what a persona may search
+
+```
+  document ──────────▶ knowledge_base ◀────── kb_grant ──▶ user | Cognito group
+  (chunked once,       (the unit of                        (may read)
+   never re-indexed)    binding AND sharing)
+       │                      ▲
+       │ chunks               │ bound by id
+       ▼                      │
+  DynamoDB: chunks     ┌──────┴────────────────────────────┐
+  { kb_id, doc_id,     │  run                              │
+    ordinal, content } │   knowledge_bases: [...]  ← whole │
+       ▲               │   cast:                     cast  │
+       │               │     Priya  knowledge_bases: [...] │
+       │               │     Dan    knowledge_bases: [...] │
+       │               └──────┬────────────────────────────┘
+       │                      │
+       └──────────────────────┘
+         a speaker's scope = run.knowledge_bases ∪ persona.knowledge_bases
+         → one DynamoDB Query for those kb_ids → BM25 in-process
+```
+
+Reuse is binding, not copying: a document is chunked and stored once and any conversation
+that binds its KB can search it. Cast-wide is the run-level binding. Grants must be
+re-checked at **query** time, not only when a binding is created, or a revoked grant
+keeps working.
 
 ## 6. The turn loop: Step Functions Standard, one execution per run
 
@@ -198,10 +277,7 @@ Measured from the 38 real runs here: a turn takes **6–13 s**, a 30-turn run **
 That fits a 15-minute Lambda — but a 40-turn run with validation-gate retries does not,
 and the budget is user-controlled. So the loop belongs in an orchestrator.
 
-`IngestDocuments` once, then loop: **PrepareTurn** (`reconstruct_at_turn(N)`, select
-speaker) → **GenerateTurn** (one Bedrock call, validation gate, append events, write
-snapshot) → **CheckContinue** (a `Choice`: stop requested? cost cap hit? budget
-reached? else loop).
+The states are drawn in §5.2; this section is the reasoning behind the choice.
 
 This is tractable because `branching.reconstruct_at_turn()` **already exists** — the
 engine can rebuild exact state from the event log, so a turn is already a pure function
