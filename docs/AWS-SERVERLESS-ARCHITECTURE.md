@@ -2,6 +2,15 @@
 
 Status: **proposed architecture**, revised 2026-09-09. Nothing here is built.
 
+**Verification.** The S3 Vectors, Bedrock prompt-caching and DynamoDB claims below were
+checked against AWS service documentation and the AWS Well-Architected **Generative AI
+Lens** (Nov 2025), not written from memory. That pass corrected one outright error (a
+single query cannot span vector indexes), inverted one constraint (index count is not the
+limiting factor — fan-out is), and surfaced one gap the design had missed entirely (choosing
+the embedding dimension deliberately — §8). Claims still resting on measurement rather than
+documentation are the ones drawn from this repository's own `docs/PHASE5-RETRIEVAL-MEASUREMENT.md`
+and `data/matrix_studio.db`, and are labelled as measured where they appear.
+
 **Premise (revised).** AWS-only — local-run capability is explicitly dropped. The target
 is something a large company installs: individuals sign in with Cognito and each has
 their own private conversations. Serverless throughout.
@@ -576,11 +585,31 @@ operator-facing `/documents/search`, so BM25 stays — computed in-process over 
 document text fetched from S3 (§4a), not over DynamoDB. It is ~50 lines, needs no
 service, and now serves the one caller the measurement says it helps.
 
-**Before committing**, verify against current AWS capability: supported dimensions for
-the chosen embedding model, metadata-filter expressiveness (it must express
-`owner_sub` + `kb_id IN [...]`), per-index vector limits, and whether index-per-KB is
-practical at the expected KB count. S3 Vectors is newer than the rest of this design, so
-these are checks rather than assumptions.
+### Choose the embedding dimension deliberately, not by default
+
+The AWS Well-Architected **Generative AI Lens** (Nov 2025) raises this twice, and the design
+had not addressed it at all: **GENCOST04-BP01 "Reduce vector length on embedded tokens"** and
+**GENPERF04-BP02 "Optimize vector sizes for your use case"**. Vector length drives storage
+cost, query cost and latency, and an index's dimension is **immutable after creation**
+(§8b) — so this is a decision to make once, with evidence, before the first index exists.
+
+Titan Text Embeddings v2 — the model the Phase 5f measurement used, so the model whose
+numbers transfer — supports **256, 512 and 1024** output dimensions. The design should not
+simply take 1024 because it is the default. S3 Vectors accepts 1 to 4096.
+
+What to do, and it is cheap because the ground truth already exists: re-run the Phase 5f
+recall measurement at 256 and 1024 on the same corpus and queries. That is the lens's
+**GENPERF04-BP01 "Test vector embeddings for latency and relevant performance"**, and this
+repository is unusually well placed to do it — the labelled queries, the diluted/paraphrased
+arms and the recall@1/recall@5/MRR harness are all already built. If 256 holds recall, it is
+a 4× reduction in vector storage and query cost for free; if it does not, the measurement
+says so before the choice is locked in.
+
+**Everything else previously flagged as "verify before committing" is now verified** against
+the service documentation and resolved inline: metadata size limits (§8a), filter
+expressiveness (§8a), per-index and per-bucket limits (§8b), and whether one query can span
+indexes (§8b — it cannot). The one remaining open item is the dimension choice above, and it
+is a measurement rather than a lookup.
 
 ### Why not feed the documents to an LLM and pass forward what it extracts
 
@@ -618,8 +647,12 @@ Cost, at Sonnet-class input pricing: 5 documents ≈ 14,200 tokens × 30 turns �
 tokens ≈ **$1.28 per run**, against the $0.05–0.06 measured for real runs — roughly 20×.
 With **Bedrock prompt caching** it becomes defensible: put the document block before the
 transcript so it is a stable prefix, and cache reads cost a fraction of fresh input,
-bringing it to roughly $0.13 per run. Turns are 6–13 s apart and a persona speaks every
-~8 turns in an 8-person cast, comfortably inside the cache TTL.
+bringing it to roughly $0.13 per run. The cache TTL is **five minutes and resets on each
+successful hit** (confirmed in the Generative AI Lens, GENCOST03-BP03), and a checkpoint
+needs a **minimum prefix length** — 1,024 tokens for Claude 3.7 Sonnet. Both work here: a
+persona's 3k–14k-token document block clears the minimum comfortably, and in an 8-person
+cast a persona speaks every ~8 turns at 6–13 s each, so ~50–100 s between its own turns —
+inside the TTL, and each hit extends it.
 
 What stuffing buys: **perfect recall** — no retrieval miss is possible, because the model
 sees everything — and the deletion of retrieval as a subsystem.
@@ -703,23 +736,44 @@ each vector is stored with metadata:
 and the query filters on the KBs the speaker is bound to:
 
 ```jsonc
-// conceptually — check the current S3 Vectors filter syntax before building
+// QueryVectors — one call per bound KB index (see §8b on fan-out)
 {
-  "vector": [ /* the embedded query */ ],
+  "indexName": "kb-legal",
+  "queryVector": { "float32": [ /* the embedded query */ ] },
   "topK": 6,
+  "returnMetadata": true,          // brings the passage text back with the hit
+  "returnDistance": true,
   "filter": {
     "owner_sub": "<from the verified JWT>",
-    "kb_id": { "$in": ["kb-legal", "kb-migration"] }
+    "scope": { "$in": ["run", "org"] }
   }
 }
 ```
 
-Two details that matter:
+`$in`, `$eq`, `$and`/`$or` and `$exists` are all supported filter operators, so the scoping
+predicates this design needs are expressible directly.
 
-- **Passage text must be non-filterable metadata.** Filterable metadata is the
-  constrained kind (tighter size limits, and it is indexed); only `owner_sub`, `kb_id` and
-  `scope` need to be filtered on. Putting the text in the filterable set would waste the
-  budget that actually needs it.
+**One IAM detail that is easy to miss and would fail closed at runtime:** requesting
+metadata *or* using a metadata filter requires **both** `s3vectors:QueryVectors` **and**
+`s3vectors:GetVectors`. With only `QueryVectors` a caller can retrieve keys and distances
+but the request returns **403** the moment it filters or asks for metadata — and this design
+does both on every turn. Note also that S3 Vectors uses its own `s3vectors` IAM namespace,
+separate from `s3`, so the vector policy is written independently of the object-store one
+in §3.
+
+Three details that matter, **verified against the S3 Vectors documentation**:
+
+- **Passage text as non-filterable metadata is the documented intended use.** The service
+  guide states non-filterable metadata is "ideal for storing large text chunks" and gives
+  "full document text" as the example. It is retrieved with query results via
+  `returnMetadata`, which is exactly the one-round-trip property §4a relies on.
+- **The size budget is ample.** Per vector: **40 KB total metadata**, of which **2 KB may be
+  filterable**, across up to 50 keys. A 749-byte passage plus five short filter fields sits
+  far inside both. The earlier "verify whether the text will fit" caveat is resolved — it
+  fits with roughly 50× headroom.
+- **Non-filterable keys are declared at index creation and are immutable** (max 10 per
+  index). `text` must therefore be declared non-filterable when each KB index is created;
+  it cannot be reclassified later. See §8b.
 - **Cast-wide is a binding, not a null field.** The earlier draft expressed "visible to
   the whole cast" as an absent `persona_name`, which required an awkward
   `must_not exists` predicate. Under §8b it is simply a KB bound at run level, so the
@@ -761,11 +815,18 @@ boundary IAM does not hold by itself:
    `kb_id` are in the requested scope; drop mismatches and alarm. It costs a loop over *k*
    hits and turns a silent cross-tenant disclosure into a detectable error.
 
-**And then take the boundary back** where it matters: with **one vector index per KB**
-(§8b) IAM can grant per index, so a principal's policy names the KB indexes they hold a
-grant for. The per-document filter reduces to a per-index permission, which is
-credential-enforced again. The filter still applies — defence in depth — but it stops
-being the only thing standing between two tenants.
+**And then take the boundary back** where it matters: the service documentation confirms
+policies can grant access to **individual vector indexes**, all indexes in a bucket, or all
+buckets. So with **one vector index per KB** (§8b) a principal's policy names exactly the KB
+indexes they hold a grant for, and the per-document filter reduces to a per-index
+permission — credential-enforced again. The filter still applies as defence in depth, but it
+stops being the only thing standing between two tenants.
+
+**One thing that turned out better than assumed:** writes to S3 Vectors are **strongly
+consistent**, so a document is searchable immediately after ingest. There is no
+read-your-writes gap to design around — which is what makes the "operator uploads and
+expects to see it work" case in §4a hold on the retrieval side too, not just the listing
+side.
 
 ## 8b. Sharing and reuse: documents, collections, bindings
 
@@ -826,34 +887,55 @@ conversations nobody intended.
 
 ### Index granularity: one vector index per KB
 
-**Recommended**, when KB count stays in the low hundreds. Two things fall out — note that
-the third reason an earlier draft gave, "corpus statistics land on the right unit", is
-**void**: with vector retrieval there are no corpus statistics (§8a).
+Verified against the S3 Vectors service documentation rather than assumed. Two earlier
+claims here were wrong, and the correction changes what the limiting factor is.
 
-1. **Isolation becomes credential-enforceable again.** IAM can grant per index, so a
-   principal's policy names the KB indexes they hold a grant for. That restores the
-   `LeadingKeys`-grade property §8a otherwise has to concede — unavailable at *document*
-   granularity, but a KB is a coarser and far more natural boundary.
-2. **A multi-KB search is one query over several indexes**, so a persona bound to three KBs
-   does not become three round trips.
+**Index count is not the constraint.** The service allows **10,000 vector indexes per
+vector bucket** and **2 billion vectors per index**, so index-per-KB is viable at real
+company scale — not merely "the low hundreds" as an earlier draft cautioned.
 
-**Cross-index scores are comparable, unlike the lexical case.** With BM25 this would have
-been a problem — statistics are per index, so scores from different indexes are not on the
-same scale, and OpenSearch's `dfs_query_then_fetch` exists to fix exactly that. Cosine
-similarity has no such issue: it is pairwise between the query and each vector, so a hit
-from `kb-legal` and a hit from `kb-migration` are directly rankable against each other with
-no extra round trip and no special search mode. This is the second place (after §8a) where
-choosing vector retrieval removes a problem instead of relocating it.
+**A multi-KB search is NOT one query.** `QueryVectors` takes a single `indexName` (or
+`indexArn`), so a persona bound to three KBs is **three queries, fanned out and merged
+client-side** — the opposite of what an earlier draft claimed. This is the real cost of
+index-per-KB, and it is modest: the queries are independent so they parallelise, each is
+sub-second, and a persona typically binds one or two KBs. Against a 6–13 s turn it does
+not register.
 
-**Fall back to one index with a `kb_id` filter** if KB count becomes unbounded — many tiny
-indexes carry per-index overhead and there are service limits to check. That trade is:
-simpler operationally, but isolation returns to being application-enforced only, so §8a's
-two mitigations become the whole boundary rather than defence in depth.
+**Merging is trivially correct, which is the part that would not have been true with
+BM25.** Cosine distance is pairwise between the query and each vector, so results from
+`kb-legal` and `kb-migration` are directly comparable and a merge is just a sort. Under
+BM25 statistics are per index, scores would not share a scale, and OpenSearch's
+`dfs_query_then_fetch` exists precisely to paper over that. So vector retrieval makes
+fan-out cheap where lexical would have made it wrong.
 
-**To verify before building:** the per-index vector count limit, the number of indexes
-permitted per vector bucket, and whether a single query may span several indexes or must
-be fanned out. These determine whether index-per-KB is viable at the expected KB count,
-and S3 Vectors is newer than the rest of this design.
+So the trade is now clear and it is not the one stated before:
+
+| | index per KB | single index, `kb_id` filter |
+|---|---|---|
+| Isolation | **IAM-enforceable** — policies can grant on individual vector indexes | Application-enforced only (§8a's mitigations become the whole boundary) |
+| Queries per turn | one **per bound KB**, parallel | **one** |
+| Ceiling | 10,000 indexes per bucket | 2 billion vectors per index |
+
+**Recommended: index per KB**, because the IAM boundary is worth more than saving one or
+two parallel sub-second calls — and because the third reason an earlier draft gave,
+"corpus statistics land on the right unit", is **void**: with vector retrieval there are
+no corpus statistics (§8a).
+
+**Two immutability constraints that must be decided before the first index is created**,
+since neither can be changed afterwards:
+
+- **Non-filterable metadata keys are fixed at index creation** — maximum 10 per index, and
+  a key designated non-filterable can never become filterable. So `text` must be declared
+  non-filterable up front (§8a).
+- **Dimension, distance metric and encryption are also fixed at creation.** Changing any of
+  them means creating a new index and re-populating it. This is what makes the
+  embedding-model choice (§12) genuinely expensive to reverse: not just re-embedding every
+  document, but rebuilding every KB index.
+
+**The documented escalation path**, better than the hand-waved one in an earlier draft: an
+S3 vector index snapshot can be **exported to Amazon OpenSearch Serverless** for high-QPS,
+low-latency search. So outgrowing S3 Vectors is a migration AWS supports, not a rewrite —
+which removes most of the risk from choosing the cheaper store first.
 
 ### What sharing costs the tenancy model — stated, not hidden
 
@@ -1096,16 +1178,20 @@ as orchestrator states; adds per-user spend caps.
    uploads. Worth designing while the key structure is still malleable — per-user
    prefixes everywhere make it a prefix delete rather than a scan.
 5. **Encryption.** Default AWS-managed keys, or customer-managed KMS keys? A per-tenant
-   CMK is a strong isolation story for a security review and cheap at this scale.
+   CMK is a strong isolation story for a security review and cheap at this scale. Confirmed
+   available on S3 Vectors (SSE-S3 or SSE-KMS, per bucket or overridden per index) — but
+   **fixed at creation**, like dimension, so it is another decide-once item. Note KMS adds a
+   `kms:Decrypt` requirement to every principal that queries.
 6. **Analytics.** DynamoDB serves the access patterns the UI has, but not "show me every
    run about X across the org". If that is wanted, add a DynamoDB-Streams-to-S3 path and
    query with Athena rather than distorting the operational key design.
-7. **Which embedding model.** Now a core decision rather than a detail, and the most
-   expensive one to reverse: its dimension count fixes the vector index configuration, so
-   changing model later means **re-embedding and re-indexing every document in the
-   deployment**. Titan Embed v2 is what the Phase 5f measurement used, so its numbers are
-   the ones that transfer. Decide it once, record it, and store the model id alongside each
-   vector so a future migration can tell what needs redoing.
+7. **Which embedding model, and at which dimension.** A core decision, and verified to be
+   the most expensive one to reverse: an S3 Vectors index's **dimension, distance metric and
+   non-filterable metadata keys cannot be changed after creation**, so a different model or
+   width means creating new indexes and re-populating every one. Titan Text Embeddings v2 is
+   what Phase 5f measured, so its numbers are the ones that transfer, and it offers 256 /
+   512 / 1024 — pick with the measurement in §8, not the default. Store the model id and
+   dimension alongside each vector so a future migration can tell what needs redoing.
 8. **Cost ownership.** Is Bedrock spend charged back to teams? If so, tag or attribute
    invocations per user from the start, since it is nearly impossible to reconstruct
    later.
