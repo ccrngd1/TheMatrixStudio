@@ -26,7 +26,9 @@ from matrix_studio.storage import Database
 logger = logging.getLogger(__name__)
 
 # Terminal event types that tell a subscriber the stream is finished.
-TERMINAL_EVENTS = {"sim.completed", "sim.failed", "sim.interrupted", "sim.capped"}
+TERMINAL_EVENTS = {
+    "sim.completed", "sim.failed", "sim.interrupted", "sim.capped", "sim.stopped",
+}
 
 
 class RunBroker:
@@ -66,6 +68,12 @@ class RunManager:
         self.db = db
         self._brokers: Dict[str, RunBroker] = {}
         self._tasks: Dict[str, asyncio.Task] = {}
+        # Run ids an operator has asked to stop. The engine polls this between
+        # turns, so it is a request rather than a cancellation: the turn in flight
+        # finishes and is persisted. In-memory on purpose — a stop only has to
+        # outlive the request, and a process restart already ends the run (the
+        # startup sweep marks orphaned runs interrupted).
+        self._stop_requested: Set[str] = set()
 
     def get_broker(self, run_id: str) -> Optional[RunBroker]:
         return self._brokers.get(run_id)
@@ -153,6 +161,7 @@ class RunManager:
                     db=self.db,
                     run_id=run_id,
                     on_event=_on_event,
+                    should_stop=lambda: run_id in self._stop_requested,
                 )
                 # Phase 1.5: after a run completes, auto-generate the structured
                 # summary (unless disabled in the run's summary config). This is
@@ -169,7 +178,7 @@ class RunManager:
 
         task = asyncio.create_task(_runner())
         self._tasks[run_id] = task
-        task.add_done_callback(lambda _t: self._tasks.pop(run_id, None))
+        task.add_done_callback(lambda _t: self._finish(run_id))
 
         return {
             "run_id": run_id,
@@ -246,9 +255,44 @@ class RunManager:
 
         task = asyncio.create_task(_runner())
         self._tasks[branch_run_id] = task
-        task.add_done_callback(lambda _t: self._tasks.pop(branch_run_id, None))
+        task.add_done_callback(lambda _t: self._finish(branch_run_id))
 
         return meta
+
+    def _finish(self, run_id: str) -> None:
+        """Drop a finished run's task handle and any pending stop request.
+
+        Clearing the stop matters: without it a run stopped once would stop again
+        one turn into every later resume, which reads as the resume silently not
+        working.
+        """
+        self._tasks.pop(run_id, None)
+        self._stop_requested.discard(run_id)
+
+    def request_stop(self, run: Dict[str, Any]) -> Dict[str, Any]:
+        """Ask a live run to stop after the turn it is generating.
+
+        A request, not a cancellation. The engine polls it between turns, so the
+        turn in flight is finished and persisted and the run ends in the terminal
+        ``stopped`` status — which is resumable, and distinguishable from
+        ``interrupted`` (the process died) when reading a run list later.
+
+        Idempotent: asking twice is not an error, because a second click on a
+        button whose effect takes a turn to appear is expected, not a mistake.
+        """
+        run_id = run["id"]
+        status = run.get("status")
+        if run_id not in self._tasks:
+            # Either terminal, or running in a process that is no longer here. Both
+            # mean this server cannot stop it, and saying so beats accepting a
+            # request that will never take effect.
+            raise ValueError(
+                f"Run is '{status}' with no live generation on this server; "
+                "there is nothing to stop."
+            )
+        self._stop_requested.add(run_id)
+        logger.info("Stop requested for run %s (currently '%s')", run_id, status)
+        return {"run_id": run_id, "status": "stopping", "stop_requested": True}
 
     async def resume_run(self, run: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -265,7 +309,8 @@ class RunManager:
         status = run.get("status")
         if status not in branching.RESUMABLE_STATUSES:
             raise ValueError(
-                f"Run is '{status}'; only interrupted/failed runs can be resumed "
+                f"Run is '{status}'; only "
+                f"{'/'.join(sorted(branching.RESUMABLE_STATUSES))} runs can be resumed "
                 "(use a branch to continue a completed run)."
             )
         if run_id in self._tasks:
@@ -284,7 +329,8 @@ class RunManager:
         async def _runner() -> None:
             try:
                 result = await branching.resume_run_in_place(
-                    self.db, run, on_event=_on_event
+                    self.db, run, on_event=_on_event,
+                    should_stop=lambda: run_id in self._stop_requested,
                 )
                 if result.get("status") == "complete":
                     await maybe_autogenerate_summary(self.db, run_id)
@@ -300,7 +346,7 @@ class RunManager:
 
         task = asyncio.create_task(_runner())
         self._tasks[run_id] = task
-        task.add_done_callback(lambda _t: self._tasks.pop(run_id, None))
+        task.add_done_callback(lambda _t: self._finish(run_id))
 
         return {
             "run_id": run_id,

@@ -467,13 +467,18 @@ async def _resolve_promote_aside(
     }
 
 
-RESUMABLE_STATUSES = {"interrupted", "failed"}
+# `stopped` is resumable for the same reason as the others: the run never
+# completed, so continuing it forward is not rewriting canonical history. It is a
+# separate status from `interrupted` so "I stopped this" stays distinguishable from
+# "the process died" when reading a run list back.
+RESUMABLE_STATUSES = {"interrupted", "failed", "stopped"}
 
 
 async def resume_run_in_place(
     db: Database,
     run: Dict[str, Any],
     on_event: Optional[OnEvent] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
 ) -> Dict[str, Any]:
     """
     Error-recovery: RESUME an ``interrupted``/``failed`` run forward IN PLACE.
@@ -547,6 +552,7 @@ async def resume_run_in_place(
     resume_model = resume_cfg.get("model") or None
 
     return await resume_simulation(
+        should_stop=should_stop,
         run_id=run_id,
         topic=topic,
         agents=agents,
