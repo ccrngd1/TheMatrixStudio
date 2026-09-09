@@ -78,25 +78,42 @@ The other arguments for it do not survive the change of premise either:
 So retrieval goes to a central service too — see §8. SQLite leaves the architecture
 entirely.
 
-## 2. Identity: Cognito federated to the company IdP
+## 2. Identity: standalone Cognito now, federation later
 
-A large company will not accept managing employee passwords in a new user pool, and
-will expect SSO.
+**Decision (2026-09-09): a standalone Cognito user pool, no IdP federation yet.** The
+immediate need is to secure the solution for demos, and federation to a corporate IdP is a
+procurement and coordination exercise (metadata exchange, an IdP admin, attribute mapping)
+that would block something otherwise ready.
 
-- **Cognito user pool** as the token issuer, with an **external identity provider**
-  (SAML 2.0 or OIDC) federated in — Entra ID, Okta, Ping. Employees sign in with
-  their existing corporate credentials; the pool issues the JWTs this application
-  trusts.
+- **Cognito user pool with native users.** Self-signup **disabled** — an admin creates
+  accounts, which is the right posture for a demo and avoids an open registration endpoint
+  on the internet. Strong password policy; MFA optional at first, and a switch to turn on.
+- **Hosted UI**, so there is no login form to build or maintain, and no password handling
+  in this codebase at all.
+- **Authorization Code with PKCE**, not implicit. Tokens in memory; refresh via the SDK.
 - **API Gateway JWT authorizer** validates the token at the edge, so no unauthenticated
   request reaches a Lambda. `sub` is the stable user identifier.
-- **SPA uses Authorization Code with PKCE**, not implicit. Tokens held in memory,
-  refresh handled by the Cognito SDK.
-- **Cognito groups** carry entitlement — tier, per-user spend cap (§7), and admin.
-  Groups arrive as a JWT claim, so authorisation decisions need no extra lookup.
+- **Cognito groups** carry entitlement — tier, per-user spend cap (§7), admin. They arrive
+  as a JWT claim, so authorisation needs no extra lookup. Groups work identically in a
+  native pool.
+
+### Why this is a deferral and not a decision to redo later
+
+The thing to protect is that **`sub` is the tenant key regardless of where the identity
+came from**. A native Cognito user and a user federated from Entra or Okta both arrive as
+a `sub` in a token this application already validates. So adding federation later means:
+
+1. Register the IdP on the existing user pool and map attributes.
+2. Point the Hosted UI at it.
+3. Nothing in §3's isolation, §4's key design, or any route changes.
+
+The one migration cost, worth knowing now: **a federated user gets a different `sub` from
+the native account of the same person**, so demo-era conversations would not automatically
+follow a user across the switch. For a demo that is irrelevant; if any demo data must
+survive federation, plan a one-time remap keyed on email rather than discovering it later.
 
 Provider credentials still never reach the browser: the app calls Bedrock with its
-execution role. The only thing in the browser is the user's own OIDC token, which is
-what it is for.
+execution role. The only thing in the browser is the user's own OIDC token.
 
 ---
 
@@ -314,10 +331,14 @@ execution per run, polling for live updates. Nothing here has an hourly capacity
 ### 5.1 System
 
 ```
- ┌────────────┐        OIDC / PKCE          ┌──────────────┐      SAML / OIDC
- │  employee  │◀───────────────────────────▶│   Cognito    │◀────────────────── company IdP
- │  (browser) │                             │  user pool   │                    (Entra/Okta)
- └──┬───┬─────┘                             └──────────────┘
+ ┌────────────┐        OIDC / PKCE          ┌──────────────────┐
+ │  employee  │◀───────────────────────────▶│    Cognito       │
+ │  (browser) │      via Hosted UI          │  user pool       │
+ └──┬───┬─────┘                             │  native users,   │
+    │   │                                   │  signup disabled │
+    │   │                                   └──────────────────┘
+    │   │                                    (IdP federation added later — §2;
+    │   │                                     `sub` stays the tenant key either way)
     │   │  static
     │   └──────────────▶ CloudFront ──────▶ S3: built SPA
     │                    (index.html no-cache · /assets/* immutable)
@@ -1168,7 +1189,8 @@ as orchestrator states; adds per-user spend caps.
 2. **One tenant or many?** "Installed for a large company" reads as one company per
    deployment, in which case `USER#{sub}` suffices. If one deployment must serve several
    companies, keys need `TENANT#{org}#USER#{sub}` and the IdP federation becomes
-   per-tenant.
+   per-tenant. Federation is deferred for now (§2), so this stays a key-design question
+   rather than an identity one.
 3. **Admin visibility.** Who can see all runs, and can they read conversation content or
    only spend and volume? A company will want cost attribution; whether that includes
    reading employees' conversations is a policy question with privacy implications, and
