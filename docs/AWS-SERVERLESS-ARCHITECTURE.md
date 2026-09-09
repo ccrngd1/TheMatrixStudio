@@ -892,6 +892,124 @@ This is inherent to sharing, not a flaw in the design, but it means:
   binding created while a grant existed keeps working after it is revoked — a stale
   binding is the obvious way this design leaks.
 
+## 8c. Walkthrough: a document, from upload to a persona quoting it
+
+Marked ✅ where the step exists today, ⟳ where it changes on AWS, ✚ where it is new.
+
+### Why there are two moments, not one
+
+The confusing part of the current design is that **extraction and ingestion are separate
+events, minutes apart**. That is deliberate:
+
+- The engine indexes a persona's documents **before turn 1**, because a document attached
+  after generation starts is too late to influence the conversation.
+- The browser cannot hand the server a file path, and the upload-to-a-run endpoint only
+  exists once a run exists — by which point turn 1 has been generated.
+
+So a file is turned into *text* while the operator is still filling in the form, that text
+travels inside the create-run request, and *indexing* happens when the run starts.
+
+### Stage 1 — Upload, while the form is still open  ✅
+
+1. Operator picks `migration-plan.pdf` in Priya's documents section.
+2. `POST /api/documents/extract` (multipart). The handler takes the **base name only**
+   (a client filename may contain path separators), checks the extension against the
+   allowlist, and checks the extractor is actually installed on this server.
+3. The body is streamed to a temp file with a running byte total, so an oversized upload is
+   refused *before* it is buffered (`MAX_UPLOAD_BYTES`, 10 MB).
+4. `ingest_file()` → `pypdf` / `python-docx` / plain read → `normalise_text()` (de-hyphenate
+   line breaks, preserve paragraph breaks, collapse the rest) → `chunk_text()`
+   (paragraph-packed, ~900 chars, overlap snapped to a sentence boundary).
+5. Refused here if the text exceeds `MAX_DOCUMENT_CHARS` (400 k) or is empty — the
+   scanned-PDF case, reported by the operator's filename, not the temp file's.
+6. Returns `{title, media_type, text, char_count, chunk_count}` and **deletes the temp
+   file. Nothing is stored.**
+7. The browser drops the returned text into Priya's `document_texts` draft, where the
+   operator can read and edit it. That review step is the point of returning text rather
+   than storing the file: PDF extraction quality varies.
+
+⟳ **On AWS**: unchanged, except the original file is also written to
+`uploads/{sub}/{kb}/{doc}` for audit ("which document did that come from"), which the
+current code deliberately does not keep.
+
+### Stage 2 — Run creation  ✅
+
+`POST /api/runs` carries the whole setup, including
+`cast[i].document_texts = [{title, text}]`. The text rides in the request body; there is
+no separate upload call.
+
+✚ **On AWS**, this is also where the KB decision is made: an ad-hoc upload becomes an
+**implicit KB scoped to this run**, and a named reusable KB is referenced by id in
+`knowledge_bases` instead (§8b). Both end up as the same thing downstream — a `kb_id`.
+
+### Stage 3 — Ingest, at run start, before turn 1  ✅ ⟳
+
+`_ingest_cast_documents()` runs once, per cast member, inline documents first (they cannot
+fail on a missing path, so one bad path elsewhere in the cast cannot block a
+browser-authored run).
+
+Today:
+- `ingest_text()` re-chunks the text, then `db.add_document()` writes one `documents` row
+  and N `doc_chunks` rows scoped `(run_id, persona_name)`. The FTS5 index updates
+  automatically, being an external-content table over `doc_chunks`.
+- Emits `document.ingested` per document — `document_id`, `persona_name`, `title`,
+  `media_type`, `char_count`, `chunk_count` — or `document.failed` with the reason. Never
+  raises: a bad document degrades that persona's background, it does not fail the run.
+
+⟳ On AWS this becomes the `IngestDocuments` state (§5.2), and the three writes change:
+
+| | goes to |
+|---|---|
+| normalised full text, one object | S3 `docs/{sub}/{kb}/{doc}.txt` |
+| each chunk: **embedding + the passage text as metadata**, tagged `owner_sub`, `kb_id`, `doc_id`, `ordinal` | S3 Vectors, index per KB |
+| title, counts, media type | DynamoDB `documents` (metadata only) |
+
+✚ The new step is **embedding**: one Bedrock embedding call per batch of chunks. Measured
+cost for a 387-chunk corpus: **$0.0014**. The `document.ingested` event stays as the
+operator-visible record.
+
+### Stage 4 — Retrieval, on every turn  ✅ ⟳
+
+This is where the earlier revisions of this document went wrong, and the shape of the query
+is why.
+
+1. `retrieve_for_turn()` builds the query from **the last 3 turns of conversation plus the
+   topic** — not from a search box. That is what makes it *diluted*: conversational prose
+   with the relevant terms buried in it.
+2. ⟳ Today those terms become an FTS5 `OR` query. On AWS the assembled text is **embedded**
+   (~$0.0000001) and used for k-NN against the KB indexes the speaker is bound to
+   (`run.knowledge_bases ∪ persona.knowledge_bases`), filtered on `owner_sub` + `kb_id`.
+   This is the step the 5f measurement settles: on exactly this query shape, lexical put
+   the right passage first **1.7%** of the time against vector's **36.7%**.
+3. Passages come back **with** the vectors — no second lookup.
+4. `apply_budget()` trims to `max_chars` (default 1200), which is what keeps a 40-page
+   attachment out of every prompt.
+5. The passages go into that turn's prompt, and a **`document.retrieved`** event records
+   the query and each passage's `chunk_id`, `document_id`, `title`, `ordinal`, `score`,
+   `chars` — metadata only, no content. That event is the provenance trail the dossier
+   reads and `citation_integrity` gates.
+
+### The whole path, compressed
+
+```
+ browser        POST /api/documents/extract     → text (nothing stored)
+   │            (extract · normalise · chunk · caps)
+   ▼
+ form          POST /api/runs { cast[].document_texts }
+   │
+   ▼
+ IngestDocuments (once, before turn 1)
+   ├─▶ S3           full normalised text
+   ├─▶ S3 Vectors   embedding + passage text, tagged owner_sub/kb_id/doc_id/ordinal
+   ├─▶ DynamoDB     title, counts (metadata only)
+   └─▶ event        document.ingested
+   ▼
+ per turn:  last 3 turns + topic ──embed──▶ k-NN over bound KBs ──▶ passages
+                                              │
+                                              ├─▶ prompt (trimmed to max_chars)
+                                              └─▶ event  document.retrieved (metadata)
+```
+
 ## 9. Live updates
 
 **Start with polling.** The client already supports `getEvents(ref, after_seq)`, so a
