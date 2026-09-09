@@ -544,6 +544,7 @@ async def run_simulation(
     db: Optional[Database] = None,
     run_id: Optional[str] = None,
     on_event: Optional[OnEvent] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
 ) -> Dict[str, Any]:
     """
     Run a complete simulation from a request dict.
@@ -773,6 +774,7 @@ async def run_simulation(
         cognition=cognition,
         retrieval=retrieval,
         personas=personas_cfg,
+        should_stop=should_stop,
     )
 
 
@@ -996,10 +998,17 @@ async def _run_turns(
     pending_threads: Optional[List[PendingThread]] = None,
     retrieval: Optional[RetrievalConfig] = None,
     personas: Optional[PersonaConfig] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
 ) -> Dict[str, Any]:
     """
     Shared turn loop + completion/failure handling for both a fresh run and a
     resumed branch. Generates turns ``start_turn + 1 .. max_messages``.
+
+    ``should_stop`` is polled AFTER each turn is emitted and checkpointed, so an
+    operator's stop lets the turn in flight finish and be persisted, and only
+    prevents the NEXT one. Cancelling mid-call would throw away tokens that have
+    already been paid for and leave a partial turn to trim on resume; waiting one
+    turn costs at most one turn and keeps the log clean and resumable.
 
     Phase 4b: ``pending_threads`` is the global setups-&-payoffs ledger ([] for
     a fresh run; the replayed ledger for a branch/resume). Open threads are fed
@@ -1494,6 +1503,50 @@ async def _run_turns(
 
             logger.info(f"Turn {turn}/{max_messages}: {speaker_name}: {response_data['content'][:100]}...")
 
+            # Operator stop, checked BEFORE the cost cap: if both would end the run
+            # on the same turn, "you stopped it" is the more informative answer,
+            # since a cap that was also reached would have stopped it anyway.
+            if should_stop is not None and should_stop():
+                completion_time = int(time.time())
+                total_cost = sum(a.total_cost_usd for a in agents.values())
+                await emit(
+                    turn=turn,
+                    seq=next_seq(),
+                    event_type="sim.stopped",
+                    payload={
+                        "total_turns": turn,
+                        "message_count": len(conversation),
+                        "total_cost_usd": total_cost,
+                    },
+                )
+                if db:
+                    await db.save_snapshot(SimSnapshot(
+                        run_id=run_id,
+                        turn=turn,
+                        topic=topic,
+                        agents=agents,
+                        conversation=conversation,
+                        pending_threads=pending_threads,
+                        status="stopped",
+                        created_at=completion_time,
+                        completed_at=completion_time,
+                        total_turns=turn,
+                    ))
+                    await db.update_run_status(run_id, "stopped", completion_time)
+                logger.info(
+                    "Simulation %s stopped by operator after turn %d ($%.4f)",
+                    run_id, turn, total_cost,
+                )
+                return {
+                    "run_id": run_id,
+                    "status": "stopped",
+                    "topic": topic,
+                    "conversation": conversation,
+                    "agents": {n: a.model_dump() for n, a in agents.items()},
+                    "total_turns": turn,
+                    "total_cost_usd": total_cost,
+                }
+
             # Phase 3: check cost cap AFTER each turn (additive; when cap is 0 this
             # adds zero overhead). The cap acts on accumulated REAL cost_usd; when
             # litellm reports no cost for a call we count $0 for that call (no
@@ -1922,6 +1975,7 @@ async def resume_simulation(
     pending_threads: Optional[List[PendingThread]] = None,
     retrieval: Optional[RetrievalConfig] = None,
     personas: Optional[PersonaConfig] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
 ) -> Dict[str, Any]:
     """
     Phase 2a branch primitive — RESUME generating forward from a checkpoint.
@@ -2052,4 +2106,5 @@ async def resume_simulation(
         pending_threads=pending_threads,
         retrieval=retrieval,
         personas=personas,
+        should_stop=should_stop,
     )

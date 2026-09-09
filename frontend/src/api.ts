@@ -262,6 +262,17 @@ export const api = {
     ),
 
   // Error-recovery: resume an interrupted/failed run forward in place.
+  /**
+   * Ask a live run to stop after the turn it is generating. 202 = request
+   * registered; the effect lands one turn later, so the UI must not assume the run
+   * is already over.
+   */
+  stopRun: (ref: string) =>
+    jsonFetch<{ run_id: string; status: string; stop_requested: boolean }>(
+      `/api/runs/${encodeURIComponent(ref)}/stop`,
+      { method: 'POST' },
+    ),
+
   resumeRun: (ref: string) =>
     jsonFetch<{ run_id: string; name: string | null; status: string }>(
       `/api/runs/${encodeURIComponent(ref)}/resume`,

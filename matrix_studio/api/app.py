@@ -14,6 +14,7 @@ Endpoints:
     WS     /api/runs/{ref}/stream        live stream (replay then tail)
     GET    /api/name/suggest?topic=      suggested codename + description
     GET    /api/models                   selectable model string(s)
+    POST   /api/runs/{ref}/stop           stop a live run after the current turn
     GET    /api/health                   liveness probe
     GET    /api/documents/formats        which file types this install can read
     POST   /api/documents/extract        extract text from an uploaded file
@@ -1326,6 +1327,30 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Run not found")
         try:
             return await manager.resume_run(run)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
+    @app.post("/api/runs/{ref}/stop", status_code=202)
+    async def stop_run(ref: str) -> Dict[str, Any]:
+        """Ask a live run to stop after the turn it is currently generating.
+
+        A request, not a kill: the in-flight turn finishes and is persisted, then
+        the run ends in the terminal ``stopped`` status. Cancelling mid-call would
+        discard tokens already paid for and leave a partial turn for a later resume
+        to trim, so waiting one turn is the cheaper trade.
+
+        ``stopped`` is deliberately its own status rather than reusing
+        ``interrupted``: it is resumable exactly the same way, but it records that
+        someone chose to end the run rather than that the process died.
+
+        Returns 202 while the request is registered, since the effect lands a turn
+        later. Idempotent — a second request on the same live run is not an error.
+        """
+        run = await db.get_run_by_ref(ref)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        try:
+            return manager.request_stop(run)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
 

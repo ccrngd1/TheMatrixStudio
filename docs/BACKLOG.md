@@ -735,3 +735,48 @@ between runs, so they are not reproducible as recorded. Anything that depended o
 absolute values should be re-measured before being relied on; the relative comparisons
 within a single sitting are more likely to have survived, but that is an assumption, not
 a finding.
+
+### Stopping a live run: BUILT
+
+Added 2026-09-09. There was no way to end a run you could see going nowhere — only a
+pre-set cost cap, or killing the server. `POST /api/runs/{ref}/stop` plus a **■ Stop**
+button now do it.
+
+Two decisions, both from the operator's stated intent ("don't waste tokens/time"):
+
+- **The turn in flight finishes and is persisted.** The stop is a predicate the engine
+  polls between turns, not `task.cancel()`. Cancelling mid-call would discard tokens
+  already spent and leave a partial turn for a later resume to trim. Cost of waiting:
+  at most one turn. Verified live — requested at turn 15, ended at turn 16 of a
+  30-turn budget, $0.0582, with all 16 `agent.response` events persisted.
+- **`stopped` is its own terminal status**, resumable exactly like `interrupted` but
+  distinguishable from it, so a run list still says whether someone chose to end a run
+  or the process died under it. It is checked *before* the cost cap, so if both would
+  end the same turn the more informative answer wins.
+
+A stopped run gets **no auto-summary** — that gate was already `status == "complete"`,
+so stopping cannot trigger a spend right after you asked to stop spending.
+
+Threaded through both engine entry points (`run_simulation` and `resume_simulation`,
+which share `_run_turns`), so a branch and a resumed run are stoppable too. The stop
+request is cleared when a run's task ends; without that, a run stopped once would stop
+again one turn into every later resume and read as resume silently not working.
+
+Four pre-existing gaps this closed on the way:
+
+- **`deriveState` only knew `sim.completed` and `sim.failed`.** Any other terminal
+  event left the UI showing a live run: the Stop button stayed offered, the thinking
+  indicator never cleared, and the analysis affordances stayed hidden until reload.
+  `sim.capped` had that hole since Phase 3 — a cost-capped run read as still running.
+- **`sim.stopped` and `sim.capped` were absent from the `SimEvent` union**, so the
+  compiler rejected handling them until both were added.
+- **A capped run could not be scrubbed or asked about.** The analysis gate was
+  `status === 'complete'`, which hid the scrubber and asides from exactly the runs you
+  most want to inspect — the ones cut short. Now `complete | stopped | capped`.
+- **A shared test fake mirrored `run_simulation`'s parameter list**, so an additive
+  kwarg broke 20 unrelated tests with a `TypeError` swallowed into a 404. It takes
+  `**kwargs` now.
+
+Seven mutants checked. One initially SURVIVED — dropping the predicate's forwarding
+into the resume path — because no test stopped a *resumed* run; that test now exists
+and kills it.

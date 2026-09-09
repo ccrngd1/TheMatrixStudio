@@ -18,7 +18,10 @@ export interface SimState {
   totalCost: number
   totalTokensIn: number
   totalTokensOut: number
-  status: 'idle' | 'running' | 'complete' | 'failed'
+  // Every terminal event the engine can emit. Missing one leaves a finished run
+  // looking live: the Stop button stays offered and the analysis affordances stay
+  // hidden until the page is reloaded.
+  status: 'idle' | 'running' | 'complete' | 'failed' | 'stopped' | 'capped' | 'interrupted'
   error: string | null
 }
 
@@ -146,6 +149,25 @@ export function applyEvent(prev: SimState, e: SimEvent): SimState {
     case 'sim.failed':
       state.status = 'failed'
       state.error = e.payload.error ?? 'Simulation failed'
+      state.thinking = false
+      state.activeSpeaker = null
+      break
+    // Ended with a transcript, but not by finishing: stopped by the operator, cut
+    // off by the cost cap, or orphaned by a process that died. Each is terminal and
+    // each leaves real turns to inspect, so they are distinct rather than folded
+    // into 'complete' or 'failed'.
+    case 'sim.stopped':
+      state.status = 'stopped'
+      state.thinking = false
+      state.activeSpeaker = null
+      break
+    case 'sim.capped':
+      state.status = 'capped'
+      state.thinking = false
+      state.activeSpeaker = null
+      break
+    case 'sim.interrupted':
+      state.status = 'interrupted'
       state.thinking = false
       state.activeSpeaker = null
       break
