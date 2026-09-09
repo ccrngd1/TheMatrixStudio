@@ -219,6 +219,45 @@ metadata, since only `owner_sub` and `kb_id` need to be filtered on and filterab
 metadata is the constrained kind. If the text will not fit, the fallback is not DynamoDB
 but the S3 document object plus per-chunk offsets carried in the vector metadata.
 
+### What the DynamoDB document row is actually for
+
+Not "describing the document" — S3 could do most of that, since `LIST` gives keys and
+sizes and object metadata could carry a title. It earns its place for four things that
+S3 cannot do, traced from the real consumers (`list_documents` has six callers).
+
+1. **Strongly consistent listing.** An operator uploads a document and expects to see it
+   in the persona's list immediately. S3 `LIST` is not strongly consistent for that, so
+   the document would intermittently appear missing right after upload — the worst moment
+   for it to look broken.
+2. **The authorisation join.** Which KB a document belongs to, and therefore who may read
+   it, is a relationship, not a property of a byte range. The delete path already relies on
+   this shape today (`app.py:1567` builds the set of documents owned by the run before
+   permitting a delete), and on AWS every read needs it to check a grant (§8b).
+3. **The cleanup manifest across three stores.** Deleting a document means removing the S3
+   object *and* its vectors from S3 Vectors. To delete the right vectors you need to know
+   how many chunks there were and their ordinals — which is exactly what `chunk_count`
+   is for. Without a row, deletion becomes "query the vector store by filter and hope",
+   and user-level deletion (§12.4) becomes unbounded. This is the least obvious job and
+   the hardest to retrofit.
+4. **Facts that do not survive the trip to S3.** `chunk_count` is a property of the
+   chunking, not of the object. Original `media_type` — that this was a PDF rather than a
+   `.docx` — is lost the moment only extracted text is stored, and it is what the operator
+   needs to recognise their own file. Ingest status and any failure reason likewise.
+
+**One honest near-redundancy:** `char_count` is approximately the S3 object's size, and
+keeping it only saves a `HEAD` per object on the list endpoint. That is a fair trade for a
+list view, but it *is* denormalisation and a denormalised count can drift from the object
+it describes. Treat the S3 object as authoritative if they ever disagree.
+
+**One consumer that disappears:** `retrieval.py:452` reads `chunk_count` to compute a
+document-frequency ratio for lexical term selection. That feature is default-off and was
+measured harmful, and the vector path has no use for it, so this is not a reason to keep
+the row.
+
+**One that gets cheaper:** `copy_documents_to_run` copies a parent's documents into a
+branch today. Under the KB model a branch inherits *bindings* instead, so nothing is
+copied at all.
+
 ### Why the event log specifically cannot live in S3
 
 This is the least negotiable placement in the design, and worth stating because "it is
