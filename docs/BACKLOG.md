@@ -780,3 +780,24 @@ Four pre-existing gaps this closed on the way:
 Seven mutants checked. One initially SURVIVED — dropping the predicate's forwarding
 into the resume path — because no test stopped a *resumed* run; that test now exists
 and kills it.
+
+### Avatar images are stored as base64 inside the event log
+
+Found 2026-09-09 while sizing data for the AWS architecture. `avatar.ready` carries the
+generated image inline in its event payload: **2.2 MB** in the one real instance in
+`data/matrix_studio.db`, against a mean of 1.2 KB and a maximum of 2.4 KB for every other
+event type.
+
+Two problems, one soft and one hard:
+
+- **Today (SQLite):** a megabyte of image data sits in the append-only log, which every
+  replay and every `reconstruct_at_turn` reads. Wasteful rather than broken.
+- **On DynamoDB:** it exceeds the 400 KB item limit, so it is a hard write failure. This
+  is a blocker for the AWS migration, not a slow path.
+
+Fix: write the image to S3 (or a blob location) and put the key in the event payload.
+Small, testable now, and worth doing before the port rather than during it.
+
+Related: snapshots have the same shape of problem but rarely — mean 45 KB, max 2.2 MB,
+with 1 of 619 already over 400 KB. That one row proves the limit is reachable in normal
+use, which is why the architecture puts snapshot bodies in S3 with a DynamoDB pointer.
