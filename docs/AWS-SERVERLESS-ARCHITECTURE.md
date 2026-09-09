@@ -312,6 +312,130 @@ the retrieval tests (~55 of them in `test_retrieval*.py`), or a fake, which is a
 the exact scoring semantics being relied on and therefore not worth much. Budget for the
 container.
 
+## 8a. How a persona's knowledge base is scoped
+
+The mechanism is **indexed metadata fields plus filter context** — but two things about
+that deserve stating precisely, because one is a real limitation and the other is a
+design question the current model does not answer well.
+
+### The mechanical answer
+
+Every chunk today already carries `run_id` and a nullable `persona_name`
+(`doc_chunks`), and search scopes with `persona_name = ? OR persona_name IS NULL` —
+"this persona's own documents plus anything cast-wide". Indexed as fields, the
+document becomes:
+
+```json
+{
+  "owner_sub":   "…",          // tenant
+  "run_id":      "…",
+  "persona_name":"Priya",      // absent = visible to the whole cast
+  "kb_id":       "…",          // see below
+  "scope":       "run",        // run | org
+  "document_id": "…", "title": "…", "ordinal": 7,
+  "content":     "…"           // the only analysed field
+}
+```
+
+and the query puts every scoping predicate in **`filter` context**, not `must`:
+
+```json
+{"query": {"bool": {
+  "must":   [ {"match": {"content": "<terms>"}} ],
+  "filter": [
+    {"term": {"owner_sub": "<from the JWT>"}},
+    {"term": {"run_id": "<run>"}},
+    {"bool": {"should": [
+      {"term": {"persona_name": "Priya"}},
+      {"bool": {"must_not": {"exists": {"field": "persona_name"}}}}
+    ]}}
+  ]
+}}}
+```
+
+`filter` rather than `must` matters for two reasons: filter clauses **do not contribute
+to the score**, so scoping cannot perturb ranking, and they are cacheable. A scoping
+predicate in `must` would silently make a persona's own documents rank differently from
+the same documents in another persona's slice.
+
+That `should` block is the literal translation of `persona_name = ? OR persona_name IS
+NULL`. Note `must_not exists` is the correct way to express "cast-wide" — a missing
+field, not a `null` value, since a JSON null and an absent field index differently.
+
+### The limitation: on Serverless, this filter is client-side
+
+OpenSearch's security plugin supports **document-level security** — a role carries a
+query filter and the *cluster* enforces it, so a client cannot see documents outside its
+scope even if it forgets the predicate. That is the enforcement model you would want
+here.
+
+**OpenSearch Serverless does not offer it.** Its data access policies are collection-
+and index-granular; there is no per-document rule. (Worth re-checking against current
+AWS capability before building — this is the kind of gap AWS closes — but assume it is
+absent.) So the filter is the application's responsibility, which is weaker than the
+`dynamodb:LeadingKeys` enforcement §3 uses for the primary datastore.
+
+Two mitigations, both cheap, and worth having together because this is the one boundary
+IAM cannot hold:
+
+1. **Make the scope impossible to omit at the call site.** One value object,
+   constructible only from an authenticated principal plus a run plus a persona, and a
+   single search function that accepts nothing else. No raw-query path, no overload
+   without a scope. Backed by a test that fails if anything other than that module
+   imports the search client.
+2. **Assert on the way out.** After a search returns, verify every hit's `owner_sub`
+   and `run_id` match the requested scope; drop mismatches and raise an alarm. It costs
+   a loop over *k* hits and converts a silent cross-tenant leak into a detectable
+   error. Cheap insurance for a boundary enforced by a predicate.
+
+### The design question: knowledge bases should probably be first-class
+
+`persona_name` is a **string inside one run**, and documents are scoped
+`run_id + persona_name` (`doc_chunks`, and `documents.run_id` is a foreign key to the
+run). That means a knowledge base is not a thing — it is an attachment to one
+conversation. Two consequences that will bite a company install immediately:
+
+- **No reuse.** Giving the same three PDFs to a persona in a new conversation means
+  uploading them again, re-chunking, re-indexing and re-storing. A company with a
+  standing "Legal" or "Security" corpus will expect to define it once.
+- **Duplication multiplies within a run too.** Attaching one document to eight personas
+  stores it eight times — which is exactly the effect measured in the cast-wide
+  investigation, where duplication collapsed the document's BM25 score to zero because
+  the term appeared in 8 of 16 chunks.
+
+So model knowledge bases as their own objects and bind them to personas:
+
+| Concept | Where it lives |
+|---|---|
+| `knowledge_base` | Owned by a user or a team. Has a name, and documents. |
+| `kb_documents` / chunks | Indexed **once**, tagged `kb_id` (+ `owner_sub`, `scope`). No `run_id`. |
+| persona → KB binding | On the run's cast: `knowledge_bases: ["kb-legal", "kb-migration"]` |
+
+Retrieval then filters `kb_id` against the bindings for the speaking persona:
+
+```json
+{"filter": [
+  {"term":  {"owner_sub": "<from the JWT>"}},
+  {"terms": {"kb_id": ["kb-legal", "kb-migration"]}}
+]}
+```
+
+This is a better answer to the original question than per-run tagging, because "which
+knowledge base may this agent search" becomes an explicit, inspectable binding on the
+cast rather than a string match on a persona's display name. It also fixes three things
+at once: reuse across conversations, the duplication that distorted scoring, and the
+cast-wide case (a KB bound to every persona, stored once) that was shelved as
+`WILL NOT IMPLEMENT` partly *because* the per-run model made it costly.
+
+It does mean per-conversation ad-hoc uploads become "an implicit KB scoped to this
+run" — still one code path, with `scope: "run"` and a `kb_id` derived from the run.
+
+**One caveat to size before committing:** binding a persona to a shared KB means its
+BM25 corpus statistics are those of the whole KB, so a persona's retrieval quality now
+depends on a corpus it does not own and that other conversations also use. That is the
+right trade for a company (a shared corpus should have shared statistics) but it must be
+measured on a real KB with the inspection endpoint, not assumed.
+
 ## 9. Live updates
 
 **Start with polling.** The client already supports `getEvents(ref, after_seq)`, so a
