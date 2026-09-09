@@ -173,10 +173,45 @@ Applied to this application, with sizes **measured from the 38 real runs** in
 | `events` | **80/run, mean 1.2 KB, max 2.4 KB** | DynamoDB | Atomic append; `get_events_after(seq)` is `Query SK > n`; polling needs read-after-write. See below. |
 | **avatar images** | **2.2 MB, base64 inside an `avatar.ready` event** | **S3** | Over DynamoDB's 400 KB item limit. Must be extracted — see below. |
 | `snapshots` | **mean 45 KB, max 2.2 MB; 1 of 619 over 400 KB** | S3 body + DynamoDB pointer | Large, immutable, write-once-read-rarely. The one oversized row proves the limit is reachable in normal use. |
-| chunk **text** | mean 749 B | DynamoDB | Point lookup by `chunk_id` after k-NN; `Query` by `kb_id` for the lexical arm. |
-| chunk **embeddings** | ~4 KB each | S3 Vectors | The only similarity-search workload. |
+| document **full text** (normalised) | mean 11 KB | S3 | One object per document. Serves whole-document reads and the lexical arm. |
+| chunk **embedding + text** | ~4 KB vector, 749 B text | S3 Vectors | Text rides as vector metadata, so one k-NN call returns ids, scores *and* passages. |
+| document/KB **metadata** | small | DynamoDB | `title`, `char_count`, `chunk_count`, `kb_id`, owner — for listing. No content. |
 | uploaded originals | MBs | S3 | Write once, read for audit ("which document did this come from"). |
 | KBs, grants, summaries, threads, connections | small | DynamoDB | Mutable, key-addressed. |
+
+### Chunk text does not belong in DynamoDB
+
+An earlier revision put chunk text there. That was inertia from the SQLite schema, where
+`doc_chunks.content` was the only place text could live — not a reasoned placement.
+
+Only three things ever read document text, and none of them wants a DynamoDB item:
+
+| Reader | Needs | Best source |
+|---|---|---|
+| A turn (hot path) | the *k* retrieved passages | **S3 Vectors metadata** — the k-NN call already returns them, so there is no second lookup at all |
+| The lexical arm of `hybrid`, for `/documents/search` | all of a KB's chunks | **S3** — a handful of document objects (mean 11 KB each) |
+| Setup export (`document_text`) | one whole document | **S3** — a single GET |
+
+Two consequences worth having:
+
+- **The hot path drops from two round trips to one.** Vector search returns ids, scores
+  and passage text together; DynamoDB leaves the retrieval path entirely.
+- **`join_chunks` becomes unnecessary.** That function — and the overlap-deduplication it
+  performs — exists *only* because chunks were the sole store of text, so reassembling a
+  document meant stitching overlapping chunks back together (measured: naive joining added
+  4,253 and 4,859 duplicated characters to two real documents). Store the normalised full
+  text as one S3 object and `document_text()` is a GET. The machinery was correct for the
+  constraint it was written under; the constraint disappears here.
+
+Provenance is unaffected: `document.retrieved` already records only `chunk_id`,
+`document_id`, `ordinal`, `score`, `title` and `chars` — no content — so the trace needs
+no text store at all.
+
+**To verify before committing:** S3 Vectors per-vector metadata limits, and the
+filterable-versus-non-filterable distinction — passage text should be *non-filterable*
+metadata, since only `owner_sub` and `kb_id` need to be filtered on and filterable
+metadata is the constrained kind. If the text will not fit, the fallback is not DynamoDB
+but the S3 document object plus per-chunk offsets carried in the vector metadata.
 
 ### Why the event log specifically cannot live in S3
 
@@ -247,7 +282,7 @@ execution per run, polling for live updates. Nothing here has an hourly capacity
  ┌───────────────┐  ┌──────────────────────────────────────────────┐
  │ Step Functions│  │  DynamoDB                                    │
  │ (§5.2)        │─▶│   runs · events · snapshots(ptr)              │
-         │  │  chunks (TEXT + metadata, no vectors)       │
+         │  │  documents/KBs (METADATA only, no text)     │
  └───────┬───────┘  │   summaries · threads · knowledge_bases       │
          │          │   kb_grants · connections                    │
          │          └──────────────────────────────────────────────┘
@@ -259,7 +294,8 @@ execution per run, polling for live updates. Nothing here has an hourly capacity
          │          ┌──────────────────────────────────────────────┐
          │─────────▶│  S3 Vectors                                  │
          │          │   one index per KB · chunk embeddings +      │
-         │          │   {owner_sub, kb_id, chunk_id} metadata      │
+         │          │   metadata {owner_sub, kb_id, chunk_id,      │
+         │          │   ordinal, PASSAGE TEXT}                     │
          │          └──────────────────────────────────────────────┘
          │
          ▼
@@ -282,8 +318,8 @@ execution per run, polling for live updates. Nothing here has an hourly capacity
         ▼
  ┌───────────────────┐   only when bindings or uploads changed:
  │ IngestDocuments   │   extract → chunk (sentence-aligned overlap)
- │                   │   → text to DynamoDB · original to S3
- │                   │   → embed chunks → S3 Vectors  ($0.0014/387 chunks)
+ │                   │   → full text + original to S3
+ │                   │   → embed chunks → S3 Vectors, text as metadata
  └─────────┬─────────┘
            ▼
  ┌───────────────────┐   reconstruct_at_turn(N) from the event log
@@ -295,7 +331,8 @@ execution per run, polling for live updates. Nothing here has an hourly capacity
  │ GenerateTurn      │   → S3 Vectors k-NN, filtered to bound KBs
  │                   │     (vector mode: measured 22x recall@1 vs lexical
  │  Retry: throttle, │      on the diluted queries a turn produces)
- │  validation fail  │   → BatchGetItem chunk text → top-k under max_chars
+ │  validation fail  │     (passages return WITH the vectors — no second
+ │                   │      lookup) → top-k under max_chars
  │                   │   → Bedrock call → Phase 4a validation gate
  │                   │   → append events (incl. document.retrieved)
  └─────────┬─────────┘   → snapshot: DynamoDB pointer + S3 body
@@ -315,23 +352,27 @@ turns, so the turn in flight is always finished and persisted.
 ### 5.3 Documents, knowledge bases and what a persona may search
 
 ```
-  document ──────────▶ knowledge_base ◀────── kb_grant ──▶ user | Cognito group
-  (chunked once,       (the unit of                        (may read)
-   never re-indexed)    binding AND sharing)
-       │                      ▲
-       │ chunks               │ bound by id
-       ▼                      │
-  DynamoDB: text       ┌──────┴────────────────────────────┐
-  S3 Vectors: embeds   │  run                              │
-  { kb_id, doc_id,     │   knowledge_bases: [...]  ← whole │
-       ▲               │   cast:                     cast  │
-       │               │     Priya  knowledge_bases: [...] │
-       │               │     Dan    knowledge_bases: [...] │
-       │               └──────┬────────────────────────────┘
-       │                      │
-       └──────────────────────┘
-         a speaker's scope = run.knowledge_bases ∪ persona.knowledge_bases
-         → S3 Vectors k-NN over those KB indexes → chunk text from DynamoDB
+  document ───────────▶ knowledge_base ◀────── kb_grant ──▶ user | Cognito group
+  (chunked once,        (unit of binding                    (may read)
+   never re-indexed)     AND sharing)
+       │                       ▲
+       │                       │ bound by id
+       ▼                       │
+  ┌─────────────────────┐  ┌───┴──────────────────────────────┐
+  │ S3                  │  │  run                             │
+  │  docs/…/{doc}.txt   │  │   knowledge_bases: [...]  ← whole│
+  │  (normalised text)  │  │   cast:                    cast  │
+  ├─────────────────────┤  │     Priya  knowledge_bases: [...]│
+  │ S3 Vectors          │  │     Dan    knowledge_bases: [...]│
+  │  one index per KB   │  └───┬──────────────────────────────┘
+  │  vector + metadata: │      │
+  │   owner_sub, kb_id, │      │  scope = run.knowledge_bases
+  │   doc_id, ordinal,  │◀─────┘        ∪ persona.knowledge_bases
+  │   PASSAGE TEXT      │
+  └─────────────────────┘  k-NN over those KB indexes
+                           → passages returned inline, no second lookup
+
+  DynamoDB holds only document/KB METADATA (title, counts, owner) for listing.
 ```
 
 Reuse is binding, not copying: a document is chunked and stored once and any conversation
@@ -451,12 +492,12 @@ makes the earlier cost objection moot without reintroducing an hourly floor.
 
 | Holds | Where | Why there |
 |---|---|---|
-| chunk **text** + `kb_id`, `doc_id`, `ordinal` | DynamoDB | Needed to return passage content, and for the lexical arm of `hybrid`. One Query or BatchGetItem. |
-| chunk **embedding** + filter metadata | S3 Vectors | Purpose-built. Keeps 4 KB float32 vectors out of DynamoDB items and off the per-turn fetch. |
+| document **full text** | S3 | One object per document. Serves whole-document reads and the lexical arm of `hybrid`. |
+| chunk **embedding + passage text** | S3 Vectors | Text as vector metadata, so one k-NN call returns everything a turn needs. See §4a. |
 
 Per turn: embed the query (one Bedrock call) → query S3 Vectors filtered to the speaker's
-bound KBs → `BatchGetItem` the winning chunks' text from DynamoDB. Two round trips,
-sub-second plus single-digit milliseconds, against a 6–13 s turn.
+bound KBs → passages come back with the vectors. **One** round trip to the store, not two;
+DynamoDB is not in the retrieval path at all.
 
 Why S3 Vectors over the alternatives now that a vector store is required:
 
