@@ -22,6 +22,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from matrix_studio import __version__
 from matrix_studio.engine import run_simulation
 from matrix_studio.settings import get_settings
 from matrix_studio.storage import Database
@@ -290,7 +291,10 @@ Examples:
   matrix-studio serve --host 0.0.0.0 --port 8000
         """,
     )
-    parser.add_argument("--version", action="version", version="matrix-sim-studio 0.1.0")
+    parser.add_argument(
+        "--version", action="version",
+        version=f"matrix-sim-studio {__version__}",
+    )
 
     subparsers = parser.add_subparsers(dest="command")
 

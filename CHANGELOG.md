@@ -5,6 +5,112 @@ All notable changes to TheMatrix Simulation Studio are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-09-09
+
+Interface and correctness, not new engine capability. Phase 6 became visible and
+authorable, knowledge bases became uploadable, and two silent correctness bugs were
+found and fixed — one of which invalidates the absolute values in the project's own
+prior retrieval measurements.
+
+### Added
+- **Stop a live run.** `POST /api/runs/{ref}/stop` and a **■ Stop** button. A request
+  polled between turns rather than a cancellation: the turn in flight finishes and is
+  persisted, because those tokens are already spent and cancelling mid-call would also
+  leave a partial turn for a later resume to trim. New terminal `stopped` status —
+  resumable in place like `interrupted`, but distinguishable from it, so a run list
+  still says whether someone chose to end a run or the process died. No auto-summary
+  on a stopped run: stopping is a request to stop spending.
+- **Upload files as a persona's knowledge base** (`.txt`, `.md`, `.pdf`, `.docx`).
+  `POST /api/documents/extract` extracts text and stores nothing, so an uploaded file
+  becomes an ordinary `document_texts` entry and rides the existing create-run,
+  retrieval and setup-export paths. Run-agnostic by design: a knowledge base must be
+  authored *before* the run exists, since cast documents are ingested ahead of turn 1.
+  The extracted text is shown for review before use, which matters for PDFs where
+  extraction quality varies and a scanned page yields nothing.
+  `GET /api/documents/formats` reports what this install can actually read, so the
+  picker offers only what will work and names the missing package otherwise.
+  Server-enforced caps: `MAX_UPLOAD_BYTES` (10 MB, checked while streaming) and an
+  independent `MAX_DOCUMENT_CHARS` (400k, because a small PDF can expand enormously);
+  both refuse rather than truncate, since a half-loaded knowledge base looks complete.
+- **Start a fresh conversation from an existing run's setup.** `GET /api/runs/{ref}/setup`
+  returns the run's definition shaped as a create-run body — the same schema the setup
+  importer already reads, so a setup round-trips through either path and the two cannot
+  drift. Loaded into the new-run form for editing; submitting creates a fresh ROOT run
+  with nothing from the transcript.
+- **Import a conversation setup from JSON**, augmented with convictions, plus a
+  **persona wizard** that drafts a cast of stakeholders from a one-line brief. Both are
+  authoring assistance: they fill the form, and nothing they produce starts a run by
+  itself.
+- **Convictions are rendered in the dossier**, so Phase 6 is no longer invisible; and
+  the new-run screen exposes convictions, documents and per-persona concerns, with an
+  explanation on every optional switch.
+- `underlying_concern` is persisted as a dedicated field rather than dropped at submit.
+
+### Fixed
+- **BM25 scores were computed over the whole database, not the run.** `bm25()` is
+  evaluated by FTS5 over the index it is handed, and `run_id` was only an outer filter
+  on already-scored rows, so a run's retrieval scores moved when unrelated runs were
+  added. Measured: -0.0000 with a run alone in the database, **-1.8331** once an
+  unrelated second run existed; on the real 37-run database the same query scored
+  -2.8631 scoped versus -2.3807 whole-database. Now scored in a scratch FTS index over
+  the run's slice with the same tokenizer — the same ranking function over a corrected
+  corpus, pinned by a test asserting the two agree exactly when the database holds one
+  run. Overhead +0.34 ms at 30 chunks, +7.30 ms at 1500, against a model call of 1000 ms
+  or more. **Consequence: the absolute values in this project's prior Phase 5 retrieval
+  measurements are not reproducible as recorded**, since they were gathered against a
+  database that grew between runs.
+- **A relative `DATA_DIR` resolved against the working directory.** Starting the server
+  from a subdirectory silently created a second, empty database; the UI truthfully
+  reported no previous conversations while 37 runs sat untouched in the real file — a
+  cwd mistake was indistinguishable from data loss. Now anchored to the checkout root,
+  and startup logs the absolute path plus the run count, at WARNING when it created the
+  file.
+- **Terminal events other than `sim.completed`/`sim.failed` left the UI showing a live
+  run** — Stop still offered, thinking indicator stuck, analysis hidden until reload.
+  `sim.capped` had that hole since Phase 3, so a cost-capped run has been reading as
+  still running. A capped or stopped run can now also be scrubbed and asked about,
+  which previously required a clean completion.
+- **Truncated summaries.** The analyst summary shared the per-turn token budget (2048)
+  and overflowed, so a strict parse returned nothing and the UI showed an empty summary.
+  Own budget (`SUMMARY_MAX_TOKENS`, 8000) plus partial-JSON recovery.
+- **A blank page after a frontend rebuild**, from a cached `index.html` pointing at
+  deleted asset hashes. No-cache shell, immutable hashed assets.
+- **Order-dependent test isolation.** `clean_env` cleared the `.env`-derived variables,
+  then a fixture below it imported litellm, whose `load_dotenv()` put them straight
+  back. The full suite passed only because litellm was already imported by collection
+  time; a single file failed. Whether a test saw code defaults or local config depended
+  on which other files were selected.
+
+### Changed
+- The scrubber has **one branch button** with the change options always visible, rather
+  than "Branch" and "Intervene" presented as rival actions when they are one operation.
+- Cognition is **on by default** in the new-run form, with every sub-feature. A run
+  without it cannot answer "why did it say that?", which is the point of the tool. The
+  engine default stays off, so programmatic and CLI runs are unchanged.
+- `python-multipart` is now a core dependency: uploading a `.txt` needs nothing else,
+  so gating the base case behind an extra was arbitrary.
+- **One authoritative version.** `matrix-studio --version` carried its own literal and
+  reported `0.1.0` through four releases; `__init__.py` carried a third copy. The
+  runtime version is now read from the installed package metadata, so it cannot drift
+  from `pyproject.toml`.
+
+### Decided
+- **Cast-wide documents: will not implement for now.** The narrow legitimate case
+  (shared material too long for the topic prompt) does not justify it, and the cost of
+  the workaround was measured rather than argued: duplicating a shared document across
+  8 personas collapses its BM25 score from -4.2821 to -0.0000 and takes the persona's
+  own private document down with it, because the shared text then occupies 8 of 16
+  chunks. Reasoning and numbers kept in `docs/BACKLOG.md` so the decision is
+  revisitable.
+
+### Testing
+709 Python tests (was 609 at v0.5.0) and 122 frontend tests (was 18) — both baselines
+measured by checking the tag out, not taken from a commit message. Every fix above is
+mutation-tested — the guard is reverted and the suite must fail. Two tests in this
+release initially passed against the bug they were written for and were rewritten:
+the model-clobber race needed the model list to resolve *after* the setup, and the stop
+feature needed a test that stops a *resumed* run.
+
 ## [0.5.0] - 2026-09-06
 
 Phases 5 and 6. Two capabilities, and a measurement discipline applied to both:
