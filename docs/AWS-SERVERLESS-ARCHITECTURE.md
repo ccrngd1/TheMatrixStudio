@@ -34,42 +34,40 @@ load-bearing.
 
 So runs, events, snapshots, summaries and threads all move to DynamoDB (§4).
 
-### As a per-run, read-only retrieval index: still correct, and multi-tenancy *strengthens* it
+### As a per-run retrieval index: also rejected, on a claim that turned out to be false
 
-This is the part worth not throwing out with the rest. The retrieval index has three
-properties that make it unlike the primary datastore:
+An earlier revision of this document argued for keeping SQLite as a per-run,
+**read-only** FTS index in S3, on the grounds that it is immutable after ingest and
+therefore has no write concurrency to reason about.
 
-1. **It is immutable after ingest.** Built once when a conversation's documents are
-   attached, then only ever read. No writer, so no write concurrency to reason about.
-2. **It is per-run**, and a run belongs to exactly one user. So one file *is* one
-   tenant's data — isolation becomes an S3 object key under a per-user prefix, enforced
-   by an IAM policy, rather than a query predicate.
-3. **It is small.** Measured here: a 17,771-character document produces 29 chunks. A
-   conversation with 100 such documents is roughly 3,000 chunks — single-digit
-   megabytes of SQLite, a sub-second S3 GET into `/tmp`, cached for the life of the
-   execution environment.
+**That premise is wrong.** `attach_document` (`api/app.py`) performs no status check —
+it 404s on a missing run and otherwise accepts the attachment — so a document can be
+added to a run that is actively generating turns, and `retrieve_for_turn` re-reads the
+index on **every** turn (`engine/simulator.py:1101`). A per-run S3 file would therefore
+need download → rebuild → re-upload on each mid-run attachment, and two concurrent
+attachments to the same run would silently lose one. That is the same write-concurrency
+problem as the primary datastore, in the one place the argument claimed it was absent.
 
-Compare the alternative at company scale: a shared search index needs a tenant filter
-on **every** query, and that filter is a security control. Get it wrong once — a code
-path that forgets it, a query built by string concatenation — and you have
-cross-tenant disclosure. A per-run index file cannot leak that way: reading another
-tenant's index requires their object key *and* IAM permission on their prefix.
+The other arguments for it do not survive the change of premise either:
 
-It also preserves something specific that was just fixed. In v0.6.0 BM25 scoring was
-corrected so that corpus statistics come from the run's own slice rather than the whole
-database (scores moved by 1.83 when an unrelated run was added; on a 37-run database
-the same query scored −2.8631 correctly versus −2.3807 contaminated). A per-run index
-preserves that **physically** — the index contains only that run's chunks — and needs
-no change to the scoring code at all.
+- **Cost floor.** A managed search service bills an hourly capacity minimum whether or
+  not anyone queries. For a single-operator tool that dominated the bill. For a
+  thousand-employee install it is immaterial next to Bedrock spend, so the strongest
+  objection to a central service disappears.
+- **BM25 corpus scoping.** v0.6.0 corrected scoring so corpus statistics come from the
+  run's own slice. That fix was motivated by **measurement reproducibility** — making
+  experimental arms comparable across a database that grew between runs. It is not
+  obviously the right choice for a product: deployment-wide IDF is defensible, arguably
+  better, since a term being common across the whole corpus is genuine information about
+  how discriminative it is. See §8 for what changes and what must be re-baselined.
+- **Operational ownership.** A hand-rolled index lifecycle with rebuild-on-write is
+  precisely the kind of component you do not want to hand a company to operate.
+- **An org-wide corpus is likely, not hypothetical.** "Search our documents" is the
+  obvious next request for a company install. Building a bespoke per-run mechanism first
+  means running two retrieval systems later.
 
-**Where this breaks, stated up front.** The model is "a conversation with some attached
-documents". It stops being appropriate at roughly 10,000+ chunks or ~100 MB per run,
-where the cold-start download stops being free. And it does not serve "chat with the
-company wiki" — an org-wide shared corpus is a different feature with different
-retrieval architecture (§6). If that becomes a requirement, revisit; do not stretch
-this to fit it.
-
----
+So retrieval goes to a central service too — see §8. SQLite leaves the architecture
+entirely.
 
 ## 2. Identity: Cognito federated to the company IdP
 
@@ -255,25 +253,64 @@ so each is a new execution with a different `from_turn`.
 
 ---
 
-## 8. Retrieval
+## 8. Retrieval: OpenSearch Serverless
 
-Per §1, the per-run SQLite FTS index in S3, under a per-user prefix
-(`fts/{sub}/{run_id}.db`). Built in `IngestDocuments`, downloaded to `/tmp` on cold
-start, read-only thereafter. `reindex_documents()` already exists for documents added
-after a run starts: rebuild and re-upload.
+One collection, used directly rather than through Bedrock Knowledge Bases.
 
-Uploaded source files land in `uploads/{sub}/{run_id}/` — note the extract endpoint
-currently stores nothing and returns text, which stays correct; keeping the original
-is a new (and probably wanted) capability for a company install, where "which document
-did that come from" is an audit question.
+**Why not Knowledge Bases**, despite being Bedrock-native and more managed: it takes
+over chunking, and this codebase's chunker has measured behaviour worth keeping. Chunk
+overlap is snapped to a sentence boundary because a naive tail cut produced a real
+failure — a chunk beginning `". This is a correctness requirement, not hardening."` had
+lost the antecedent of "This", and a persona quoted it verbatim and inferred the
+**opposite** of what the source meant. On one real document 90% of chunks began
+mid-sentence before the fix. Handing chunking to a managed service discards that, and
+the failure it prevents is silent. Knowledge Bases also runs on OpenSearch Serverless
+underneath, so it does not avoid the cost floor.
 
-If an org-wide shared corpus becomes a requirement, that is a **separate** retrieval
-path — an OpenSearch Serverless collection or Bedrock Knowledge Bases over the shared
-corpus, queried alongside the per-run index. Do not merge the two: the shared corpus
-has no per-run isolation requirement and different scale, and merging them is what
-would reintroduce the cross-corpus scoring bug.
+**Isolation is the part to get right, and here it is a query filter rather than an IAM
+boundary.** OpenSearch Serverless data access policies operate at collection and index
+granularity, not per document, so per-user scoping cannot be enforced by credentials the
+way DynamoDB's `LeadingKeys` allows (§3). An index per user would restore that, but
+thousands of tiny indexes is a known anti-pattern — shard overhead, and hard limits.
 
----
+So accept a code-level boundary and make it **one auditable chokepoint** rather than a
+predicate repeated at call sites:
+
+- Exactly one function may talk to the search client, and it takes the authenticated
+  subject as a required argument — there is no overload without it.
+- Every query it issues carries the `owner_sub` and `run_id` filters.
+- Enforce it with a test that greps for any other import of the search client, in the
+  same spirit as the other structural rules here. A convention nobody checks is not a
+  control.
+
+For a multi-company deployment, add an index per tenant: that granularity *is*
+IAM-enforceable via data access policies, and it caps the index count at the number of
+customers rather than users or conversations.
+
+**What changes behaviourally, stated so it is not discovered later.** Corpus statistics
+become deployment-wide rather than per-run, which is the opposite of the v0.6.0 fix.
+Consequences:
+
+- Retrieval scores are no longer comparable to any number recorded in `docs/`. Every
+  absolute retrieval measurement in this repository must be re-baselined against the new
+  backend before it is cited again.
+- Scores now move as the deployment's corpus grows. That is acceptable for a product and
+  unacceptable for an experiment, so any future retrieval measurement needs a fixed
+  corpus snapshot to be meaningful.
+- Ranking quality is likely *better* for the product case and is worth measuring rather
+  than assumed — the inspection endpoint (`/documents/search`) already exists for
+  exactly this and should be used to compare before and after on a real corpus.
+
+**What comes free**, and did not before: native k-NN, so vector and hybrid retrieval no
+longer need `sqlite-vec` in a Lambda temp file; and an org-wide shared corpus can live
+in the same collection under a different index with a `scope` field, queried alongside a
+user's own documents.
+
+**The cost this adds**, honestly: the test suite currently runs retrieval against
+in-process SQLite — fast and hermetic. Against OpenSearch it needs a container in CI for
+the retrieval tests (~55 of them in `test_retrieval*.py`), or a fake, which is a fake of
+the exact scoring semantics being relied on and therefore not worth much. Budget for the
+container.
 
 ## 9. Live updates
 
@@ -329,8 +366,10 @@ feedback. This is the phase most likely to be under-estimated.
 
 **Phase 2 — storage port.** Replace the SQLite implementation with DynamoDB + S3. One
 implementation, no abstraction (local run is out of scope). The existing tests are the
-specification; run them against DynamoDB Local in CI. Retrieval keeps its SQLite
-implementation per §1 and needs a small blob-access seam for S3-versus-`/tmp`.
+specification; run them against DynamoDB Local in CI. Retrieval moves to OpenSearch
+Serverless in the same phase (§8), which is the largest single behavioural change in the
+port and the one that needs a before/after quality comparison rather than a green
+test suite.
 
 **Phase 3 — deploy.** Cognito + IdP federation, API Gateway with the JWT authorizer,
 scoped-role assumption, container Lambda, CloudFront/S3, polling for live updates. The
