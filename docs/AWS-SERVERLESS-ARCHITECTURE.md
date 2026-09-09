@@ -154,9 +154,10 @@ of a real conversation is how a user loses work.
 
 ## 5. Topology
 
-Reflects every revision in this document: DynamoDB as the only datastore, **no SQLite
-and no search service**, retrieval scored in-process, one Step Functions execution per
-run, polling for live updates.
+Reflects every revision in this document: **no SQLite anywhere**, DynamoDB for
+application data and chunk text, **S3 Vectors** for embeddings (retrieval is vector —
+measured 22× better recall@1 than lexical on engine queries), one Step Functions
+execution per run, polling for live updates. Nothing here has an hourly capacity floor.
 
 ### 5.1 System
 
@@ -187,7 +188,8 @@ run, polling for live updates.
      ▼                ▼
  ┌───────────────┐  ┌──────────────────────────────────────────────┐
  │ Step Functions│  │  DynamoDB                                    │
- │ (§5.2)        │─▶│   runs · events · snapshots(ptr) · chunks     │
+ │ (§5.2)        │─▶│   runs · events · snapshots(ptr)              │
+         │  │  chunks (TEXT + metadata, no vectors)       │
  └───────┬───────┘  │   summaries · threads · knowledge_bases       │
          │          │   kb_grants · connections                    │
          │          └──────────────────────────────────────────────┘
@@ -195,6 +197,11 @@ run, polling for live updates.
          │          │  S3  (per-user prefixes)                     │
          │─────────▶│   snapshots/{sub}/{run}/{turn}.json          │
          │          │   uploads/{sub}/{kb}/{doc}     (originals)   │
+         │          └──────────────────────────────────────────────┘
+         │          ┌──────────────────────────────────────────────┐
+         │─────────▶│  S3 Vectors                                  │
+         │          │   one index per KB · chunk embeddings +      │
+         │          │   {owner_sub, kb_id, chunk_id} metadata      │
          │          └──────────────────────────────────────────────┘
          │
          ▼
@@ -217,7 +224,8 @@ run, polling for live updates.
         ▼
  ┌───────────────────┐   only when bindings or uploads changed:
  │ IngestDocuments   │   extract → chunk (sentence-aligned overlap)
- │                   │   → chunks into DynamoDB, original into S3
+ │                   │   → text to DynamoDB · original to S3
+ │                   │   → embed chunks → S3 Vectors  ($0.0014/387 chunks)
  └─────────┬─────────┘
            ▼
  ┌───────────────────┐   reconstruct_at_turn(N) from the event log
@@ -225,12 +233,14 @@ run, polling for live updates.
  │                   │   → select next speaker
  └─────────┬─────────┘
            ▼
- ┌───────────────────┐   Query the speaker's bound-KB chunks (one Query)
- │ GenerateTurn      │   → BM25 in-process → top-k under max_chars
+ ┌───────────────────┐   embed the query (Bedrock, ~$1e-7)
+ │ GenerateTurn      │   → S3 Vectors k-NN, filtered to bound KBs
+ │                   │     (vector mode: measured 22x recall@1 vs lexical
+ │  Retry: throttle, │      on the diluted queries a turn produces)
+ │  validation fail  │   → BatchGetItem chunk text → top-k under max_chars
  │                   │   → Bedrock call → Phase 4a validation gate
- │  Retry: throttle, │   → append events (incl. document.retrieved)
- │  validation fail  │   → snapshot: DynamoDB pointer + S3 body
- └─────────┬─────────┘
+ │                   │   → append events (incl. document.retrieved)
+ └─────────┬─────────┘   → snapshot: DynamoDB pointer + S3 body
            ▼
  ┌───────────────────┐
  │ CheckContinue     │──── stop_requested (DynamoDB) ────▶  Stopped
@@ -253,9 +263,9 @@ turns, so the turn in flight is always finished and persisted.
        │                      ▲
        │ chunks               │ bound by id
        ▼                      │
-  DynamoDB: chunks     ┌──────┴────────────────────────────┐
-  { kb_id, doc_id,     │  run                              │
-    ordinal, content } │   knowledge_bases: [...]  ← whole │
+  DynamoDB: text       ┌──────┴────────────────────────────┐
+  S3 Vectors: embeds   │  run                              │
+  { kb_id, doc_id,     │   knowledge_bases: [...]  ← whole │
        ▲               │   cast:                     cast  │
        │               │     Priya  knowledge_bases: [...] │
        │               │     Dan    knowledge_bases: [...] │
@@ -263,7 +273,7 @@ turns, so the turn in flight is always finished and persisted.
        │                      │
        └──────────────────────┘
          a speaker's scope = run.knowledge_bases ∪ persona.knowledge_bases
-         → one DynamoDB Query for those kb_ids → BM25 in-process
+         → S3 Vectors k-NN over those KB indexes → chunk text from DynamoDB
 ```
 
 Reuse is binding, not copying: a document is chunked and stored once and any conversation
@@ -329,7 +339,7 @@ so each is a new execution with a different `from_turn`.
 
 ---
 
-## 8. Retrieval: size it to the corpus (OpenSearch is overkill at 1–5 docs)
+## 8. Retrieval: vector search via S3 Vectors
 
 **Revised again.** Told that a persona will hold roughly 1–5 documents, the earlier
 recommendation of OpenSearch Serverless is wrong — it is a distributed search cluster
@@ -344,37 +354,81 @@ characters):
 | 5 documents | 57k | 14,200 | 63 |
 | 10 documents | 114k | 28,500 | 126 |
 
-Sixty-three chunks is **one DynamoDB Query** (~57 KB, well inside the 1 MB page limit),
-and BM25 over 63 short passages in Python is sub-millisecond. There is no indexing
-problem here to solve with infrastructure.
+Sixty-three chunks is small — small enough that the earlier revision concluded no search
+infrastructure was needed at all. That conclusion was right about *scale* and wrong about
+*method*, for the reason below.
 
-### Recommended at this scale: in-process BM25 over chunks from DynamoDB
+### Correction: retrieval must be VECTOR, and this project already measured it
 
-Fetch the run's (or the bound KB's) chunks with one Query and score them in the Lambda.
-What this removes, all at once:
+The previous revision recommended in-process BM25 and was wrong. It contradicted
+`docs/PHASE5-RETRIEVAL-MEASUREMENT.md` §5f, which measured all three modes against the
+same ground truth. On **diluted** queries — the shape the engine actually produces, since
+a turn's query is built from conversational text rather than a well-formed search string:
 
-- **OpenSearch entirely** — its hourly capacity floor, the CI container the ~55
-  retrieval tests would have needed, and the operational surface.
-- **The SQLite-in-Lambda problem entirely.** Nothing is written at query time and there
-  is no index file to keep, so the write-concurrency objection that killed the per-run
-  S3 index simply does not arise.
-- **The isolation weakness of §8a.** Chunks live in DynamoDB, so scoping is
-  `dynamodb:LeadingKeys`-enforceable — the strong version — rather than a query filter
-  the application must remember.
-- **The corpus-statistics argument, in the good direction.** Statistics are computed over
-  exactly the set fetched, so per-run or per-KB scoping is exact and reproducible. This
-  restores the v0.6.0 property for free instead of trading it away.
+| metric | fts | vector | hybrid |
+|---|---|---|---|
+| recall@1 | **0.017** | **0.367** | 0.233 |
+| recall@5 | 0.400 | 0.817 | 0.700 |
+| MRR | 0.127 | 0.549 | 0.409 |
 
-The one cost: the tokeniser and stemmer become ours. Earlier this was a reason *not* to
-hand-roll BM25 — the implementation had to agree with FTS5's porter stemmer or a chunk
-found by stemming would score zero. With FTS5 out of the picture that constraint
-disappears: we own both sides, so a pure-Python snowball stemmer (a small dependency) or
-exact-token matching is internally consistent by construction.
+`recall@1` is the figure that matters, because a turn injects only `k = 1..3` passages.
+Lexical put the right passage first **1.7% of the time**. That is not a subtlety to trade
+against infrastructure simplicity; it means lexical-only retrieval on engine turns
+mostly does not work.
 
-Headroom: this stays comfortable to roughly 1,000–2,000 chunks per query — an order of
-magnitude beyond the stated 1–5 documents. **The OpenSearch design below becomes the
-right answer only past that**, which in practice means an org-wide shared corpus. Keep
-it as the documented next tier, not the starting point.
+The measurement also settles the mode per caller: **`vector` for engine turns**, and
+**`hybrid` for the operator-facing `/documents/search`**, where queries are well-formed
+and fusion helps. Hybrid *loses* to pure vector on diluted queries, because equal-weight
+RRF lets a noise-grade lexical ranking drag down a good semantic one.
+
+Cost is not the gate it was assumed to be: embedding a 231,744-character corpus (387
+chunks) measured **$0.0014**, and a per-turn query embedding ~**$0.0000001**.
+
+### Recommended: S3 Vectors for embeddings, DynamoDB for chunk text
+
+Given retrieval must be vector, a vector store is needed either way, and **S3 Vectors is
+the right one for this workload's shape** — bursty, low QPS, small-to-medium corpora,
+priced as storage plus per-query rather than provisioned capacity. It is the option that
+makes the earlier cost objection moot without reintroducing an hourly floor.
+
+| Holds | Where | Why there |
+|---|---|---|
+| chunk **text** + `kb_id`, `doc_id`, `ordinal` | DynamoDB | Needed to return passage content, and for the lexical arm of `hybrid`. One Query or BatchGetItem. |
+| chunk **embedding** + filter metadata | S3 Vectors | Purpose-built. Keeps 4 KB float32 vectors out of DynamoDB items and off the per-turn fetch. |
+
+Per turn: embed the query (one Bedrock call) → query S3 Vectors filtered to the speaker's
+bound KBs → `BatchGetItem` the winning chunks' text from DynamoDB. Two round trips,
+sub-second plus single-digit milliseconds, against a 6–13 s turn.
+
+Why S3 Vectors over the alternatives now that a vector store is required:
+
+- **Versus OpenSearch Serverless** — no hourly capacity floor, which was the whole
+  objection. Same metadata filtering, same k-NN capability for this use.
+- **Versus vectors in DynamoDB with in-process cosine** — workable at 63 chunks (258 KB
+  of float32 per turn) but it is a key-value store used as a vector store: bulky items,
+  bulky fetches, and a hand-rolled brute-force scan that has to be replaced the moment a
+  corpus outgrows it. S3 Vectors removes the escalation cliff instead of deferring it.
+- **Versus Bedrock Knowledge Bases** (which can sit on S3 Vectors) — Knowledge Bases
+  takes over chunking, and this codebase's chunking has a measured justification: overlap
+  is snapped to a sentence boundary because a naive cut produced a chunk starting
+  `". This is a correctness requirement, not hardening."` and a persona quoted it and
+  inferred the **opposite** of the source. Calling S3 Vectors directly keeps our chunker
+  and our embedding choice.
+
+**Isolation.** Filtering is by metadata, so the §8a caveat applies rather than
+`LeadingKeys`: make it one chokepoint that requires the authenticated subject, and assert
+on the way out. Where a stronger boundary is wanted, use **one vector index per KB** —
+the same reasoning as §8b, and IAM can then grant per index rather than per document.
+
+**Keep lexical, but as the second arm.** `hybrid` is the measured best mode for the
+operator's search, so in-process BM25 over the same DynamoDB chunks stays — it is ~50
+lines, needs no service, and now serves the caller it actually helps.
+
+**Before committing**, verify against current AWS capability: supported dimensions for
+the chosen embedding model, metadata-filter expressiveness (it must express
+`owner_sub` + `kb_id IN [...]`), per-index vector limits, and whether index-per-KB is
+practical at the expected KB count. S3 Vectors is newer than the rest of this design, so
+these are checks rather than assumptions.
 
 ### Why not feed the documents to an LLM and pass forward what it extracts
 
@@ -430,11 +484,11 @@ at essentially zero infrastructure.
 
 ---
 
-### Next tier only: OpenSearch Serverless
+### Rejected: OpenSearch Serverless
 
-**Applies past ~1,000–2,000 chunks per query**, i.e. an org-wide shared corpus. Retained
-here as the documented escalation, not the v1 design. Used directly rather than through
-Bedrock Knowledge Bases.
+Retained here for the reasoning. Its hourly capacity floor was the objection, and S3
+Vectors provides the same capability for this use without one. Used directly rather than
+through Bedrock Knowledge Bases, had it been chosen.
 
 **Why not Knowledge Bases**, despite being Bedrock-native and more managed: it takes
 over chunking, and this codebase's chunker has measured behaviour worth keeping. Chunk
