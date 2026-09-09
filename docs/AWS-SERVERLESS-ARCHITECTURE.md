@@ -253,9 +253,112 @@ so each is a new execution with a different `from_turn`.
 
 ---
 
-## 8. Retrieval: OpenSearch Serverless
+## 8. Retrieval: size it to the corpus (OpenSearch is overkill at 1–5 docs)
 
-One collection, used directly rather than through Bedrock Knowledge Bases.
+**Revised again.** Told that a persona will hold roughly 1–5 documents, the earlier
+recommendation of OpenSearch Serverless is wrong — it is a distributed search cluster
+being asked to rank a few dozen short passages.
+
+Measured against the real documents in this repository (8 documents, mean 11,383
+characters):
+
+| Persona's corpus | Chars | ~Tokens | Chunks at 900 chars |
+|---|---|---|---|
+| 1 document | 11k | 2,800 | 13 |
+| 5 documents | 57k | 14,200 | 63 |
+| 10 documents | 114k | 28,500 | 126 |
+
+Sixty-three chunks is **one DynamoDB Query** (~57 KB, well inside the 1 MB page limit),
+and BM25 over 63 short passages in Python is sub-millisecond. There is no indexing
+problem here to solve with infrastructure.
+
+### Recommended at this scale: in-process BM25 over chunks from DynamoDB
+
+Fetch the run's (or the bound KB's) chunks with one Query and score them in the Lambda.
+What this removes, all at once:
+
+- **OpenSearch entirely** — its hourly capacity floor, the CI container the ~55
+  retrieval tests would have needed, and the operational surface.
+- **The SQLite-in-Lambda problem entirely.** Nothing is written at query time and there
+  is no index file to keep, so the write-concurrency objection that killed the per-run
+  S3 index simply does not arise.
+- **The isolation weakness of §8a.** Chunks live in DynamoDB, so scoping is
+  `dynamodb:LeadingKeys`-enforceable — the strong version — rather than a query filter
+  the application must remember.
+- **The corpus-statistics argument, in the good direction.** Statistics are computed over
+  exactly the set fetched, so per-run or per-KB scoping is exact and reproducible. This
+  restores the v0.6.0 property for free instead of trading it away.
+
+The one cost: the tokeniser and stemmer become ours. Earlier this was a reason *not* to
+hand-roll BM25 — the implementation had to agree with FTS5's porter stemmer or a chunk
+found by stemming would score zero. With FTS5 out of the picture that constraint
+disappears: we own both sides, so a pure-Python snowball stemmer (a small dependency) or
+exact-token matching is internally consistent by construction.
+
+Headroom: this stays comfortable to roughly 1,000–2,000 chunks per query — an order of
+magnitude beyond the stated 1–5 documents. **The OpenSearch design below becomes the
+right answer only past that**, which in practice means an org-wide shared corpus. Keep
+it as the documented next tier, not the starting point.
+
+### Why not feed the documents to an LLM and pass forward what it extracts
+
+This is the tempting alternative at small scale, and it is worse than both retrieval and
+plain stuffing. Three reasons, in order of weight:
+
+1. **It destroys the provenance trace, which is this product's differentiator.** Every
+   turn currently emits a `document.retrieved` event carrying the query and the exact
+   passages used — `chunk_id`, `document_id`, `title`, `ordinal`. That is what lets the
+   dossier answer "which passages did it use", and `citation_integrity` is part of the
+   Phase 4a validation gate. An LLM digest cannot be traced back to a passage, so the
+   tool stops being able to show its work.
+2. **"Relevant" has no fixed referent.** Extract at ingest and you must guess what the
+   conversation will need — but a multi-turn debate goes places nobody planned, and a
+   fixed digest cannot answer an unanticipated question. Extract at turn time and you
+   have to read the whole document to do it, which is stuffing (below) *plus* an extra
+   model call and its latency. Turn-time extraction is strictly dominated.
+3. **It generalises a failure this project has already measured.** Chunk overlap is
+   sentence-aligned because a naive cut produced a chunk beginning `". This is a
+   correctness requirement, not hardening."` — a persona quoted it verbatim and inferred
+   the **opposite** of the source. An LLM digest is that risk everywhere, and harder to
+   detect, because there is no verbatim passage left to compare against.
+
+The **good version of the instinct** is additive rather than substitutive: a one-time,
+ingest-time document abstract stored alongside the chunks, used to help choose *which*
+document or KB to search and to show the operator what they attached. Cheap, computed
+once, and it does not replace passage-level retrieval.
+
+### The honest alternative: stuff the documents and use prompt caching
+
+At 3k–14k tokens per persona this is genuinely viable, and it deserves stating fairly
+rather than dismissing.
+
+Cost, at Sonnet-class input pricing: 5 documents ≈ 14,200 tokens × 30 turns ≈ 427k input
+tokens ≈ **$1.28 per run**, against the $0.05–0.06 measured for real runs — roughly 20×.
+With **Bedrock prompt caching** it becomes defensible: put the document block before the
+transcript so it is a stable prefix, and cache reads cost a fraction of fresh input,
+bringing it to roughly $0.13 per run. Turns are 6–13 s apart and a persona speaks every
+~8 turns in an 8-person cast, comfortably inside the cache TTL.
+
+What stuffing buys: **perfect recall** — no retrieval miss is possible, because the model
+sees everything — and the deletion of retrieval as a subsystem.
+
+What it costs: **the provenance trace**, the `max_chars` per-turn budget that
+`PROJECT-SPEC` calls "the feature, not a safety valve", and any path to a corpus larger
+than the context window.
+
+So the choice is: retrieval buys provenance and cost control; stuffing buys recall and
+simplicity. At this corpus size recall is a non-issue either way and cost is manageable
+either way, which leaves **provenance as the deciding factor** — and for a tool whose
+purpose is introspection, that is decisive. Hence in-process BM25, which keeps the trace
+at essentially zero infrastructure.
+
+---
+
+### Next tier only: OpenSearch Serverless
+
+**Applies past ~1,000–2,000 chunks per query**, i.e. an org-wide shared corpus. Retained
+here as the documented escalation, not the v1 design. Used directly rather than through
+Bedrock Knowledge Bases.
 
 **Why not Knowledge Bases**, despite being Bedrock-native and more managed: it takes
 over chunking, and this codebase's chunker has measured behaviour worth keeping. Chunk
@@ -313,6 +416,11 @@ the exact scoring semantics being relied on and therefore not worth much. Budget
 container.
 
 ## 8a. How a persona's knowledge base is scoped
+
+> With in-process scoring (§8) the filter below is not a query sent to a search
+> service — it is which chunks are fetched from DynamoDB, so `LeadingKeys` enforces it
+> and the client-side-filter caveat does not apply. The OpenSearch form is retained for
+> the escalation tier.
 
 The mechanism is **indexed metadata fields plus filter context** — but two things about
 that deserve stating precisely, because one is a real limitation and the other is a
@@ -492,7 +600,7 @@ separate operations: a grant says *may* read, a binding says *does* read in this
 conversation. Both are needed, which is what stops a shared corpus leaking into
 conversations nobody intended.
 
-### Index granularity: one index per KB
+### Index granularity: one index per KB (escalation tier only)
 
 This is the decision that also repairs the isolation weakness §8a had to concede.
 
