@@ -19,6 +19,10 @@ export interface SimEvent {
     | 'sim.completed'
     | 'sim.failed'
     | 'sim.interrupted'
+    // Terminal like the three above. `sim.capped` predates this list and was
+    // simply missing, so a cost-capped run read as still running in the UI.
+    | 'sim.stopped'
+    | 'sim.capped'
     | 'error'
   agent_name: string | null
   payload: Record<string, any>

@@ -25,7 +25,11 @@ from matrix_studio.engine.simulator import OnEvent
 def make_fake_run(turns=2, fail=False, delay=0.0):
     """Build a fake run_simulation coroutine that emits scripted events."""
 
-    async def fake_run_simulation(request, db=None, run_id=None, on_event=None):
+    # **kwargs, not a mirror of the real signature: this fake is monkeypatched over
+    # run_simulation by three test files, so pinning the parameter list means every
+    # additive engine kwarg (should_stop was the third) breaks twenty unrelated tests
+    # with a TypeError swallowed into a 404.
+    async def fake_run_simulation(request, db=None, run_id=None, on_event=None, **kwargs):
         topic = request["topic"]
         cast = request["cast"]
         names = [c["name"] for c in cast]

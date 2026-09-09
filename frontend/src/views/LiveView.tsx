@@ -38,6 +38,12 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh }: Props) {
   const [branchError, setBranchError] = useState<string | null>(null)
   const [resuming, setResuming] = useState(false)
   const [resumeError, setResumeError] = useState<string | null>(null)
+  // `stopRequested` stays true after the request succeeds: the effect lands a turn
+  // later, so the button must show the request was accepted rather than look
+  // unresponsive and invite a second click.
+  const [stopping, setStopping] = useState(false)
+  const [stopRequested, setStopRequested] = useState(false)
+  const [stopError, setStopError] = useState<string | null>(null)
   // In-thread model picker: the models allowlist + the currently selected model
   // for analysis (summary/asides) and forward branching from this thread.
   const [models, setModels] = useState<{ id: string; label: string }[]>([])
@@ -70,12 +76,38 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh }: Props) {
   const stream = useRunStream({ runId, cast, reloadKey })
   const { state } = stream
 
-  // A run is analyzable once it has completed (live or on reload).
-  const completed = detail?.status === 'complete' || state.status === 'complete'
-  // Error-recovery: an interrupted/failed run can be resumed forward in place.
-  const resumable = detail?.status === 'interrupted' || detail?.status === 'failed'
+  // A run is analyzable once generation has ENDED with real turns to look at —
+  // not only on a clean completion. A stopped or capped run has a transcript, a
+  // final checkpoint and a cast, so withholding the scrubber and asides from it
+  // would hide exactly the run you most want to inspect: the one you cut short.
+  const ENDED_WITH_TRANSCRIPT = ['complete', 'stopped', 'capped']
+  const completed =
+    ENDED_WITH_TRANSCRIPT.includes(detail?.status ?? '') ||
+    ENDED_WITH_TRANSCRIPT.includes(state.status ?? '')
+  // Error-recovery / deliberate stop: continue forward in place. Mirrors
+  // branching.RESUMABLE_STATUSES server-side, which rejects anything else.
+  const resumable = ['interrupted', 'failed', 'stopped'].includes(detail?.status ?? '')
+  // Only a run this server is actively generating can be stopped; the API answers
+  // 409 otherwise, so the button is hidden rather than offered and refused.
+  const TERMINAL = ['complete', 'failed', 'stopped', 'capped', 'interrupted']
+  const running = detail?.status === 'running' && !TERMINAL.includes(state.status)
   const lineage = detail?.lineage
   const maxTurn = detail?.result?.total_turns ?? detail?.turn_count ?? 0
+
+  // Ask the engine to stop after the turn in flight. Not a cancel: that turn is
+  // finished and persisted, which is why the label says "after this turn".
+  const stop = async () => {
+    setStopping(true)
+    setStopError(null)
+    try {
+      await api.stopRun(runId)
+      setStopRequested(true)
+    } catch (e) {
+      setStopError((e as Error).message)
+    } finally {
+      setStopping(false)
+    }
+  }
 
   // Resume an interrupted/failed run in place, then reconnect the stream so the
   // newly-generated turns stream in live (the prior socket closed on the
@@ -135,6 +167,16 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh }: Props) {
           </div>
         </div>
         <div className="flex items-center gap-3">
+          {running && (
+            <button
+              onClick={stop}
+              disabled={stopping || stopRequested}
+              className="rounded border border-red-500/60 px-3 py-1 text-sm text-red-300 hover:border-red-400 disabled:opacity-50"
+              title="Stop after the turn being generated now. That turn is finished and kept; no further turns start. The run can be resumed later."
+            >
+              {stopRequested ? '■ Stopping after this turn…' : stopping ? '■ Stopping…' : '■ Stop'}
+            </button>
+          )}
           {resumable && (
             <button
               onClick={resume}
@@ -192,6 +234,12 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh }: Props) {
           </span>
         </div>
       </header>
+
+      {stopError && (
+        <div className="border-b border-red-900/50 bg-red-950/40 px-4 py-2 text-xs text-red-300">
+          Stop failed: {stopError}
+        </div>
+      )}
 
       {resumeError && (
         <div className="border-b border-red-900/50 bg-red-950/40 px-4 py-2 text-xs text-red-300">

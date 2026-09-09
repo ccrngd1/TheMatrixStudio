@@ -143,6 +143,15 @@ MAX_RUN_COST_USD=0.0           # Per-run hard spend cap in USD (0 = OFF)
 COST_WARN_THRESHOLD=1.0        # Warning threshold shown in UI cost meter
 ```
 
+**Stopping a run:** a live run has a **■ Stop** button in the control room (or
+`POST /api/runs/{ref}/stop`). It is a request rather than a kill: the turn being
+generated finishes and is persisted — those tokens are already paid for — and no
+further turns start. The run ends in a terminal `stopped` status, keeps its full
+transcript and final checkpoint, and can be **↻ Resumed** later from where it left
+off. `stopped` is deliberately distinct from `interrupted` (the process died) so a
+run list still shows which it was. A stopped run does **not** auto-generate a
+summary, since stopping is a request to stop spending.
+
 **Cost Cap:** When `MAX_RUN_COST_USD > 0`, the engine checks accumulated real cost after each turn. When the cap is reached, the run ends in a terminal `capped` status. The cap acts on LiteLLM-reported cost only; providers that don't report cost (e.g., local Ollama) are counted as $0.
 
 ### Phase 4: Validation, Threads, Structured View & Adaptive Pressure
