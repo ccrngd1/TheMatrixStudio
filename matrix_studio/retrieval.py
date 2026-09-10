@@ -611,6 +611,9 @@ async def embed_pending_chunks(
     run_id: str,
     embedding_model: str = "",
     batch: Optional[int] = None,
+    # Explicit width; None lets the provider use its default. An index's dimension is
+    # fixed at creation on the AWS target, so this is chosen once with evidence.
+    dimensions: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Embed any of a run's chunks that do not yet have a vector.
 
@@ -645,7 +648,9 @@ async def embed_pending_chunks(
         return out
 
     try:
-        result = await embed_texts([c["content"] for c in pending], model=model)
+        result = await embed_texts(
+            [c["content"] for c in pending], model=model, dimensions=dimensions
+        )
     except EmbeddingError as exc:
         out["error"] = str(exc)
         return out

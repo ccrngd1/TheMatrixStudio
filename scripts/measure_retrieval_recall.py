@@ -66,6 +66,8 @@ from matrix_studio.storage import Database  # noqa: E402
 # Set from --embedding-model before any pipeline runs; a one-element list so
 # run_pipeline can read it without threading the value through every signature.
 EMBED_MODEL = [""]
+# Query and chunk embeddings MUST use the same width or the vectors are incomparable.
+EMBED_DIMS: list = [None]
 
 # Best-match cosine of the most recent vector query, stashed so the caller can
 # record it per result. Calibration data for the absolute score floor.
@@ -128,6 +130,12 @@ async def generate_queries(
     passage: str, model: str, semaphore: asyncio.Semaphore
 ) -> Optional[Dict[str, str]]:
     import litellm
+
+    # Same fix the engine carries. Providers restrict sampling parameters per model —
+    # Sonnet 5 accepts only temperature=1 — and without this every call here failed
+    # with UnsupportedParamsError, which this script then reported as a table of
+    # dashes rather than an error. Determinism is preferred but not worth silence.
+    litellm.drop_params = True
 
     async with semaphore:
         try:
@@ -207,7 +215,9 @@ async def run_pipeline(
         from matrix_studio.embeddings import embed_query
         from matrix_studio.retrieval import reciprocal_rank_fusion
 
-        result = await embed_query(query, model=EMBED_MODEL[0])
+        result = await embed_query(
+            query, model=EMBED_MODEL[0], dimensions=EMBED_DIMS[0]
+        )
         semantic: List[Dict[str, Any]] = []
         if result and result.vectors and result.vectors[0]:
             semantic = await db.vector_search(
@@ -293,6 +303,17 @@ async def main() -> int:
     ap.add_argument("--model", default=None, help="Query-generation model")
     ap.add_argument("--json-out", type=Path, default=None)
     ap.add_argument(
+        "--queries-out", type=Path, default=None,
+        help="Write the generated queries here, so a later run can reuse them.",
+    )
+    ap.add_argument(
+        "--queries-in", type=Path, default=None,
+        help="Reuse queries from a previous --queries-out instead of generating. "
+             "Required for any A/B comparison: generation is non-deterministic (the "
+             "provider may reject temperature=0), so two runs otherwise measure "
+             "different ground truth and the numbers are not comparable.",
+    )
+    ap.add_argument(
         "--compare", action="store_true",
         help="Also evaluate the tuned query pipeline (discriminative terms + "
              "score filter) against the pre-measurement baseline",
@@ -307,6 +328,12 @@ async def main() -> int:
         help="Comma-separated pipelines to evaluate: baseline,tuned,vector,hybrid",
     )
     ap.add_argument("--embedding-model", default="", help="LiteLLM embedding model")
+    ap.add_argument(
+        "--dimensions", type=int, default=None,
+        help="Embedding width (Titan v2: 256/512/1024). Omit for the provider default. "
+             "Worth measuring rather than defaulting: it drives vector storage and query "
+             "cost, and on S3 Vectors an index's dimension is fixed at creation.",
+    )
     ap.add_argument("--term-limit", type=int, default=8)
     ap.add_argument("--max-df-ratio", type=float, default=0.5)
     ap.add_argument("--score-ratio", type=float, default=0.25)
@@ -349,6 +376,7 @@ async def main() -> int:
             print(f"corpus: {len(files)} files, {len(chunks)} chunks, "
                   f"{total_chars:,} chars")
             EMBED_MODEL[0] = args.embedding_model or ""
+            EMBED_DIMS[0] = args.dimensions
             if any(m in args.modes for m in ("vector", "hybrid")):
                 from matrix_studio.retrieval import embed_pending_chunks
                 if not db.vec_available:
@@ -356,7 +384,8 @@ async def main() -> int:
                           file=sys.stderr)
                     return 1
                 stats = await embed_pending_chunks(
-                    db, "eval", embedding_model=args.embedding_model
+                    db, "eval", embedding_model=args.embedding_model,
+                    dimensions=args.dimensions,
                 )
                 if stats.get("error"):
                     print(f"embedding failed: {stats['error']}", file=sys.stderr)
@@ -376,12 +405,62 @@ async def main() -> int:
             print(f"sampling {len(sample)} of {len(eligible)} eligible chunks "
                   f"(>=300 chars), k={args.k}\n")
 
-            sem = asyncio.Semaphore(args.concurrency)
-            generated = await asyncio.gather(
-                *(generate_queries(c["content"], model, sem) for c in sample)
-            )
+            if args.queries_in:
+                # Reuse a previous run's queries so an A/B differs in ONE variable.
+                cached = json.loads(args.queries_in.read_text())
+                by_id = {int(k): v for k, v in cached["queries"].items()}
+                generated = [by_id.get(c["id"]) for c in sample]
+                reused = sum(1 for g in generated if g)
+                # A cache legitimately covers fewer chunks than were sampled: some
+                # passages never produced usable queries. What matters for an A/B is
+                # that both runs use the SAME set, which reusing the file guarantees.
+                # Zero overlap means the sample does not match the cache at all —
+                # different targets, --sample or --seed — and that is an error.
+                if reused == 0:
+                    print(
+                        f"ERROR: --queries-in matched none of the {len(sample)} "
+                        f"sampled chunks. Re-run with the same targets, --sample "
+                        f"and --seed that produced it.",
+                        file=sys.stderr,
+                    )
+                    return 1
+                print(f"reusing {reused} cached queries from {args.queries_in} "
+                      f"(of {len(sample)} sampled; the rest never produced one)")
+            else:
+                sem = asyncio.Semaphore(args.concurrency)
+                generated = await asyncio.gather(
+                    *(generate_queries(c["content"], model, sem) for c in sample)
+                )
+                if args.queries_out:
+                    args.queries_out.write_text(json.dumps({
+                        "model": model, "seed": args.seed, "sample": len(sample),
+                        "queries": {
+                            str(c["id"]): g
+                            for c, g in zip(sample, generated) if g
+                        },
+                    }, indent=2) + "\n")
+                    print(f"wrote queries to {args.queries_out}")
 
-            gen_cost = sum(g["_cost"] for g in generated if g)
+            # Fail rather than report zeros. A table of dashes is indistinguishable
+            # from "retrieval found nothing", and this script exists to be an
+            # instrument you can trust — a broken run must look broken. The cause is
+            # usually a provider rejecting a sampling parameter, which is printed above.
+            usable = sum(1 for g in generated if g)
+            if usable == 0:
+                print(
+                    f"\nERROR: 0 of {len(sample)} queries were generated, so nothing "
+                    f"can be measured. See the warnings above.",
+                    file=sys.stderr,
+                )
+                return 1
+            if usable < len(sample) // 2:
+                print(
+                    f"\nWARNING: only {usable} of {len(sample)} queries generated; "
+                    f"treat the numbers below as indicative, not comparable.",
+                    file=sys.stderr,
+                )
+
+            gen_cost = sum(g.get("_cost", 0.0) for g in generated if g)
             pipelines = tuple(
                 m.strip() for m in args.modes.split(",") if m.strip()
             )

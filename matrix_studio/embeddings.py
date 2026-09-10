@@ -29,6 +29,13 @@ from typing import List, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
+# Titan Embed v2 emits 1024 floats by default but accepts 256 or 512. The width is worth
+# choosing rather than defaulting to: it drives vector storage, query cost and latency, and
+# on the AWS target an index's dimension is FIXED AT CREATION, so changing it later means
+# rebuilding every index. The Well-Architected Generative AI Lens raises this twice
+# (GENCOST04-BP01, GENPERF04-BP02). None = let the provider use its default.
+TITAN_V2_DIMENSIONS = (256, 512, 1024)
+
 # Amazon Titan Embed v2: 1024 dimensions and the cheapest of the Bedrock options
 # measured on this project (~$1e-7 for a short input). Overridable per run.
 DEFAULT_EMBEDDING_MODEL = "bedrock/amazon.titan-embed-text-v2:0"
@@ -119,6 +126,7 @@ async def embed_texts(
     texts: Sequence[str],
     model: str = DEFAULT_EMBEDDING_MODEL,
     concurrency: int = DEFAULT_BATCH_CONCURRENCY,
+    dimensions: Optional[int] = None,
 ) -> EmbeddingResult:
     """Embed a list of texts, returning one vector per input (None where failed).
 
@@ -150,15 +158,30 @@ async def embed_texts(
             return
         async with semaphore:
             try:
-                resp = await litellm.aembedding(model=model, input=[text])
+                # `dimensions` is only sent when asked for, so a provider that does
+                # not accept it is unaffected — and litellm.drop_params would silently
+                # discard it, which would look like the request worked at the wrong
+                # width. Asserting the returned length below is what catches that.
+                kwargs = {"dimensions": dimensions} if dimensions else {}
+                resp = await litellm.aembedding(model=model, input=[text], **kwargs)
             except Exception as exc:  # noqa: BLE001
                 failures.append(f"{type(exc).__name__}: {exc}")
                 return
         try:
-            results[index] = [float(x) for x in resp.data[0]["embedding"]]
+            vector = [float(x) for x in resp.data[0]["embedding"]]
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             failures.append(f"malformed embedding response: {exc}")
             return
+        # A provider that ignored `dimensions` would hand back its default width, and
+        # every vector would then be silently wrong for the index it is destined for.
+        # Fail loudly instead: an index's dimension cannot be changed after creation.
+        if dimensions and len(vector) != dimensions:
+            failures.append(
+                f"asked for {dimensions} dimensions, got {len(vector)} — the provider "
+                f"or model does not honour the parameter"
+            )
+            return
+        results[index] = vector
         usage = getattr(resp, "usage", None)
         if usage is not None:
             tokens += int(getattr(usage, "prompt_tokens", 0) or 0)
@@ -188,7 +211,9 @@ async def embed_texts(
 
 
 async def embed_query(
-    text: str, model: str = DEFAULT_EMBEDDING_MODEL
+    text: str,
+    model: str = DEFAULT_EMBEDDING_MODEL,
+    dimensions: Optional[int] = None,
 ) -> Optional[EmbeddingResult]:
     """Embed a single query. Returns None on failure instead of raising.
 
@@ -196,7 +221,9 @@ async def embed_query(
     degrade that turn to lexical retrieval rather than surface an error.
     """
     try:
-        result = await embed_texts([text], model=model, concurrency=1)
+        result = await embed_texts(
+            [text], model=model, concurrency=1, dimensions=dimensions
+        )
     except EmbeddingError as exc:
         logger.warning("Query embedding failed, falling back to lexical: %s", exc)
         return None

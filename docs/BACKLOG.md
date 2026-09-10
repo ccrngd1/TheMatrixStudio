@@ -836,3 +836,28 @@ Four mutants checked. One initially survived: the atomicity test only asserted t
 files remained, which a direct write also satisfies. Rewritten to test the consequence — a
 failed write must leave nothing readable, because a truncated body at a content-addressed key
 would be served forever as if it were the real image.
+
+### Retrieval measurement harness: two defects that made it report zeros
+
+Found 2026-09-10 while measuring embedding width (AWS plan 0.4). Both would have silently
+corrupted any future retrieval measurement, which matters more than the result they blocked.
+
+**1. Query generation failed on every sample, and the script reported zeros.**
+`scripts/measure_retrieval_recall.py` hardcoded `temperature=0`, and the configured model
+(`claude-sonnet-5`) accepts only `temperature=1` — so every call raised
+`UnsupportedParamsError`. The script printed a warning per failure to stderr and then a
+results table of dashes with `n (queries) = 0`, which reads as "retrieval found nothing"
+rather than "nothing was measured". This is the same defect the engine fixed with
+`litellm.drop_params = True`; the script never received the fix.
+
+Fixed: `drop_params` set, **and an empty measurement now exits non-zero** naming the cause. A
+measurement instrument that reports zeros when broken is worse than one that crashes.
+
+**2. A/B comparisons were silently incomparable.** With `drop_params` set, generation runs at
+temperature=1 and is non-deterministic. A first attempt at the width comparison produced n=30
+for one arm and n=25 for another — two different ground truths presented as a comparison.
+Fixed with `--queries-out` / `--queries-in`, so a query set is generated once and reused and
+an A/B differs in exactly one variable.
+
+Both fixes are in `scripts/measure_retrieval_recall.py`. Any measurement recorded in `docs/`
+before this date that shows suspiciously round zeros should be re-checked against defect 1.
