@@ -191,6 +191,9 @@ class DynamoStorage:
         self._client = None
         self._s3vectors = None
         self._tables: Dict[str, Any] = {}
+        # Set only by `for_owner`. Absent on the unbound store, which is
+        # what makes an unbound call raise instead of guessing.
+        self._owner_sub: Optional[str] = None
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -224,6 +227,63 @@ class DynamoStorage:
         self._s3 = None
         self._s3vectors = None
         self._tables.clear()
+
+    def for_owner(self, owner_sub: str) -> "DynamoStorage":
+        """A view of this store bound to one tenant, for the life of one request.
+
+        **Why binding rather than an argument on every call.** The Phase 2 key design
+        (§6) weighed two options — pass `owner_sub` explicitly everywhere, or resolve
+        it inside the store from `run_id` — and chose the first, on the grounds that a
+        caller who forgets an explicit argument fails with a `TypeError` rather than
+        reading the wrong partition. That reasoning is right and this preserves it;
+        what it missed is that there was a third option.
+
+        Threading the argument through every call meant **325 call sites** (63 in the
+        application, 262 in the tests and scripts). The number is not the objection —
+        the objection is that a change of that size, applied mechanically, is where a
+        wrong `owner_sub` gets typed once and is never noticed, because every site
+        looks like every other site.
+
+        Binding is *stronger* than the explicit argument, not a relaxation of it:
+
+          * The owner is named **once per request**, at the boundary, where the
+            identity actually arrives from the JWT — so a route cannot omit it, it can
+            only fail to bind at all.
+          * An unbound store raises on first use (see `_owner`), so "forgot to bind"
+            is loud in exactly the way "forgot the argument" was.
+          * An explicit `owner_sub=` still wins, which is what lets a test assert a
+            cross-tenant read is refused.
+
+        It also mirrors §3's real mechanism: per-request credentials scoped to a `sub`
+        for the duration of a request. `for_owner` is the code-level shape of the same
+        idea, and it is where those credentials attach.
+
+        The view shares this store's clients — it is a shallow copy, not a new
+        connection — so creating one per request costs nothing. The thing not to do is
+        hold one past its request, since it carries an identity.
+        """
+        import copy as _copy
+
+        bound = _copy.copy(self)
+        bound._owner_sub = owner_sub
+        return bound
+
+    def _owner(self, owner_sub: Optional[str]) -> str:
+        """Resolve the tenant for a call: the explicit argument, else the binding.
+
+        Raises rather than defaulting. An unbound store with no explicit owner means
+        the identity was lost somewhere upstream, and the safe answer to "whose data
+        is this" being unanswerable is not "the local user's" — that would attribute
+        one person's conversation to a shared bucket, silently.
+        """
+        resolved = owner_sub or getattr(self, "_owner_sub", None)
+        if not resolved:
+            raise StorageError(
+                "no owner for this call. Either bind the store with "
+                "`db.for_owner(sub)` at the request boundary, or pass "
+                "`owner_sub=` explicitly."
+            )
+        return resolved
 
     def _table(self, name: str):
         if name not in self._tables:
@@ -340,7 +400,7 @@ class DynamoStorage:
         config: Optional[Dict[str, Any]] = None,
         parent_run_id: Optional[str] = None,
         branch_turn: Optional[int] = None,
-        owner_sub: str = LOCAL_USER_SUB,
+        owner_sub: Optional[str] = None,
     ) -> None:
         """Create a run, refusing a name this owner already used.
 
@@ -353,6 +413,11 @@ class DynamoStorage:
         failed, the name would be permanently unavailable to its owner with no run to
         show for it — and nothing would report why.
         """
+        # Falls back to LOCAL_USER_SUB only when there is neither an argument nor a
+        # binding — the CLI, the import script, a direct engine call. A BOUND store
+        # attributes the run to its binding, which is what makes the API path correct
+        # without every caller repeating the owner.
+        owner_sub = owner_sub or getattr(self, "_owner_sub", None) or LOCAL_USER_SUB
         now = int(time.time())
         item = {
             "pk": _user_pk(owner_sub),
@@ -411,13 +476,14 @@ class DynamoStorage:
                 ) from exc
             raise
 
-    async def name_exists(self, name: str, *, owner_sub: str) -> bool:
+    async def name_exists(self, name: str, *, owner_sub: Optional[str] = None) -> bool:
         """Whether THIS OWNER already has a run with this name.
 
         Reads the marker item, not the runs — so it is a `GetItem` rather than a
         query, and it stays correct even for a run whose row was deleted while its
         name marker remained.
         """
+        owner_sub = self._owner(owner_sub)
         got = await self._call(
             self._table("runs").get_item,
             Key={"pk": _user_pk(owner_sub), "sk": _name_sk(name)},
@@ -430,7 +496,7 @@ class DynamoStorage:
         status: str,
         completed_at: Optional[int] = None,
         *,
-        owner_sub: str,
+        owner_sub: Optional[str] = None,
     ) -> None:
         """Set a run's lifecycle status, and its completion time when terminal.
 
@@ -448,6 +514,7 @@ class DynamoStorage:
         had already finished. The warning is what makes a real bug findable, since
         silence is how this class of thing survives.
         """
+        owner_sub = self._owner(owner_sub)
         expr = "SET #s = :s"
         values: Dict[str, Any] = {":s": status}
         if completed_at is not None:
@@ -473,7 +540,7 @@ class DynamoStorage:
             )
 
     async def get_run(
-        self, run_id: str, *, owner_sub: str
+        self, run_id: str, *, owner_sub: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         """One run by id.
 
@@ -482,6 +549,7 @@ class DynamoStorage:
         user-partitioned table there is no id-only read to offer, which turns that
         comment into something the type system enforces.
         """
+        owner_sub = self._owner(owner_sub)
         got = await self._call(
             self._table("runs").get_item,
             Key={"pk": _user_pk(owner_sub), "sk": _run_sk(run_id)},
@@ -490,7 +558,7 @@ class DynamoStorage:
         return _row(item, _RUN_FIELDS) if item else None
 
     async def get_run_by_ref(
-        self, ref: str, *, owner_sub: str
+        self, ref: str, *, owner_sub: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         """Resolve one of this owner's runs by id OR memorable name.
 
@@ -502,6 +570,7 @@ class DynamoStorage:
         on purpose, and here that is free rather than deliberate: a ref outside the
         caller's partition simply is not there.
         """
+        owner_sub = self._owner(owner_sub)
         found = await self.get_run(ref, owner_sub=owner_sub)
         if found:
             return found
@@ -515,7 +584,7 @@ class DynamoStorage:
         return await self.get_run(str(item["run_id"]), owner_sub=owner_sub)
 
     async def list_runs(
-        self, q: Optional[str] = None, limit: int = 200, *, owner_sub: str
+        self, q: Optional[str] = None, limit: int = 200, *, owner_sub: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """This owner's runs, newest first, optionally substring-filtered.
 
@@ -527,6 +596,7 @@ class DynamoStorage:
         parses as `(owner AND a) OR b OR c`, which leaked across tenants until it was
         parenthesised).
         """
+        owner_sub = self._owner(owner_sub)
         items = await self._query_all(
             "runs",
             KeyConditionExpression="pk = :pk AND begins_with(sk, :prefix)",
@@ -576,7 +646,7 @@ class DynamoStorage:
         return runs
 
     async def get_run_stats(
-        self, run_id: str, *, owner_sub: str
+        self, run_id: str, *, owner_sub: Optional[str] = None
     ) -> Dict[str, Any]:
         """Turn count, total cost and last-event time, aggregated from the log.
 
@@ -586,6 +656,7 @@ class DynamoStorage:
         source of truth, so the derived-on-read version is the one that cannot be
         wrong. Bounded work: measured 80 events per run.
         """
+        owner_sub = self._owner(owner_sub)
         items = await self._query_all(
             "events",
             KeyConditionExpression="pk = :pk AND begins_with(sk, :prefix)",
@@ -647,7 +718,7 @@ class DynamoStorage:
         return {str(i["id"]): _row(i, _RUN_FIELDS) for i in items if "id" in i}
 
     async def get_run_tree(
-        self, run_id: str, *, owner_sub: str
+        self, run_id: str, *, owner_sub: Optional[str] = None
     ) -> Dict[str, Any]:
         """The full lineage forest rooted at this run's earliest ancestor.
 
@@ -655,6 +726,7 @@ class DynamoStorage:
         needs, including `config_json` so the caller can read `branch_mutation` for an
         edge label without a second round trip.
         """
+        owner_sub = self._owner(owner_sub)
         runs = await self._all_runs(owner_sub)
         if run_id not in runs:
             return {"root_id": run_id, "nodes": {}}
@@ -704,9 +776,10 @@ class DynamoStorage:
         return {"root_id": root_id, "nodes": nodes}
 
     async def list_branches(
-        self, run_id: str, *, owner_sub: str
+        self, run_id: str, *, owner_sub: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """Runs forked directly from this one, newest first."""
+        owner_sub = self._owner(owner_sub)
         runs = await self._all_runs(owner_sub)
         out = [
             {
@@ -735,7 +808,7 @@ class DynamoStorage:
         payload: Dict[str, Any],
         agent_name: Optional[str] = None,
         *,
-        owner_sub: str,
+        owner_sub: Optional[str] = None,
     ) -> None:
         """Append one event.
 
@@ -744,6 +817,7 @@ class DynamoStorage:
         a Step Functions retry, say — would silently overwrite a different event
         that happened to reuse the seq, and the log would be corrupt with no error.
         """
+        owner_sub = self._owner(owner_sub)
         item = {
             "pk": _user_pk(owner_sub),
             "sk": _event_sk(run_id, seq),
@@ -774,7 +848,7 @@ class DynamoStorage:
         from_turn: int = 0,
         to_turn: Optional[int] = None,
         *,
-        owner_sub: str,
+        owner_sub: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """This run's events in a turn range, ordered by (turn, seq).
 
@@ -783,6 +857,7 @@ class DynamoStorage:
         index. Key design §2: a GSI keyed on turn would add write cost to the
         hottest write path in the system to save filtering ~80 items.
         """
+        owner_sub = self._owner(owner_sub)
         items = await self._query_all(
             "events",
             KeyConditionExpression="pk = :pk AND begins_with(sk, :prefix)",
@@ -806,7 +881,7 @@ class DynamoStorage:
         after_seq: int = -1,
         limit: Optional[int] = None,
         *,
-        owner_sub: str,
+        owner_sub: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Events strictly after a global seq — the polling and replay path.
 
@@ -815,6 +890,7 @@ class DynamoStorage:
         beginning", and it cannot be expressed as `sk > RUN#{id}#-000000000001`, so
         it becomes a prefix query instead of a range.
         """
+        owner_sub = self._owner(owner_sub)
         if after_seq < 0:
             items = await self._query_all(
                 "events",
@@ -845,8 +921,9 @@ class DynamoStorage:
         out.sort(key=lambda e: (e["turn"], e["seq"]))
         return out[:limit] if limit is not None else out
 
-    async def last_event_turn(self, run_id: str, *, owner_sub: str) -> int:
+    async def last_event_turn(self, run_id: str, *, owner_sub: Optional[str] = None) -> int:
         """Highest turn in the log, or 0. Reads the last item, not all of them."""
+        owner_sub = self._owner(owner_sub)
         items = await self._query_all(
             "events",
             KeyConditionExpression="pk = :pk AND begins_with(sk, :prefix)",
@@ -857,13 +934,14 @@ class DynamoStorage:
         )
         return max((int(i["turn"]) for i in items), default=0)
 
-    async def max_seq(self, run_id: str, *, owner_sub: str) -> int:
+    async def max_seq(self, run_id: str, *, owner_sub: Optional[str] = None) -> int:
         """Highest event seq, or -1 for a run with no events.
 
         A single backwards read: the sort key ends in a zero-padded seq, so the last
         item in key order IS the highest seq. That equivalence is the payoff for the
         padding, and it is why this is O(1) rather than a scan of the run.
         """
+        owner_sub = self._owner(owner_sub)
         result = await self._call(
             self._table("events").query,
             KeyConditionExpression="pk = :pk AND begins_with(sk, :prefix)",
@@ -878,7 +956,7 @@ class DynamoStorage:
         return int(items[0]["seq"]) if items else -1
 
     async def truncate_after_turn(
-        self, run_id: str, turn: int, *, owner_sub: str
+        self, run_id: str, turn: int, *, owner_sub: Optional[str] = None
     ) -> int:
         """Delete events and snapshots past a turn; return the events removed.
 
@@ -887,6 +965,7 @@ class DynamoStorage:
         and a batch delete, because DynamoDB has no `DELETE … WHERE`: the keys have
         to be read before they can be deleted.
         """
+        owner_sub = self._owner(owner_sub)
         events = await self._query_all(
             "events",
             KeyConditionExpression="pk = :pk AND begins_with(sk, :prefix)",
@@ -925,7 +1004,7 @@ class DynamoStorage:
         dest_run_id: str,
         upto_turn: int,
         *,
-        owner_sub: str,
+        owner_sub: Optional[str] = None,
     ) -> int:
         """Copy a run's log up to a turn into another run, preserving (turn, seq).
 
@@ -933,6 +1012,7 @@ class DynamoStorage:
         its parent's owner (`branching.create_branch_run` reads it off the parent
         rather than accepting it), so one partition is read and written.
         """
+        owner_sub = self._owner(owner_sub)
         items = await self._query_all(
             "events",
             KeyConditionExpression="pk = :pk AND begins_with(sk, :prefix)",
@@ -972,7 +1052,7 @@ class DynamoStorage:
     # ------------------------------------------------------------------ #
 
     async def save_snapshot(
-        self, snapshot: SimSnapshot, *, owner_sub: str
+        self, snapshot: SimSnapshot, *, owner_sub: Optional[str] = None
     ) -> None:
         """Body to S3, pointer to DynamoDB.
 
@@ -990,6 +1070,7 @@ class DynamoStorage:
         pointer is invisible and harmless, while a pointer with no body is a
         checkpoint that claims to exist and fails on read.
         """
+        owner_sub = self._owner(owner_sub)
         key = self._snapshot_key(owner_sub, snapshot.run_id, snapshot.turn)
         await self._put_body(key, snapshot.model_dump_json())
         await self._call(
@@ -1008,9 +1089,10 @@ class DynamoStorage:
         )
 
     async def get_snapshot(
-        self, run_id: str, turn: Optional[int] = None, *, owner_sub: str
+        self, run_id: str, turn: Optional[int] = None, *, owner_sub: Optional[str] = None
     ) -> Optional[SimSnapshot]:
         """A snapshot at a turn, or the latest. Pointer read, then one S3 GET."""
+        owner_sub = self._owner(owner_sub)
         if turn is not None:
             got = await self._call(
                 self._table("snapshots").get_item,
@@ -1044,13 +1126,14 @@ class DynamoStorage:
         return SimSnapshot.model_validate_json(body)
 
     async def list_snapshots(
-        self, run_id: str, *, owner_sub: str
+        self, run_id: str, *, owner_sub: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """Checkpoint turns for a run: `{turn, status, created_at}`, turn ascending.
 
         Reads only DynamoDB. `status` comes off the pointer rather than the body,
         which is what keeps this one query instead of one query plus N S3 GETs.
         """
+        owner_sub = self._owner(owner_sub)
         items = await self._query_all(
             "snapshots",
             KeyConditionExpression="pk = :pk AND begins_with(sk, :prefix)",
@@ -1071,9 +1154,10 @@ class DynamoStorage:
         return out
 
     async def last_checkpoint_turn(
-        self, run_id: str, *, owner_sub: str
+        self, run_id: str, *, owner_sub: Optional[str] = None
     ) -> Optional[int]:
         """Highest checkpoint turn, or None. One backwards read, as `get_snapshot`."""
+        owner_sub = self._owner(owner_sub)
         result = await self._call(
             self._table("snapshots").query,
             KeyConditionExpression="pk = :pk AND begins_with(sk, :prefix)",
@@ -1355,7 +1439,7 @@ class DynamoStorage:
         document_id: Optional[str] = None,
         text: Optional[str] = None,
         *,
-        owner_sub: str,
+        owner_sub: Optional[str] = None,
     ) -> str:
         """Store a document: normalised text to S3, metadata to DynamoDB.
 
@@ -1391,6 +1475,7 @@ class DynamoStorage:
         harmless, while a row pointing at a missing object is a document that lists
         but cannot be opened.
         """
+        owner_sub = self._owner(owner_sub)
         from matrix_studio.documents import join_chunks
 
         doc_id = document_id or uuid.uuid4().hex[:12]
@@ -1516,7 +1601,7 @@ class DynamoStorage:
         return len(await self.list_documents(run_id))
 
     async def copy_documents_to_run(
-        self, from_run_id: str, to_run_id: str, *, owner_sub: str
+        self, from_run_id: str, to_run_id: str, *, owner_sub: Optional[str] = None
     ) -> int:
         """Copy a run's documents to another run — the branch path.
 
@@ -1543,6 +1628,7 @@ class DynamoStorage:
         that is the right place for sharing, because a binding is a reference with
         explicit lifetime rather than an implicit one.
         """
+        owner_sub = self._owner(owner_sub)
         source = await self.list_documents(from_run_id)
         if not source:
             return 0
@@ -1688,7 +1774,7 @@ class DynamoStorage:
         vectors: List[tuple],
         model: str,
         *,
-        owner_sub: str,
+        owner_sub: Optional[str] = None,
         chunks: Optional[Dict[int, Dict[str, Any]]] = None,
     ) -> int:
         """Store embeddings. `vectors` is `[(chunk_id, [floats]), ...]`.
@@ -1705,6 +1791,7 @@ class DynamoStorage:
 
         Batched at 500, which is the `PutVectors` limit.
         """
+        owner_sub = self._owner(owner_sub)
         if not vectors:
             return 0
         chunks = chunks or {}
@@ -1773,7 +1860,7 @@ class DynamoStorage:
         persona_name: Optional[str] = None,
         k: int = 3,
         *,
-        owner_sub: str,
+        owner_sub: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """k-NN over the persona's slice. Returns the same shape the SQLite path did.
 
@@ -1784,6 +1871,7 @@ class DynamoStorage:
         Passages come back inline via `returnMetadata`, so there is no second lookup:
         this is the round trip §4a's design saves.
         """
+        owner_sub = self._owner(owner_sub)
         if not vector or k <= 0:
             return []
         bucket = os.environ.get("VECTOR_BUCKET", "")
@@ -1831,8 +1919,9 @@ class DynamoStorage:
         rows.sort(key=lambda r: r["score"])
         return rows[:k]
 
-    async def count_chunk_vectors(self, run_id: str, *, owner_sub: str) -> int:
+    async def count_chunk_vectors(self, run_id: str, *, owner_sub: Optional[str] = None) -> int:
         """How many of a run's chunks have a stored embedding."""
+        owner_sub = self._owner(owner_sub)
         return len(await self._run_vector_keys(run_id, owner_sub))
 
     async def _run_vector_keys(self, run_id: str, owner_sub: str) -> set:
@@ -1873,7 +1962,7 @@ class DynamoStorage:
                 return keys
 
     async def chunks_missing_vectors(
-        self, run_id: str, limit: Optional[int] = None, *, owner_sub: str
+        self, run_id: str, limit: Optional[int] = None, *, owner_sub: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """A run's chunks with no stored embedding, so ingest is resumable.
 
@@ -1886,6 +1975,7 @@ class DynamoStorage:
         ordinals cannot be trusted to line up — logged rather than silently embedded
         against the wrong text.
         """
+        owner_sub = self._owner(owner_sub)
         from matrix_studio.documents import chunk_text
 
         stored = await self._run_vector_keys(run_id, owner_sub)

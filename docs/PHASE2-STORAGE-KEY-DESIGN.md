@@ -158,17 +158,36 @@ Three ways to bridge that, and the choice matters more than it looks:
 | `Database` resolves `run_id → owner_sub` internally, with a cache | Tempting — no caller changes. But the lookup item lives outside `USER#{sub}`, so the *scoped credentials cannot read it*, which means the resolution has to happen with wider rights than the request. That reintroduces exactly the ambient authority §3 exists to remove. |
 | **Thread `owner_sub` through the signatures** | Chosen. |
 
-**Decision:** `owner_sub` becomes a **required keyword-only argument** on every
-method touching a user-partitioned table — the same rule Phase 0.2 established for
-the read paths, and for the same reason: a caller that forgets it fails with a
-`TypeError` at call time rather than writing into, or reading from, the wrong
-partition.
+**Decision (revised):** the store is **bound to a tenant at the request boundary**
+with `db.for_owner(sub)`, and `owner_sub` remains an optional override on every method.
 
-The callers already have it. `api/app.py` resolves every request through
-`get_run_by_ref(ref, owner_sub=user)` before doing anything else, and the engine
-receives `owner_sub` in its run request (added in Phase 0.2). So this is threading a
-value that exists, not inventing one — which is why it is worth the churn across
-~25 signatures instead of hiding it behind a cache.
+The first decision here was "a required keyword-only argument everywhere", on the
+Phase 0.2 grounds that a caller who forgets it fails with a `TypeError` rather than
+reading the wrong partition. That reasoning is right, and binding keeps it — but the
+option was mis-framed as a choice between *explicit everywhere* and *resolve
+internally*. There is a third shape, and counting the work is what exposed it:
+threading the argument meant **325 call sites** (63 in the application, 262 in tests
+and scripts). The number is not the objection; the objection is that a mechanical
+change of that size is exactly where one wrong `owner_sub` gets typed and never
+noticed, because every site looks like every other site.
+
+Binding is **stronger** than the explicit argument, not a relaxation:
+
+- The owner is named **once per request**, where the identity actually arrives from
+  the JWT. A route cannot omit it — it can only fail to bind at all.
+- An **unbound store raises** on first use, so "forgot to bind" is loud in the same
+  way "forgot the argument" was. It does *not* fall back to the local user:
+  attributing one person's conversation to a shared bucket silently is the failure
+  being guarded against.
+- An **explicit `owner_sub=` still wins**, which is what lets a test assert that a
+  cross-tenant read is refused. Without the override the negative cases would be
+  unwritable.
+- `for_owner` returns a shallow copy sharing the clients, so it costs nothing per
+  request and a binding cannot leak back into the unbound store. All three properties
+  are mutation-tested.
+
+It also mirrors §3's actual mechanism — per-request credentials scoped to a `sub` for
+the duration of a request — so `for_owner` is where those credentials attach.
 
 ---
 
