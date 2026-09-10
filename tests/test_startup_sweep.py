@@ -135,30 +135,30 @@ def test_lifespan_startup_sweeps_orphaned_running_run():
     orphaned by a server restart mid-generation (the azure-vector test case).
     """
     import asyncio
-    import tempfile
     from fastapi.testclient import TestClient
     from matrix_studio.api.app import create_app
+    from matrix_studio.tenancy import LOCAL_USER_SUB
 
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-        db_path = f.name
-
+    # Seeded as LOCAL_USER_SUB, because the read below goes through the API with no
+    # identity override — and the app in `single-user` mode attributes every request to
+    # exactly that. Seeding under the suite's default owner instead put the run in a
+    # partition the request could not see, so the assertion failed with a 404 that
+    # looked like "the sweep did not run" rather than "the test read as the wrong user".
     async def _seed_db():
-        d = Database().for_owner(TEST_OWNER)
+        d = Database().for_owner(LOCAL_USER_SUB)
         await d.connect()
         await _seed(d, "azure-vector", "running", turns=5)
         await d.close()
 
     asyncio.run(_seed_db())
 
-    app = create_app(db_path=db_path)
+    app = create_app()
     with TestClient(app) as client:  # entering the context runs lifespan
         resp = client.get("/api/runs/azure-vector")
-        assert resp.status_code == 200
+        assert resp.status_code == 200, resp.text
         body = resp.json()
         assert body["status"] == "interrupted"
         assert body["completed_at"] is not None
-
-    Path(db_path).unlink(missing_ok=True)
 
 
 # --------------------------------------------------------------------------- #

@@ -177,11 +177,22 @@ class DynamoStorage:
         bucket: Optional[str] = None,
         region: Optional[str] = None,
     ) -> None:
-        self.table_prefix = table_prefix or os.environ.get(
-            "TABLE_PREFIX", "matrix-studio"
+        # `is None` rather than a falsy check, so an explicit empty string means
+        # "explicitly none" instead of "not supplied". The `or` form conflated them:
+        # `DynamoStorage(bucket="")` silently picked up `DATA_BUCKET` from the
+        # environment, which makes "no bucket configured" impossible to express and
+        # impossible to test.
+        self.table_prefix = (
+            table_prefix if table_prefix is not None
+            else os.environ.get("TABLE_PREFIX", "matrix-studio")
         )
-        self.bucket = bucket or os.environ.get("DATA_BUCKET", "")
-        self.region = region or os.environ.get("AWS_REGION") or "us-east-1"
+        self.bucket = (
+            bucket if bucket is not None else os.environ.get("DATA_BUCKET", "")
+        )
+        self.region = (
+            region if region is not None
+            else (os.environ.get("AWS_REGION") or "us-east-1")
+        )
         self._ddb = None
         self._s3 = None
         # The low-level client, needed for `transact_write_items`, which has no
@@ -213,12 +224,62 @@ class DynamoStorage:
         self._ddb = boto3.resource("dynamodb", region_name=self.region)
         self._client = boto3.client("dynamodb", region_name=self.region)
         self._s3 = boto3.client("s3", region_name=self.region)
-        logger.info(
-            "Storage: DynamoDB tables '%s-*' in %s, bodies in s3://%s",
-            self.table_prefix,
-            self.region,
-            self.bucket or "<UNSET — DATA_BUCKET is empty, snapshot writes will fail>",
+        await self._announce()
+
+    async def _announce(self) -> None:
+        """Say plainly which store this is, and WARN when it holds nothing.
+
+        This is the same job the SQLite layer's startup log did, for the same reason
+        and against the same failure. There, a relative `data_dir` resolved against the
+        working directory, so starting the server from a subdirectory silently created
+        a second empty database — the UI honestly reported no previous conversations
+        while the real runs sat in another file, and nothing in the logs distinguished
+        that from data loss.
+
+        The analogue here is exact: a wrong `TABLE_PREFIX` (or the wrong region, or the
+        wrong account) points at tables that are absent or empty, and the symptom is
+        identical — an empty history and no error. So the same remedy applies: name what
+        was opened, and raise the level when there is nothing in it.
+
+        `DescribeTable` rather than a count: it is key-addressed and cheap, it
+        distinguishes "the table is not there" from "the table is empty" — which are
+        different mistakes with different fixes — and its approximate `ItemCount` is
+        free. A denial is logged at debug and ignored, because the per-request scoped
+        role has no reason to hold `DescribeTable` and this is a convenience, not a
+        precondition.
+        """
+        target = (
+            f"tables '{self.table_prefix}-*' in {self.region}, bodies in "
+            f"s3://{self.bucket or '<UNSET — DATA_BUCKET is empty, writes will fail>'}"
         )
+        try:
+            described = await self._call(
+                self._client.describe_table,
+                TableName=f"{self.table_prefix}-runs",
+            )
+        except Exception as exc:  # noqa: BLE001
+            name = type(exc).__name__
+            if "ResourceNotFound" in name or "ResourceNotFound" in str(exc):
+                logger.warning(
+                    "Storage: %s — THE RUNS TABLE DOES NOT EXIST, so no previous "
+                    "conversations will be listed and every write will fail. If you "
+                    "expected existing runs, check TABLE_PREFIX and the region.",
+                    target,
+                )
+                return
+            logger.debug("Storage: %s (could not describe: %s)", target, exc)
+            logger.info("Storage: %s", target)
+            return
+
+        count = int(described["Table"].get("ItemCount") or 0)
+        if count:
+            logger.info("Storage: %s (~%d run item(s))", target, count)
+        else:
+            logger.warning(
+                "Storage: %s — EMPTY (no previous conversations will be listed). If "
+                "you expected existing runs, check TABLE_PREFIX and the region.",
+                target,
+            )
 
     async def close(self) -> None:
         """Drop the clients. Nothing to flush — every write is already durable."""
