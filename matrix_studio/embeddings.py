@@ -99,16 +99,35 @@ def normalise(vector: Sequence[float]) -> List[float]:
 
 
 def distance_to_cosine(distance: float) -> float:
-    """Convert a sqlite-vec L2 distance to cosine similarity.
+    """Convert an S3 Vectors **cosine distance** to cosine similarity: ``cos = 1 - d``.
 
-    For UNIT vectors, ``|a-b|^2 = 2 - 2·cos``, so ``cos = 1 - d^2/2``. That gives
-    an interpretable, provider-portable scale where 1.0 is identical, 0.0 is
-    unrelated (orthogonal) and negative is actively opposed — which is what makes
-    an absolute threshold meaningful, unlike a raw BM25 score.
+    The scale is what makes an absolute threshold meaningful, unlike a raw BM25 score:
+    1.0 is identical, 0.0 is unrelated (orthogonal), negative is actively opposed.
 
-    Only valid for unit-norm vectors; see ``is_unit_norm``.
+    **This was wrong until the port, and wrong in the direction that disables the
+    guard.** The previous implementation was ``1 - d²/2``, the conversion for
+    `sqlite-vec`'s **L2** distance (for unit vectors ``|a-b|² = 2 - 2·cos``). S3 Vectors
+    returns cosine distance, which is a different quantity — measured against the real
+    index at three known angles:
+
+        angle   S3 distance   true cosine   the L2 formula gave
+          0°       0.0000        1.0000            1.0000
+         45°       0.2929        0.7071            0.9571
+         90°       1.0000        0.0000            0.5000
+
+    The two agree at 0° and 180° and diverge everywhere between, which is exactly
+    where the floor operates. At the default ``min_similarity`` of 0.15 an orthogonal
+    passage — cosine 0.0, i.e. nothing whatever to do with the query — scored 0.5 and
+    was **kept**. Nothing would be rejected until an S3 distance of 1.304, a cosine of
+    −0.30: actively opposed. So the off-topic guard was silently inert: it stayed
+    configured, ``floor_rejected`` stayed 0, and it looked exactly like a corpus that
+    never produced a weak match.
+
+    Only valid for unit-norm vectors; see ``is_unit_norm``. That constraint is
+    unchanged and still checked by the caller — a non-unit vector makes the arithmetic
+    meaningless whichever formula is used.
     """
-    return 1.0 - (distance * distance) / 2.0
+    return 1.0 - distance
 
 
 def serialise(vector: Sequence[float]) -> bytes:

@@ -34,6 +34,7 @@ USER_A = "verify-vec-aaaa"
 USER_B = "verify-vec-bbbb"
 RUN_1 = "verify-vec-run-1"
 RUN_2 = "verify-vec-run-2"
+ORDER_RUN = "verify-vec-run-order"
 
 
 def unit(*components: float) -> List[float]:
@@ -179,6 +180,43 @@ def main() -> int:
     b_view = texts(query(RUN_1, None, USER_B))
     check("B sees only its own", b_view == {"Another tenant's passage."},
           str(b_view))
+
+    # Nearest-first ordering. Moved here from `test_store_and_knn_search`, which could
+    # not exercise it: `moto` has no `QueryVectors`, so no unit test can observe the
+    # order the service returns. Three vectors at known angles from the query, so the
+    # expected order is arithmetic rather than a guess.
+    print("\nQueryVectors ordering")
+    ordered = [
+        (f"{USER_A}:order:near", unit(1.0, 0.0),
+         {"owner_sub": USER_A, "run_id": ORDER_RUN, "document_id": "o1",
+          "ordinal": 0, "text": "nearest"}),
+        (f"{USER_A}:order:mid", unit(1.0, 1.0),
+         {"owner_sub": USER_A, "run_id": ORDER_RUN, "document_id": "o2",
+          "ordinal": 0, "text": "middle"}),
+        (f"{USER_A}:order:far", unit(0.0, 1.0),
+         {"owner_sub": USER_A, "run_id": ORDER_RUN, "document_id": "o3",
+          "ordinal": 0, "text": "farthest"}),
+    ]
+    client.put_vectors(
+        vectorBucketName=bucket, indexName=index,
+        vectors=[{"key": k, "data": {"float32": v}, "metadata": m}
+                 for k, v, m in ordered],
+    )
+    hits = query(ORDER_RUN, None, USER_A)
+    labels = [h["metadata"]["text"] for h in hits]
+    check("results are nearest-first", labels == ["nearest", "middle", "farthest"],
+          str(labels))
+    distances = [h["distance"] for h in hits]
+    check("distance increases with angle",
+          distances == sorted(distances), str([round(d, 4) for d in distances]))
+    # The floor's arithmetic depends on this: `apply_similarity_floor` converts
+    # distance to cosine as 1 - d/2 for unit vectors, so an identical vector must be
+    # ~0 and an orthogonal one ~1.
+    check("an identical vector is at distance ~0", abs(distances[0]) < 1e-4,
+          str(distances[0]))
+    check("an orthogonal vector is at distance ~1", abs(distances[2] - 1.0) < 1e-3,
+          str(distances[2]))
+    _cleanup(client, bucket, index, [k for k, _, _ in ordered])
 
     _cleanup(client, bucket, index, [k for k, _ in fixtures])
 
