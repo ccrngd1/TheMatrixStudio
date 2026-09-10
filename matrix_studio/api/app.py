@@ -1754,13 +1754,18 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         re-running never pays to redo work. Reports real tokens and cost, because
         embeddings are a per-chunk spend and the cost gate applies to them too.
 
-        Returns 422 (not 500) when sqlite-vec or the embedding provider is
-        unavailable: that is a deployment condition the caller can act on.
+        Returns 422 (not 500) when the embedding provider is unavailable: that is a
+        deployment condition the caller can act on rather than a server fault.
         """
         run = await db.get_run_by_ref(ref, owner_sub=user)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
-        stats = await embed_pending_chunks(db, run["id"], embedding_model=model or "")
+        # A BOUND store: `embed_pending_chunks` reaches `chunks_missing_vectors` and
+        # `store_chunk_vectors`, both of which scope by owner — vectors carry
+        # `owner_sub` metadata and a filtered query cannot exclude what it cannot see.
+        stats = await embed_pending_chunks(
+            db.for_owner(user), run["id"], embedding_model=model or ""
+        )
         if stats.get("error"):
             raise HTTPException(status_code=422, detail=stats["error"])
         return {

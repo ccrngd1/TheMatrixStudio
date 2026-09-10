@@ -61,12 +61,19 @@ async def test_run_scoped_score_is_unchanged_by_an_unrelated_run(db):
     )
 
 
-async def test_the_legacy_whole_database_scorer_does_move(db):
-    """
-    Reproduces the defect, so the fix is a demonstrated difference not a claim.
+async def test_the_legacy_whole_database_scorer_can_no_longer_be_contaminated(db):
+    """The defect is now impossible to reproduce, which is the strongest form of fixed.
 
-    If this ever stops failing to differ, either FTS5 changed or the legacy path is no
-    longer whole-database — and the test above would be passing for the wrong reason.
+    This test used to assert the OPPOSITE: that `corpus="database"` scores DID move when
+    an unrelated run was added, so the run-scoped fix was a demonstrated difference
+    rather than a claim. That contrast depended on there being a shared persistent FTS5
+    index for the legacy path to be contaminated by.
+
+    There is no shared index. The BM25 index is built from the run's own chunks for both
+    corpus values, so `"database"` cannot diverge from `"run"` — the contamination is
+    excluded by construction rather than filtered out. Asserting the invariance here,
+    with an unrelated run present, is what keeps that true: if the two ever diverge
+    again, this fails.
     """
     await _seed_run_a(db)
     before = await db.search_documents("A", QUERY, "P0", 5, corpus="database")
@@ -74,8 +81,12 @@ async def test_the_legacy_whole_database_scorer_does_move(db):
     after = await db.search_documents("A", QUERY, "P0", 5, corpus="database")
 
     assert before and after
-    assert before[0]["score"] != after[0]["score"], (
-        "expected the whole-database scorer to be contaminated by run B"
+    assert before[0]["score"] == after[0]["score"], (
+        "another run's corpus moved this run's scores — the contamination is back"
+    )
+    scoped = await db.search_documents("A", QUERY, "P0", 5, corpus="run")
+    assert [r["score"] for r in after] == [r["score"] for r in scoped], (
+        "the two corpus values diverged, which is what the v0.6 bug was"
     )
 
 
@@ -136,9 +147,17 @@ async def test_results_keep_the_scored_ranking(db):
     """
     await db.create_run(run_id="A", topic="t",
                         cast=[{"name": "P0", "persona": "x"}], config={})
-    # Inserted worst-first so rowid order is the REVERSE of relevance order.
+    # Inserted worst-first, so insertion order is the REVERSE of relevance order and a
+    # lost ranking shows up as the wrong document first.
+    #
+    # The weak document uses "rollback" — a query term verbatim — rather than
+    # "migration", which the previous fixture used. That relied on the lexical arm
+    # unifying "migration" with the query's "migrate", which FTS5's Porter stemmer did
+    # and the in-process one deliberately does not (see
+    # `test_the_stemmer_handles_inflection_but_not_derivation`). The subject here is
+    # ORDERING, so the fixture should not also depend on morphology.
     await db.add_document(run_id="A", title="weak.md",
-                          chunks=["A passing mention of migration."], persona_name="P0")
+                          chunks=["A passing mention of rollback."], persona_name="P0")
     await db.add_document(run_id="A", title="strong.md", chunks=[POLICY],
                           persona_name="P0")
 
@@ -221,29 +240,18 @@ async def test_a_malformed_query_degrades_instead_of_raising(db):
     assert await db.search_documents("A", 'unbalanced "quote', "P0", 5) == []
 
 
-async def test_search_does_not_leave_a_transaction_open(db):
-    """
-    Scoring writes to a scratch table, which opens an implicit transaction.
-
-    Leaving it open pins this connection's read snapshot, so a subsequent read misses
-    anything committed elsewhere in the meantime, and any writer queues behind a lock
-    held by a *search*. Found for real: the whole-database scorer kept returning hits
-    from an index that had already been wiped by another connection.
-    """
-    import sqlite3
-
-    await _seed_run_a(db)
-    await db.search_documents("A", QUERY, "P0", 5)
-
-    assert not db._conn.in_transaction, (
-        "a search left a transaction open, pinning the read snapshot"
-    )
-
-    # And the connection genuinely sees an outside change afterwards.
-    outside = sqlite3.connect(db.db_path)
-    outside.execute("INSERT INTO doc_chunks_fts(doc_chunks_fts) VALUES('delete-all')")
-    outside.commit()
-    outside.close()
-    assert await db.search_documents("A", QUERY, "P0", 5, corpus="database") == [], (
-        "the connection is reading a stale snapshot"
-    )
+# `test_search_does_not_leave_a_transaction_open` was removed here.
+#
+# Run-scoped scoring under SQLite wrote to a scratch table, which opened an implicit
+# transaction; leaving it open pinned the connection's read snapshot, so a later read
+# missed anything another connection had committed and any writer queued behind a lock
+# held by a *search*. That was found for real — the whole-database scorer kept returning
+# hits from an index another connection had already wiped.
+#
+# The hazard cannot exist now, and not because it was fixed: there is no connection, no
+# transaction and no snapshot. DynamoDB and S3 are request-per-call, and the BM25 index
+# is built in memory from text fetched per query. A search holds no lock and cannot see
+# a stale view.
+#
+# Kept as a note rather than deleted silently, because "a search that blocks writers"
+# is a class of bug worth remembering was once possible here.
