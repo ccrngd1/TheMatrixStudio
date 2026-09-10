@@ -3,7 +3,8 @@
 Companion to `AWS-SERVERLESS-ARCHITECTURE.md`, which is the *what* and *why*. This is the
 *in what order*, and what proves each step worked.
 
-Status: **in progress**, updated 2026-09-10. **Phase 0 is complete** — see Progress at the end.
+Status: **in progress**, updated 2026-09-10. **Phase 0 complete; Phase 1 written and
+verified locally, not yet deployed** — see Progress at the end.
 
 ## Principles for sequencing
 
@@ -118,6 +119,52 @@ authenticated `GET /api/health` returns 200 while an unauthenticated one returns
 (litellm is 91 MB, the environment 343 MB), IAM policy shape, the `s3vectors:GetVectors`
 requirement that returns 403 the moment you filter or request metadata — while there is
 nothing else to blame.
+
+### Status: written and verified locally, awaiting a deploy
+
+`infra/` holds the CDK app (Python), and `infra/README.md` is the runbook. What has
+actually been verified, as distinct from written:
+
+- ✅ **`cdk synth` succeeds** — real CLI, no credentials needed. 23 resource types.
+- ✅ **39 template assertions pass** (`infra/tests/`), each covering a property whose
+  absence is a *working deployment with a real defect*. Four mutation-tested: enabling
+  self-signup, dropping the default authorizer, caching `index.html`, leaving passage
+  text filterable — all four caught.
+- ✅ **The Lambda image builds**, from the exact context CDK stages: **791 MB**. Under
+  the 10 GB container limit, ~3× over the 250 MB zip limit. The container decision is
+  now measured rather than inferred.
+- ✅ **The container answers correctly under the Lambda Runtime Interface Emulator**:
+  `/api/health` 200, `/api/runs` 200, and `/api/runs` **401 with no authorizer context**
+  — so `AUTH_MODE=jwt` is real defence in depth behind the gateway, not just a setting.
+- ⬜ **Not verified:** anything requiring an account — the Hosted UI login, CloudFront
+  serving the SPA, the gateway's own 401, `s3vectors` IAM. Credentials were expired.
+
+**Three defects this phase surfaced, which is what it is for:**
+
+1. **`Mangum(lifespan="off")` broke every storage route.** Reasoning that the startup
+   sweep should not fire per cold start, the first version disabled the lifespan — which
+   is also where `db.connect()` happens. Result: `AttributeError: 'NoneType' object has
+   no attribute 'execute'` and a bare 500 on every route touching storage, while
+   `/api/health` passed throughout. **The phase's own acceptance check would not have
+   caught it.** Found by invoking the image through the RIE. Fixed by running the
+   lifespan and gating the sweep on a new `STARTUP_SWEEP` setting.
+2. **The sweep is a correctness problem under concurrency, not a performance one.** Its
+   premise is "this is the only process"; with several Lambda sandboxes, two cold starts
+   each conclude the other's in-flight run was orphaned and mark it `interrupted` — one
+   request terminating another user's live conversation. Observed directly: two cold
+   starts logged the sweep decision in a single RIE session. Now off on Lambda, and
+   Phase 7 owns the replacement.
+3. **`microdnf install gcc` cannot be undone.** Adding a compiler "in case" failed the
+   build, because the base image's `annobin-plugin-gcc` depends on gcc — so the real
+   choice is "ship gcc permanently", not "add it cheaply". It turned out to be
+   unnecessary: every dependency, including `tokenizers` and `pydantic-core`, has a
+   manylinux wheel. A future dependency that does need to compile belongs in a separate
+   builder stage.
+
+Plus one incidental: `8bit-agents-activation-demo-main/` (125 MB, git-ignored, unrelated
+to this project) was in `.dockerignore`'s blind spot, so every Docker build had been
+copying it. With that and a CDK-level `exclude`, the staged build context went
+**132 MB → 1.7 MB**.
 
 ---
 
@@ -239,6 +286,17 @@ debuggable.
 first: the two hardest changes (tenancy, and avatars out of the event log) are now done
 and debugged against 786 fast local tests rather than through a deployment.
 
-**Next: Phase 1**, the CDK skeleton. It needs an AWS account, and it deliberately stands
-up nothing but infrastructure so the boring blockers — container image size, IAM shape,
-the `s3vectors` API — surface while there is nothing else to blame.
+- ✅ **Phase 1 CDK skeleton** (2026-09-10) — *written and verified locally.* `cdk synth`
+  succeeds, 39 template assertions pass, the 791 MB Lambda image builds from the staged
+  context and answers correctly under the Runtime Interface Emulator. Three defects
+  surfaced and fixed, one of which (`lifespan="off"`) broke every storage route while
+  leaving the phase's own acceptance check passing.
+- ⬜ **Phase 1 deploy** — blocked on credentials only (the token in this environment was
+  expired). `cd infra && cdk deploy -c admin_email=...`, then the four checks in
+  `infra/README.md`. Node 20+ recommended; Node 18 works but warns.
+
+**Next after that: Phase 2**, the storage port — the largest phase in the plan (53
+methods) and the one that makes the deployment more than a login screen. Phase 1 leaves
+the Lambda on SQLite in `/tmp`, which is per-sandbox and ephemeral by design: that is the
+phase boundary, not a bug, and `infra/README.md` says so where a demo operator will see
+it.

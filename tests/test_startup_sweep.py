@@ -156,3 +156,84 @@ def test_lifespan_startup_sweeps_orphaned_running_run():
         assert body["completed_at"] is not None
 
     Path(db_path).unlink(missing_ok=True)
+
+
+# --------------------------------------------------------------------------- #
+# The sweep must be switchable off for multi-process deployments
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_can_be_disabled_and_then_leaves_runs_alone(
+    tmp_path, monkeypatch
+):
+    """`STARTUP_SWEEP=false` is a correctness requirement on Lambda, not a tuning knob.
+
+    The sweep's premise is "this is the only process, so nothing can still be
+    running". Under Lambda that is false: several sandboxes serve the same data,
+    and two concurrent cold starts would each conclude the other's in-flight run
+    was orphaned and mark it `interrupted`. That is one request terminating
+    another user's live conversation — which is why this is asserted through the
+    real app lifespan rather than by calling the sweep function directly. The bug
+    would be in the wiring, not in the sweep.
+    """
+    from fastapi.testclient import TestClient
+
+    from matrix_studio.api.app import create_app
+
+    db_path = str(tmp_path / "sweep.db")
+    seeded = Database(db_path)
+    await seeded.connect()
+    await seeded.create_run(
+        run_id="live", topic="T", cast=[{"name": "A", "persona": "p"}]
+    )
+    await seeded.update_run_status("live", "running")
+    await seeded.close()
+
+    monkeypatch.setenv("STARTUP_SWEEP", "false")
+    with TestClient(create_app(db_path)):
+        pass  # entering and leaving the context runs the full lifespan
+
+    after = Database(db_path)
+    await after.connect()
+    try:
+        run = await after.get_run("live")
+        assert run["status"] == "running", (
+            "the sweep ran despite STARTUP_SWEEP=false — on Lambda this would "
+            "terminate a live run belonging to a concurrent request"
+        )
+    finally:
+        await after.close()
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_still_runs_by_default(tmp_path):
+    """The opt-out must not have become the default.
+
+    Paired with the test above deliberately: a change that disabled the sweep
+    everywhere would satisfy that one and break this one, and the single-server
+    case is where the sweep is genuinely needed — without it a crashed run reports
+    as live forever.
+    """
+    from fastapi.testclient import TestClient
+
+    from matrix_studio.api.app import create_app
+
+    db_path = str(tmp_path / "sweep-default.db")
+    seeded = Database(db_path)
+    await seeded.connect()
+    await seeded.create_run(
+        run_id="orphan", topic="T", cast=[{"name": "A", "persona": "p"}]
+    )
+    await seeded.update_run_status("orphan", "running")
+    await seeded.close()
+
+    with TestClient(create_app(db_path)):
+        pass
+
+    after = Database(db_path)
+    await after.connect()
+    try:
+        assert (await after.get_run("orphan"))["status"] == "interrupted"
+    finally:
+        await after.close()

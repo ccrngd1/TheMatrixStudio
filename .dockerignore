@@ -58,3 +58,11 @@ matrix_studio/static/
 # OS
 .DS_Store
 Thumbs.db
+# The CDK app: aws-cdk-lib is ~60 MB and has no business in a runtime image.
+infra/
+.venv/
+
+# Unrelated vendored material sitting in the repo root. Git-ignored but NOT
+# docker-ignored until now, so every build was copying 125 MB into the context
+# for nothing — which is also 125 MB uploaded on every CDK asset change.
+8bit-agents-activation-demo-main/

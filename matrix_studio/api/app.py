@@ -525,12 +525,26 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         # crash/restart mid-generation. Mark them "interrupted" (a terminal
         # state) and record a sim.interrupted event so the UI stops showing them
         # as live forever. Read-only w.r.t. simulation content; never re-runs.
-        swept = await sweep_stale_running_runs(db)
-        if swept:
-            logger.warning(
-                "Startup sweep: marked %d orphaned running run(s) as interrupted: %s",
-                len(swept),
-                ", ".join(swept),
+        #
+        # Gated because that premise — "this is the only process" — is false under
+        # Lambda or any horizontally-scaled deployment, where two concurrent cold
+        # starts would each mark the other's in-flight run as interrupted. One
+        # request killing another user's live run is not a degradation, so this is
+        # off there and the cleanup becomes a scheduled job (Phase 7).
+        if settings.startup_sweep:
+            swept = await sweep_stale_running_runs(db)
+            if swept:
+                logger.warning(
+                    "Startup sweep: marked %d orphaned running run(s) as "
+                    "interrupted: %s",
+                    len(swept),
+                    ", ".join(swept),
+                )
+        else:
+            logger.info(
+                "Startup sweep disabled (STARTUP_SWEEP=false). Runs orphaned by a "
+                "crash will keep reporting as running until something else cleans "
+                "them up."
             )
         yield
         await manager.shutdown()

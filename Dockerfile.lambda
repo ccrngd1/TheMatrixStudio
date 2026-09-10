@@ -1,0 +1,41 @@
+# SPDX-License-Identifier: Apache-2.0
+# Lambda container image for the API.
+#
+# Separate from `Dockerfile` (the standalone uvicorn server) because the two have
+# genuinely different entry contracts: that one runs a server and binds a port,
+# this one hands a handler to the Lambda runtime API. Sharing one image would mean
+# an `if` on an environment variable deciding which process to become, and a
+# packaging bug would then look like a runtime bug.
+#
+# **Why a container image at all** — the 250 MB unzipped limit for a zip-packaged
+# Lambda. litellm alone is 91 MB and the installed environment is ~343 MB, so the
+# zip route is not close. The container limit is 10 GB.
+
+FROM public.ecr.aws/lambda/python:3.12
+
+COPY pyproject.toml README.md ./
+COPY matrix_studio/ matrix_studio/
+
+# No compiler. Every dependency in this closure — including tokenizers and
+# pydantic-core, the two with native extensions — ships a manylinux wheel for
+# x86-64, so nothing is built from source. Verified by building this image.
+#
+# The first attempt installed gcc "in case", which then failed: `microdnf remove
+# gcc` cannot uninstall it, because the base image's own
+# annobin-plugin-gcc depends on it. So the choice is not "add gcc cheaply" — it
+# is "add gcc permanently, to the shipped image". Worth knowing if a future
+# dependency does need to compile: it belongs in a separate builder stage, not
+# here.
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir ".[documents]" mangum \
+    && rm -rf /root/.cache
+
+# DATA_DIR is set so nothing silently writes into the read-only image root. Phase 2
+# removes the filesystem dependency entirely (DynamoDB + S3); until then /tmp is the
+# only writable path in a Lambda sandbox, and it is per-sandbox and ephemeral —
+# which is precisely why SQLite cannot be the datastore here.
+ENV DATA_DIR=/tmp/data \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+CMD ["matrix_studio.api.lambda_handler.handler"]
