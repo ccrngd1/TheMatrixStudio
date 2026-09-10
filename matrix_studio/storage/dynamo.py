@@ -189,6 +189,7 @@ class DynamoStorage:
         # levels take DIFFERENT item formats, and mixing them is a silent-looking
         # ParamValidationError at the first write.
         self._client = None
+        self._s3vectors = None
         self._tables: Dict[str, Any] = {}
 
     # ------------------------------------------------------------------ #
@@ -221,6 +222,7 @@ class DynamoStorage:
         self._ddb = None
         self._client = None
         self._s3 = None
+        self._s3vectors = None
         self._tables.clear()
 
     def _table(self, name: str):
@@ -1567,6 +1569,504 @@ class DynamoStorage:
                 ),
             )
         return len(source)
+
+    # ------------------------------------------------------------------ #
+    # Retrieval: vectors in S3 Vectors, lexical in process
+    # ------------------------------------------------------------------ #
+    #
+    # ONE SHARED INDEX, metadata-filtered — not one index per run.
+    #
+    # §8b recommends index-per-KB, and that reasoning is sound *for knowledge
+    # bases*: the ceiling is 10,000 indexes per vector bucket, a company has few
+    # KBs, and per-index IAM grants become possible. It does NOT transfer to
+    # index-per-RUN, which is the only mapping available before Phase 6 introduces
+    # KBs — that would cap the whole install at 10,000 conversations, and the stated
+    # target is "something a large company installs". Ten thousand conversations is
+    # a year for one team.
+    #
+    # So the interim is a single index filtered on `owner_sub`, `run_id` and
+    # `persona_name`, whose ceiling is 2 billion vectors. The cost is that isolation
+    # here is application-enforced rather than IAM-enforced, which is why the filter
+    # is applied in ONE method (`_slice_filter`) that every read goes through, rather
+    # than assembled at each call site. Phase 6 replaces this with per-KB indexes and
+    # recovers the IAM boundary; nothing above this layer changes when it does.
+
+    def _vector_index(self) -> str:
+        return os.environ.get("VECTOR_INDEX", f"{self.table_prefix}-chunks")
+
+    @staticmethod
+    def _vector_key(document_id: str, ordinal: int) -> str:
+        """S3 Vectors keys are strings, and (document, ordinal) is the natural one."""
+        return f"{document_id}:{ordinal}"
+
+    @staticmethod
+    def chunk_id_for(document_id: str, ordinal: int) -> int:
+        """A stable integer chunk id, because `RetrievedPassage.chunk_id` is an int.
+
+        SQLite gave this for free as an `AUTOINCREMENT` rowid. There is no such thing
+        here, and the type cannot simply become a string: `retrieval.py` does
+        `int(row["chunk_id"])`, reciprocal-rank fusion keys on it, and the
+        `document.retrieved` event records it for provenance.
+
+        So it is derived — a 63-bit hash of `{document_id}:{ordinal}` — which gives
+        the two properties that matter: **stable** (the lexical and vector arms
+        compute the same id for the same chunk, which is what makes fusion by chunk
+        id meaningful) and **derivable without a lookup**.
+
+        The collision risk, stated rather than waved at: with 63 bits, a million
+        chunks in one query's scope collide with probability ~5e-8, and a run holds a
+        few hundred. A collision would fuse two passages in RRF — a degraded ranking,
+        not a corrupted record, since the event log stores `document_id` and `ordinal`
+        alongside and those are exact.
+        """
+        import hashlib
+
+        digest = hashlib.sha256(f"{document_id}:{ordinal}".encode()).digest()
+        return int.from_bytes(digest[:8], "big") >> 1
+
+    def _slice_filter(
+        self, run_id: str, persona_name: Optional[str], owner_sub: str
+    ) -> Dict[str, Any]:
+        """The metadata filter defining what a persona may retrieve.
+
+        The single chokepoint for retrieval scoping, deliberately. With one shared
+        index this filter *is* the isolation boundary, so it exists once rather than
+        being spelled out at each call site — the failure mode being guarded against
+        is a future read that forgets a clause.
+
+        **Every object carries exactly ONE key.** That is a hard S3 Vectors rule, not
+        a style preference, and the first version broke it: `{"owner_sub": …,
+        "run_id": …}` is rejected with a bare `ValidationException: Invalid filter`,
+        which names neither the offending object nor the rule. Determined empirically
+        against the real service, since the error says nothing:
+
+            {"a": 1, "b": 2}                        -> Invalid filter
+            {"a": 1}                                -> ok
+            {"$and": [{"a": 1}, {"b": 2}]}          -> ok
+            {"$and": [{"a": 1, "b": 2}, {...}]}     -> Invalid filter
+            {"$and": [{"a": 1}, {"$or": [...]}]}    -> ok
+
+        So the conjunction is always explicit and always flat.
+
+        `persona_name` absent means cast-wide. A cast-wide chunk carries no
+        `persona_name` metadata at all — absent metadata cannot be matched by a filter
+        — so it carries an explicit `cast_wide: True` instead, and the persona case is
+        an `$or` over "mine" and "everyone's". That mirrors the SQL
+        `(persona_name = ? OR persona_name IS NULL)` it replaces; dropping the second
+        arm would make cast-wide documents retrievable by nobody, which is the same
+        trap that made them invisible in `list_documents`.
+        """
+        clauses: List[Dict[str, Any]] = [
+            {"owner_sub": owner_sub},
+            {"run_id": run_id},
+        ]
+        if persona_name is not None:
+            clauses.append(
+                {"$or": [{"persona_name": persona_name}, {"cast_wide": True}]}
+            )
+        return {"$and": clauses}
+
+    async def embedding_model(self) -> Optional[str]:
+        """The model the stored vectors were produced with, if any.
+
+        Recorded so a change of embedding model is detected rather than silently
+        mixing dimensions — which would produce distances that are arithmetic
+        nonsense. On S3 Vectors the index's dimension is fixed at creation, so a
+        genuinely different width would be refused by the service; this catches the
+        subtler case of a same-width model whose vectors are not comparable.
+        """
+        got = await self._call(
+            self._table("documents").get_item,
+            Key={"pk": "EMBEDDING", "sk": "META"},
+        )
+        item = got.get("Item")
+        return str(item["model"]) if item and item.get("model") else None
+
+    async def store_chunk_vectors(
+        self,
+        run_id: str,
+        vectors: List[tuple],
+        model: str,
+        *,
+        owner_sub: str,
+        chunks: Optional[Dict[int, Dict[str, Any]]] = None,
+    ) -> int:
+        """Store embeddings. `vectors` is `[(chunk_id, [floats]), ...]`.
+
+        `chunks` maps chunk_id to `{document_id, ordinal, content, persona_name}` —
+        required, because a vector is useless without the metadata that scopes and
+        renders it, and the chunk_id alone cannot be reversed into a document.
+
+        The passage text rides along as metadata, which is the point of §4a: one
+        `QueryVectors` returns ids, distances *and* passages, so the per-turn hot path
+        is a single round trip. `text` is declared non-filterable at index creation
+        (filterable metadata has a ~2 KB per-vector budget and nothing filters on
+        text), and that declaration is immutable — see the CDK stack.
+
+        Batched at 500, which is the `PutVectors` limit.
+        """
+        if not vectors:
+            return 0
+        chunks = chunks or {}
+        client = self._vectors_client()
+        bucket = os.environ.get("VECTOR_BUCKET", "")
+        if not bucket:
+            raise StorageError(
+                "VECTOR_BUCKET is not set, so there is nowhere to store embeddings."
+            )
+
+        payload = []
+        for chunk_id, vector in vectors:
+            meta = chunks.get(int(chunk_id))
+            if not meta:
+                # Refusing rather than storing an unscoped vector. A vector with no
+                # owner_sub would be returned to every tenant by a filtered query
+                # that cannot exclude what it cannot see.
+                raise StorageError(
+                    f"no metadata for chunk {chunk_id}; a vector without owner_sub "
+                    "and run_id cannot be scoped and must not be stored"
+                )
+            entry: Dict[str, Any] = {
+                "owner_sub": owner_sub,
+                "run_id": run_id,
+                "document_id": str(meta["document_id"]),
+                "ordinal": int(meta["ordinal"]),
+                "text": str(meta.get("content") or ""),
+            }
+            persona = meta.get("persona_name")
+            if persona:
+                entry["persona_name"] = persona
+            else:
+                # An explicit flag, because "absent" cannot be matched by a filter.
+                # This is the vector-store form of the same trap that made cast-wide
+                # documents invisible in `list_documents`.
+                entry["cast_wide"] = True
+            payload.append(
+                {
+                    "key": self._vector_key(
+                        str(meta["document_id"]), int(meta["ordinal"])
+                    ),
+                    "data": {"float32": [float(v) for v in vector]},
+                    "metadata": entry,
+                }
+            )
+
+        for start in range(0, len(payload), 500):
+            await self._call(
+                client.put_vectors,
+                vectorBucketName=bucket,
+                indexName=self._vector_index(),
+                vectors=payload[start:start + 500],
+            )
+
+        await self._call(
+            self._table("documents").put_item,
+            Item=_to_ddb({"pk": "EMBEDDING", "sk": "META", "model": model,
+                          "created_at": int(time.time())}),
+        )
+        return len(payload)
+
+    async def vector_search(
+        self,
+        run_id: str,
+        vector: List[float],
+        persona_name: Optional[str] = None,
+        k: int = 3,
+        *,
+        owner_sub: str,
+    ) -> List[Dict[str, Any]]:
+        """k-NN over the persona's slice. Returns the same shape the SQLite path did.
+
+        `score` is the cosine DISTANCE, matching `sqlite-vec` — smaller is better —
+        because `apply_similarity_floor` converts distance to cosine similarity and
+        would be inverted by a similarity here.
+
+        Passages come back inline via `returnMetadata`, so there is no second lookup:
+        this is the round trip §4a's design saves.
+        """
+        if not vector or k <= 0:
+            return []
+        bucket = os.environ.get("VECTOR_BUCKET", "")
+        if not bucket:
+            logger.warning("VECTOR_BUCKET is not set; vector search is unavailable.")
+            return []
+        try:
+            result = await self._call(
+                self._vectors_client().query_vectors,
+                vectorBucketName=bucket,
+                indexName=self._vector_index(),
+                queryVector={"float32": [float(v) for v in vector]},
+                topK=k,
+                filter=self._slice_filter(run_id, persona_name, owner_sub),
+                returnMetadata=True,
+                returnDistance=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Same contract as the SQLite path: a retrieval failure degrades to "no
+            # supporting passage", which the prompt handles honestly, rather than
+            # ending a run.
+            logger.warning("Vector search failed for run %s: %s", run_id, exc)
+            return []
+
+        titles = {
+            d["id"]: d.get("title") for d in await self.list_documents(run_id)
+        }
+        rows = []
+        for hit in result.get("vectors") or []:
+            meta = hit.get("metadata") or {}
+            doc_id = str(meta.get("document_id") or "")
+            ordinal = int(meta.get("ordinal") or 0)
+            rows.append(
+                {
+                    "chunk_id": self.chunk_id_for(doc_id, ordinal),
+                    "document_id": doc_id,
+                    "ordinal": ordinal,
+                    "content": str(meta.get("text") or ""),
+                    "title": titles.get(doc_id) or doc_id,
+                    "source_path": None,
+                    "media_type": None,
+                    "score": float(hit.get("distance") or 0.0),
+                }
+            )
+        rows.sort(key=lambda r: r["score"])
+        return rows[:k]
+
+    async def count_chunk_vectors(self, run_id: str, *, owner_sub: str) -> int:
+        """How many of a run's chunks have a stored embedding."""
+        return len(await self._run_vector_keys(run_id, owner_sub))
+
+    async def _run_vector_keys(self, run_id: str, owner_sub: str) -> set:
+        """The vector keys already stored for a run.
+
+        `ListVectors` has no filter parameter — unlike `QueryVectors` — so this pages
+        the index and filters on returned metadata. Acceptable only because it is off
+        the per-turn path: it serves the ingest and count endpoints. If the shared
+        index grows large this becomes the reason to move to per-KB indexes early,
+        rather than a thing to optimise here.
+        """
+        bucket = os.environ.get("VECTOR_BUCKET", "")
+        if not bucket:
+            return set()
+        client = self._vectors_client()
+        keys: set = set()
+        token = None
+        while True:
+            params = {
+                "vectorBucketName": bucket,
+                "indexName": self._vector_index(),
+                "returnMetadata": True,
+                "maxResults": 500,
+            }
+            if token:
+                params["nextToken"] = token
+            try:
+                result = await self._call(client.list_vectors, **params)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Listing vectors failed for run %s: %s", run_id, exc)
+                return keys
+            for entry in result.get("vectors") or []:
+                meta = entry.get("metadata") or {}
+                if meta.get("run_id") == run_id and meta.get("owner_sub") == owner_sub:
+                    keys.add(entry["key"])
+            token = result.get("nextToken")
+            if not token:
+                return keys
+
+    async def chunks_missing_vectors(
+        self, run_id: str, limit: Optional[int] = None, *, owner_sub: str
+    ) -> List[Dict[str, Any]]:
+        """A run's chunks with no stored embedding, so ingest is resumable.
+
+        Chunks are re-derived from the stored document text rather than read from a
+        chunks table — there isn't one. That is safe *only* because the stored text is
+        the original (see `add_document`'s `text` parameter and the §4a correction):
+        re-chunking the original reproduces the chunks the vectors were built from,
+        while re-chunking a `join_chunks` reassembly shifts 2–7% of boundaries.
+        Documents written without `text` carry `text_is_original: False`, and their
+        ordinals cannot be trusted to line up — logged rather than silently embedded
+        against the wrong text.
+        """
+        from matrix_studio.documents import chunk_text
+
+        stored = await self._run_vector_keys(run_id, owner_sub)
+        out: List[Dict[str, Any]] = []
+        for doc in await self.list_documents(run_id):
+            if doc.get("text_is_original") is False:
+                logger.warning(
+                    "Document %s was stored as a chunk reassembly, so re-chunking "
+                    "may not reproduce the ordinals its passages were cited under. "
+                    "Re-upload it to make retrieval provenance exact.",
+                    doc["id"],
+                )
+            text = await self.document_text(str(doc["id"]))
+            if not text:
+                continue
+            for chunk in chunk_text(text):
+                key = self._vector_key(str(doc["id"]), chunk.ordinal)
+                if key in stored:
+                    continue
+                out.append(
+                    {
+                        "chunk_id": self.chunk_id_for(str(doc["id"]), chunk.ordinal),
+                        "content": chunk.content,
+                        "document_id": str(doc["id"]),
+                        "ordinal": chunk.ordinal,
+                        "persona_name": doc.get("persona_name"),
+                    }
+                )
+                if limit is not None and len(out) >= limit:
+                    return out
+        return out
+
+    async def _run_chunks(
+        self, run_id: str, persona_name: Optional[str] = None
+    ) -> List[tuple]:
+        """`[(chunk_id, content), ...]` for a persona's slice, from the stored text.
+
+        One S3 GET per document (mean 11 KB, 1–5 documents), re-chunked in memory.
+        This is what §4a's "chunk text does not belong in DynamoDB" costs on the
+        lexical path, and it is cheap because the lexical path is an inspection
+        endpoint rather than the per-turn one.
+        """
+        from matrix_studio.documents import chunk_text
+
+        out: List[tuple] = []
+        for doc in await self.list_documents(run_id, persona_name):
+            text = await self.document_text(str(doc["id"]))
+            if not text:
+                continue
+            for chunk in chunk_text(text):
+                out.append(
+                    (
+                        self.chunk_id_for(str(doc["id"]), chunk.ordinal),
+                        chunk.content,
+                        str(doc["id"]),
+                        chunk.ordinal,
+                        doc.get("title"),
+                        doc.get("source_path"),
+                        doc.get("media_type"),
+                    )
+                )
+        return out
+
+    async def search_documents(
+        self,
+        run_id: str,
+        query: str,
+        persona_name: Optional[str] = None,
+        k: int = 3,
+        corpus: str = "run",
+    ) -> List[Dict[str, Any]]:
+        """BM25 over a persona's slice, best match first — in process, not FTS5.
+
+        `corpus` is accepted and effectively ignored, and that is a simplification
+        rather than a gap. It existed to distinguish statistics drawn from this run's
+        slice from statistics drawn from the whole SQLite index — the v0.6 bug where
+        `bm25()` computed over every run while `run_id` was only an outer filter, so a
+        score depended on what else the database held. Here the index is *built from
+        the run's chunks*, so run-scoping is structural: `"database"` cannot be
+        implemented without deliberately reintroducing the contamination. Rejecting an
+        unknown value is kept, since a typo should still fail loudly.
+
+        Never raises: a search failure degrades to "no supporting passage found",
+        which the prompt handles honestly, rather than ending a run.
+        """
+        if not query or k <= 0:
+            return []
+        if corpus not in ("run", "database"):
+            raise ValueError(f"corpus must be 'run' or 'database', not {corpus!r}")
+        try:
+            from matrix_studio.storage.lexical import Bm25Index, extract_query_terms
+
+            rows = await self._run_chunks(run_id, persona_name)
+            index = Bm25Index([(r[0], r[1]) for r in rows])
+            by_id = {r[0]: r for r in rows}
+            hits = index.search(extract_query_terms(query), k)
+            return [
+                {
+                    "chunk_id": chunk_id,
+                    "document_id": by_id[chunk_id][2],
+                    "ordinal": by_id[chunk_id][3],
+                    "content": by_id[chunk_id][1],
+                    "title": by_id[chunk_id][4],
+                    "source_path": by_id[chunk_id][5],
+                    "media_type": by_id[chunk_id][6],
+                    "score": score,
+                }
+                for chunk_id, score in hits
+            ]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Document search failed for run %s: %s", run_id, exc)
+            return []
+
+    async def term_document_frequencies(
+        self,
+        run_id: str,
+        terms: List[str],
+        persona_name: Optional[str] = None,
+    ) -> Dict[str, int]:
+        """How many chunks in the slice contain each term.
+
+        Feeds discriminative-term selection, which is default-off and was measured
+        harmful — so this is kept for contract parity rather than because anything
+        depends on it. Returning an empty dict on failure is what the SQLite version
+        did, and the caller treats a missing count as "unknown" and falls back to using
+        every candidate term.
+        """
+        if not terms:
+            return {}
+        try:
+            from matrix_studio.storage.lexical import Bm25Index
+
+            rows = await self._run_chunks(run_id, persona_name)
+            index = Bm25Index([(r[0], r[1]) for r in rows])
+            return index.document_frequencies(terms)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Term frequency probe failed for run %s: %s", run_id, exc)
+            return {}
+
+    async def chunk_count(
+        self, run_id: str, persona_name: Optional[str] = None
+    ) -> int:
+        """Chunks in a persona's slice, read from the document metadata.
+
+        `chunk_count` on the document row is what makes this a metadata read rather
+        than a fetch-and-re-chunk of every document — one of the four jobs §4a says
+        the row earns its place with.
+        """
+        docs = await self.list_documents(run_id, persona_name)
+        return sum(int(d.get("chunk_count") or 0) for d in docs)
+
+    async def reindex_documents(self) -> int:
+        """No-op, and returning 0 would be a lie about what it did.
+
+        In SQLite this rebuilt the FTS5 index from `doc_chunks` — a derived structure
+        that could drift from its source. Here there is no derived structure: the
+        vectors ARE the index, and rebuilding them means re-embedding, which
+        `embed_pending_chunks` already does incrementally and idempotently via
+        `chunks_missing_vectors`. The lexical arm is computed per query from the
+        stored text and holds no state at all.
+
+        So there is nothing to rebuild, and the honest return is the number of chunks
+        that exist — which is what the endpoint reports and what the operator wants to
+        see. Kept rather than removed because the route exists and its contract is
+        "tell me the index is consistent"; the answer is now "it cannot be otherwise".
+        """
+        total = 0
+        for run in await self._scan_all(
+            "documents",
+            FilterExpression="begins_with(sk, :prefix)",
+            ExpressionAttributeValues={":prefix": "DOC#"},
+        ):
+            total += int(_from_ddb(run).get("chunk_count") or 0)
+        return total
+
+    def _vectors_client(self):
+        if self._s3vectors is None:
+            import boto3
+
+            self._s3vectors = boto3.client("s3vectors", region_name=self.region)
+        return self._s3vectors
 
     # ------------------------------------------------------------------ #
     # Paging helpers

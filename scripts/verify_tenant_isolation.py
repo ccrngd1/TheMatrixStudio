@@ -120,8 +120,18 @@ def main() -> int:
 
     failures: List[str] = []
 
-    def check(name: str, ok: bool, detail: str = "") -> None:
-        print(f"  {'PASS' if ok else 'FAIL'}  {name}{(' — ' + detail) if detail else ''}")
+    def check(name: str, ok: bool, detail: str = "", hint: str = "") -> None:
+        """`detail` is context shown either way; `hint` explains a FAILURE only.
+
+        Kept separate because the first version printed a failure explanation next to
+        a PASS — "PASS  a persona sees cast-wide passages — the cast_wide arm of the
+        filter is not working" — which reads as a contradiction and is exactly the
+        wrong thing for a verification script to be ambiguous about.
+        """
+        suffix = f" — {detail}" if detail else ""
+        if not ok and hint:
+            suffix += f" — {hint}"
+        print(f"  {'PASS' if ok else 'FAIL'}  {name}{suffix}")
         if not ok:
             failures.append(name)
 
@@ -156,7 +166,7 @@ def main() -> int:
     try:
         runs_b.get_item(Key={"pk": f"USER#{USER_A}", "sk": "RUN#verify"})
         check("B is REFUSED a GetItem on A's partition", False,
-              "the read succeeded — isolation is NOT enforced")
+              hint="the read succeeded — isolation is NOT enforced")
     except Exception as exc:  # noqa: BLE001
         check("B is REFUSED a GetItem on A's partition", is_access_denied(exc),
               type(exc).__name__)
@@ -168,7 +178,7 @@ def main() -> int:
             ExpressionAttributeValues={":pk": f"USER#{USER_A}"},
         )
         check("B is REFUSED a Query on A's partition", False,
-              "the query succeeded — isolation is NOT enforced")
+              hint="the query succeeded — isolation is NOT enforced")
     except Exception as exc:  # noqa: BLE001
         check("B is REFUSED a Query on A's partition", is_access_denied(exc),
               type(exc).__name__)
@@ -179,7 +189,7 @@ def main() -> int:
     try:
         runs_b.scan(Limit=1)
         check("B is REFUSED a Scan (no partition named)", False,
-              "the scan succeeded — an unscoped read returns other tenants' data")
+              hint="the scan succeeded — an unscoped read returns other tenants' data")
     except Exception as exc:  # noqa: BLE001
         check("B is REFUSED a Scan (no partition named)", is_access_denied(exc),
               type(exc).__name__)
@@ -189,7 +199,7 @@ def main() -> int:
         runs_b.put_item(Item={"pk": f"USER#{USER_A}", "sk": "RUN#injected",
                               "id": "injected"})
         check("B is REFUSED a write into A's partition", False,
-              "the write succeeded — one tenant can inject runs into another")
+              hint="the write succeeded — one tenant can inject runs into another")
     except Exception as exc:  # noqa: BLE001
         check("B is REFUSED a write into A's partition", is_access_denied(exc),
               type(exc).__name__)
@@ -217,7 +227,7 @@ def main() -> int:
     try:
         s3_b.list_objects_v2(Bucket=bucket, Prefix=f"snapshots/{USER_A}/")
         check("B is REFUSED a listing of A's prefix", False,
-              "the listing succeeded — keys disclose other tenants' run ids")
+              hint="the listing succeeded — keys disclose other tenants' run ids")
     except Exception as exc:  # noqa: BLE001
         check("B is REFUSED a listing of A's prefix", is_access_denied(exc),
               type(exc).__name__)
@@ -225,7 +235,7 @@ def main() -> int:
     try:
         s3_b.list_objects_v2(Bucket=bucket)
         check("B is REFUSED an unprefixed listing", False,
-              "the listing succeeded — the whole bucket is visible")
+              hint="the listing succeeded — the whole bucket is visible")
     except Exception as exc:  # noqa: BLE001
         check("B is REFUSED an unprefixed listing", is_access_denied(exc),
               type(exc).__name__)
