@@ -1624,3 +1624,104 @@ async def test_reindex_reports_the_chunk_count_rather_than_pretending(store):
     await store.add_document(run_id="r1", title="a.md", chunks=["x", "y", "z"],
                              owner_sub=USER_A)
     assert await store.reindex_documents() == 3
+
+
+# --------------------------------------------------------------------------- #
+# Owner binding
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_an_unbound_store_refuses_rather_than_guessing(aws):
+    """"Whose data is this?" being unanswerable must not default to anyone.
+
+    Defaulting to the local user would attribute one person's conversation to a
+    shared bucket, silently — the failure the explicit-argument design existed to
+    prevent, and binding has to preserve it rather than trade it away.
+    """
+    s = DynamoStorage(table_prefix=PREFIX, bucket=BUCKET, region="us-east-1")
+    await s.connect()
+    try:
+        for call in (
+            s.get_run("r1"),
+            s.list_runs(),
+            s.get_events("r1"),
+            s.append_event(run_id="r1", turn=1, seq=0, event_type="e", payload={}),
+        ):
+            with pytest.raises(StorageError, match="no owner for this call"):
+                await call
+    finally:
+        await s.close()
+
+
+@pytest.mark.asyncio
+async def test_binding_scopes_every_read_without_repeating_the_owner(aws):
+    """The point of `for_owner`: name the tenant once, at the request boundary."""
+    s = DynamoStorage(table_prefix=PREFIX, bucket=BUCKET, region="us-east-1")
+    await s.connect()
+    try:
+        a = s.for_owner(USER_A)
+        b = s.for_owner(USER_B)
+        await a.create_run(run_id="r1", topic="t", cast=[], name="a-run")
+        await a.append_event(run_id="r1", turn=1, seq=0, event_type="e",
+                             payload={"v": 1})
+
+        assert (await a.get_run("r1"))["owner_sub"] == USER_A
+        assert len(await a.get_events("r1")) == 1
+        # The other binding sees none of it, with no argument passed anywhere.
+        assert await b.get_run("r1") is None
+        assert await b.get_events("r1") == []
+        assert await b.list_runs() == []
+    finally:
+        await s.close()
+
+
+@pytest.mark.asyncio
+async def test_an_explicit_owner_overrides_the_binding(aws):
+    """What lets a test assert that a cross-tenant read is refused.
+
+    Without the override, a bound store could only ever read its own partition, and
+    the negative cases would be unwritable — the suite would be unable to express the
+    property it most needs to check.
+    """
+    s = DynamoStorage(table_prefix=PREFIX, bucket=BUCKET, region="us-east-1")
+    await s.connect()
+    try:
+        a = s.for_owner(USER_A)
+        await a.create_run(run_id="r1", topic="t", cast=[])
+        assert await a.get_run("r1", owner_sub=USER_B) is None
+        assert (await a.get_run("r1", owner_sub=USER_A))["id"] == "r1"
+    finally:
+        await s.close()
+
+
+@pytest.mark.asyncio
+async def test_a_binding_does_not_leak_back_into_the_unbound_store(aws):
+    """`for_owner` returns a copy. If it mutated `self`, the last request served
+    would silently become the default for every later one — including an unbound
+    background task."""
+    s = DynamoStorage(table_prefix=PREFIX, bucket=BUCKET, region="us-east-1")
+    await s.connect()
+    try:
+        s.for_owner(USER_A)
+        assert getattr(s, "_owner_sub", None) is None
+        with pytest.raises(StorageError, match="no owner"):
+            await s.list_runs()
+    finally:
+        await s.close()
+
+
+@pytest.mark.asyncio
+async def test_two_bindings_do_not_interfere(aws):
+    """Concurrent requests take separate bindings off one store."""
+    s = DynamoStorage(table_prefix=PREFIX, bucket=BUCKET, region="us-east-1")
+    await s.connect()
+    try:
+        a, b = s.for_owner(USER_A), s.for_owner(USER_B)
+        await a.create_run(run_id="ra", topic="t", cast=[], name="shared-name")
+        await b.create_run(run_id="rb", topic="t", cast=[], name="shared-name")
+        assert (await a.get_run_by_ref("shared-name"))["id"] == "ra"
+        assert (await b.get_run_by_ref("shared-name"))["id"] == "rb"
+        assert a._owner_sub == USER_A and b._owner_sub == USER_B
+    finally:
+        await s.close()
