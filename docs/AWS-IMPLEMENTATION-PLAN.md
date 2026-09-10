@@ -229,6 +229,32 @@ including concurrent writes and sort-key range reads — so the storage layer ke
 `storage/__init__.py` last. Nothing is broken until the swap, and the swap plus the 41
 construction sites is one mechanical step rather than a partially migrated tree.
 
+### Progress
+
+- ✅ **Runs, events, snapshots** (21 methods) in `storage/dynamo.py`, with 28 tests
+  against `moto`. All six design decisions above are mutation-tested — unpadding the
+  sort keys fails 5 tests, ignoring `LastEvaluatedKey` fails 1, dropping the trailing
+  `#` from the run prefix fails 1, not denormalising `status` fails 1, an inclusive
+  `get_events_after` lower bound fails 1, and skipping the `Decimal` conversion
+  fails 1.
+- ✅ Both GSIs deployed and **ACTIVE**.
+- ⬜ **Summaries, threads, documents** (14 methods) — the same patterns; threads and
+  thread messages are the first users of the atomic counter.
+- ⬜ **The swap**: `storage/__init__.py`, then 41 construction sites and ~25 call sites
+  gaining `owner_sub`. Mechanical, and the step that makes the 788 existing tests the
+  acceptance criterion.
+- ⬜ **The scoped-role test** — that `dynamodb:LeadingKeys` actually refuses a
+  cross-partition read. This is what proves §3 rather than assuming it, and `moto` does
+  not enforce IAM, so it needs the real account.
+
+The test emphasis is deliberately lopsided toward **ordering and paging** rather than
+round-trips. A round-trip failure announces itself; the two failures this port can
+actually produce are silent — an unpadded key returns every item in the wrong order
+(so count-based assertions pass while the log replays as a different conversation), and
+an unfollowed page returns a truncated log (indistinguishable from a short run). The
+ordering tests therefore assert sequences, never lengths, and straddle a digit boundary
+(9 → 10), because a test using 1, 2, 3 passes against the bug.
+
 ---
 
 ## Phase 3 — Retrieval port
