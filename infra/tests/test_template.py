@@ -427,28 +427,168 @@ def test_the_api_lambda_runs_in_jwt_auth_mode(template: Template):
     )
 
 
-def test_the_api_lambda_cannot_yet_read_any_table_or_bucket(template: Template):
-    """Phase 1 grants Bedrock and nothing else, and that is the design (§3).
+def _policies_for(template: Template, role_logical_prefix: str):
+    """The inline policies attached to a role, found by its logical id.
 
-    Storage access arrives in Phase 2 as per-request STS credentials scoped with
-    `dynamodb:LeadingKeys`, so that a missing tenant filter in application code
-    CANNOT leak data. A skeleton whose function role could already read every
-    table would quietly make that boundary optional — the code would work, and the
-    isolation guarantee would be gone with nothing failing.
+    Needed because an earlier version of the test below scanned EVERY
+    `AWS::IAM::Policy` in the template. That was fine while only one role had
+    policies, and became wrong the moment the tenant role appeared — which
+    legitimately holds DynamoDB rights. A test that cannot say *whose* permission it
+    is checking will either fail on a correct change or pass on an incorrect one.
     """
+    roles = {
+        lid: r for lid, r in template.find_resources("AWS::IAM::Role").items()
+        if lid.startswith(role_logical_prefix)
+    }
+    assert roles, f"no role with logical id starting {role_logical_prefix!r}"
+    out = []
     for policy in template.find_resources("AWS::IAM::Policy").values():
-        for statement in policy["Properties"]["PolicyDocument"]["Statement"]:
-            actions = statement.get("Action")
-            actions = [actions] if isinstance(actions, str) else (actions or [])
-            for action in actions:
-                if not isinstance(action, str):
-                    continue
-                assert not action.startswith("dynamodb:"), (
-                    f"the API function must not hold DynamoDB rights yet: {action}"
-                )
-                assert not action.startswith("s3vectors:"), (
-                    f"the API function must not hold S3 Vectors rights yet: {action}"
-                )
+        refs = {
+            r.get("Ref") for r in policy["Properties"].get("Roles", [])
+            if isinstance(r, dict)
+        }
+        if refs & set(roles):
+            out.append(policy["Properties"]["PolicyDocument"])
+    # Managed policies too, because CDK moves statements into an
+    # `AWS::IAM::ManagedPolicy` overflow once an inline policy nears IAM's
+    # 10,240-character limit — silently. An earlier version of this helper read only
+    # `AWS::IAM::Policy` and therefore reported that the tenant role held no S3
+    # rights when it held them in the overflow: a test that would have failed on a
+    # correct stack, which is worse than one that passes on a broken one.
+    for policy in template.find_resources("AWS::IAM::ManagedPolicy").values():
+        refs = {
+            r.get("Ref") for r in policy["Properties"].get("Roles", [])
+            if isinstance(r, dict)
+        }
+        if refs & set(roles):
+            out.append(policy["Properties"]["PolicyDocument"])
+    return out
+
+
+def _actions(documents) -> set:
+    out = set()
+    for doc in documents:
+        for statement in doc["Statement"]:
+            action = statement.get("Action")
+            for a in ([action] if isinstance(action, str) else action or []):
+                if isinstance(a, str):
+                    out.add(a)
+    return out
+
+
+def test_the_api_lambda_holds_no_storage_rights_of_its_own(template: Template):
+    """§3: storage access must arrive as per-request scoped credentials.
+
+    The function's own role grants Bedrock and one `sts:AssumeRole`, and nothing
+    else. If it could read the tables directly, the `dynamodb:LeadingKeys` boundary
+    would become optional — application code would work either way, and the
+    guarantee that "a missing tenant filter cannot leak data" would quietly stop
+    being true with nothing failing.
+
+    Scoped to the Lambda's own role. The tenant role holds these rights on purpose;
+    a test that checked every policy in the template could not tell the two apart.
+    """
+    actions = _actions(_policies_for(template, "ApiFunctionServiceRole"))
+    assert actions, "the API function has no policy at all"
+    forbidden = {a for a in actions
+                 if a.startswith(("dynamodb:", "s3vectors:", "s3:GetObject",
+                                  "s3:PutObject"))}
+    assert not forbidden, (
+        f"the API function must not hold storage rights directly: {sorted(forbidden)}"
+    )
+    assert "bedrock:InvokeModel" in actions
+    assert "sts:AssumeRole" in actions
+
+
+def test_the_lambda_can_assume_only_the_tenant_role(template: Template):
+    """`sts:AssumeRole` on `*` would let a compromised function reach any role
+    in the account that happens to trust it."""
+    for doc in _policies_for(template, "ApiFunctionServiceRole"):
+        for statement in doc["Statement"]:
+            action = statement.get("Action")
+            actions = [action] if isinstance(action, str) else action or []
+            if "sts:AssumeRole" not in actions:
+                continue
+            resource = statement["Resource"]
+            resources = [resource] if not isinstance(resource, list) else resource
+            assert "*" not in resources, "AssumeRole must name the tenant role"
+            assert resources, "AssumeRole with no resource"
+
+
+def test_the_tenant_role_is_assumable_only_by_the_api_function(template: Template):
+    """Anything else in the account being able to assume it defeats the point.
+
+    The role is deliberately broad — effective permissions are the intersection of
+    it and the per-request session policy — so who may assume it *is* the control.
+    """
+    roles = {
+        lid: r for lid, r in template.find_resources("AWS::IAM::Role").items()
+        if lid.startswith("TenantRole")
+    }
+    assert len(roles) == 1
+    trust = next(iter(roles.values()))["Properties"]["AssumeRolePolicyDocument"]
+    principals = []
+    for statement in trust["Statement"]:
+        assert statement["Action"] == "sts:AssumeRole"
+        principals.append(statement["Principal"])
+    assert len(principals) == 1, f"more than one trusted principal: {principals}"
+    body = str(principals[0])
+    assert "AWS" in principals[0], principals[0]
+    assert "Service" not in principals[0], (
+        "a service principal here would let that service assume the tenant role"
+    )
+    assert "ApiFunctionServiceRole" in body, body
+
+
+def test_no_verification_principal_by_default(template: Template):
+    """`verify_principal_arn` must be off unless asked for.
+
+    It widens the one control that makes the tenant role's deliberate breadth safe.
+    Asserted as an absence, because the failure mode is somebody leaving the flag in
+    a deploy script and nothing complaining.
+    """
+    trust = next(
+        r for lid, r in template.find_resources("AWS::IAM::Role").items()
+        if lid.startswith("TenantRole")
+    )["Properties"]["AssumeRolePolicyDocument"]
+    assert "arn:aws:iam::" not in str(trust), (
+        "a literal principal ARN in the trust policy means verify_principal_arn "
+        f"is set: {trust}"
+    )
+
+
+def test_the_verification_principal_is_additive_when_set():
+    """When set, it must ADD a principal rather than replace the Lambda's.
+
+    Replacing it would leave a role nothing in production can assume — a stack that
+    deploys and then fails every request, which is the worse of the two mistakes.
+    """
+    t = _template(verify_principal_arn="arn:aws:iam::111122223333:role/Admin")
+    trust = next(
+        r for lid, r in t.find_resources("AWS::IAM::Role").items()
+        if lid.startswith("TenantRole")
+    )["Properties"]["AssumeRolePolicyDocument"]
+    body = str(trust)
+    assert "arn:aws:iam::111122223333:role/Admin" in body, body
+    assert "ApiFunctionServiceRole" in body, (
+        "the API function must still be able to assume the tenant role"
+    )
+
+
+def test_the_tenant_role_can_reach_storage(template: Template):
+    """The other half: a role that cannot read the tables scopes nothing.
+
+    Paired with the Lambda test above deliberately — a change that moved the grants
+    to the wrong principal would satisfy one of them and break the other.
+    """
+    actions = _actions(_policies_for(template, "TenantRole"))
+    for service in ("dynamodb:", "s3vectors:"):
+        assert any(a.startswith(service) for a in actions), (service, sorted(actions))
+    # Matched by prefix, not by exact name: CDK's bucket grants emit `s3:GetObject*`
+    # with a trailing wildcard, so `"s3:GetObject" in actions` is False on a correct
+    # stack. Asserting the exact string is a test that fails for the wrong reason.
+    assert any(a.startswith("s3:GetObject") for a in actions), sorted(actions)
+    assert any(a.startswith("s3:PutObject") for a in actions), sorted(actions)
 
 
 def test_bedrock_foundation_model_access_is_region_wildcarded(template: Template):
@@ -585,3 +725,25 @@ def test_id_only_lookups_have_an_index(template: Template):
         assert gsis[index_name]["Projection"]["ProjectionType"] == "KEYS_ONLY", (
             f"{index_name} should project keys only"
         )
+
+
+def test_the_tenant_policy_does_not_overflow(template: Template):
+    """One wildcard statement, not a grant per table.
+
+    Enumerating the tables produced 22 statements and a 5,429-character inline
+    policy, which CDK spilled into an `AWS::IAM::ManagedPolicy` overflow — IAM caps
+    an inline policy at 10,240 characters. That worked, but a role may attach only
+    ten managed policies, so adding tables would eventually fail a deploy for a
+    reason unrelated to the change that triggered it.
+
+    The wildcard loses nothing: this role is deliberately broad, and what confines a
+    request is `dynamodb:LeadingKeys` in the per-request session policy.
+    """
+    overflow = [
+        lid for lid in template.find_resources("AWS::IAM::ManagedPolicy")
+        if "Overflow" in lid
+    ]
+    assert not overflow, (
+        f"an IAM policy is overflowing into a managed policy: {overflow}. "
+        "Prefer one wildcard statement over a grant per resource."
+    )

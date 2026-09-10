@@ -681,6 +681,95 @@ class MatrixStudioStack(Stack):
             )
         )
 
+        # §3's mechanism, and the reason the Lambda's own role grants no storage
+        # rights. The API reads `sub` from the verified JWT, assumes THIS role with a
+        # session policy pinning `dynamodb:LeadingKeys` to `USER#{sub}` and S3 object
+        # ARNs to `.../{sub}/*`, and does all storage work with the result.
+        #
+        # Effective permissions are the INTERSECTION of this role's policy and the
+        # session policy, which is why this grants the whole table: the per-request
+        # policy is what narrows it, built from a claim the caller cannot forge. A
+        # narrow role with a broad session policy — the natural mistake — would
+        # produce credentials that work in testing and enforce nothing.
+        self.tenant_role = iam.Role(
+            self,
+            "TenantRole",
+            role_name=f"{self.config.prefix}-tenant",
+            assumed_by=(
+                iam.CompositePrincipal(
+                    iam.ArnPrincipal(self.api_lambda.role.role_arn),
+                    # Verification only, and off unless explicitly asked for. See
+                    # StackConfig.verify_principal_arn: the trust policy is what
+                    # makes this role's breadth safe, so widening it is a decision
+                    # rather than a convenience.
+                    iam.ArnPrincipal(self.config.verify_principal_arn),
+                )
+                if self.config.verify_principal_arn
+                else iam.ArnPrincipal(self.api_lambda.role.role_arn)
+            ),
+            max_session_duration=Duration.hours(1),
+            description="Assumed per request with a session policy scoping every "
+            "storage call to one Cognito sub. See matrix_studio/storage/"
+            "credentials.py.",
+        )
+        # A WILDCARD over this deployment's tables, not a grant per table.
+        #
+        # Enumerating them produced 22 statements and a 5,429-character inline
+        # policy, which CDK silently spilled into an `AWS::IAM::ManagedPolicy`
+        # overflow — IAM caps an inline policy at 10,240 characters. It worked, but a
+        # role may attach only 10 managed policies, so growing the table list would
+        # eventually fail the deploy for a reason with nothing to do with the change
+        # that triggered it.
+        #
+        # The wildcard costs nothing in security. This role is deliberately broad —
+        # effective permissions are the INTERSECTION of it and the per-request
+        # session policy — so enumerating tables narrows nothing while making the
+        # policy fragile. What actually confines a request is
+        # `dynamodb:LeadingKeys` in `credentials.session_policy`, and the prefix
+        # keeps this deployment out of any other stack's tables in the same account.
+        self.tenant_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "dynamodb:GetItem", "dynamodb:BatchGetItem", "dynamodb:Query",
+                    "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem",
+                    "dynamodb:BatchWriteItem", "dynamodb:ConditionCheckItem",
+                    # Scan is here for the startup sweep only, which is a system
+                    # operation and off on Lambda (STARTUP_SWEEP=false). No request
+                    # path may scan.
+                    "dynamodb:Scan",
+                ],
+                resources=[
+                    f"arn:aws:dynamodb:{self.region}:{self.account}:table/"
+                    f"{self.config.prefix}-*",
+                    f"arn:aws:dynamodb:{self.region}:{self.account}:table/"
+                    f"{self.config.prefix}-*/index/*",
+                ],
+            )
+        )
+        self.data_bucket.grant_read_write(self.tenant_role)
+        self.tenant_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["s3vectors:GetVectors", "s3vectors:PutVectors",
+                         "s3vectors:QueryVectors", "s3vectors:DeleteVectors",
+                         "s3vectors:ListVectors"],
+                resources=[
+                    self.vector_bucket.attr_vector_bucket_arn,
+                    f"{self.vector_bucket.attr_vector_bucket_arn}/index/*",
+                ],
+            )
+        )
+        # The Lambda may assume it, and nothing else may. Narrower than granting
+        # `sts:AssumeRole` on `*`, which would let a compromised function reach any
+        # role in the account it happened to be trusted by.
+        self.api_lambda.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["sts:AssumeRole"],
+                resources=[self.tenant_role.role_arn],
+            )
+        )
+        self.api_lambda.add_environment("TENANT_ROLE_ARN", self.tenant_role.role_arn)
+        self.api_lambda.add_environment("TABLE_PREFIX", self.config.prefix)
+
         self.authorizer = apigw_authorizers.HttpJwtAuthorizer(
             "JwtAuthorizer",
             jwt_issuer=(
@@ -781,6 +870,13 @@ class MatrixStudioStack(Stack):
             value=self.data_bucket.bucket_name,
             description="Snapshots, document text, uploads, avatars — per-user "
             "prefixes.",
+        )
+        CfnOutput(
+            self,
+            "TenantRoleArn",
+            value=self.tenant_role.role_arn,
+            description="Assumed per request with a tenant-scoped session policy "
+            "(§3). Verify with scripts/verify_tenant_isolation.py.",
         )
         CfnOutput(
             self,

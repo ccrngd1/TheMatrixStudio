@@ -50,6 +50,22 @@ class StackConfig:
     #: one, because a pool with a hardcoded default account would be worse.
     admin_email: Optional[str] = None
 
+    #: An extra principal permitted to assume the tenant role, for
+    #: `scripts/verify_tenant_isolation.py`.
+    #:
+    #: Off by default, and it should stay off in anything real. The tenant role's
+    #: trust policy is the control that makes the role's deliberate breadth safe —
+    #: effective permissions are the intersection of the role and a per-request
+    #: session policy, so *who may assume it* is what confines the whole mechanism.
+    #: Adding a principal widens exactly that.
+    #:
+    #: It exists because §3 cannot be verified any other way: `moto` does not
+    #: evaluate IAM, and the role trusts only the API Lambda, so a developer's
+    #: credentials cannot exercise it. The alternative — believing the policy is
+    #: right because it looks right — is how this kind of thing is wrong for a year.
+    #: Visible in `cdk diff` when set, and asserted absent by a template test.
+    verify_principal_arn: Optional[str] = None
+
     @staticmethod
     def from_context(node: Any) -> "StackConfig":
         """Build from `cdk.json` context and `-c key=value` overrides."""
@@ -79,4 +95,5 @@ class StackConfig:
             retain_data=flag("retain_data", True),
             extra_callback_urls=list(extra),
             admin_email=get("admin_email"),
+            verify_principal_arn=get("verify_principal_arn"),
         )
