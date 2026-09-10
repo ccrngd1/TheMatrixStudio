@@ -224,10 +224,16 @@ def aws_backend(monkeypatch):
     monkeypatch.setenv("DATA_BUCKET", TEST_DATA_BUCKET)
     monkeypatch.setenv("VECTOR_BUCKET", TEST_VECTOR_BUCKET)
     monkeypatch.setenv("VECTOR_INDEX", TEST_VECTOR_INDEX)
-    # The sweep scans across tenants and is a process-start operation. Off here for the
-    # same reason it is off on Lambda: several app instances in one test session would
-    # each conclude the others' runs were orphaned.
-    monkeypatch.setenv("STARTUP_SWEEP", "false")
+    # The startup sweep is left ON, matching a single long-lived server — which is what
+    # a `TestClient` app is. Disabling it here was over-cautious: the worry was several
+    # app instances concluding each other's runs were orphaned, but each test gets its
+    # own mocked account, so there is nothing to cross-contaminate. Worse, it silently
+    # disabled the behaviour two tests exist to assert
+    # (`test_lifespan_startup_sweeps_orphaned_running_run`,
+    # `test_the_sweep_still_runs_by_default`), which passed as failures rather than
+    # telling anyone the fixture had turned the feature off.
+    #
+    # Tests that need it off set it themselves.
 
     with mock_aws():
         provision()

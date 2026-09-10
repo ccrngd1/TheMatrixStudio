@@ -287,40 +287,49 @@ def test_reindex_reports_chunk_count_and_is_idempotent(client, run_ref):
     assert len({p["chunk_id"] for p in passages}) == len(passages)
 
 
-def test_reindex_restores_search_after_index_loss(client, run_ref, tmp_path):
-    """
-    The rebuild path must recover a wiped index — for the scorer that needs it.
+def test_reindex_reports_the_chunk_count_and_leaves_search_working(client, run_ref):
+    """The reindex endpoint's contract changed from "rebuild" to "report".
 
-    Run-scoped scoring (the default) builds its index from ``doc_chunks``, so wiping
-    the persistent index no longer breaks it. That is a robustness gain, and it is why
-    this test drives the whole-database scorer to exercise the rebuild: otherwise there
-    would be nothing left that a lost index can break, and the reindex endpoint would
-    go untested.
+    This test used to wipe the persistent FTS5 index with `delete-all`, drive
+    `corpus=database` to show the wipe had broken it, call reindex, and show it
+    recovered. Every step needed a persistent derived index that could go stale.
+
+    There is none: the BM25 index is built per query from the stored document text and
+    discarded, so it cannot be stale, and the vectors ARE the vector index — rebuilding
+    them means re-embedding, which the embed endpoint already does incrementally.
+
+    So the endpoint's honest job is to report how many chunks exist, which is what an
+    operator asking "is my index consistent" actually wants to know now that the answer
+    is "it cannot be otherwise". Kept as an API-level test because the route is still
+    there and a caller still depends on its shape.
+
+    The property the old test protected — a lost derived structure must not make
+    material unfindable — is asserted by
+    `test_lexical_search_survives_losing_every_vector` in test_retrieval.py, against
+    the derived structure that can still be lost.
     """
     client.post(f"/api/runs/{run_ref}/documents",
                 json={"persona_name": "Dana", "title": "a.md", "text": DANA_TEXT})
     base = f"/api/runs/{run_ref}/documents/search?q=egress inspection"
     assert client.get(base).json()["passages"]
 
-    import sqlite3
+    reported = client.post(f"/api/runs/{run_ref}/documents/reindex")
+    assert reported.status_code == 200, reported.text
+    count = reported.json()["reindexed_chunks"]
+    assert count >= 1, reported.json()
 
-    # Wipe the FTS index directly, leaving doc_chunks (the source of truth) intact.
-    con = sqlite3.connect(str(tmp_path / "test.db"))
-    con.execute("INSERT INTO doc_chunks_fts(doc_chunks_fts) VALUES('delete-all')")
-    con.commit()
-    con.close()
+    # It is a report, so it does not change anything — calling it twice must give the
+    # same answer rather than accumulating.
+    assert client.post(
+        f"/api/runs/{run_ref}/documents/reindex"
+    ).json()["reindexed_chunks"] == count
 
-    # Unaffected: it never consulted the persistent index.
-    assert client.get(base).json()["passages"], (
-        "run-scoped search should not depend on the derived index"
-    )
-    assert client.get(f"{base}&corpus=database").json()["passages"] == []
-
-    assert client.post(f"/api/runs/{run_ref}/documents/reindex").json()["reindexed_chunks"] >= 1
-    assert client.get(f"{base}&corpus=database").json()["passages"], (
-        "reindex did not restore whole-database search"
-    )
-
+    # And search is unaffected either way, because it never consulted a derived index.
+    assert client.get(base).json()["passages"]
+    assert (
+        client.get(f"{base}&corpus=database").json()["passages"]
+        == client.get(f"{base}&corpus=run").json()["passages"]
+    ), "the two corpus values diverged, which is what the v0.6 contamination bug was"
 
 def test_search_reports_which_corpus_scored_it(client, run_ref):
     """

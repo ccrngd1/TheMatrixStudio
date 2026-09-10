@@ -250,9 +250,57 @@ construction sites is one mechanical step rather than a partially migrated tree.
   caller already holds. **This was on Phase 3's critical path**: had it gone unnoticed,
   hybrid retrieval would have fused arms by chunk id across two different chunkings and
   cited passages under ordinals that do not contain them.
-- ⬜ **The swap**: `storage/__init__.py`, then 41 construction sites and ~25 call sites
-  gaining `owner_sub`. Mechanical, and the step that makes the 788 existing tests the
-  acceptance criterion.
+- ✅ **The swap** (2026-09-10). `storage/__init__.py` points `Database` at
+  `DynamoStorage`, and **all 863 tests pass** — in fixed and random order — plus 48
+  infra template tests and 129 frontend tests. That is Phase 2's stated exit criterion
+  met: the existing suite is the contract, and it passes against the new backend.
+
+  Binding the store at the request boundary is what made it tractable: the manager binds
+  once per run, so the engine, `branching.py` and the summariser never mention an owner
+  at all. app.py's route-level calls bind to `Depends(current_user)` explicitly, and the
+  startup sweep — the system's only cross-tenant read — binds to *each row's* owner,
+  because one binding there would write one user's interruption marker into another's
+  partition.
+
+  **Six product bugs the swap exposed**, every one of which would have shipped:
+  1. `vec_available` did not exist on the new store, and `retrieve_for_turn` gates the
+     whole vector arm on it — every run would have silently degraded to lexical
+     retrieval, 22× worse at recall@1.
+  2. `embed_pending_chunks` never passed the chunk metadata the store requires, so
+     ingest failed outright. The store's refusal to accept an unscoped vector is what
+     surfaced it.
+  3. `distance_to_cosine` still used sqlite-vec's **L2** conversion. S3 Vectors returns
+     *cosine* distance, so the similarity floor was inert — an orthogonal passage scored
+     0.5 against a 0.15 floor and was kept. Found by measuring the real service at 45°,
+     an angle no test covered; four existing tests *agreed* with the wrong conversion
+     because their fixtures encoded the same wrong inverse.
+  4. `update_run_status` invented runs, because DynamoDB's `UpdateItem` upserts where
+     SQL's `UPDATE … WHERE` is a no-op — including into another user's partition.
+  5. `chunk_count` recorded the input list length rather than the chunking of the stored
+     text, so the document-frequency ratio's numerator and denominator could disagree.
+  6. `copy_documents_to_run` reused document ids and shared S3 objects, so the
+     `by-document-id` GSI held duplicates and deleting either copy emptied the other.
+
+  **One measured decision not to improve something.** The in-process stemmer does not
+  unify `migrate` with `migration`, where FTS5's Porter stemmer did. Extending the
+  suffix rules was tried and measured: 1 of 11 derivational pairs unified, 2 false
+  collisions introduced. So the honest options are a full Porter implementation or none,
+  and none is right for an inspection endpoint whose arm is 22× worse than the vector
+  one — handling morphological variation is what embeddings are for. Documented and
+  pinned in both directions, because false matches in an inspection tool look like
+  findings.
+
+  **Tests removed rather than skipped**, with the reasoning in place: a skip on a
+  permanently-true condition is a test that never runs again and still looks like
+  coverage. Where a property survived its mechanism it was ported instead — the
+  corrupt-index test now destroys every *vector* and asserts the lexical arm still
+  works, which is the same guarantee against the derived structure that can still be
+  lost.
+
+  **One gap named rather than dropped:** the 38 runs in an existing
+  `data/matrix_studio.db` are unreachable through the app. Moving them is a migration
+  script — read with the retained `storage/database.py`, write with `DynamoStorage` —
+  and it does not exist. Whether those runs are worth carrying is a product decision.
 - ✅ **The scoped-role proof** (2026-09-10). §3 is now demonstrated rather than
   asserted: `scripts/verify_tenant_isolation.py` assumes the tenant role twice with
   different session policies and confirms against the real account that user B is
