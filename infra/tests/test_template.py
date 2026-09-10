@@ -551,3 +551,37 @@ def test_both_spa_behaviours_attach_a_response_headers_policy(template: Template
         config["DefaultCacheBehavior"]["ResponseHeadersPolicyId"]
         != assets["ResponseHeadersPolicyId"]
     ), "both behaviours share one policy, so one of them is wrong"
+
+
+def test_id_only_lookups_have_an_index(template: Template):
+    """`get_thread(id)` and `document_text(id)` carry no run or user context.
+
+    Both partitions are keyed by run, so without an index there is no partition to
+    read. The fallback would be a Scan — O(table), and it reads ACROSS TENANTS, so
+    a tenancy slip becomes a full-table disclosure instead of a mistake confined to
+    one partition. See docs/PHASE2-STORAGE-KEY-DESIGN.md §5.
+
+    Missing from the first Phase 1 deploy; found by designing the storage port.
+    """
+    tables = template.find_resources("AWS::DynamoDB::Table")
+    wanted = {
+        "matrix-studio-threads": "by-thread-id",
+        "matrix-studio-documents": "by-document-id",
+    }
+    for table_name, index_name in wanted.items():
+        table = next(
+            t for t in tables.values()
+            if t["Properties"].get("TableName") == table_name
+        )
+        gsis = {
+            g["IndexName"]: g
+            for g in table["Properties"].get("GlobalSecondaryIndexes", [])
+        }
+        assert index_name in gsis, f"{table_name} has no {index_name}: {list(gsis)}"
+        # KEYS_ONLY on purpose: the index exists to locate an item, not to serve it.
+        # A projection carrying attributes would make it tempting to read the item
+        # straight off the index — skipping the base-table read, and with it the
+        # ownership check that read is paired with.
+        assert gsis[index_name]["Projection"]["ProjectionType"] == "KEYS_ONLY", (
+            f"{index_name} should project keys only"
+        )
