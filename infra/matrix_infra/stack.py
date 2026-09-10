@@ -243,7 +243,7 @@ class MatrixStudioStack(Stack):
         )
 
     def _create_vector_store(self) -> None:
-        """S3 Vectors: one bucket, one index.
+        """S3 Vectors: one bucket, one index — the one Phase 3 writes to.
 
         L1 constructs (`CfnVectorBucket`, `CfnIndex`) because S3 Vectors has no L2
         yet. That is fine here — there is nothing an L2 would add over naming the
@@ -266,10 +266,10 @@ class MatrixStudioStack(Stack):
             vector_bucket_name=f"{self.config.prefix}-vectors-{self.account}",
         )
 
-        self.probe_index = s3vectors.CfnIndex(
+        self.chunks_index = s3vectors.CfnIndex(
             self,
-            "ProbeIndex",
-            index_name=f"{self.config.prefix}-probe",
+            "ChunksIndex",
+            index_name=f"{self.config.prefix}-chunks",
             vector_bucket_name=self.vector_bucket.vector_bucket_name,
             # float32 is the only data type S3 Vectors accepts.
             data_type="float32",
@@ -283,7 +283,7 @@ class MatrixStudioStack(Stack):
                 non_filterable_metadata_keys=NON_FILTERABLE_METADATA_KEYS,
             ),
         )
-        self.probe_index.add_resource_dependency(self.vector_bucket)
+        self.chunks_index.add_resource_dependency(self.vector_bucket)
 
     # ------------------------------------------------------------------ #
     # SPA hosting
@@ -635,6 +635,7 @@ class MatrixStudioStack(Stack):
                 "DATA_DIR": "/tmp/data",
                 "DATA_BUCKET": self.data_bucket.bucket_name,
                 "VECTOR_BUCKET": self.vector_bucket.vector_bucket_name,
+                "VECTOR_INDEX": self.chunks_index.index_name,
                 "USER_POOL_ID": self.user_pool.user_pool_id,
                 **{
                     f"TABLE_{name.upper()}": table.table_name
