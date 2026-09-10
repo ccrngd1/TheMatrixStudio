@@ -353,7 +353,13 @@ async def test_vector_mode_falls_back_to_lexical_when_embedding_fails(vdb):
     assert "egress" in query
 
 
-async def test_vector_mode_without_the_extension_uses_lexical(vdb, monkeypatch):
+async def test_hybrid_mode_without_the_extension_uses_lexical(vdb, monkeypatch):
+    """Renamed: this only ever exercised HYBRID, despite being named for vector.
+
+    Hybrid was never at risk — its lexical arm runs unconditionally. The name
+    claiming vector coverage is part of why the vector-mode hole below survived:
+    a reader scanning test names would conclude the case was tested.
+    """
     monkeypatch.setattr(vdb, "_vec_available", False)
     await vdb.add_document(
         run_id="r1", title="a.md",
@@ -364,6 +370,83 @@ async def test_vector_mode_without_the_extension_uses_lexical(vdb, monkeypatch):
         k=3, max_chars=900, mode="hybrid",
     )
     assert passages, "hybrid without sqlite-vec should still retrieve lexically"
+
+
+async def test_vector_mode_without_the_extension_falls_back_to_lexical(
+    vdb, monkeypatch, caplog
+):
+    """The bug: vector mode went SILENT, not degraded, with sqlite-vec absent.
+
+    The fallback used to be an `elif` on the query-embedding branch *inside* the
+    `vec_available` guard, so with the extension missing the whole block was
+    skipped and the fallback was unreachable. `mode="vector"` then returned zero
+    passages over a corpus where `mode="fts"` returned matches, and the persona
+    announced it had no background material while its documents sat there.
+
+    `sqlite-vec` is an optional extra, so this is the default state of any install
+    that did not opt in — not an edge case.
+    """
+    monkeypatch.setattr(vdb, "_vec_available", False)
+    await vdb.add_document(
+        run_id="r1", title="a.md",
+        chunks=["egress inspection provides auditable evidence"], persona_name="A",
+    )
+    with caplog.at_level("WARNING"):
+        passages, query, _rej = await retrieve_for_turn(
+            vdb, "r1", "A", "egress inspection evidence", conversation=[],
+            k=3, max_chars=900, mode="vector",
+        )
+    assert passages, "vector mode without sqlite-vec returned nothing at all"
+    assert "egress" in query
+    # Degrading quietly is how this went unnoticed; the log has to say so.
+    assert any("falling back to lexical" in r.message for r in caplog.records)
+
+
+@requires_vec
+async def test_vector_mode_with_unembedded_chunks_falls_back_to_lexical(vdb, caplog):
+    """The other unreachable case: documents attached but never embedded.
+
+    `vector_search` swallows its own errors (here: no `chunk_vec` table, because
+    nothing has ever been stored) and returns no rows, which the old code could not
+    distinguish from a legitimately empty result — so it returned nothing. KNN
+    applies no score threshold, so an empty vector result never means "your query
+    matched nothing"; it means the arm could not run, and lexical beats silence.
+    """
+    if not vdb.vec_available:
+        pytest.skip("sqlite-vec could not be loaded in this environment")
+    await vdb.add_document(
+        run_id="r1", title="a.md",
+        chunks=["egress inspection provides auditable evidence"], persona_name="A",
+    )
+    # Deliberately no embed_pending_chunks call — that is the whole scenario.
+    with patch("litellm.aembedding", side_effect=_fake_embedding((1.0, 0.0))), \
+         caplog.at_level("WARNING"):
+        passages, _query, _rej = await retrieve_for_turn(
+            vdb, "r1", "A", "egress inspection evidence", conversation=[],
+            k=3, max_chars=900, mode="vector",
+        )
+    assert passages, "unembedded chunks made vector mode return nothing"
+    assert any("falling back to lexical" in r.message for r in caplog.records)
+
+
+@requires_vec
+async def test_fts_mode_is_unaffected_by_the_vector_fallback(vdb):
+    """The fallback must not change fts mode, which never had the defect.
+
+    Stated as its own test because the fix touches shared code above the mode
+    branch, and `fts` is what every existing run uses.
+    """
+    if not vdb.vec_available:
+        pytest.skip("sqlite-vec could not be loaded in this environment")
+    await vdb.add_document(
+        run_id="r1", title="a.md",
+        chunks=["egress inspection provides auditable evidence"], persona_name="A",
+    )
+    passages, _query, _rej = await retrieve_for_turn(
+        vdb, "r1", "A", "egress inspection evidence", conversation=[],
+        k=3, max_chars=900, mode="fts",
+    )
+    assert len(passages) == 1
 
 
 @requires_vec
@@ -552,6 +635,15 @@ async def test_floor_skipped_for_non_unit_vectors(vdb, caplog):
 
 @requires_vec
 async def test_floor_rejection_is_reported_to_the_caller(vdb):
+    """Also the guard on the other side of the lexical fallback.
+
+    The `passages == []` assertion is load-bearing beyond floor reporting: it
+    proves the vector→lexical fallback does NOT fire when the floor rejected the
+    matches. "Matched, but only below the floor" is a decision the operator
+    configured; reaching past it to lexical would quietly defeat the floor. A
+    fallback written as "vector mode returned nothing, so try lexical" would pass
+    every other test in this file and fail here.
+    """
     if not vdb.vec_available:
         pytest.skip("sqlite-vec could not be loaded in this environment")
     await vdb.add_document(
