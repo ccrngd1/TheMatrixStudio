@@ -430,19 +430,45 @@ class DynamoStorage:
         *,
         owner_sub: str,
     ) -> None:
-        """Set a run's lifecycle status, and its completion time when terminal."""
+        """Set a run's lifecycle status, and its completion time when terminal.
+
+        **Conditional on the run existing, and that is not a nicety.** DynamoDB's
+        `UpdateItem` UPSERTS, where SQL's `UPDATE … WHERE id = ?` is a silent no-op on
+        a missing row. Without the condition, updating a run that is not there
+        *creates* one — measured: a row with a status, a `completed_at`, and no topic,
+        no cast and no `created_at`, which then appears in the caller's history list.
+        A wrong `owner_sub`, a deleted run, or a resume of something already gone
+        would each manufacture a phantom conversation.
+
+        A missing run is logged and ignored rather than raised, which matches what
+        SQLite did and what callers assume: the engine calls this at the end of a run,
+        and turning "the row is gone" into an exception there would fail a run that
+        had already finished. The warning is what makes a real bug findable, since
+        silence is how this class of thing survives.
+        """
         expr = "SET #s = :s"
         values: Dict[str, Any] = {":s": status}
         if completed_at is not None:
             expr += ", completed_at = :c"
             values[":c"] = completed_at
-        await self._call(
-            self._table("runs").update_item,
-            Key={"pk": _user_pk(owner_sub), "sk": _run_sk(run_id)},
-            UpdateExpression=expr,
-            ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues=values,
-        )
+        try:
+            await self._call(
+                self._table("runs").update_item,
+                Key={"pk": _user_pk(owner_sub), "sk": _run_sk(run_id)},
+                UpdateExpression=expr,
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues=values,
+                ConditionExpression="attribute_exists(sk)",
+            )
+        except Exception as exc:  # noqa: BLE001
+            if "ConditionalCheckFailed" not in str(exc):
+                raise
+            logger.warning(
+                "Ignored a status update to %r for run %s, which does not exist "
+                "under owner %s. Nothing was written — but a caller reaching here "
+                "has a run id or an owner that does not match its data.",
+                status, run_id, owner_sub,
+            )
 
     async def get_run(
         self, run_id: str, *, owner_sub: str
