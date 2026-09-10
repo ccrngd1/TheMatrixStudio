@@ -302,6 +302,52 @@ class MatrixStudioStack(Stack):
             self.spa_bucket
         )
 
+        # A cache POLICY governs CloudFront's own cache. It says nothing to the
+        # browser. Measured on the first real deployment: with only the policies
+        # set, neither `index.html` nor a hashed asset carried a `Cache-Control`
+        # header at all — so the edge behaved correctly and the browser fell back
+        # to heuristic caching, which for an HTML response carrying `Last-Modified`
+        # means caching it anyway. That is the same stale-`index.html` blank page,
+        # relocated from the edge to the client, where an invalidation cannot reach
+        # it.
+        #
+        # Response headers policies fix it declaratively. Setting `--cache-control`
+        # on the `aws s3 sync` would also work, but it depends on whoever runs the
+        # upload remembering two flags, and the failure is silent.
+        no_store = cloudfront.ResponseHeadersPolicy(
+            self,
+            "SpaNoStorePolicy",
+            response_headers_policy_name=f"{self.config.prefix}-html-no-store",
+            custom_headers_behavior=cloudfront.ResponseCustomHeadersBehavior(
+                custom_headers=[
+                    cloudfront.ResponseCustomHeader(
+                        header="Cache-Control",
+                        value="no-store, must-revalidate",
+                        # Override, because S3 may send its own value and the
+                        # weaker one winning is the whole bug.
+                        override=True,
+                    )
+                ]
+            ),
+        )
+        immutable = cloudfront.ResponseHeadersPolicy(
+            self,
+            "SpaImmutablePolicy",
+            response_headers_policy_name=f"{self.config.prefix}-assets-immutable",
+            custom_headers_behavior=cloudfront.ResponseCustomHeadersBehavior(
+                custom_headers=[
+                    cloudfront.ResponseCustomHeader(
+                        header="Cache-Control",
+                        # A year, and `immutable` so a browser does not even
+                        # revalidate. Safe only because the filename contains a
+                        # content hash: new content is a new URL.
+                        value="public, max-age=31536000, immutable",
+                        override=True,
+                    )
+                ]
+            ),
+        )
+
         self.distribution = cloudfront.Distribution(
             self,
             "SpaDistribution",
@@ -313,6 +359,7 @@ class MatrixStudioStack(Stack):
                     cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS
                 ),
                 cache_policy=cloudfront.CachePolicy.CACHING_DISABLED,
+                response_headers_policy=no_store,
                 allowed_methods=cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
             ),
             additional_behaviors={
@@ -322,6 +369,7 @@ class MatrixStudioStack(Stack):
                         cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS
                     ),
                     cache_policy=cloudfront.CachePolicy.CACHING_OPTIMIZED,
+                    response_headers_policy=immutable,
                     allowed_methods=(
                         cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS
                     ),
@@ -576,17 +624,32 @@ class MatrixStudioStack(Stack):
         self.api_lambda.add_to_role_policy(
             iam.PolicyStatement(
                 actions=["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
-                # Bedrock has no resource-level permission for foundation models
-                # beyond the model ARN itself, and the model list is configuration
-                # rather than infrastructure, so this is scoped by service and
-                # region rather than by model. Phase 7's model-invocation logging
-                # is where usage becomes auditable.
+                # The region segment is a WILDCARD, and this was learned the hard
+                # way on the first deployment rather than reasoned out.
+                #
+                # The default model is a GLOBAL inference profile
+                # (`global.anthropic.claude-haiku-4-5-...`), and when Bedrock
+                # authorises the underlying foundation model for a global profile
+                # it evaluates a REGION-LESS ARN:
+                #     arn:aws:bedrock:::foundation-model/anthropic.claude-haiku-...
+                # The first version pinned `us-east-1` and `us-west-2`, which
+                # cannot match an empty region segment, so every model call failed
+                # with AccessDenied. An IAM `*` matches zero characters, so the
+                # wildcard covers both the empty form and every real region.
+                #
+                # This is not as broad as it looks: foundation-model ARNs carry no
+                # account id, so there is no cross-account reach here — the grant
+                # is "any Bedrock foundation model", which is what a global profile
+                # requires by construction. It also subsumes the us-west-2 entry
+                # the image model needed (§5.1). Narrowing to specific models would
+                # mean the IAM policy has to be redeployed whenever someone changes
+                # `AVAILABLE_MODELS`, coupling configuration to infrastructure;
+                # Phase 7's model-invocation logging is the right place for
+                # per-model accountability.
                 resources=[
-                    f"arn:aws:bedrock:{self.region}::foundation-model/*",
-                    f"arn:aws:bedrock:{self.region}:{self.account}:inference-profile/*",
-                    # Stability's image model is served from us-west-2, which can
-                    # differ from the text region (§5.1).
-                    "arn:aws:bedrock:us-west-2::foundation-model/*",
+                    "arn:aws:bedrock:*::foundation-model/*",
+                    f"arn:aws:bedrock:*:{self.account}:inference-profile/*",
+                    f"arn:aws:bedrock:*:{self.account}:application-inference-profile/*",
                 ],
             )
         )

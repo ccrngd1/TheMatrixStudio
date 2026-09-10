@@ -79,6 +79,27 @@ supposed to catch them.
   docker-ignored). With that plus a CDK-level `exclude` for directories the Lambda image
   never copies, the staged build context went **132 MB → 1.7 MB**.
 
+- **Deployed Phase 1 to AWS**, and three defects surfaced that `cdk synth` and 39
+  template assertions could not have found. Each one is worth stating because each
+  **passed `/api/health`**:
+  - **The Bedrock IAM policy could not authorise the default model.** A *global*
+    inference profile makes Bedrock evaluate a **region-less** foundation-model ARN
+    (`arn:aws:bedrock:::foundation-model/…`), which region-pinned ARNs cannot match. Every
+    model call returned AccessDenied while the stack looked healthy. Fixed by wildcarding
+    the region — an IAM `*` matches zero characters, so it covers the empty form too.
+  - **CloudFront sent no `Cache-Control` header at all.** A cache *policy* governs the
+    edge and says nothing to the browser, so `index.html` fell back to heuristic caching:
+    the same stale-`index.html` blank page, relocated to the client where a CloudFront
+    invalidation cannot reach it. Fixed with a response headers policy per behaviour
+    (`no-store` for HTML, `immutable` for hashed assets).
+  - **Lambda freezes the execution environment when the handler returns**, so the
+    `asyncio` background task that runs a conversation is never scheduled.
+    `POST /api/runs` returns 201 with a real LLM-generated codename, logs one line
+    (`Starting simulation …`), bills **8 ms**, and the run is gone — the row is never even
+    written. **Phase 4 of the implementation plan is cancelled as a result**: Step
+    Functions is a prerequisite for a run to execute at all, not an optimisation for long
+    runs. Documented in `docs/AWS-IMPLEMENTATION-PLAN.md` and `infra/README.md`.
+
 ### Changed
 - `docs/AWS-IMPLEMENTATION-PLAN.md` item 0.3 (make vector retrieval the default) moved
   to Phase 3, where SQLite and FTS disappear anyway. Flipping the default today would

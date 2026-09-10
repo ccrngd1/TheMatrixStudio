@@ -16,6 +16,8 @@ These need no AWS account and no credentials — `Template.from_stack` synthesiz
 in-process — so they run in the same pytest invocation as everything else.
 """
 
+import re
+
 import aws_cdk as cdk
 import pytest
 from aws_cdk.assertions import Match, Template
@@ -449,15 +451,103 @@ def test_the_api_lambda_cannot_yet_read_any_table_or_bucket(template: Template):
                 )
 
 
-def test_bedrock_access_covers_the_image_model_region(template: Template):
-    """Stability is served from us-west-2, which can differ from the text region.
+def test_bedrock_foundation_model_access_is_region_wildcarded(template: Template):
+    """A region-pinned foundation-model ARN cannot authorise a GLOBAL profile.
 
-    Easy to miss because avatars are optional: text generation would work and only
-    avatar generation would fail, with a 502 that reads like an upstream problem.
+    Observed on the first real deployment, not deduced. The default model is
+    `global.anthropic.claude-haiku-4-5-...`, and when Bedrock authorises the
+    underlying foundation model for a global inference profile it evaluates a
+    **region-less** ARN:
+
+        arn:aws:bedrock:::foundation-model/anthropic.claude-haiku-4-5-...
+
+    The first version granted `arn:aws:bedrock:us-east-1::foundation-model/*` and
+    `...us-west-2...`, neither of which matches an empty region segment, so every
+    model call returned AccessDenied — while `/api/health` returned 200 and the
+    stack looked healthy. An IAM `*` matches zero characters, which is what makes
+    the wildcard cover the empty form as well as every real region.
+
+    The wildcard also subsumes the separate us-west-2 grant the Stability image
+    model needs (§5.1), which the previous version of this test checked for.
     """
     resources = []
     for policy in template.find_resources("AWS::IAM::Policy").values():
         for statement in policy["Properties"]["PolicyDocument"]["Statement"]:
             if "bedrock:InvokeModel" in str(statement.get("Action")):
                 resources.extend(statement["Resource"])
-    assert any("us-west-2" in str(r) for r in resources), resources
+    assert resources, "no bedrock:InvokeModel grant found"
+
+    flat = [str(r) for r in resources]
+    assert any("bedrock:*::foundation-model" in r for r in flat), (
+        "foundation-model ARNs must wildcard the region, or a global inference "
+        f"profile cannot be invoked: {flat}"
+    )
+    # A region-pinned foundation-model ARN is the defect; assert it is gone rather
+    # than only that the right one is present, since both could coexist and the
+    # pinned one would be dead weight suggesting the region matters.
+    assert not any(
+        re.search(r"bedrock:[a-z]{2}-[a-z]+-\d::foundation-model", r) for r in flat
+    ), f"region-pinned foundation-model ARN left behind: {flat}"
+
+
+def test_the_browser_is_told_how_to_cache_too(template: Template):
+    """A cache POLICY governs the edge; a browser needs a `Cache-Control` header.
+
+    Found on the first real deployment: with only the cache policies set, neither
+    `index.html` nor a hashed asset carried `Cache-Control` at all. The edge
+    behaved correctly, and the browser fell back to heuristic caching — which for
+    an HTML response with `Last-Modified` means caching it anyway. Same
+    stale-`index.html` blank page, relocated to the client, where a CloudFront
+    invalidation cannot reach it.
+
+    Asserted on the response headers policies rather than on the cache policies,
+    because those were already right and the deployment was still wrong.
+    """
+    policies = {
+        p["Properties"]["ResponseHeadersPolicyConfig"]["Name"]: p["Properties"][
+            "ResponseHeadersPolicyConfig"
+        ]
+        for p in template.find_resources(
+            "AWS::CloudFront::ResponseHeadersPolicy"
+        ).values()
+    }
+
+    html = policies["matrix-studio-html-no-store"]
+    assets = policies["matrix-studio-assets-immutable"]
+
+    def header(config):
+        items = config["CustomHeadersConfig"]["Items"]
+        entry = next(i for i in items if i["Header"] == "Cache-Control")
+        # Override matters: S3 may send its own value, and the weaker one winning
+        # is the entire bug.
+        assert entry["Override"] is True, entry
+        return entry["Value"]
+
+    assert "no-store" in header(html), header(html)
+    assert "immutable" in header(assets), header(assets)
+    assert "max-age=31536000" in header(assets), header(assets)
+
+
+def test_both_spa_behaviours_attach_a_response_headers_policy(template: Template):
+    """The policies existing is not the same as them being attached.
+
+    Two resources in the template and neither referenced by a behaviour is a
+    deployment with the original defect and a passing test above it.
+    """
+    dist = next(
+        iter(template.find_resources("AWS::CloudFront::Distribution").values())
+    )
+    config = dist["Properties"]["DistributionConfig"]
+    assert config["DefaultCacheBehavior"].get("ResponseHeadersPolicyId"), (
+        "index.html has no response headers policy attached"
+    )
+    assets = next(
+        b for b in config["CacheBehaviors"] if b["PathPattern"] == "/assets/*"
+    )
+    assert assets.get("ResponseHeadersPolicyId"), (
+        "/assets/* has no response headers policy attached"
+    )
+    assert (
+        config["DefaultCacheBehavior"]["ResponseHeadersPolicyId"]
+        != assets["ResponseHeadersPolicyId"]
+    ), "both behaviours share one policy, so one of them is wrong"

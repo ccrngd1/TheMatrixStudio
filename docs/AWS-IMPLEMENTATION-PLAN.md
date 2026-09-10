@@ -202,24 +202,67 @@ a retrieval-quality regression, so the measurement is the acceptance test.
 
 ---
 
-## Phase 4 — Run execution, still inside one Lambda
+## Phase 4 — ~~Run execution, still inside one Lambda~~ **CANCELLED**
 
-Wire run creation to execute the whole conversation in the API Lambda's background task, as
-it does today.
+**This phase cannot work, and that was measured on the Phase 1 deployment rather than
+reasoned out.** It is left here rather than deleted because the mistake is instructive.
 
-*Done when:* a real ~20-turn conversation completes end to end in AWS, streams to the UI by
-polling, produces a summary, and the dossier shows retrieved passages.
+The plan was: "wire run creation to execute the whole conversation in the API Lambda's
+background task, as it does today", justified by "measured turn latency (6–13 s) means ~30
+turns fits a 15-minute Lambda". Both halves were wrong about Lambda's execution model.
 
-**Why stop here before Step Functions:** this proves tenancy, storage, retrieval and Bedrock
-together, with one moving part instead of five. Measured turn latency (6–13 s) means ~30
-turns fits a 15-minute Lambda, so this is genuinely usable, not a throwaway.
+**What actually happens.** `POST /api/runs` on the deployed Phase 1 stack returns **201
+with a real LLM-generated codename** — so the synchronous part of `manager.create_run`
+works, Bedrock works, the token works. Then the run vanishes. Never appears in
+`GET /api/runs`, and `GET /api/runs/{name}` is 404. The CloudWatch logs show exactly one
+line from the engine:
+
+```
+[INFO] Starting simulation 99e8458f-…: Whether serverless is worth the cold starts
+Billed Duration: 8 ms
+```
+
+`"Starting simulation"` is the first statement in `run_simulation`, logged *before*
+`db.create_run`. Nothing follows it, and the invocation billed **8 ms**.
+
+**Why.** Lambda **freezes the execution environment when the handler returns.** An
+`asyncio.create_task` background task is not a thread that outlives the response — it is a
+coroutine on an event loop that stops being scheduled. The 15-minute figure is the limit on
+a *single invocation*, and this invocation ends in milliseconds because the API responded.
+The run row is never written, so there is not even a broken run to resume: the work is lost
+with no trace beyond one log line.
+
+The obvious repair does not exist either. Not returning until the run finishes would make
+the invocation long enough — but **API Gateway's integration timeout is a hard 30 seconds**,
+and a 20-turn run at 6–13 s/turn needs minutes.
+
+**Consequence for the plan: Step Functions is a prerequisite, not an optimisation.** Phase 5
+was framed as "move the loop to a state machine" for runs longer than one Lambda allows. It
+is actually the only way a run executes at all. Phase 5 absorbs this phase's acceptance
+criteria (a real conversation end to end, polled by the UI, producing a summary and a
+dossier).
+
+*What is salvaged:* the intent — "prove tenancy, storage, retrieval and Bedrock together
+before adding orchestration" — is still right, and Phase 3's retrieval measurement already
+does most of it without needing a run to execute.
 
 ---
 
-## Phase 5 — Step Functions
+## Phase 5 — Step Functions  *(now the first phase in which a run can execute)*
 
 Move the loop to a Standard workflow per §5.2: `IngestDocuments` → `PrepareTurn` →
 `GenerateTurn` → `CheckContinue`.
+
+Promoted from "the phase that lifts the turn ceiling" to **the phase that makes run
+execution possible at all** — see the cancelled Phase 4 above for the measurement. It
+therefore also inherits Phase 4's acceptance criteria: a real conversation completing end to
+end, streaming to the UI by polling, producing a summary, and a dossier showing retrieved
+passages.
+
+One consequence worth planning for now: `POST /api/runs` must become
+`StartExecution` + return, and the run row has to be written **synchronously in the request**
+rather than by the engine. Otherwise a client that gets a 201 still has nothing to poll —
+which is precisely the failure observed above.
 
 - `stop_requested` and the cost caps become `Choice` states — restoring semantics that
   currently depend on in-memory state and so only work if the request lands on the process
@@ -291,12 +334,34 @@ and debugged against 786 fast local tests rather than through a deployment.
   context and answers correctly under the Runtime Interface Emulator. Three defects
   surfaced and fixed, one of which (`lifespan="off"`) broke every storage route while
   leaving the phase's own acceptance check passing.
-- ⬜ **Phase 1 deploy** — blocked on credentials only (the token in this environment was
-  expired). `cd infra && cdk deploy -c admin_email=...`, then the four checks in
-  `infra/README.md`. Node 20+ recommended; Node 18 works but warns.
+- ✅ **Phase 1 DEPLOYED** (2026-09-10) to account 791580863750, us-east-1. All four
+  acceptance checks pass: Hosted UI login through the real authorization-code+PKCE flow, the
+  SPA served from CloudFront (deep links included), unauthenticated `/api/health` → **401**
+  from API Gateway before Lambda, authenticated → **200**. Live Bedrock call from the Lambda
+  confirmed (`name_source: "llm"`).
+  Two further defects found *only by deploying*:
+  - **The Bedrock IAM policy could not authorise the default model.** A *global* inference
+    profile makes Bedrock evaluate a **region-less** foundation-model ARN
+    (`arn:aws:bedrock:::foundation-model/…`), which region-pinned ARNs cannot match. Every
+    model call returned AccessDenied while `/api/health` returned 200 and the stack looked
+    healthy. Fixed with a wildcarded region (an IAM `*` matches zero characters).
+  - **CloudFront sent no `Cache-Control` header at all.** A cache *policy* governs the edge
+    and says nothing to the browser, so `index.html` fell to heuristic caching — the same
+    stale-`index.html` blank page, relocated to the client where an invalidation cannot
+    reach it. Fixed with response headers policies per behaviour.
+  - **Phase 4 is cancelled** as a result of a third finding; see that section.
 
-**Next after that: Phase 2**, the storage port — the largest phase in the plan (53
-methods) and the one that makes the deployment more than a login screen. Phase 1 leaves
-the Lambda on SQLite in `/tmp`, which is per-sandbox and ephemeral by design: that is the
-phase boundary, not a bug, and `infra/README.md` says so where a demo operator will see
-it.
+**Next: Phase 2**, the storage port — the largest phase in the plan (53 methods) and the one
+that makes the deployment more than a login screen. Phase 1 leaves the Lambda on SQLite in
+`/tmp`, which is per-sandbox and ephemeral by design: that is the phase boundary, not a bug,
+and `infra/README.md` says so where a demo operator will see it.
+
+**Revised remaining order:** 2 (storage) → 3 (retrieval) → ~~4~~ → 5 (Step Functions, now
+mandatory for a run to execute) → 6 (knowledge bases) → 7 (operations).
+
+### What deploying taught, in one line
+
+Every one of the three deployment defects — Bedrock IAM, CloudFront cache headers, frozen
+background tasks — **passed `/api/health`**. A phase whose acceptance criterion is a health
+check will sign off a stack that cannot invoke a model, caches its own index page, and
+silently drops every run. Worth remembering when writing the "done when" for Phase 2.
