@@ -160,12 +160,19 @@ async def _docs_action(args: argparse.Namespace) -> int:
     from matrix_studio.retrieval import apply_budget, build_fts_query, extract_terms
     from matrix_studio.settings import get_settings
     from matrix_studio.storage import Database
+    from matrix_studio.tenancy import LOCAL_USER_SUB
 
     settings = get_settings()
     db = Database(str(settings.db_file))
     await db.connect()
     try:
-        run = await db.get_run_by_ref(args.run)
+        # The CLI is an operator tool on the local database, and there is no
+        # authenticated caller — so it acts as the single local user, which is who
+        # owns every run a local install has. It is deliberately NOT given
+        # cross-tenant reach: a shell on the box is not a reason to widen the
+        # query, and if this database ever holds more than one user's runs, the
+        # right fix is a `--user` flag, not an unscoped read.
+        run = await db.get_run_by_ref(args.run, owner_sub=LOCAL_USER_SUB)
         if not run:
             print(f"Error: run not found: {args.run}", file=sys.stderr)
             return 1

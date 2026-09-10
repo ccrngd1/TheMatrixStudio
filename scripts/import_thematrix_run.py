@@ -14,11 +14,13 @@ import json
 import sys
 import time
 import uuid
+from functools import partial
 
 from matrix_studio.storage import Database
 from matrix_studio.state import AgentState, SimSnapshot
 from matrix_studio.naming import generate_run_name
 from matrix_studio.settings import get_settings
+from matrix_studio.tenancy import LOCAL_USER_SUB
 
 
 async def main(request_path: str, result_path: str) -> None:
@@ -51,7 +53,8 @@ async def main(request_path: str, result_path: str) -> None:
     naming = await generate_run_name(
         topic=topic,
         cast_names=list(persona_by_name.keys()),
-        name_exists=db.name_exists,
+        # An import belongs to the single local user, same as the CLI.
+        name_exists=partial(db.name_exists, owner_sub=LOCAL_USER_SUB),
     )
     name = naming["name"]
     description = (naming.get("description") or "").strip()
@@ -65,6 +68,7 @@ async def main(request_path: str, result_path: str) -> None:
         run_id=run_id, topic=topic, cast=cast,
         name=name, description=description, slug=slug,
         config={"imported": True, "source": "thematrix", "model": meta.get("model")},
+        owner_sub=LOCAL_USER_SUB,
     )
     await db.update_run_status(run_id, "running")
 

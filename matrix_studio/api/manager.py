@@ -15,6 +15,7 @@ buffered stream a client sees is identical whether the run is live or finished.
 import asyncio
 import logging
 import uuid
+from functools import partial
 from typing import Any, Dict, List, Optional, Set
 
 from matrix_studio import branching
@@ -78,11 +79,17 @@ class RunManager:
     def get_broker(self, run_id: str) -> Optional[RunBroker]:
         return self._brokers.get(run_id)
 
-    async def create_run(self, request: Dict[str, Any]) -> Dict[str, Any]:
+    async def create_run(
+        self, request: Dict[str, Any], *, owner_sub: str
+    ) -> Dict[str, Any]:
         """
         Resolve the run's name/description, then start the simulation as a
         background task. Returns immediately with run metadata — NEVER blocks on
         completion.
+
+        ``owner_sub`` is required and keyword-only: this is the one place a run's
+        owner is established, and defaulting it would attribute somebody's
+        conversation to an identity they do not have.
         """
         topic = request["topic"]
         cast = request.get("cast", [])
@@ -99,12 +106,14 @@ class RunManager:
         slug = None
         name_source = "user" if supplied_name else None
 
-        if supplied_name and await self.db.name_exists(supplied_name):
+        if supplied_name and await self.db.name_exists(
+            supplied_name, owner_sub=owner_sub
+        ):
             # Disambiguate a user-supplied duplicate rather than rejecting.
             base = supplied_name
             for suffix in range(2, 100):
                 candidate = f"{base}-{suffix}"
-                if not await self.db.name_exists(candidate):
+                if not await self.db.name_exists(candidate, owner_sub=owner_sub):
                     supplied_name = candidate
                     break
 
@@ -118,7 +127,8 @@ class RunManager:
                 topic=topic,
                 cast_names=cast_names,
                 model=model,
-                name_exists=self.db.name_exists,
+                # Uniqueness is per user, so the predicate carries the owner.
+                name_exists=partial(self.db.name_exists, owner_sub=owner_sub),
             )
             name = naming["name"]
             description = description or naming["description"]
@@ -129,6 +139,7 @@ class RunManager:
         engine_request = dict(request)
         engine_request["name"] = name
         engine_request["description"] = description
+        engine_request["owner_sub"] = owner_sub
 
         # Phase 1.5: fold an optional top-level `summary` config into the run's
         # stored config so it persists in config_json and drives auto-summary at

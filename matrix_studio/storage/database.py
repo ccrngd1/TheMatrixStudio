@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional
 import aiosqlite
 
 from matrix_studio.state import SimSnapshot
+from matrix_studio.tenancy import LOCAL_USER_SUB
 
 logger = logging.getLogger(__name__)
 
@@ -153,7 +154,8 @@ class Database:
                 parent_run_id TEXT,
                 branch_turn INTEGER,
                 created_at INTEGER NOT NULL,
-                completed_at INTEGER
+                completed_at INTEGER,
+                owner_sub TEXT
             )
         """)
 
@@ -162,15 +164,40 @@ class Database:
         # older rows/queries keep working (nullable, backward-compatible).
         async with self._conn.execute("PRAGMA table_info(runs)") as cursor:
             existing_cols = {row[1] for row in await cursor.fetchall()}
-        for col in ("name", "description", "slug"):
+        for col in ("name", "description", "slug", "owner_sub"):
             if col not in existing_cols:
                 await self._conn.execute(f"ALTER TABLE runs ADD COLUMN {col} TEXT")
 
-        # Enforce name uniqueness for the runs that have one (nullable names are
-        # exempt so legacy rows and unnamed runs never collide).
+        # Phase 0.2 tenancy migration. Existing rows predate ownership, and a NULL
+        # owner is a run nobody can read — so back-fill them to the single local
+        # user, which is who actually created them. Doing this before the unique
+        # index is built matters: the index is over (owner_sub, name), and NULL is
+        # not equal to itself in SQL, so a table of NULL owners would silently keep
+        # global-looking uniqueness semantics.
+        await self._conn.execute(
+            "UPDATE runs SET owner_sub = ? WHERE owner_sub IS NULL",
+            (LOCAL_USER_SUB,),
+        )
+
+        # Name uniqueness is PER USER, not global. Two people must both be able to
+        # have a run called `trusted-robot` — with a global index the second one to
+        # generate that name would collide with a row they cannot even see, which
+        # is both a bug and an information leak about another tenant's data.
+        #
+        # The old global index has to be dropped explicitly. Leaving it in place
+        # would defeat the new one entirely: `CREATE INDEX IF NOT EXISTS` is
+        # satisfied by adding the per-user index, and the surviving global index
+        # would go on rejecting the cross-user duplicate anyway. Silent, and
+        # invisible to any test that only checks the new index exists.
+        await self._conn.execute("DROP INDEX IF EXISTS runs_name_unique")
         await self._conn.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS runs_name_unique
-            ON runs(name) WHERE name IS NOT NULL
+            CREATE UNIQUE INDEX IF NOT EXISTS runs_owner_name_unique
+            ON runs(owner_sub, name) WHERE name IS NOT NULL
+        """)
+        # Every tenant-scoped read filters on this.
+        await self._conn.execute("""
+            CREATE INDEX IF NOT EXISTS runs_owner_created
+            ON runs(owner_sub, created_at DESC)
         """)
 
         await self._conn.execute("""
@@ -431,6 +458,7 @@ class Database:
         config: Optional[Dict[str, Any]] = None,
         parent_run_id: Optional[str] = None,
         branch_turn: Optional[int] = None,
+        owner_sub: str = LOCAL_USER_SUB,
     ) -> None:
         """
         Create a new simulation run.
@@ -439,19 +467,29 @@ class Database:
             run_id: Unique run identifier
             topic: Simulation topic
             cast: List of persona definitions
-            name: Optional memorable run name (unique when present)
+            name: Optional memorable run name (unique per owner when present)
             description: Optional one-line human description
             slug: Optional normalized slug (defaults to name)
             config: Optional configuration dict
             parent_run_id: Parent run ID if this is a branch
             branch_turn: Turn number branched from
+            owner_sub: Who owns this run.
+
+        ``owner_sub`` has a default, unlike the read methods below, and the
+        asymmetry is deliberate. A forgotten owner on a *read* fails OPEN — it
+        would return another tenant's run — so those arguments are required and
+        omitting one is a ``TypeError``. A forgotten owner on a *write* fails
+        CLOSED: the run belongs to an identity no authenticated user has, so
+        nobody can read it. That is a visible bug (the creator cannot find their
+        own run) rather than a leak, and it keeps ~40 test and script call sites
+        that have no notion of a user from having to invent one.
         """
         await self._conn.execute(
             """
             INSERT INTO runs (id, name, description, slug, topic, cast_json,
                               config_json, status, parent_run_id, branch_turn,
-                              created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+                              created_at, owner_sub)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
             """,
             (
                 run_id,
@@ -464,14 +502,21 @@ class Database:
                 parent_run_id,
                 branch_turn,
                 int(time.time()),
+                owner_sub,
             ),
         )
         await self._conn.commit()
 
-    async def name_exists(self, name: str) -> bool:
-        """Return True if a run with this memorable name already exists."""
+    async def name_exists(self, name: str, *, owner_sub: str) -> bool:
+        """Return True if THIS OWNER already has a run with this memorable name.
+
+        Scoped, because uniqueness is per user. An unscoped check would make one
+        tenant's chosen codename unavailable to everyone else, and the resulting
+        "that name is taken" would be a statement about data the caller cannot see.
+        """
         async with self._conn.execute(
-            "SELECT 1 FROM runs WHERE name = ? LIMIT 1", (name,)
+            "SELECT 1 FROM runs WHERE name = ? AND owner_sub = ? LIMIT 1",
+            (name, owner_sub),
         ) as cursor:
             return await cursor.fetchone() is not None
 
@@ -558,13 +603,19 @@ class Database:
 
     async def get_run(self, run_id: str) -> Optional[Dict[str, Any]]:
         """
-        Get run metadata.
+        Get run metadata by id, WITHOUT an ownership check.
 
         Args:
             run_id: Run identifier
 
         Returns:
             Run dict or None if not found
+
+        **Internal, post-authorisation use only.** Callers are the engine and the
+        startup sweep, which operate on a run whose ownership has already been
+        established (or, in the sweep's case, across all tenants by design).
+        Anything reachable from an HTTP route must go through
+        ``get_run_by_ref``, which enforces the scope in SQL.
         """
         async with self._conn.execute(
             "SELECT * FROM runs WHERE id = ?", (run_id,)
@@ -574,47 +625,74 @@ class Database:
                 return dict(row)
             return None
 
-    async def get_run_by_ref(self, ref: str) -> Optional[Dict[str, Any]]:
+    async def get_run_by_ref(
+        self, ref: str, *, owner_sub: str
+    ) -> Optional[Dict[str, Any]]:
         """
-        Resolve a run by either its UUID id or its memorable name.
+        Resolve one of THIS OWNER's runs by either its UUID id or its memorable name.
 
         Args:
             ref: A run_id (UUID) or a memorable name.
+            owner_sub: The caller's identity. Required and keyword-only.
 
         Returns:
-            Run dict or None if not found.
+            Run dict, or None if it does not exist *or* is not this owner's.
+
+        This is the single authorisation choke point for the ~25 routes that take a
+        ``ref``, and the reason ``owner_sub`` is required rather than defaulted: a
+        route that forgets it raises ``TypeError`` at call time instead of quietly
+        serving another tenant's conversation. One missed route is the whole
+        vulnerability, so the check cannot be something each route remembers to do.
+
+        Returning None rather than raising is what collapses "not found" and "not
+        yours" into an identical 404 at the edge. A 403 would confirm that a given
+        run name exists under some other account, and run names are guessable —
+        they come from a generator with a small vocabulary.
         """
         async with self._conn.execute(
-            "SELECT * FROM runs WHERE id = ? OR name = ? LIMIT 1", (ref, ref)
+            """
+            SELECT * FROM runs
+            WHERE (id = ? OR name = ?) AND owner_sub = ?
+            LIMIT 1
+            """,
+            (ref, ref, owner_sub),
         ) as cursor:
             row = await cursor.fetchone()
             return dict(row) if row else None
 
     async def list_runs(
-        self, q: Optional[str] = None, limit: int = 200
+        self, q: Optional[str] = None, limit: int = 200, *, owner_sub: str
     ) -> List[Dict[str, Any]]:
         """
-        List runs (newest first), optionally filtered by a case-insensitive
-        substring matching name, description, or topic.
+        List THIS OWNER's runs (newest first), optionally filtered by a
+        case-insensitive substring matching name, description, or topic.
 
         Each returned dict includes derived aggregates (turn_count,
         total_cost_usd) computed from the event log so the history list needs
         no extra round-trips.
+
+        ``owner_sub`` is keyword-only and required for the same reason as in
+        ``get_run_by_ref``: this is the history list, so an omitted filter would
+        show every tenant every other tenant's conversations at once.
         """
         if q:
             like = f"%{q.lower()}%"
             query = """
                 SELECT * FROM runs
-                WHERE lower(COALESCE(name, '')) LIKE ?
-                   OR lower(COALESCE(description, '')) LIKE ?
-                   OR lower(topic) LIKE ?
+                WHERE owner_sub = ?
+                  AND (lower(COALESCE(name, '')) LIKE ?
+                       OR lower(COALESCE(description, '')) LIKE ?
+                       OR lower(topic) LIKE ?)
                 ORDER BY created_at DESC
                 LIMIT ?
             """
-            params = (like, like, like, limit)
+            params = (owner_sub, like, like, like, limit)
         else:
-            query = "SELECT * FROM runs ORDER BY created_at DESC LIMIT ?"
-            params = (limit,)
+            query = """
+                SELECT * FROM runs WHERE owner_sub = ?
+                ORDER BY created_at DESC LIMIT ?
+            """
+            params = (owner_sub, limit)
 
         async with self._conn.execute(query, params) as cursor:
             rows = [dict(r) for r in await cursor.fetchall()]
@@ -633,6 +711,12 @@ class Database:
         a crash/restart mid-generation. Rows are returned unenriched (no event
         aggregates) since the sweep only needs id + last recorded turn, which it
         derives from the event log directly.
+
+        **Deliberately cross-tenant, and the only read that is.** A crash orphans
+        every user's in-flight run, so a sweep scoped to one tenant would leave
+        everyone else's showing as live forever. This is a system operation with no
+        caller identity: nothing here is returned to a user, and there is no HTTP
+        route to it.
         """
         async with self._conn.execute(
             "SELECT * FROM runs WHERE status = ? ORDER BY created_at DESC",
@@ -813,7 +897,7 @@ class Database:
         return out
 
     async def get_run_tree(
-        self, run_id: str
+        self, run_id: str, *, owner_sub: str
     ) -> Dict[str, Any]:
         """
         Return the full lineage tree rooted at the **ancestor** of ``run_id``
@@ -825,21 +909,31 @@ class Database:
 
         The config_json is included so the caller can extract
         ``config.branch_mutation`` for edge labels without a round-trip.
+
+        Every hop is scoped to ``owner_sub``. A branch always inherits its
+        parent's owner, so in a correct system the recursion could never leave the
+        tenant and this filter would be redundant — which is exactly why it is
+        here. The one query in the codebase that walks *from* an authorised run
+        *to* rows nobody checked should not depend on an invariant holding
+        elsewhere; if branching ever loses the owner, the failure is a missing node
+        rather than another tenant's run names in the tree view.
         """
         # Walk up to the root (the run whose parent_run_id IS NULL).
         root_id = run_id
         async with self._conn.execute(
             """
             WITH RECURSIVE ancestors(id, parent_run_id) AS (
-                SELECT id, parent_run_id FROM runs WHERE id = ?
+                SELECT id, parent_run_id FROM runs
+                WHERE id = ? AND owner_sub = ?
                 UNION ALL
                 SELECT r.id, r.parent_run_id
                 FROM runs r
                 JOIN ancestors a ON r.id = a.parent_run_id
+                WHERE r.owner_sub = ?
             )
             SELECT id FROM ancestors WHERE parent_run_id IS NULL
             """,
-            (run_id,),
+            (run_id, owner_sub, owner_sub),
         ) as cursor:
             row = await cursor.fetchone()
         if row:
@@ -849,9 +943,10 @@ class Database:
         async with self._conn.execute(
             """
             WITH RECURSIVE tree(id) AS (
-                SELECT id FROM runs WHERE id = ?
+                SELECT id FROM runs WHERE id = ? AND owner_sub = ?
                 UNION ALL
                 SELECT r.id FROM runs r JOIN tree t ON r.parent_run_id = t.id
+                WHERE r.owner_sub = ?
             )
             SELECT r.id, r.name, r.slug, r.status, r.branch_turn, r.parent_run_id,
                    r.config_json, r.created_at,
@@ -863,7 +958,7 @@ class Database:
             FROM runs r JOIN tree t ON r.id = t.id
             ORDER BY r.created_at ASC
             """,
-            (root_id,),
+            (root_id, owner_sub, owner_sub),
         ) as cursor:
             rows = await cursor.fetchall()
 
@@ -883,21 +978,26 @@ class Database:
             }
         return {"root_id": root_id, "nodes": nodes}
 
-    async def list_branches(self, run_id: str) -> List[Dict[str, Any]]:
+    async def list_branches(
+        self, run_id: str, *, owner_sub: str
+    ) -> List[Dict[str, Any]]:
         """
         List child branches forked from ``run_id`` (Phase 2a lineage).
 
         Returns ``{run_id, name, branch_turn, status, created_at}`` for each run
         whose ``parent_run_id`` is this run, newest first. Read-only; used by the
         run detail view to show "this run's branches".
+
+        Scoped for the same reason as ``get_run_tree``: the caller authorised the
+        parent, not the children.
         """
         async with self._conn.execute(
             """
             SELECT id, name, branch_turn, status, created_at FROM runs
-            WHERE parent_run_id = ?
+            WHERE parent_run_id = ? AND owner_sub = ?
             ORDER BY created_at DESC
             """,
-            (run_id,),
+            (run_id, owner_sub),
         ) as cursor:
             rows = await cursor.fetchall()
         return [
