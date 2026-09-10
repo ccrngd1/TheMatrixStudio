@@ -476,7 +476,13 @@ async def retrieve_for_turn(
     # read meaning, so stripping the sentence to keywords first would discard it.
     semantic: List[Dict[str, Any]] = []
     floor_rejected = 0
-    if mode in ("vector", "hybrid") and getattr(db, "vec_available", False):
+    # Why the vector arm produced nothing, when it produced nothing. Set to a
+    # human-readable cause so the fallback below can say what it is compensating
+    # for; an empty string means the arm was usable (or was not asked for).
+    vector_unusable = ""
+    if mode in ("vector", "hybrid") and not getattr(db, "vec_available", False):
+        vector_unusable = "the sqlite-vec extension is not loaded"
+    elif mode in ("vector", "hybrid"):
         from matrix_studio.embeddings import DEFAULT_EMBEDDING_MODEL, embed_query
 
         # An empty embedding_model means "use the module default" (that is what
@@ -495,6 +501,18 @@ async def retrieve_for_turn(
                 run_id=run_id, vector=query_vector,
                 persona_name=persona_name, k=fetch_k,
             )
+            if not semantic:
+                # KNN applies no score threshold, so an empty result is not "your
+                # query matched nothing" — it means the arm could not run: no
+                # embedded chunks in this slice (attached but never embedded), a
+                # width mismatch against the index, or a failed query. All of them
+                # are conditions under which lexical is strictly better than
+                # nothing. `vector_search` swallows and logs its own errors, so
+                # this is the only signal here that it came back empty-handed.
+                vector_unusable = (
+                    "the vector index returned nothing — chunks may not be "
+                    "embedded yet, or their width may not match the index"
+                )
             if semantic and min_similarity > 0:
                 from matrix_studio.embeddings import is_unit_norm
 
@@ -512,12 +530,34 @@ async def retrieve_for_turn(
                         "similarity floor is not applicable and was skipped.",
                         model,
                     )
-        elif mode == "vector":
-            # Vector-only mode with no usable embedding: fall back to lexical
-            # rather than returning nothing. Degrading beats going silent.
-            lexical = await db.search_documents(
-                run_id=run_id, query=query, persona_name=persona_name, k=fetch_k
-            )
+        else:
+            vector_unusable = "the query could not be embedded"
+
+    # Vector-only mode with no usable vector arm: fall back to lexical rather than
+    # returning nothing. Degrading beats going silent.
+    #
+    # This covers every cause. An earlier version covered exactly one: it was an
+    # `elif` on the query-embedding branch, nested inside the `vec_available`
+    # guard, so the two commonest causes could never reach it — the sqlite-vec
+    # extension being absent (the guard skips the whole block) and chunks never
+    # having been embedded (the arm runs and returns no rows). In both,
+    # `mode="vector"` returned zero passages where `mode="fts"` over the same
+    # corpus returned matches, and the persona then announced it had no background
+    # material while its documents sat there. Precisely the silent degradation the
+    # original comment set out to prevent.
+    #
+    # It deliberately does NOT fire when the similarity floor rejected rows:
+    # "matched, but only below the floor" is a decision the operator configured,
+    # and reaching past it to lexical would defeat the floor.
+    if mode == "vector" and vector_unusable and not floor_rejected:
+        logger.warning(
+            "Vector retrieval unusable (%s); falling back to lexical search for "
+            "this turn.",
+            vector_unusable,
+        )
+        lexical = await db.search_documents(
+            run_id=run_id, query=query, persona_name=persona_name, k=fetch_k
+        )
 
     if mode == "hybrid" and lexical and semantic:
         rows = reciprocal_rank_fusion([lexical, semantic], rrf_k=rrf_k)
