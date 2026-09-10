@@ -466,17 +466,72 @@ async def test_costs_come_back_as_floats_not_decimals(store):
 
 @pytest.mark.asyncio
 async def test_absent_optional_fields_read_back_as_none(store):
-    """Callers index `run["description"]` and expect None, as SQLite gave them.
+    """Callers SUBSCRIPT these fields and expect None, as SQLite gave them.
 
-    `_to_ddb` drops None rather than storing DynamoDB's NULL type, so the attribute
-    is absent — and an absent attribute is a KeyError, not a None, unless the read
-    path fills it in.
+    `_to_ddb` drops None rather than storing DynamoDB's NULL type, so a nullable
+    attribute comes back ABSENT — and absent is a `KeyError`, not a `None`, unless
+    the read path restores it.
+
+    Subscripted, not `.get()`. An earlier version of this test used `.get()` and so
+    passed with the restoration removed entirely — it asserted that a dict does what
+    dicts do. Real callers subscript:
+
+        app.py     d["media_type"] · d["persona_name"] is None   (the dossier)
+        app.py     row["agent_name"]                             (retrieved passages)
+        service.py thread["persona_name"] · reply["speaker"]     (aside threads)
+
+    and a cast-wide document has no `persona_name` while `sim.started` has no
+    `agent_name`, so these are the ordinary cases. The dossier route would 500 on any
+    run holding a cast-wide document.
     """
     await _seed_run(store)
     run = await store.get_run("r1", owner_sub=USER_A)
     for field in ("name", "description", "slug", "config_json",
                   "parent_run_id", "branch_turn", "completed_at"):
-        assert run.get(field) is None, field
+        assert run[field] is None, field
+
+
+@pytest.mark.asyncio
+async def test_every_read_restores_its_nullable_fields(store):
+    """The same guarantee across every entity, exercised the way callers do.
+
+    One test per entity rather than one for runs, because the restoration is applied
+    per read path — so it can be present on three of them and missing on the fourth,
+    and only the fourth's caller would find out.
+    """
+    await _seed_run(store)
+
+    # An event with no agent_name — `sim.started` always looks like this.
+    await store.append_event(run_id="r1", turn=0, seq=0, event_type="sim.started",
+                             payload={}, owner_sub=USER_A)
+    event = (await store.get_events("r1", owner_sub=USER_A))[0]
+    assert event["agent_name"] is None
+    after = (await store.get_events_after("r1", owner_sub=USER_A))[0]
+    assert after["agent_name"] is None
+
+    # A cast-wide document has no persona_name, and no source_path when pasted.
+    doc_id = await store.add_document(run_id="r1", title="everyone.md",
+                                      chunks=["e"], owner_sub=USER_A)
+    doc = (await store.list_documents("r1"))[0]
+    assert doc["persona_name"] is None
+    assert doc["source_path"] is None
+    assert doc["media_type"] is None
+    assert (await store._find_document(doc_id))["persona_name"] is None
+    # The dossier's actual expression, which KeyErrors on an absent attribute.
+    assert doc["persona_name"] is None and doc["char_count"] == 0
+
+    # An analyst thread has no persona_name.
+    await store.create_thread("t1", "r1", target="analyst")
+    assert (await store.get_thread("t1"))["persona_name"] is None
+    assert (await store.list_threads("r1"))[0]["persona_name"] is None
+
+    # A user message has no speaker.
+    await store.add_thread_message("t1", role="user", content="q")
+    assert (await store.get_thread_messages("t1"))[0]["speaker"] is None
+
+    # A summary generated with the default framing has no instructions.
+    await store.save_summary("r1", {"overview": "o"})
+    assert (await store.get_summaries("r1"))[0]["instructions"] is None
 
 
 @pytest.mark.asyncio
@@ -837,32 +892,61 @@ async def test_document_text_of_an_unknown_id_is_empty_not_an_error(store):
 
 
 @pytest.mark.asyncio
-async def test_copying_documents_to_a_branch_shares_the_s3_objects(store):
-    """A branch inherits its parent's documents without duplicating bytes.
+async def test_copying_documents_to_a_branch_gives_each_its_own_id_and_object(store):
+    """A branch must own its rows, which an earlier version of this got wrong twice.
 
-    Document text is immutable once ingested, so copying it would spend storage for
-    no benefit — and sharing is the step toward Phase 6, where a branch inherits KB
-    bindings and nothing is copied at all.
+    That version reused the document id and shared the S3 object, on the reasoning
+    that document text is immutable so copying bytes buys nothing. Immutable
+    *content* was the wrong property: *lifetime* is what matters.
+
+      1. Two items sharing one `document_id` put a duplicate in the
+         `by-document-id` GSI, so `_find_document`'s `Limit=1` could resolve to
+         either run's row — and `delete_document` would delete the wrong run's
+         document while reporting success.
+      2. Deleting either copy destroyed the shared object, so the other run's
+         `document_text` silently became "" — a persona's background material gone
+         because somebody tidied a different conversation.
+
+    The previous test asserted only that the object was shared, so it passed against
+    both. This asserts the properties that matter: distinct ids, independent objects,
+    identical text, and that deleting one leaves the other readable.
     """
-    import boto3
-
     await _seed_run(store, "parent")
     await _seed_run(store, "branch")
-    await store.add_document(run_id="parent", title="bg.md", chunks=CHUNKS,
-                             persona_name="Dana", owner_sub=USER_A)
+    parent_id = await store.add_document(
+        run_id="parent", title="bg.md", chunks=CHUNKS, persona_name="Dana",
+        media_type="md", char_count=120, owner_sub=USER_A,
+    )
 
-    copied = await store.copy_documents_to_run("parent", "branch", owner_sub=USER_A)
-    assert copied == 1
+    assert await store.copy_documents_to_run(
+        "parent", "branch", owner_sub=USER_A) == 1
     branch_docs = await store.list_documents("branch")
-    assert [d["title"] for d in branch_docs] == ["bg.md"]
+    assert len(branch_docs) == 1
+    branch_id = branch_docs[0]["id"]
+
+    assert branch_id != parent_id, "the branch must not reuse the parent's id"
     assert branch_docs[0]["run_id"] == "branch"
-    # One object, two metadata rows.
-    objects = boto3.client("s3", region_name="us-east-1").list_objects_v2(
-        Bucket=BUCKET)["Contents"]
-    assert len(objects) == 1
-    # And the branch can read the text through its own row.
-    from matrix_studio.documents import join_chunks
-    assert await store.document_text(branch_docs[0]["id"]) == join_chunks(CHUNKS)
+    # Metadata carries over, so the branch's personas see the same material.
+    assert branch_docs[0]["title"] == "bg.md"
+    assert branch_docs[0]["persona_name"] == "Dana"
+    assert branch_docs[0]["media_type"] == "md"
+    # Same text, different objects.
+    assert await store.document_text(branch_id) == \
+        await store.document_text(parent_id)
+    assert branch_docs[0]["s3_key"] != \
+        (await store._find_document(parent_id))["s3_key"]
+
+    # Each id resolves to its OWN row — the GSI duplicate would break this.
+    assert (await store._find_document(parent_id))["run_id"] == "parent"
+    assert (await store._find_document(branch_id))["run_id"] == "branch"
+
+    # And deleting the parent's copy leaves the branch's intact.
+    assert await store.delete_document(parent_id) is True
+    assert await store.list_documents("parent") == []
+    assert len(await store.list_documents("branch")) == 1
+    assert await store.document_text(branch_id) != "", (
+        "deleting the parent's document emptied the branch's text"
+    )
 
 
 @pytest.mark.asyncio

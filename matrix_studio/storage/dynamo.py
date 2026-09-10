@@ -65,6 +65,52 @@ class DuplicateNameError(StorageError):
     """
 
 
+# The full attribute set of each entity, so a read can restore the keys that were
+# dropped on write. `_to_ddb` omits None rather than storing DynamoDB's NULL type,
+# which means a nullable field comes back ABSENT — and absent is a `KeyError` where
+# SQLite gave `None`.
+#
+# That difference is not theoretical. Five call sites subscript exactly these fields:
+#   app.py       d["media_type"], d["persona_name"] is None   (the dossier)
+#   app.py       row["agent_name"]                            (retrieved passages)
+#   service.py   thread["persona_name"], reply["speaker"]     (aside threads)
+# A cast-wide document has no `persona_name`, and `sim.started` has no `agent_name`,
+# so those are the ordinary cases rather than edge ones — the dossier would 500 on
+# any run with a cast-wide document.
+#
+# Fixed here rather than at the call sites, because the contract is "this layer
+# returns what the SQLite layer returned". Patching five callers would leave the
+# sixth, written later, to rediscover it.
+_RUN_FIELDS = (
+    "id", "owner_sub", "topic", "cast_json", "status", "created_at",
+    "name", "description", "slug", "config_json", "parent_run_id",
+    "branch_turn", "completed_at",
+)
+_EVENT_FIELDS = (
+    "run_id", "turn", "seq", "event_type", "agent_name", "payload", "created_at",
+)
+_DOCUMENT_FIELDS = (
+    "id", "document_id", "run_id", "persona_name", "title", "source_path",
+    "media_type", "char_count", "chunk_count", "s3_key", "owner_sub",
+    "text_is_original", "created_at",
+)
+_THREAD_FIELDS = (
+    "id", "thread_id", "run_id", "target", "persona_name", "mode", "created_at",
+)
+_THREAD_MESSAGE_FIELDS = (
+    "id", "thread_id", "role", "speaker", "content", "tokens_in", "tokens_out",
+    "cost_usd", "created_at",
+)
+
+
+def _row(item: Dict[str, Any], fields: tuple) -> Dict[str, Any]:
+    """Convert a read item and restore every declared field, absent ones as None."""
+    out = _from_ddb(item)
+    for field in fields:
+        out.setdefault(field, None)
+    return out
+
+
 def _user_pk(owner_sub: str) -> str:
     return f"USER#{owner_sub}"
 
@@ -413,7 +459,7 @@ class DynamoStorage:
             Key={"pk": _user_pk(owner_sub), "sk": _run_sk(run_id)},
         )
         item = got.get("Item")
-        return _from_ddb(item) if item else None
+        return _row(item, _RUN_FIELDS) if item else None
 
     async def get_run_by_ref(
         self, ref: str, *, owner_sub: str
@@ -461,7 +507,7 @@ class DynamoStorage:
                 ":prefix": "RUN#",
             },
         )
-        runs = [_from_ddb(i) for i in items]
+        runs = [_row(i, _RUN_FIELDS) for i in items]
 
         if q:
             needle = q.lower()
@@ -497,7 +543,7 @@ class DynamoStorage:
             ExpressionAttributeNames={"#s": "status"},
             ExpressionAttributeValues={":s": status, ":prefix": "RUN#"},
         )
-        runs = [_from_ddb(i) for i in items]
+        runs = [_row(i, _RUN_FIELDS) for i in items]
         runs.sort(key=lambda r: r.get("created_at") or 0, reverse=True)
         return runs
 
@@ -570,7 +616,7 @@ class DynamoStorage:
                 ":prefix": "RUN#",
             },
         )
-        return {str(i["id"]): _from_ddb(i) for i in items if "id" in i}
+        return {str(i["id"]): _row(i, _RUN_FIELDS) for i in items if "id" in i}
 
     async def get_run_tree(
         self, run_id: str, *, owner_sub: str
@@ -718,7 +764,7 @@ class DynamoStorage:
             },
         )
         out = [
-            _from_ddb(i)
+            _row(i, _EVENT_FIELDS)
             for i in items
             if int(i["turn"]) >= from_turn
             and (to_turn is None or int(i["turn"]) <= to_turn)
@@ -767,7 +813,7 @@ class DynamoStorage:
                 },
                 limit=limit,
             )
-        out = [_from_ddb(i) for i in items]
+        out = [_row(i, _EVENT_FIELDS) for i in items]
         out.sort(key=lambda e: (e["turn"], e["seq"]))
         return out[:limit] if limit is not None else out
 
@@ -1168,7 +1214,7 @@ class DynamoStorage:
             Key={"pk": keys[0]["pk"], "sk": keys[0]["sk"]},
         )
         item = got.get("Item")
-        return _from_ddb(item) if item else None
+        return _row(item, _THREAD_FIELDS) if item else None
 
     async def list_threads(self, run_id: str) -> List[Dict[str, Any]]:
         """A run's threads, oldest first, each with its message count and cost.
@@ -1184,7 +1230,7 @@ class DynamoStorage:
             KeyConditionExpression="pk = :pk AND begins_with(sk, :prefix)",
             ExpressionAttributeValues={":pk": _run_pk(run_id), ":prefix": "THREAD#"},
         )
-        threads = [_from_ddb(i) for i in items]
+        threads = [_row(i, _THREAD_FIELDS) for i in items]
         threads.sort(key=lambda t: (t.get("created_at") or 0, t["id"]))
         if not threads:
             return []
@@ -1253,7 +1299,7 @@ class DynamoStorage:
                 ":prefix": "MSG#",
             },
         )
-        out = [_from_ddb(i) for i in items]
+        out = [_row(i, _THREAD_MESSAGE_FIELDS) for i in items]
         out.sort(key=lambda m: int(m["id"]))
         return out
 
@@ -1364,7 +1410,7 @@ class DynamoStorage:
             KeyConditionExpression="pk = :pk AND begins_with(sk, :prefix)",
             ExpressionAttributeValues={":pk": _run_pk(run_id), ":prefix": "DOC#"},
         )
-        docs = [_from_ddb(i) for i in items]
+        docs = [_row(i, _DOCUMENT_FIELDS) for i in items]
         if persona_name is not None:
             docs = [
                 d for d in docs
@@ -1390,7 +1436,7 @@ class DynamoStorage:
             Key={"pk": keys[0]["pk"], "sk": keys[0]["sk"]},
         )
         item = got.get("Item")
-        return _from_ddb(item) if item else None
+        return _row(item, _DOCUMENT_FIELDS) if item else None
 
     async def document_text(self, document_id: str) -> str:
         """A document's full text — one S3 GET.
@@ -1446,39 +1492,54 @@ class DynamoStorage:
     ) -> int:
         """Copy a run's documents to another run — the branch path.
 
-        The S3 objects are **shared, not copied**: the destination's metadata rows
-        point at the source's `s3_key`. Document text is immutable once ingested, so
-        a copy would duplicate bytes for no benefit — and the sharing is a step
-        toward Phase 6, where a branch inherits KB *bindings* and nothing is copied
-        at all (§4a).
+        **Each copy gets a NEW document id and its OWN S3 object**, matching the
+        SQLite version, whose docstring said why: "new document ids are minted so the
+        branch owns its own rows".
 
-        The cost of sharing, stated: deleting the parent's document removes the
-        object the branch's row points at, and `document_text` would then return "".
-        That is why `delete_document` logs rather than fails on a missing object, and
-        why Phase 6 replacing this with bindings is the real fix rather than a
-        tidy-up.
+        An earlier version of this method reused the id and shared the object,
+        rationalised as "document text is immutable once ingested, so copying bytes
+        buys nothing". Immutable *content* was the wrong property to reason from —
+        what matters is *lifetime*, and two things went wrong:
+
+        1. **Two items shared one `document_id`**, so the `by-document-id` GSI held a
+           duplicate and `_find_document`'s `Limit=1` could resolve to either run's
+           row. `delete_document` would then delete the wrong run's document while
+           reporting success.
+        2. **Deleting either copy destroyed the shared object**, so the other run's
+           `document_text` silently became "" — a persona whose background material
+           evaporated because somebody tidied up a different conversation.
+
+        Copying is cheap enough that the hazard is not worth managing: measured mean
+        document text is 11 KB, and branching is a deliberate, infrequent action.
+        Phase 6 removes the copy entirely — a branch will inherit KB *bindings* — and
+        that is the right place for sharing, because a binding is a reference with
+        explicit lifetime rather than an implicit one.
         """
         source = await self.list_documents(from_run_id)
         if not source:
             return 0
-        table = self._table("documents")
 
-        def write():
-            with table.batch_writer() as writer:
-                for doc in source:
-                    writer.put_item(
-                        Item=_to_ddb(
-                            {
-                                **doc,
-                                "pk": _run_pk(to_run_id),
-                                "sk": _document_sk(str(doc["id"])),
-                                "run_id": to_run_id,
-                                "owner_sub": owner_sub,
-                            }
-                        )
-                    )
-
-        await asyncio.to_thread(write)
+        for doc in source:
+            text = await self.document_text(str(doc["id"]))
+            new_id = uuid.uuid4().hex[:12]
+            key = self._document_key(owner_sub, to_run_id, new_id)
+            await self._put_text(key, text)
+            await self._call(
+                self._table("documents").put_item,
+                Item=_to_ddb(
+                    {
+                        **doc,
+                        "pk": _run_pk(to_run_id),
+                        "sk": _document_sk(new_id),
+                        "id": new_id,
+                        "document_id": new_id,
+                        "run_id": to_run_id,
+                        "owner_sub": owner_sub,
+                        "s3_key": key,
+                        "created_at": int(time.time()),
+                    }
+                ),
+            )
         return len(source)
 
     # ------------------------------------------------------------------ #
