@@ -42,11 +42,11 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from matrix_studio import analysis, service
+from matrix_studio import analysis, blobs, service
 from matrix_studio.api.manager import RunManager, TERMINAL_EVENTS, event_row_to_wire
 from matrix_studio.documents import (
     ExtractionError,
@@ -1059,6 +1059,8 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             "tokens_in": agent.total_tokens_in,
             "tokens_out": agent.total_tokens_out,
             "cost_usd": agent.total_cost_usd,
+            "portrait_key": agent.portrait_key,
+            # Legacy: populated only for runs recorded before avatars moved to blobs.
             "portrait_b64": agent.portrait,
         }
 
@@ -1071,7 +1073,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         a generation failure surfaces as 502 (upstream image model), not 500.
         """
         import random
-        from matrix_studio.avatar import generate_avatar
+        from matrix_studio.avatar import generate_avatar, store_avatar
 
         run = await db.get_run_by_ref(ref)
         if not run:
@@ -1100,7 +1102,11 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         # EVENT (not the snapshot), so we must append a fresh one; deriveState
         # applies the last avatar.ready per agent, so the new portrait wins.
         # We also update the latest snapshot so the dossier API reflects it.
-        agent.portrait = portrait
+        # Store the image and keep only its key on the agent — see blobs.py. The
+        # key is content-addressed, so a regenerated portrait gets a new key and any
+        # URL built from it cache-busts itself.
+        agent.portrait_key = store_avatar(portrait)
+        agent.portrait = None
         await db.save_snapshot(snapshot)
 
         all_events = await db.get_events_after(run["id"], after_seq=-1, limit=None)
@@ -1111,14 +1117,46 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             seq=next_seq,
             event_type="avatar.ready",
             agent_name=name,
-            payload={"agent_name": name, "portrait_b64": portrait},
+            payload={"agent_name": name, "portrait_key": agent.portrait_key},
         )
 
         return {
             "run_id": run["id"],
             "agent": name,
-            "portrait_b64": portrait,
+            "portrait_key": agent.portrait_key,
         }
+
+    @app.get("/api/runs/{ref}/agents/{name}/avatar")
+    async def get_avatar(ref: str, name: str, v: Optional[str] = Query(default=None)):
+        """Serve a persona's avatar image.
+
+        Route-scoped to the run rather than exposing a bare blob path, so when
+        per-user authorisation arrives it attaches here like every other run route.
+        `v` is the content-addressed key: it makes the URL change when the image
+        does, which is what lets the response be cached immutably.
+        """
+        run = await db.get_run_by_ref(ref)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+
+        key = v
+        if not key:
+            # No key supplied: fall back to the latest snapshot's record for this agent.
+            snapshot = await db.get_snapshot(run["id"])
+            agent = (snapshot.agents.get(name) if snapshot else None)
+            key = getattr(agent, "portrait_key", None) if agent else None
+        if not key:
+            raise HTTPException(status_code=404, detail="No avatar for this agent")
+
+        data = blobs.get(key)
+        if data is None:
+            raise HTTPException(status_code=404, detail="Avatar image not found")
+        # Immutable: the key IS the content hash, so this body can never change.
+        return Response(
+            content=data,
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
 
     @app.get("/api/runs/{ref}/turns/{turn}/structured")
     async def structured_turn_view(

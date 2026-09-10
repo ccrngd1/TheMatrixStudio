@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import { useEffect, useState } from 'react'
-import { api } from '../api'
+import { api, avatarUrl } from '../api'
 import type { AgentDossier, AgentView, FeedMessage, TurnTrace } from '../types'
 import { AvatarBadge } from './AvatarBadge'
 
@@ -16,7 +16,10 @@ export function Dossier({ agent, feed, runId, onClose }: Props) {
   const [dossier, setDossier] = useState<AgentDossier | null>(null)
   const [loaded, setLoaded] = useState(false)
   const [regeneratingAvatar, setRegeneratingAvatar] = useState(false)
-  const [currentPortrait, setCurrentPortrait] = useState(agent.portrait)
+  // Regeneration replaces the image, so the URL is held in state rather than read
+  // from the agent. The key is content-addressed, so a new portrait yields a new URL
+  // and the browser cannot serve the old one from cache.
+  const [currentUrl, setCurrentUrl] = useState(agent.portraitUrl)
 
   useEffect(() => {
     let alive = true
@@ -34,9 +37,11 @@ export function Dossier({ agent, feed, runId, onClose }: Props) {
     setRegeneratingAvatar(true)
     try {
       const result = await api.regenerateAvatar(runId, agent.name)
-      setCurrentPortrait(result.portrait_b64)
-      // Also update the agent object if possible
-      agent.portrait = result.portrait_b64
+      const url = avatarUrl(runId, agent.name, result.portrait_key)
+      setCurrentUrl(url)
+      // Keep the shared agent object in step so the cast board updates too.
+      agent.portraitKey = result.portrait_key
+      agent.portraitUrl = url
     } catch (error) {
       console.error('Failed to regenerate avatar:', error)
       alert('Failed to regenerate avatar. Please try again.')
@@ -73,12 +78,13 @@ export function Dossier({ agent, feed, runId, onClose }: Props) {
       >
         <div className="flex items-start justify-between">
           <div className="flex items-center gap-3">
-            <AvatarBadge name={agent.name} portrait={currentPortrait} size={64} />
+            <AvatarBadge name={agent.name} portrait={agent.portrait}
+              portraitUrl={currentUrl} size={64} />
             <div>
               <h2 className="text-xl font-bold text-slate-100">{agent.name}</h2>
               <p className="text-xs text-slate-500">
                 {agent.avatarResolved
-                  ? currentPortrait
+                  ? currentUrl || agent.portrait
                     ? 'portrait generated'
                     : 'placeholder (avatar unavailable)'
                   : 'avatar pending…'}

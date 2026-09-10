@@ -17,7 +17,8 @@ export function CastCard({ agent, active, thinking, onClick }: Props) {
         ${active ? 'border-matrix-live bg-matrix-panel shadow-lg shadow-matrix-live/10' : 'border-matrix-border bg-matrix-panel hover:border-matrix-accent'}`}
     >
       <div className="flex items-center gap-3">
-        <AvatarBadge name={agent.name} portrait={agent.portrait} ring={active} />
+        <AvatarBadge name={agent.name} portrait={agent.portrait}
+          portraitUrl={agent.portraitUrl} ring={active} />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className="truncate font-semibold text-slate-100">{agent.name}</span>

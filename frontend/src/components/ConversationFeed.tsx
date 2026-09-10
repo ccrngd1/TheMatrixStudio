@@ -37,7 +37,8 @@ export function ConversationFeed({ feed, agents, activeSpeaker, thinking }: Prop
         )}
         {feed.map((m) => (
           <div key={`${m.seq}`} className="flex gap-3">
-            <AvatarBadge name={m.speaker} portrait={agents[m.speaker]?.portrait ?? null} size={36} />
+            <AvatarBadge name={m.speaker} portrait={agents[m.speaker]?.portrait ?? null}
+              portraitUrl={agents[m.speaker]?.portraitUrl ?? null} size={36} />
             <div className="min-w-0 flex-1">
               <div className="flex items-baseline gap-2">
                 <span className="font-semibold text-slate-200">{m.speaker}</span>
@@ -49,7 +50,8 @@ export function ConversationFeed({ feed, agents, activeSpeaker, thinking }: Prop
         ))}
         {thinking && activeSpeaker && (
           <div className="flex items-center gap-3 text-slate-400">
-            <AvatarBadge name={activeSpeaker} portrait={agents[activeSpeaker]?.portrait ?? null} size={36} />
+            <AvatarBadge name={activeSpeaker} portrait={agents[activeSpeaker]?.portrait ?? null}
+              portraitUrl={agents[activeSpeaker]?.portraitUrl ?? null} size={36} />
             <span className="text-sm italic">
               {activeSpeaker} is thinking
               <span className="animate-pulse">…</span>

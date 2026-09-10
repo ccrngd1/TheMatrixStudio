@@ -7,6 +7,9 @@ MOCKED — no live calls.
 
 from unittest.mock import MagicMock, patch
 
+import base64
+import json
+
 import pytest
 
 from matrix_studio.engine import run_simulation
@@ -66,14 +69,26 @@ async def test_avatar_ready_emitted_per_agent():
 
     with patch("matrix_studio.engine.simulator.litellm.acompletion") as mock:
         mock.side_effect = [MockResp("Ada"), MockResp("Ada opens")]
-        with patch("matrix_studio.engine.simulator.generate_avatar", return_value="B64IMG"):
+        # Valid base64, because store_avatar decodes it — a bogus string would be
+        # swallowed as "no avatar" and the test would pass while testing nothing.
+        fake_png = base64.b64encode(b"\x89PNG\r\n\x1a\nfake image bytes").decode()
+        with patch("matrix_studio.engine.simulator.generate_avatar", return_value=fake_png):
             await run_simulation(req, db=None, on_event=on_event)
 
     avatar_events = [e for e in events if e["event_type"] == "avatar.ready"]
     assert len(avatar_events) == 2
     names = {e["payload"]["agent_name"] for e in avatar_events}
     assert names == {"Ada", "Ben"}
-    assert all(e["payload"]["portrait_b64"] == "B64IMG" for e in avatar_events)
+    # The event carries a blob KEY, never the image. Inlining base64 here put a
+    # megabyte into the append-only log that every replay reads, and into every
+    # snapshot via AgentState.
+    assert all("portrait_b64" not in e["payload"] for e in avatar_events)
+    keys = [e["payload"]["portrait_key"] for e in avatar_events]
+    assert all(k and k.startswith("avatars/") and k.endswith(".png") for k in keys), keys
+    # Content-addressed: the same fixture image for both agents is one blob.
+    assert len(set(keys)) == 1
+    # And the payload is small — the property the change exists to guarantee.
+    assert all(len(json.dumps(e["payload"])) < 200 for e in avatar_events)
 
 
 @pytest.mark.asyncio
@@ -94,7 +109,9 @@ async def test_avatar_failure_emits_null_portrait_and_run_completes():
     assert result["status"] == "complete"
     avatar_events = [e for e in events if e["event_type"] == "avatar.ready"]
     assert len(avatar_events) == 2
-    assert all(e["payload"]["portrait_b64"] is None for e in avatar_events)
+    # A failed generation stores nothing and carries a null key; the UI renders a
+    # placeholder for exactly this case.
+    assert all(e["payload"]["portrait_key"] is None for e in avatar_events)
 
 
 @pytest.mark.asyncio

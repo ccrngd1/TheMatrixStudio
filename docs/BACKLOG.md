@@ -801,3 +801,38 @@ Small, testable now, and worth doing before the port rather than during it.
 Related: snapshots have the same shape of problem but rarely — mean 45 KB, max 2.2 MB,
 with 1 of 619 already over 400 KB. That one row proves the limit is reachable in normal
 use, which is why the architecture puts snapshot bodies in S3 with a DynamoDB pointer.
+
+### Avatar images out of the event log: FIXED (AWS plan Phase 0.1)
+
+Fixed 2026-09-10. `avatar.ready` carried its PNG as base64 in the event payload, and
+`AgentState.portrait` carried the same image into every snapshot.
+
+Measured before: one real avatar event was 2,272,785 B against a 1,165 B mean for every
+other event type, and **99% of the largest snapshot in the database (2,278,363 B) was a
+single portrait**. So a megabyte of image sat in the append-only log that every replay and
+every `reconstruct_at_turn` reads — and both figures exceed DynamoDB's 400 KB item limit,
+making this a hard write failure on the AWS target rather than merely wasteful.
+
+New `matrix_studio/blobs.py`: content-addressed storage, filesystem-backed under the
+resolved data dir. Deliberately the smallest interface that maps onto S3 `PutObject`/
+`GetObject` with the key as the object key, so the AWS port changes the backend and nothing
+about the callers. Content-addressing buys three things with no bookkeeping — a regenerated
+avatar gets a new key so any URL built from it cache-busts itself and can be served
+`immutable`; writing the same bytes twice is idempotent; and a key is hex plus a known
+suffix, validated on read, so it cannot be forged into a path.
+
+Events and snapshots now carry `portrait_key`. Verified end to end against a realistic
+1.5 MB image: event payload **2,000,012 B → 117 B (~17,000x)**, snapshot **~1,958x smaller**.
+
+`AgentState.portrait` is kept readable but no longer written, and the UI prefers a URL while
+still rendering legacy base64 — without that, the 38 runs already in the database would have
+silently lost their avatars, which looks like a styling choice rather than a regression.
+
+Served from `GET /api/runs/{ref}/agents/{name}/avatar?v={key}`, scoped to the run rather than
+exposing a bare blob path, so per-user authorisation attaches here like every other run route
+when Phase 0.2 lands.
+
+Four mutants checked. One initially survived: the atomicity test only asserted that no `.tmp`
+files remained, which a direct write also satisfies. Rewritten to test the consequence — a
+failed write must leave nothing readable, because a truncated body at a content-addressed key
+would be served forever as if it were the real image.

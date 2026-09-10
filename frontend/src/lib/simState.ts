@@ -6,6 +6,7 @@
 // many events to *reveal*. deriveState() is called with the slice of buffered
 // events up to the current reveal cursor. Nothing here ever talks to the engine.
 
+import { avatarUrl } from '../api'
 import type { AgentView, FeedMessage, Persona, SimEvent } from '../types'
 
 export interface SimState {
@@ -34,6 +35,8 @@ export function initialState(cast: Persona[] = []): SimState {
       persona: p.persona,
       goals: p.goals || [],
       portrait: null,
+      portraitKey: null,
+      portraitUrl: null,
       avatarResolved: false,
       messageCount: 0,
       tokensIn: 0,
@@ -64,6 +67,8 @@ function ensureAgent(state: SimState, name: string) {
       persona: '',
       goals: [],
       portrait: null,
+      portraitKey: null,
+      portraitUrl: null,
       avatarResolved: false,
       messageCount: 0,
       tokensIn: 0,
@@ -92,9 +97,17 @@ export function applyEvent(prev: SimState, e: SimEvent): SimState {
       const name = e.payload.agent_name ?? e.agent_name
       if (name) {
         ensureAgent(state, name)
+        // `portrait_key` is the current shape; `portrait_b64` only appears on runs
+        // recorded before avatars moved out of the event payload. Both are carried so
+        // those runs keep rendering.
+        const key = e.payload.portrait_key ?? null
         state.agents[name] = {
           ...state.agents[name],
           portrait: e.payload.portrait_b64 ?? null,
+          portraitKey: key,
+          // Built here because the event carries its own run_id, so no component
+          // needs the run threaded down to it just to render a face.
+          portraitUrl: avatarUrl(e.run_id, name, key),
           avatarResolved: true,
         }
       }
