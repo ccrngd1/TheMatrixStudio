@@ -7,8 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Pre-work for the AWS port (`docs/AWS-IMPLEMENTATION-PLAN.md` Phase 0), plus one live
-bug the investigation turned up.
+The AWS port, Phases 0 and 1 of `docs/AWS-IMPLEMENTATION-PLAN.md`: tenancy in the
+domain model, and the infrastructure written as CDK. Nothing is deployed yet. Three
+live bugs surfaced on the way, two of which were invisible to the checks that were
+supposed to catch them.
 
 ### Added
 - **Tenancy in the domain model** (plan item 0.2). Every run now has an `owner_sub`,
@@ -36,6 +38,23 @@ bug the investigation turned up.
     user rather than left with a NULL owner, which would have been indistinguishable
     from data loss. Verified on the real 38-run database.
 
+- **AWS infrastructure as CDK** (`infra/`, plan Phase 1). Cognito user pool with the
+  Hosted UI and self-signup disabled · 10 DynamoDB tables with the two `runs` GSIs ·
+  an S3 data bucket with per-user prefixes · an S3 Vectors bucket and a 1024-dimension
+  cosine index with passage text declared non-filterable · an HTTP API with a JWT
+  authorizer on every route · a container-image Lambda · CloudFront with the
+  `index.html` no-cache / `/assets/*` immutable split. `infra/README.md` is the runbook.
+  Verified without an account: `cdk synth` succeeds, 39 template assertions pass, the
+  791 MB image builds from the CDK-staged context, and the container answers correctly
+  under the Lambda Runtime Interface Emulator — including **401 for a request with no
+  authorizer context**, so `AUTH_MODE=jwt` is real defence in depth behind the gateway.
+  Not yet deployed.
+- **`STARTUP_SWEEP`** setting. The orphaned-run sweep is correct on a single long-lived
+  server and *wrong* on Lambda: its premise is "this is the only process", so two
+  concurrent cold starts would each mark the other's in-flight run as interrupted — one
+  request terminating another user's live conversation. Defaults to on; the Lambda sets
+  it off.
+
 ### Fixed
 - **Vector-only retrieval went silent instead of degrading**, in the two commonest
   cases. `retrieve_for_turn` had a lexical fallback whose stated intent was "degrading
@@ -48,6 +67,17 @@ bug the investigation turned up.
   now covers every cause and logs which one fired; it deliberately does *not* fire when
   the similarity floor rejected the matches, since that is a configured decision rather
   than a missing capability.
+
+- **`Mangum(lifespan="off")` returned 500 from every storage route.** Disabling the
+  lifespan to stop the startup sweep firing per cold start also stopped `db.connect()`,
+  so anything touching storage raised `AttributeError: 'NoneType' object has no
+  attribute 'execute'`. `/api/health` passed throughout, so Phase 1's own acceptance
+  check would not have found it — it took invoking the image through the Lambda Runtime
+  Interface Emulator. Fixed by running the lifespan and gating the sweep separately.
+- **`.dockerignore` was copying 125 MB of unrelated vendored material** into every
+  Docker build context (`8bit-agents-activation-demo-main/`, git-ignored but not
+  docker-ignored). With that plus a CDK-level `exclude` for directories the Lambda image
+  never copies, the staged build context went **132 MB → 1.7 MB**.
 
 ### Changed
 - `docs/AWS-IMPLEMENTATION-PLAN.md` item 0.3 (make vector retrieval the default) moved
