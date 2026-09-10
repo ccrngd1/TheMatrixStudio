@@ -17,19 +17,22 @@ import json
 
 import pytest
 
+from tests.support import TEST_OWNER
+
 from matrix_studio.api.app import sweep_stale_running_runs
 from matrix_studio.storage import Database
 
 
-@pytest.fixture
-async def db():
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-        db_path = f.name
-    database = Database(db_path)
-    await database.connect()
-    yield database
-    await database.close()
-    Path(db_path).unlink(missing_ok=True)
+@pytest.fixture(autouse=True)
+def _storage_backend(aws_backend):
+    """Every test in this file builds the FastAPI app.
+
+    The app's lifespan connects to DynamoDB, so without a mocked account it reaches
+    real AWS — which surfaces as `ExpiredTokenException` on a `Scan` and reads like a
+    credentials problem rather than a missing fixture. Autouse and explicit here
+    rather than hidden in `conftest.py`, so the dependency is visible in the file that
+    has it.
+    """
 
 
 async def _seed(db, run_id, status, turns=0):
@@ -140,7 +143,7 @@ def test_lifespan_startup_sweeps_orphaned_running_run():
         db_path = f.name
 
     async def _seed_db():
-        d = Database(db_path)
+        d = Database().for_owner(TEST_OWNER)
         await d.connect()
         await _seed(d, "azure-vector", "running", turns=5)
         await d.close()
@@ -182,7 +185,7 @@ async def test_the_sweep_can_be_disabled_and_then_leaves_runs_alone(
     from matrix_studio.api.app import create_app
 
     db_path = str(tmp_path / "sweep.db")
-    seeded = Database(db_path)
+    seeded = Database().for_owner(TEST_OWNER)
     await seeded.connect()
     await seeded.create_run(
         run_id="live", topic="T", cast=[{"name": "A", "persona": "p"}]
@@ -194,7 +197,7 @@ async def test_the_sweep_can_be_disabled_and_then_leaves_runs_alone(
     with TestClient(create_app(db_path)):
         pass  # entering and leaving the context runs the full lifespan
 
-    after = Database(db_path)
+    after = Database().for_owner(TEST_OWNER)
     await after.connect()
     try:
         run = await after.get_run("live")
@@ -220,7 +223,7 @@ async def test_the_sweep_still_runs_by_default(tmp_path):
     from matrix_studio.api.app import create_app
 
     db_path = str(tmp_path / "sweep-default.db")
-    seeded = Database(db_path)
+    seeded = Database().for_owner(TEST_OWNER)
     await seeded.connect()
     await seeded.create_run(
         run_id="orphan", topic="T", cast=[{"name": "A", "persona": "p"}]
@@ -231,7 +234,7 @@ async def test_the_sweep_still_runs_by_default(tmp_path):
     with TestClient(create_app(db_path)):
         pass
 
-    after = Database(db_path)
+    after = Database().for_owner(TEST_OWNER)
     await after.connect()
     try:
         assert (await after.get_run("orphan"))["status"] == "interrupted"

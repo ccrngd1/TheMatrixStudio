@@ -8,9 +8,22 @@ byte-for-byte identical to pre-Phase-3.
 """
 
 import pytest
+
+from tests.support import TEST_OWNER
 from matrix_studio.engine import run_simulation
 from matrix_studio.settings import Settings, get_settings
 from matrix_studio.storage import Database
+
+
+@pytest.fixture(autouse=True)
+def _storage_backend(aws_backend):
+    """Storage is DynamoDB + S3 now, so these tests need a mocked account.
+
+    Autouse and explicit here rather than hidden in `conftest.py`, so the dependency
+    is visible in the file that has it. Without it a call escapes to real AWS and
+    fails with `ExpiredTokenException`, which reads like a credentials problem rather
+    than a missing fixture.
+    """
 
 
 @pytest.mark.asyncio
@@ -40,7 +53,7 @@ async def test_cost_cap_off_unchanged_behavior(tmp_path, monkeypatch):
     monkeypatch.setattr("matrix_studio.engine.simulator.get_settings", lambda: settings)
 
     db_path = tmp_path / "test.db"
-    db = Database(str(db_path))
+    db = Database().for_owner(TEST_OWNER)
     await db.connect()
 
     request = {
@@ -96,7 +109,7 @@ async def test_cost_cap_hit(tmp_path, monkeypatch):
     monkeypatch.setattr("matrix_studio.engine.simulator.get_settings", lambda: settings)
 
     db_path = tmp_path / "test.db"
-    db = Database(str(db_path))
+    db = Database().for_owner(TEST_OWNER)
     await db.connect()
 
     request = {
@@ -163,7 +176,7 @@ async def test_cost_cap_not_hit(tmp_path, monkeypatch):
     monkeypatch.setattr("matrix_studio.engine.simulator.get_settings", lambda: settings)
 
     db_path = tmp_path / "test.db"
-    db = Database(str(db_path))
+    db = Database().for_owner(TEST_OWNER)
     await db.connect()
 
     request = {
@@ -215,7 +228,7 @@ async def test_cost_cap_zero_cost_providers(tmp_path, monkeypatch):
     monkeypatch.setattr("matrix_studio.engine.simulator.get_settings", lambda: settings)
 
     db_path = tmp_path / "test.db"
-    db = Database(str(db_path))
+    db = Database().for_owner(TEST_OWNER)
     await db.connect()
 
     request = {

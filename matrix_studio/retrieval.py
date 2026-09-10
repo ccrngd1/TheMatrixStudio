@@ -677,9 +677,12 @@ async def embed_pending_chunks(
         "embedded": 0, "skipped": 0, "tokens": 0, "cost_usd": 0.0, "model": model,
     }
     if not getattr(db, "vec_available", False):
+        # Kept for the storage layer's own answer to "can I do vector search at all".
+        # On S3 Vectors it is a constant `True`; the wording no longer mentions
+        # sqlite-vec, because there is no extra to install and telling an operator to
+        # pip-install one would send them somewhere with nothing to find.
         out["error"] = (
-            "sqlite-vec is not available; install the 'vectors' extra "
-            "(pip install 'matrix-sim-studio[vectors]')"
+            "the storage layer reports that vector retrieval is unavailable"
         )
         return out
 
@@ -700,8 +703,23 @@ async def embed_pending_chunks(
         for chunk, vector in zip(pending, result.vectors)
         if vector
     ]
+    # The metadata that scopes and renders each vector, keyed by chunk id.
+    #
+    # Required, not optional: on the vector store a chunk id alone cannot be reversed
+    # into a document, and a vector stored without `owner_sub`/`run_id` is returned to
+    # every tenant by a filtered query that cannot exclude what it cannot see. The
+    # store refuses such a write rather than accept it, which is what surfaced this
+    # call site — `chunks_missing_vectors` already returns everything needed.
+    chunk_meta = {
+        int(chunk["chunk_id"]): chunk
+        for chunk in pending
+        if "document_id" in chunk
+    }
     try:
-        stored = await db.store_chunk_vectors(run_id, pairs, result.model)
+        stored = await db.store_chunk_vectors(
+            run_id, pairs, result.model,
+            **({"chunks": chunk_meta} if chunk_meta else {}),
+        )
     except ValueError as exc:
         # Dimension mismatch against an existing index — refuse, do not corrupt.
         out["error"] = str(exc)

@@ -17,9 +17,22 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tests.support import TEST_OWNER
+
 from matrix_studio.engine import resume_simulation, run_simulation
 from matrix_studio.state import AgentState
 from matrix_studio.storage import Database
+
+
+@pytest.fixture(autouse=True)
+def _storage_backend(aws_backend):
+    """Storage is DynamoDB + S3 now, so these tests need a mocked account.
+
+    Autouse and explicit here rather than hidden in `conftest.py`, so the dependency
+    is visible in the file that has it. Without it a call escapes to real AWS and
+    fails with `ExpiredTokenException`, which reads like a credentials problem rather
+    than a missing fixture.
+    """
 
 
 class MockLiteLLMResponse:
@@ -33,7 +46,7 @@ class MockLiteLLMResponse:
 async def test_db():
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db_path = f.name
-    database = Database(db_path)
+    database = Database().for_owner(TEST_OWNER)
     await database.connect()
     yield database
     await database.close()

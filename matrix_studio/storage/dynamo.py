@@ -285,6 +285,30 @@ class DynamoStorage:
             )
         return resolved
 
+    @property
+    def vec_available(self) -> bool:
+        """Whether vector retrieval can be used. Always true on S3 Vectors.
+
+        **This property is load-bearing and its absence is silent.**
+        `retrieval.retrieve_for_turn` gates the entire vector arm on
+        `getattr(db, "vec_available", False)` — so a store without it degrades every
+        run to lexical retrieval, which is measured 22× worse at recall@1 (0.017 vs
+        0.367, PHASE5-RETRIEVAL-MEASUREMENT §5f). The port omitted it at first, and
+        nothing failed: retrieval simply became the arm that was measured not to work,
+        with one warning line to show for it.
+
+        On SQLite this was genuinely conditional — it reported whether the optional
+        `sqlite-vec` extension had loaded. Here the vector store is a service, not an
+        extension, so the answer is a constant. Kept as a property rather than deleted
+        because `retrieval.py` asks the question and this is the honest answer to it;
+        removing it would mean the caller's `getattr` default silently wins.
+
+        Whether an individual query *succeeds* is a different matter, and the fallback
+        for that failure already exists — `vector_search` returns no rows and
+        `retrieve_for_turn` degrades to lexical with a warning naming the cause.
+        """
+        return True
+
     def _table(self, name: str):
         if name not in self._tables:
             if self._ddb is None:

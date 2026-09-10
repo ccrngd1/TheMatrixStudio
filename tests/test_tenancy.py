@@ -37,6 +37,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import pytest
+
+from tests.support import TEST_OWNER
 from fastapi.testclient import TestClient
 
 from matrix_studio.api.app import create_app
@@ -44,6 +46,18 @@ from matrix_studio.api.identity import current_user, current_user_ws
 from matrix_studio.state import AgentState, SimSnapshot
 from matrix_studio.storage import Database
 from matrix_studio.tenancy import LOCAL_USER_SUB
+
+
+@pytest.fixture(autouse=True)
+def _storage_backend(aws_backend):
+    """Every test in this file builds the FastAPI app.
+
+    The app's lifespan connects to DynamoDB, so without a mocked account it reaches
+    real AWS — which surfaces as `ExpiredTokenException` on a `Scan` and reads like a
+    credentials problem rather than a missing fixture. Autouse and explicit here
+    rather than hidden in `conftest.py`, so the dependency is visible in the file that
+    has it.
+    """
 
 USER_A = "sub-aaaa-1111"
 USER_B = "sub-bbbb-2222"
@@ -164,17 +178,6 @@ def test_the_websocket_dependency_resolves_the_same_identity():
 # --------------------------------------------------------------------------- #
 
 
-@pytest.fixture
-async def db():
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-        path = f.name
-    database = Database(path)
-    await database.connect()
-    yield database
-    await database.close()
-    Path(path).unlink(missing_ok=True)
-
-
 @pytest.mark.asyncio
 async def test_two_users_can_hold_the_same_run_name(db):
     """The per-user unique index, end to end.
@@ -251,7 +254,7 @@ async def test_a_pre_tenancy_row_is_adopted_by_the_local_user(tmp_path):
         )
         await conn.commit()
 
-    database = Database(path)
+    database = Database().for_owner(TEST_OWNER)
     await database.connect()
     try:
         run = await database.get_run_by_ref("legacy-name", owner_sub=LOCAL_USER_SUB)
@@ -321,7 +324,7 @@ def app_and_db(tmp_path, monkeypatch):
     app = create_app(db_path)
 
     async def seed() -> str:
-        database = Database(db_path)
+        database = Database().for_owner(TEST_OWNER)
         await database.connect()
         try:
             await database.create_run(

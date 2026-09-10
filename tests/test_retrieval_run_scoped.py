@@ -31,14 +31,6 @@ NOISE = (
 QUERY = build_fts_query("Must the rollback be tested before we migrate?")
 
 
-@pytest.fixture
-async def db(tmp_path):
-    database = Database(str(tmp_path / "scoped.db"))
-    await database.connect()
-    yield database
-    await database.close()
-
-
 async def _seed_run_a(db):
     await db.create_run(run_id="A", topic="t",
                         cast=[{"name": "P0", "persona": "x"}], config={})

@@ -11,13 +11,22 @@ import asyncio
 
 import pytest
 
+from tests.support import TEST_OWNER
+
 from matrix_studio.__main__ import build_parser
 from matrix_studio.storage import Database
 
 
 @pytest.fixture
-def data_dir(tmp_path, monkeypatch):
-    """Point settings.data_dir at a temp dir and seed a run with documents."""
+def data_dir(tmp_path, monkeypatch, aws_backend):
+    """Seed a run with documents for the CLI to read.
+
+    `aws_backend` provides the mocked account; DATA_DIR survives only because the CLI
+    still reads it for blob storage. The CLI itself binds to `LOCAL_USER_SUB` — it is
+    an operator tool with no authenticated caller — so the seeded run must be created
+    under that owner rather than the suite's `TEST_OWNER`, or the CLI would correctly
+    report the run as missing.
+    """
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     # get_settings() is cached via a module singleton; conftest resets it between
     # tests, but reset here too so DATA_DIR is picked up for this call.
@@ -25,7 +34,9 @@ def data_dir(tmp_path, monkeypatch):
     s._settings = None
 
     async def seed():
-        db = Database(str(tmp_path / "matrix_studio.db"))
+        from matrix_studio.tenancy import LOCAL_USER_SUB
+
+        db = Database().for_owner(LOCAL_USER_SUB)
         await db.connect()
         await db.create_run(
             run_id="run-1",

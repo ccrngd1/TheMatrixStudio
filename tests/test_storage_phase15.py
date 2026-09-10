@@ -14,17 +14,6 @@ from matrix_studio.state import AgentState, SimSnapshot
 from matrix_studio.storage import Database
 
 
-@pytest.fixture
-async def db():
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-        db_path = f.name
-    database = Database(db_path)
-    await database.connect()
-    yield database
-    await database.close()
-    Path(db_path).unlink(missing_ok=True)
-
-
 async def _seed_completed_run(db, run_id="r1"):
     await db.create_run(
         run_id=run_id, topic="pet food policy",

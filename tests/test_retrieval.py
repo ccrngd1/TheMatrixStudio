@@ -27,14 +27,6 @@ from matrix_studio.storage import Database
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(str(tmp_path / "test.db"))
-    await database.connect()
-    yield database
-    await database.close()
-
-
-@pytest.fixture
 async def run_db(db):
     await db.create_run(run_id="r1", topic="Retrieval design", cast=[])
     return db

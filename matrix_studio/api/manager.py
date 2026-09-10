@@ -22,6 +22,7 @@ from matrix_studio import branching
 from matrix_studio.engine import run_simulation
 from matrix_studio.naming import generate_run_name
 from matrix_studio.service import maybe_autogenerate_summary
+from matrix_studio.tenancy import LOCAL_USER_SUB
 from matrix_studio.storage import Database
 
 logger = logging.getLogger(__name__)
@@ -141,6 +142,17 @@ class RunManager:
         engine_request["description"] = description
         engine_request["owner_sub"] = owner_sub
 
+        # The engine, the summariser and everything downstream get a store already
+        # bound to this run's owner.
+        #
+        # This is what made the swap tractable: binding once here removed the need
+        # for `owner_sub` at 15 call sites in the engine and 13 in `branching.py`,
+        # none of which has any business knowing about tenants. The engine's job is
+        # to run a conversation; WHOSE conversation was decided at the request
+        # boundary, and a bound store carries that decision without restating it.
+        owned = self.db.for_owner(owner_sub)
+
+
         # Phase 1.5: fold an optional top-level `summary` config into the run's
         # stored config so it persists in config_json and drives auto-summary at
         # completion. Omitted → default (enabled + full field set) applies later.
@@ -169,7 +181,7 @@ class RunManager:
             try:
                 result = await run_simulation(
                     engine_request,
-                    db=self.db,
+                    db=owned,
                     run_id=run_id,
                     on_event=_on_event,
                     should_stop=lambda: run_id in self._stop_requested,
@@ -181,7 +193,7 @@ class RunManager:
                 # the broker has already streamed the terminal event and never
                 # affects the canonical run. Best-effort: it never raises.
                 if result.get("status") == "complete":
-                    await maybe_autogenerate_summary(self.db, run_id)
+                    await maybe_autogenerate_summary(owned, run_id)
             except Exception:  # noqa: BLE001
                 logger.exception("Background run %s crashed", run_id)
             finally:
@@ -223,8 +235,14 @@ class RunManager:
         or re-run (immutability invariant, enforced by construction here: the
         background task's DB writes all target the new branch run id).
         """
+        # A branch inherits its parent's owner, so the binding comes off the parent
+        # ROW rather than from a caller. A separately supplied owner could disagree
+        # with it, and a branch that escaped its parent's tenant would be invisible
+        # to the person who forked it.
+        owned = self.db.for_owner(parent_run.get("owner_sub") or LOCAL_USER_SUB)
+
         meta = await branching.create_branch_run(
-            self.db,
+            owned,
             parent_run,
             from_turn=from_turn,
             name=name,
@@ -245,7 +263,7 @@ class RunManager:
         async def _runner() -> None:
             try:
                 result = await branching.execute_branch(
-                    self.db,
+                    owned,
                     parent_run,
                     branch_run_id=branch_run_id,
                     from_turn=from_turn,
@@ -258,7 +276,7 @@ class RunManager:
                 # additive (writes only the summaries table); never touches the
                 # canonical event log/snapshot/cost of the branch OR the parent.
                 if result.get("status") == "complete":
-                    await maybe_autogenerate_summary(self.db, branch_run_id)
+                    await maybe_autogenerate_summary(owned, branch_run_id)
             except Exception:  # noqa: BLE001
                 logger.exception("Background branch %s crashed", branch_run_id)
             finally:
@@ -329,7 +347,11 @@ class RunManager:
 
         # Flip synchronously so an immediate re-read reflects the resume and a
         # duplicate resume is rejected by the live-task guard above.
-        await self.db.update_run_status(run_id, "running")
+        # Resume binds to the run's OWN owner, read off the row that was already
+        # authorised by the route — not to a caller-supplied value, which could
+        # disagree with it.
+        owned = self.db.for_owner(run.get("owner_sub") or LOCAL_USER_SUB)
+        await owned.update_run_status(run_id, "running")
 
         broker = RunBroker()
         self._brokers[run_id] = broker
@@ -340,16 +362,16 @@ class RunManager:
         async def _runner() -> None:
             try:
                 result = await branching.resume_run_in_place(
-                    self.db, run, on_event=_on_event,
+                    owned, run, on_event=_on_event,
                     should_stop=lambda: run_id in self._stop_requested,
                 )
                 if result.get("status") == "complete":
-                    await maybe_autogenerate_summary(self.db, run_id)
+                    await maybe_autogenerate_summary(owned, run_id)
             except Exception:  # noqa: BLE001
                 logger.exception("Background resume %s crashed", run_id)
                 # Leave it resumable again rather than stuck in "running".
                 try:
-                    await self.db.update_run_status(run_id, "failed")
+                    await owned.update_run_status(run_id, "failed")
                 except Exception:  # noqa: BLE001
                     logger.exception("Failed to reset status after resume crash")
             finally:

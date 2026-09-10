@@ -24,6 +24,18 @@ from matrix_studio.api.app import create_app
 from matrix_studio.branching import RESUMABLE_STATUSES
 
 
+@pytest.fixture(autouse=True)
+def _storage_backend(aws_backend):
+    """Every test in this file builds the FastAPI app.
+
+    The app's lifespan connects to DynamoDB, so without a mocked account it reaches
+    real AWS — which surfaces as `ExpiredTokenException` on a `Scan` and reads like a
+    credentials problem rather than a missing fixture. Autouse and explicit here
+    rather than hidden in `conftest.py`, so the dependency is visible in the file that
+    has it.
+    """
+
+
 class _Resp:
     def __init__(self, content):
         self.choices = [MagicMock(message=MagicMock(content=content))]

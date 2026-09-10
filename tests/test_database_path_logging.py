@@ -14,12 +14,25 @@ import logging
 
 import pytest
 
+from tests.support import TEST_OWNER
+
 from matrix_studio.storage import Database
+
+
+@pytest.fixture(autouse=True)
+def _storage_backend(aws_backend):
+    """Storage is DynamoDB + S3 now, so these tests need a mocked account.
+
+    Autouse and explicit here rather than hidden in `conftest.py`, so the dependency
+    is visible in the file that has it. Without it a call escapes to real AWS and
+    fails with `ExpiredTokenException`, which reads like a credentials problem rather
+    than a missing fixture.
+    """
 
 
 async def _connected(path, caplog, level=logging.INFO):
     with caplog.at_level(level, logger="matrix_studio.storage.database"):
-        db = Database(str(path))
+        db = Database().for_owner(TEST_OWNER)
         await db.connect()
         await db.close()
     return caplog.records
@@ -49,7 +62,7 @@ async def test_reopening_logs_the_path_and_the_run_count(tmp_path, caplog):
     logged file means the data is fine and the *path* is wrong.
     """
     target = tmp_path / "matrix_studio.db"
-    db = Database(str(target))
+    db = Database().for_owner(TEST_OWNER)
     await db.connect()
     await db.create_run(run_id="run-1", topic="does it persist?", cast=[{"name": "A"}])
     await db.create_run(run_id="run-2", topic="and again", cast=[{"name": "B"}])

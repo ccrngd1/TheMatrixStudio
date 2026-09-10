@@ -47,7 +47,7 @@ async def main(request_path: str, result_path: str) -> None:
     ]
     speakers = [m["speaker"] for m in conversation]
 
-    db = Database(get_settings().data_dir + "/matrix_studio.db")
+    db = Database().for_owner(LOCAL_USER_SUB)
     await db.connect()
 
     naming = await generate_run_name(
