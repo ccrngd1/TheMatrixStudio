@@ -183,6 +183,22 @@ class Settings(BaseSettings):
             )
         return value
 
+    # Startup stale-run sweep. On a single long-lived server this is correct and
+    # necessary: no run can have a live background task in a fresh process, so any
+    # row still marked `running` was orphaned by a crash and would otherwise show
+    # as live forever.
+    #
+    # It must be OFF wherever many short-lived processes serve the same database —
+    # a Lambda, or any horizontally-scaled deployment. The sweep's premise ("this
+    # is the only process") is false there, and two concurrent cold starts would
+    # each conclude the other's in-flight run was orphaned and mark it interrupted.
+    # That is not a slow path; it is one request killing another user's live run.
+    startup_sweep: bool = Field(
+        default=True,
+        description="Run the orphaned-run sweep at startup (STARTUP_SWEEP). Must "
+        "be false on Lambda or any multi-process deployment — see settings.py.",
+    )
+
     # Storage
     data_dir: str = Field(default="./data", description="Directory for SQLite database")
 

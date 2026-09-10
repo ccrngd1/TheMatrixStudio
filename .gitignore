@@ -69,3 +69,7 @@ dmypy.json
 
 # Unrelated vendored project (not part of this repo)
 8bit-agents-activation-demo-main/
+
+# CDK synthesis output
+infra/cdk.out/
+infra/.venv/

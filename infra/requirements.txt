@@ -1,0 +1,5 @@
+# Infrastructure only. Deliberately a separate dependency closure from the
+# application's: aws-cdk-lib is ~60 MB and has no business inside the Lambda
+# container image, which is already near the size at which cold starts hurt.
+aws-cdk-lib>=2.190.0,<3.0.0
+constructs>=10.0.0,<11.0.0
