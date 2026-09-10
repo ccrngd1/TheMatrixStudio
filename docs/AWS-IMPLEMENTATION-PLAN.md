@@ -253,9 +253,41 @@ construction sites is one mechanical step rather than a partially migrated tree.
 - ⬜ **The swap**: `storage/__init__.py`, then 41 construction sites and ~25 call sites
   gaining `owner_sub`. Mechanical, and the step that makes the 788 existing tests the
   acceptance criterion.
-- ⬜ **The scoped-role test** — that `dynamodb:LeadingKeys` actually refuses a
-  cross-partition read. This is what proves §3 rather than assuming it, and `moto` does
-  not enforce IAM, so it needs the real account.
+- ✅ **The scoped-role proof** (2026-09-10). §3 is now demonstrated rather than
+  asserted: `scripts/verify_tenant_isolation.py` assumes the tenant role twice with
+  different session policies and confirms against the real account that user B is
+  refused a `GetItem`, a `Query`, a `Scan` and a *write* on user A's partition, plus
+  A's S3 object, a listing of A's prefix, and an unprefixed listing — 11 checks, all
+  passing. The positive cases are checked first and the script exits early if they
+  fail, because a role that can do nothing trivially cannot cross a boundary.
+
+  **Two hard AWS limits found by trying, neither of which is in the architecture
+  document:**
+  - **An STS session policy is capped at 2,048 characters.** The first version was
+    ~2,900 — readable, one `Sid` per statement, every action spelled out — and
+    `AssumeRole` rejected it outright. Compressed to 1,441 with a real UUID sub by
+    using `dynamodb:*Item` (every item action this app uses ends in `Item`, so it is
+    exactly equivalent), wildcarding region and account in the table ARNs, and
+    dropping the `Sid`s. The limit is now asserted in code, so it fails in a test
+    rather than on a user's request.
+  - **An inline IAM policy is capped at 10,240 characters**, and CDK spills the
+    overflow into an `AWS::IAM::ManagedPolicy` *silently*. Granting the tenant role
+    per-table produced 22 statements and 5,429 characters, already overflowing. A role
+    may attach only ten managed policies, so this would eventually fail a deploy for a
+    reason unrelated to the change that triggered it. Replaced with one wildcard
+    statement over `{prefix}-*`, which loses nothing: the role is deliberately broad
+    and the session policy is what confines a request.
+
+  Verifying it needs a deliberate, default-off widening (`-c verify_principal_arn=`),
+  because the role trusts only the API Lambda — which is the control that makes its
+  breadth safe. The deployment was returned to trusting only the Lambda afterwards,
+  and a template test asserts the flag is absent by default.
+
+- ⚠️ **The swap is blocked by Phase 3, which the plan's 2/3 split did not anticipate.**
+  53 call sites across 8 test files use the 9 unported retrieval methods, and they live
+  on the same class. So "the 788 existing tests pass against the new backend" cannot be
+  Phase 2's exit criterion — the retrieval port has to land first, and then storage and
+  retrieval swap together. Phases 2 and 3 are one deliverable, not two.
 
 The test emphasis is deliberately lopsided toward **ordering and paging** rather than
 round-trips. A round-trip failure announces itself; the two failures this port can
