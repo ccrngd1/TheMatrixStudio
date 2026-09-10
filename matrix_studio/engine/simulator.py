@@ -23,7 +23,7 @@ import litellm
 # event dict (same shape as a persisted row) for each event the engine emits.
 OnEvent = Callable[[Dict[str, Any]], Awaitable[None]]
 
-from matrix_studio.avatar import generate_avatar
+from matrix_studio.avatar import generate_avatar, store_avatar
 from matrix_studio.citations import (
     CitationContext,
     analyse_citations,
@@ -714,7 +714,11 @@ async def run_simulation(
 
         async def _make_avatar(agent: AgentState) -> None:
             portrait = await generate_avatar(agent.name, agent.persona)
-            agent.portrait = portrait
+            # Store the image and carry only its KEY. Inlining the base64 put a
+            # megabyte into the append-only log that every replay reads, and into
+            # every snapshot via AgentState — measured at 99% of the largest
+            # snapshot in a real database.
+            agent.portrait_key = store_avatar(portrait)
             # avatar.ready lives outside the turn stream (turn 0); give it its
             # own seq so ordering stays total and replay is deterministic.
             await _emit(
@@ -722,7 +726,7 @@ async def run_simulation(
                 seq=_next_seq(),
                 event_type="avatar.ready",
                 agent_name=agent.name,
-                payload={"agent_name": agent.name, "portrait_b64": portrait},
+                payload={"agent_name": agent.name, "portrait_key": agent.portrait_key},
             )
 
         await asyncio.gather(*[_make_avatar(a) for a in agents.values()])

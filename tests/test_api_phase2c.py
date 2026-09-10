@@ -6,6 +6,7 @@ the honesty gate: a cognition-off run's trace reports {available: false} rather
 than synthesizing a rationale.
 """
 
+import base64
 import json
 import time
 from unittest.mock import MagicMock, patch
@@ -162,29 +163,46 @@ def _mk_plain_run(client):
 def test_regenerate_avatar_persists_and_returns_new_portrait(client):
     run_id = _mk_plain_run(client)
 
+    png = b"\x89PNG\r\n\x1a\nregenerated image bytes"
+
     async def fake_avatar(name, persona, seed=None):
         # real name must reach the prompt (no timestamp leak); seed varies
         assert "_17" not in name, "persona name/prompt must not carry a timestamp"
         assert seed is not None
-        return "NEWFAKEB64"
+        return base64.b64encode(png).decode()
 
     with patch("matrix_studio.avatar.generate_avatar", side_effect=fake_avatar):
         r = client.post(f"/api/runs/{run_id}/agents/Ada/regenerate-avatar")
     assert r.status_code == 200, r.text
-    assert r.json()["portrait_b64"] == "NEWFAKEB64"
 
-    # Persisted onto the latest snapshot -> dossier reflects it.
+    # The response carries a blob KEY, not the image.
+    key = r.json()["portrait_key"]
+    assert key.startswith("avatars/") and key.endswith(".png")
+    assert "portrait_b64" not in r.json()
+
+    # Persisted onto the latest snapshot -> dossier reflects it, and the legacy
+    # base64 field is cleared rather than left holding a stale image.
     d = client.get(f"/api/runs/{run_id}/agents/Ada/dossier").json()
-    assert d["portrait_b64"] == "NEWFAKEB64"
+    assert d["portrait_key"] == key
+    assert d["portrait_b64"] is None
 
-    # And a fresh avatar.ready event is appended so the portrait survives reload
-    # and shows across the event-derived UI (not just the snapshot).
+    # A fresh avatar.ready event is appended so the portrait survives reload and
+    # shows across the event-derived UI (not just the snapshot) — carrying the key.
     events = client.get(f"/api/runs/{run_id}/events").json()["events"]
     ready = [e for e in events
              if e["event_type"] == "avatar.ready"
              and (e["payload"].get("agent_name") == "Ada")]
     assert ready, "expected an avatar.ready event for Ada"
-    assert ready[-1]["payload"]["portrait_b64"] == "NEWFAKEB64"
+    assert ready[-1]["payload"]["portrait_key"] == key
+    assert "portrait_b64" not in ready[-1]["payload"]
+
+    # The image itself is served, byte-for-byte, and cached immutably because the
+    # key is a content hash.
+    img = client.get(f"/api/runs/{run_id}/agents/Ada/avatar?v={key}")
+    assert img.status_code == 200
+    assert img.content == png
+    assert img.headers["content-type"] == "image/png"
+    assert "immutable" in img.headers["cache-control"]
 
 
 def test_regenerate_avatar_unknown_agent_404(client):

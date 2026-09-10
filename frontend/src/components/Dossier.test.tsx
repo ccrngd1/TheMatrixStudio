@@ -17,6 +17,8 @@ const agent: AgentView = {
   persona: 'A cautious ethicist',
   goals: ['Raise risks'],
   portrait: null,
+  portraitKey: null,
+  portraitUrl: null,
   avatarResolved: true,
   messageCount: 1,
   tokensIn: 10,
