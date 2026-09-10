@@ -55,7 +55,8 @@ export interface AgentResult {
   total_tokens_in: number
   total_tokens_out: number
   total_cost_usd: number
-  portrait: string | null
+  portrait_key: string | null
+  portrait: string | null // legacy base64; null for runs recorded after the change
 }
 
 export interface RunDetail extends RunSummary {
@@ -218,8 +219,10 @@ export interface AgentView {
   name: string
   persona: string
   goals: string[]
-  portrait: string | null // base64 png, or null (placeholder)
-  avatarResolved: boolean // whether avatar.ready has fired (even if null)
+  portrait: string | null    // LEGACY base64 png — only on runs predating blob storage
+  portraitKey: string | null // blob key; content-addressed
+  portraitUrl: string | null // derived from the key when the event is folded
+  avatarResolved: boolean    // whether avatar.ready has fired (even if null)
   messageCount: number
   tokensIn: number
   tokensOut: number
@@ -320,7 +323,7 @@ export interface AgentDossier {
   tokens_in: number
   tokens_out: number
   cost_usd: number
-  portrait_b64: string | null
+  portrait_key: string | null
 }
 
 export interface TurnTrace {

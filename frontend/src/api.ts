@@ -109,6 +109,18 @@ export interface CreateRunResponse {
   status: string
 }
 
+/**
+ * URL for a persona's avatar image.
+ *
+ * `key` is content-addressed, so passing it as `v` makes the URL change whenever the
+ * image does — which is what lets the server mark the response `immutable`.
+ */
+export function avatarUrl(runId: string, name: string, key: string | null): string | null {
+  if (!key) return null
+  return `/api/runs/${encodeURIComponent(runId)}/agents/${encodeURIComponent(name)}` +
+    `/avatar?v=${encodeURIComponent(key)}`
+}
+
 export const api = {
   listRuns: (q?: string) =>
     jsonFetch<{ runs: RunSummary[] }>(
@@ -281,7 +293,7 @@ export const api = {
 
   // Regenerate avatar for a specific agent
   regenerateAvatar: (ref: string, name: string) =>
-    jsonFetch<{ run_id: string; agent: string; portrait_b64: string }>(
+    jsonFetch<{ run_id: string; agent: string; portrait_key: string }>(
       `/api/runs/${encodeURIComponent(ref)}/agents/${encodeURIComponent(name)}/regenerate-avatar`,
       { method: 'POST' },
     ),

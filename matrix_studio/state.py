@@ -66,7 +66,12 @@ class AgentState(BaseModel):
     total_tokens_in: int = Field(default=0, description="Total input tokens consumed")
     total_tokens_out: int = Field(default=0, description="Total output tokens generated")
     total_cost_usd: float = Field(default=0.0, description="Total cost in USD")
-    portrait: Optional[str] = Field(default=None, description="Base64 encoded avatar image")
+    # DEPRECATED as a write target: inlining base64 here put the image into every
+    # snapshot (measured: 99% of the largest snapshot in a real database was one
+    # portrait). Kept readable so runs recorded before the change still render.
+    portrait: Optional[str] = Field(default=None, description="Legacy base64 avatar (read-only)")
+    # The blob key the avatar is stored under; see matrix_studio.blobs.
+    portrait_key: Optional[str] = Field(default=None, description="Blob key for the avatar image")
 
 
 class CognitionConfig(BaseModel):

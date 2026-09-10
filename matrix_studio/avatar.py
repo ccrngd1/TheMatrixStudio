@@ -11,10 +11,12 @@ because avatars could not be produced.
 """
 
 import hashlib
+import base64
 import json
 import logging
 from typing import Optional
 
+from matrix_studio import blobs
 from matrix_studio.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -41,6 +43,25 @@ def _deterministic_seed(persona_name: str) -> int:
     """Stable per-persona seed (independent of Python hash randomization)."""
     digest = hashlib.sha256(persona_name.encode("utf-8")).hexdigest()
     return int(digest, 16) % _SEED_MODULUS
+
+
+def store_avatar(portrait_b64: Optional[str]) -> Optional[str]:
+    """Persist a generated avatar and return its blob key, or None.
+
+    Bedrock hands back base64; this is the only place it is decoded, so callers deal in
+    keys and never in image bytes. A None input (avatars disabled, no credentials, content
+    filter, error) returns None unchanged — the UI already renders a placeholder for that.
+
+    Never raises: a storage failure degrades to no avatar, exactly as a generation failure
+    does. An avatar is eye-candy and must not be able to fail a run.
+    """
+    if not portrait_b64:
+        return None
+    try:
+        return blobs.put(base64.b64decode(portrait_b64), namespace="avatars", suffix="png")
+    except Exception as exc:  # noqa: BLE001 - never let an avatar fail a run
+        logger.warning("Could not store avatar blob: %s", exc)
+        return None
 
 
 async def generate_avatar(
