@@ -40,7 +40,14 @@ from matrix_studio.storage.dynamo import (
 USER_A = "sub-aaaa-1111"
 USER_B = "sub-bbbb-2222"
 BUCKET = "matrix-studio-test-data"
+VECTOR_BUCKET = "matrix-studio-test-vectors"
+VECTOR_INDEX = "matrix-studio-test-chunks"
 PREFIX = "matrix-studio-test"
+# Small on purpose: these tests are about scoping and shape, not about recall, so a
+# 4-dimensional vector makes the arithmetic readable. The real index is 1024 — see
+# docs/EMBEDDING-DIMENSION-MEASUREMENT.md, and note the dimension is immutable once
+# an index exists.
+DIM = 4
 
 
 @pytest.fixture
@@ -98,6 +105,23 @@ def aws(monkeypatch):
                 **extra,
             )
         boto3.client("s3", region_name="us-east-1").create_bucket(Bucket=BUCKET)
+
+        # The vector bucket and index, mirroring infra/matrix_infra/stack.py. The
+        # metadata configuration matters and is immutable at creation: `text` must be
+        # NON-filterable, because filterable metadata has a ~2 KB per-vector budget
+        # that a 749-byte-mean passage would eat, and nothing ever filters on text.
+        monkeypatch.setenv("VECTOR_BUCKET", VECTOR_BUCKET)
+        monkeypatch.setenv("VECTOR_INDEX", VECTOR_INDEX)
+        vec = boto3.client("s3vectors", region_name="us-east-1")
+        vec.create_vector_bucket(vectorBucketName=VECTOR_BUCKET)
+        vec.create_index(
+            vectorBucketName=VECTOR_BUCKET,
+            indexName=VECTOR_INDEX,
+            dataType="float32",
+            dimension=DIM,
+            distanceMetric="cosine",
+            metadataConfiguration={"nonFilterableMetadataKeys": ["text"]},
+        )
         yield
 
 
@@ -1170,3 +1194,433 @@ async def test_a_status_update_cannot_reach_another_owners_partition(store):
     assert await store.list_runs(owner_sub=USER_B) == []
     # A's run is untouched.
     assert (await store.get_run("r1", owner_sub=USER_A))["status"] == "pending"
+
+
+# --------------------------------------------------------------------------- #
+# Retrieval — vectors
+# --------------------------------------------------------------------------- #
+
+
+async def _embed_doc(store, run_id, title, chunks, persona=None, vectors=None):
+    """Attach a document and store a vector per chunk."""
+    text = "\n\n".join(chunks)
+    doc_id = await store.add_document(
+        run_id=run_id, title=title, chunks=chunks, text=text,
+        persona_name=persona, owner_sub=USER_A,
+    )
+    from matrix_studio.documents import chunk_text
+
+    derived = chunk_text(text)
+    payload = []
+    meta = {}
+    for i, chunk in enumerate(derived):
+        cid = store.chunk_id_for(doc_id, chunk.ordinal)
+        vec = (vectors[i] if vectors else [1.0, 0.0, 0.0, 0.0])
+        payload.append((cid, vec))
+        meta[cid] = {
+            "document_id": doc_id, "ordinal": chunk.ordinal,
+            "content": chunk.content, "persona_name": persona,
+        }
+    await store.store_chunk_vectors(
+        run_id, payload, "test-model", owner_sub=USER_A, chunks=meta
+    )
+    return doc_id
+
+
+@pytest.mark.asyncio
+async def test_a_chunk_id_is_stable_and_derivable_without_a_lookup(store):
+    """SQLite gave this as an AUTOINCREMENT rowid; there is no such thing here.
+
+    It has to be an int (`retrieval.py` does `int(row["chunk_id"])`, RRF keys on it)
+    and it has to be the SAME id from both retrieval arms, or fusing by chunk id
+    fuses nothing. Derived from (document_id, ordinal) so both arms compute it
+    independently and agree.
+    """
+    a = store.chunk_id_for("doc-abc", 3)
+    assert a == store.chunk_id_for("doc-abc", 3)
+    assert a != store.chunk_id_for("doc-abc", 4)
+    assert a != store.chunk_id_for("doc-abd", 3)
+    assert 0 < a < 2 ** 63, "must fit a signed 64-bit int for JSON and SQLite parity"
+
+
+@pytest.mark.asyncio
+async def _stored_vectors(index_name=None):
+    """Everything in the test index, via `ListVectors`.
+
+    `QueryVectors` is NOT implemented by moto — it falls through to real AWS and
+    fails with an invalid-token error. So the k-NN behaviour itself is verified by
+    `scripts/verify_vector_retrieval.py` against the deployed index, and these tests
+    assert what was WRITTEN: the keys, the scoping metadata, and the passage text.
+
+    That split is not a compromise on the important part. Every way this port can
+    leak or lose data is in the write — an unscoped vector, a missing `cast_wide`
+    flag, text omitted from metadata — and each is checkable here. What needs the real
+    service is whether AWS honours a filter, which is AWS's behaviour rather than
+    this code's.
+    """
+    import boto3
+
+    client = boto3.client("s3vectors", region_name="us-east-1")
+    out = []
+    token = None
+    while True:
+        params = {"vectorBucketName": VECTOR_BUCKET,
+                  "indexName": index_name or VECTOR_INDEX,
+                  "returnMetadata": True, "maxResults": 500}
+        if token:
+            params["nextToken"] = token
+        result = client.list_vectors(**params)
+        out.extend(result.get("vectors") or [])
+        token = result.get("nextToken")
+        if not token:
+            return out
+
+
+@pytest.mark.asyncio
+async def test_a_stored_vector_carries_its_passage_text(store):
+    """The round trip §4a's design saves: text rides as vector metadata.
+
+    If text were omitted, `vector_search` would return ids and distances with empty
+    content and the per-turn path would need a second lookup per passage — the
+    design's central claim, silently untrue, with every count assertion still passing.
+    """
+    await _seed_run(store)
+    await _embed_doc(store, "r1", "bg.md",
+                     ["Egress inspection provides auditable evidence."])
+    stored = await _stored_vectors()
+    assert len(stored) == 1
+    assert "Egress inspection" in stored[0]["metadata"]["text"]
+
+
+@pytest.mark.asyncio
+async def test_every_stored_vector_is_scoped(store):
+    """With ONE shared index, this metadata IS the isolation boundary.
+
+    A vector missing `owner_sub` or `run_id` is returned by any filtered query that
+    cannot exclude what it cannot see — a permanent cross-tenant leak, undetectable
+    afterwards. Phase 6's per-KB indexes recover an IAM boundary; until then this is
+    the whole of it.
+    """
+    await _seed_run(store, "r1")
+    await _embed_doc(store, "r1", "a.md", ["Content for run one."], persona="Dana")
+    await _embed_doc(store, "r1", "b.md", ["Content shared with the cast."])
+    for entry in await _stored_vectors():
+        meta = entry["metadata"]
+        assert meta["owner_sub"] == USER_A, meta
+        assert meta["run_id"] == "r1", meta
+        assert meta["document_id"], meta
+        assert "ordinal" in meta, meta
+
+
+@pytest.mark.asyncio
+async def test_a_cast_wide_vector_carries_an_explicit_flag(store):
+    """Absent metadata cannot be matched by a filter.
+
+    A cast-wide chunk has no `persona_name`, so the slice filter's second arm has to
+    test something that IS present. Without `cast_wide`, cast-wide documents would be
+    retrievable by nobody — the same trap that made them invisible in
+    `list_documents`, one layer down.
+    """
+    await _seed_run(store)
+    await _embed_doc(store, "r1", "dana.md", ["Dana's own note."], persona="Dana")
+    await _embed_doc(store, "r1", "all.md", ["Shared with the whole cast."])
+    by_title = {}
+    for entry in await _stored_vectors():
+        by_title[entry["metadata"]["text"][:10]] = entry["metadata"]
+
+    dana = next(m for k, m in by_title.items() if k.startswith("Dana"))
+    shared = next(m for k, m in by_title.items() if k.startswith("Shared"))
+    assert dana["persona_name"] == "Dana"
+    assert "cast_wide" not in dana
+    assert shared.get("cast_wide") is True
+    assert "persona_name" not in shared
+
+
+@pytest.mark.asyncio
+async def test_the_slice_filter_names_every_scoping_clause(store):
+    """The filter is built in one method because it is the isolation boundary.
+
+    Asserted structurally rather than through a query, since moto has no
+    `QueryVectors`. The clauses that must be present: owner, run, and the
+    persona-or-cast-wide disjunction. A filter missing the `cast_wide` arm silently
+    hides shared documents; one missing `owner_sub` silently exposes other tenants'.
+    """
+    for persona in (None, "Dana"):
+        body = json.dumps(store._slice_filter("r1", persona, USER_A))
+        assert USER_A in body and '"owner_sub"' in body, body
+        assert '"run_id"' in body and "r1" in body, body
+
+    persona_body = json.dumps(store._slice_filter("r1", "Dana", USER_A))
+    assert '"persona_name"' in persona_body and "Dana" in persona_body
+    assert '"cast_wide"' in persona_body, (
+        "the filter has no cast-wide arm, so shared documents are unretrievable"
+    )
+
+
+@pytest.mark.asyncio
+async def test_every_filter_object_carries_exactly_one_key(store):
+    """A hard S3 Vectors rule, and the first version of the filter broke it.
+
+    `{"owner_sub": ..., "run_id": ...}` is rejected with a bare
+    `ValidationException: Invalid filter` that names neither the object nor the rule —
+    so this failed only against the real service, and only after the vectors had been
+    written successfully. Determined empirically:
+
+        {"a": 1, "b": 2}                     -> Invalid filter
+        {"$and": [{"a": 1}, {"b": 2}]}       -> ok
+        {"$and": [{"a": 1, "b": 2}, ...]}    -> Invalid filter
+
+    Checked recursively, because the violation that actually happened was nested one
+    level down inside an `$and` — a top-level-only check would have passed it.
+    """
+    def assert_single_key(node, path="filter"):
+        if isinstance(node, list):
+            for i, item in enumerate(node):
+                assert_single_key(item, f"{path}[{i}]")
+            return
+        if not isinstance(node, dict):
+            return
+        assert len(node) == 1, (
+            f"{path} has {len(node)} keys ({sorted(node)}); S3 Vectors rejects any "
+            "filter object with more than one"
+        )
+        for key, value in node.items():
+            if key.startswith("$"):
+                assert_single_key(value, f"{path}.{key}")
+
+    for persona in (None, "Dana", "Marcus"):
+        assert_single_key(store._slice_filter("r1", persona, USER_A))
+
+
+@pytest.mark.asyncio
+async def test_vector_search_degrades_rather_than_raising(store):
+    """A retrieval failure must not end a run.
+
+    Exercised here by the fact that moto has no `QueryVectors`: the call fails, and
+    the contract is that it returns no passages so the prompt can say so honestly —
+    the same contract the SQLite path had. An exception would take down a
+    conversation for a search problem.
+    """
+    await _seed_run(store)
+    await _embed_doc(store, "r1", "bg.md", ["Some background material."])
+    assert await store.vector_search(
+        "r1", [1.0, 0.0, 0.0, 0.0], k=3, owner_sub=USER_A) == []
+
+
+@pytest.mark.asyncio
+async def test_vector_search_without_a_bucket_is_empty_not_an_error(store,
+                                                                   monkeypatch):
+    monkeypatch.delenv("VECTOR_BUCKET", raising=False)
+    assert await store.vector_search(
+        "r1", [1.0, 0.0, 0.0, 0.0], k=3, owner_sub=USER_A) == []
+
+
+@pytest.mark.asyncio
+async def test_a_vector_without_scoping_metadata_is_refused(store):
+    """An unscoped vector would be returned to every tenant.
+
+    A filtered query cannot exclude what it cannot see, so a vector missing
+    `owner_sub`/`run_id` is a permanent cross-tenant leak with no way to detect it
+    later. Refusing the write is the only point at which it is fixable.
+    """
+    await _seed_run(store)
+    with pytest.raises(StorageError, match="cannot be scoped"):
+        await store.store_chunk_vectors(
+            "r1", [(12345, [1.0, 0.0, 0.0, 0.0])], "m",
+            owner_sub=USER_A, chunks={},
+        )
+
+
+@pytest.mark.asyncio
+async def test_embedding_ingest_is_resumable(store):
+    """`chunks_missing_vectors` must shrink as vectors land, or ingest restarts.
+
+    Also the test that catches re-chunking drift: the missing set is derived by
+    re-chunking the STORED text, so if that produced different ordinals than the
+    vectors were written under, already-embedded chunks would look missing forever
+    and ingest would loop.
+    """
+    await _seed_run(store)
+    text = "Egress inspection provides auditable evidence. " * 40
+    doc_id = await store.add_document(
+        run_id="r1", title="bg.md",
+        chunks=[c.content for c in __import__(
+            "matrix_studio.documents", fromlist=["x"]).chunk_text(text)],
+        text=text, owner_sub=USER_A,
+    )
+    missing = await store.chunks_missing_vectors("r1", owner_sub=USER_A)
+    assert len(missing) > 1, "the fixture must span several chunks"
+    assert await store.count_chunk_vectors("r1", owner_sub=USER_A) == 0
+
+    payload = [(m["chunk_id"], [1.0, 0.0, 0.0, 0.0]) for m in missing]
+    meta = {m["chunk_id"]: m for m in missing}
+    await store.store_chunk_vectors(
+        "r1", payload, "test-model", owner_sub=USER_A, chunks=meta)
+
+    assert await store.count_chunk_vectors("r1", owner_sub=USER_A) == len(missing)
+    assert await store.chunks_missing_vectors("r1", owner_sub=USER_A) == [], (
+        "re-chunking the stored text produced different ordinals, so ingest would "
+        "re-embed the same chunks forever"
+    )
+    assert await store.embedding_model() == "test-model"
+
+
+@pytest.mark.asyncio
+async def test_chunk_count_is_read_from_metadata_not_by_refetching(store):
+    """One of the four jobs §4a says the document row earns its place with."""
+    await _seed_run(store)
+    await store.add_document(run_id="r1", title="a.md", chunks=["x", "y", "z"],
+                             persona_name="Dana", owner_sub=USER_A)
+    await store.add_document(run_id="r1", title="b.md", chunks=["p", "q"],
+                             owner_sub=USER_A)
+    assert await store.chunk_count("r1") == 5
+    assert await store.chunk_count("r1", "Dana") == 5
+    assert await store.chunk_count("r1", "Marcus") == 2
+
+
+# --------------------------------------------------------------------------- #
+# Retrieval — the lexical arm
+# --------------------------------------------------------------------------- #
+
+
+LEX_CHUNKS = [
+    "Egress inspection provides auditable evidence for the auditor.",
+    "Cost allocation tags let finance attribute spend to a team.",
+]
+
+
+@pytest.mark.asyncio
+async def test_lexical_search_returns_the_matching_chunk(store):
+    """FTS5 is gone with SQLite, so this is in-process BM25.
+
+    Small on purpose: measured lexical recall@1 is 0.017 against vector's 0.367
+    (PHASE5-RETRIEVAL-MEASUREMENT §5f), so this serves `/documents/search` — an
+    inspection endpoint — not the per-turn path.
+    """
+    await _seed_run(store)
+    await store.add_document(run_id="r1", title="bg.md", chunks=LEX_CHUNKS,
+                             text="\n\n".join(LEX_CHUNKS), owner_sub=USER_A)
+    hits = await store.search_documents(run_id="r1", query='"egress"', k=3)
+    assert hits, "no lexical match"
+    assert "Egress inspection" in hits[0]["content"]
+    assert hits[0]["title"] == "bg.md"
+
+
+@pytest.mark.asyncio
+async def test_lexical_scores_are_negative_as_fts5_returned_them(store):
+    """Not cosmetic. `filter_by_score` takes `abs(score)` as strength and the
+    hybrid fusion assumes an ordering, so positive scores would invert every
+    ranking while looking numerically plausible."""
+    await _seed_run(store)
+    await store.add_document(run_id="r1", title="bg.md", chunks=LEX_CHUNKS,
+                             text="\n\n".join(LEX_CHUNKS), owner_sub=USER_A)
+    hits = await store.search_documents(
+        run_id="r1", query='"egress" OR "auditor"', k=5)
+    assert hits
+    assert all(h["score"] < 0 for h in hits), [h["score"] for h in hits]
+    assert hits == sorted(hits, key=lambda h: h["score"]), "not best-first"
+
+
+@pytest.mark.asyncio
+async def test_lexical_search_accepts_the_fts5_syntax_callers_still_build(store):
+    """`build_fts_query` emits `"a" OR "b"`, and every caller still calls it.
+
+    Stripping the quoting and operators here rather than changing those callers means
+    the engine needs no branch on which storage backend it is talking to — and a
+    query that reached the index literally would match on the word "or".
+    """
+    await _seed_run(store)
+    await store.add_document(run_id="r1", title="bg.md", chunks=LEX_CHUNKS,
+                             text="\n\n".join(LEX_CHUNKS), owner_sub=USER_A)
+    quoted = await store.search_documents(
+        run_id="r1", query='"egress" OR "inspection"', k=3)
+    plain = await store.search_documents(run_id="r1", query="egress inspection", k=3)
+    assert quoted and plain
+    assert [h["chunk_id"] for h in quoted] == [h["chunk_id"] for h in plain]
+
+
+@pytest.mark.asyncio
+async def test_lexical_search_is_scoped_to_the_persona_slice(store):
+    await _seed_run(store)
+    await store.add_document(run_id="r1", title="dana.md",
+                             chunks=["Dana's egress briefing."],
+                             text="Dana's egress briefing.",
+                             persona_name="Dana", owner_sub=USER_A)
+    await store.add_document(run_id="r1", title="marcus.md",
+                             chunks=["Marcus's egress briefing."],
+                             text="Marcus's egress briefing.",
+                             persona_name="Marcus", owner_sub=USER_A)
+    hits = await store.search_documents(
+        run_id="r1", query='"egress"', persona_name="Dana", k=5)
+    assert hits and all("Dana" in h["content"] for h in hits), (
+        [h["content"] for h in hits]
+    )
+
+
+@pytest.mark.asyncio
+async def test_lexical_statistics_cannot_be_contaminated_by_another_run(store):
+    """The v0.6 bug, structurally impossible here.
+
+    `bm25()` computed statistics over the WHOLE SQLite index while `run_id` was only
+    an outer filter, so a score depended on what other runs existed. The index here is
+    built from the run's own chunks, so scoping is structural rather than a predicate
+    — a score is a property of the run.
+    """
+    await _seed_run(store, "r1")
+    await store.add_document(run_id="r1", title="a.md",
+                             chunks=["Egress inspection is the topic."],
+                             text="Egress inspection is the topic.",
+                             owner_sub=USER_A)
+    alone = await store.search_documents(run_id="r1", query='"egress"', k=3)
+
+    await _seed_run(store, "r2")
+    for i in range(20):
+        await store.add_document(
+            run_id="r2", title=f"noise{i}.md",
+            chunks=[f"Egress egress egress noise document {i}."],
+            text=f"Egress egress egress noise document {i}.",
+            owner_sub=USER_A,
+        )
+    after = await store.search_documents(run_id="r1", query='"egress"', k=3)
+    assert [h["score"] for h in alone] == [h["score"] for h in after], (
+        "another run's corpus changed this run's scores"
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_corpus_value_is_still_rejected(store):
+    """`corpus` is now structural, but a typo should fail rather than be ignored."""
+    with pytest.raises(ValueError, match="corpus must be"):
+        await store.search_documents(run_id="r1", query='"x"', corpus="wrong")
+
+
+@pytest.mark.asyncio
+async def test_term_frequencies_are_keyed_by_the_callers_terms(store):
+    """`select_discriminative_terms` looks these up by the raw string it passed.
+
+    Returning stems would produce a zero for every term and silently disable
+    discriminative selection — a feature quietly turning off is worse than one
+    failing, because nothing reports it.
+    """
+    await _seed_run(store)
+    await store.add_document(run_id="r1", title="bg.md", chunks=LEX_CHUNKS,
+                             text="\n\n".join(LEX_CHUNKS), owner_sub=USER_A)
+    freqs = await store.term_document_frequencies(
+        "r1", ["auditor", "egress", "absent"])
+    assert set(freqs) == {"auditor", "egress", "absent"}
+    assert freqs["absent"] == 0
+    assert freqs["egress"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_reindex_reports_the_chunk_count_rather_than_pretending(store):
+    """There is no derived index to rebuild — the vectors ARE the index.
+
+    The route exists and its contract is "tell me the index is consistent". The honest
+    answer is now "it cannot be otherwise", and the useful number is how many chunks
+    there are.
+    """
+    await _seed_run(store)
+    await store.add_document(run_id="r1", title="a.md", chunks=["x", "y", "z"],
+                             owner_sub=USER_A)
+    assert await store.reindex_documents() == 3

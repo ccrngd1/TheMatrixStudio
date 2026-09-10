@@ -312,6 +312,59 @@ ordering tests therefore assert sequences, never lengths, and straddle a digit b
 "search returns something". This is the phase where a green plumbing suite would happily hide
 a retrieval-quality regression, so the measurement is the acceptance test.
 
+### Progress: all 46 methods ported; the recall measurement remains
+
+- ✅ **The 9 retrieval methods are implemented**, so `DynamoStorage` now covers all 46
+  of the SQLite layer's public methods. 73 tests under `moto`.
+- ✅ **`QueryVectors` scoping verified against the real service**
+  (`scripts/verify_vector_retrieval.py`, 8 checks): tenant, run and persona filtering
+  all hold, and passages return inline as §4a's one-round-trip design requires.
+- ⬜ **The recall measurement** — reproducing §5f's numbers on S3 Vectors. Still the
+  acceptance test, and it needs real Bedrock embeddings over a real corpus.
+
+**One shared index, not one per run.** §8b recommends index-per-KB and that reasoning
+is sound *for KBs*: 10,000 indexes per bucket, a company has few KBs, and per-index IAM
+grants become possible. It does **not** transfer to index-per-**run**, the only mapping
+available before Phase 6 exists — that would cap the install at 10,000 conversations,
+against a stated target of "something a large company installs". So the interim is one
+index filtered on `owner_sub`/`run_id`/`persona_name` (ceiling: 2 billion vectors), with
+the filter built in a single method because it *is* the isolation boundary until Phase 6
+restores the IAM one.
+
+**Four things this phase could only learn by running:**
+
+1. **An S3 Vectors filter object may hold exactly ONE key.**
+   `{"owner_sub": …, "run_id": …}` is rejected with a bare
+   `ValidationException: Invalid filter` naming neither the object nor the rule. Both
+   of my filters violated it, one nested a level down inside an `$and`. Determined
+   empirically; the conjunction is now always explicit and flat, and a test walks the
+   filter recursively (a top-level-only check would have passed the nested violation).
+2. **`moto` implements `CreateIndex`, `PutVectors` and `ListVectors` but not
+   `QueryVectors`** — it falls through to real AWS and fails on credentials. So the
+   unit suite asserts everything about what is *written* (keys, scoping metadata,
+   passage text) and the query behaviour moved to the verification script. That split
+   is not a compromise on the important part: every way this port can leak or lose data
+   is in the write.
+3. **Double stemming made lexical search return nothing, for every query.**
+   `extract_query_terms` stemmed and `search` stemmed again, so "egress" became
+   "egres" then "egre". Invisible in the output — it looks exactly like a corpus that
+   does not contain the word. Fixed by having exactly one stemming point.
+4. **A cast-wide chunk needs an explicit `cast_wide: True`**, because absent metadata
+   cannot be matched by a filter. Without it, shared documents are retrievable by
+   nobody — the same trap that made them invisible in `list_documents`, one layer down.
+
+**`chunk_id` is now derived**, a 63-bit hash of `{document_id}:{ordinal}`, because
+`RetrievedPassage.chunk_id` is an `int` and there is no `AUTOINCREMENT`. It has to be
+stable *and* identical from both arms, or fusing by chunk id fuses nothing. Collision
+probability at a million chunks is ~5e-8, and the consequence of one is a degraded
+ranking rather than a corrupted record, since the event log stores `document_id` and
+`ordinal` exactly.
+
+**`reindex_documents` is now a report, not a rebuild.** In SQLite it rebuilt the FTS5
+index from `doc_chunks` — a derived structure that could drift. Here the vectors *are*
+the index and the lexical arm holds no state, so there is nothing to rebuild; it returns
+the chunk count, which is what the endpoint's operator actually wants to know.
+
 ---
 
 ## Phase 4 — ~~Run execution, still inside one Lambda~~ **CANCELLED**
