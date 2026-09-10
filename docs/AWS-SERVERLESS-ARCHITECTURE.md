@@ -225,19 +225,56 @@ Only three things ever read document text, and none of them wants a DynamoDB ite
 | Reader | Needs | Best source |
 |---|---|---|
 | A turn (hot path) | the *k* retrieved passages | **S3 Vectors metadata** — the k-NN call already returns them, so there is no second lookup at all |
-| The lexical arm of `hybrid`, for `/documents/search` | all of a KB's chunks | **S3** — a handful of document objects (mean 11 KB each), re-chunked in memory. `chunk_text()` is deterministic, so re-chunking the same normalised text reproduces the same chunks and the same `ordinal`s the vectors were built from. |
+| The lexical arm of `hybrid`, for `/documents/search` | all of a KB's chunks | **S3** — a handful of document objects (mean 11 KB each), re-chunked in memory. ⚠️ **See the correction below**: this works only if the stored text is the ORIGINAL extracted text. |
 | Setup export (`document_text`) | one whole document | **S3** — a single GET |
 
 Two consequences worth having:
 
 - **The hot path drops from two round trips to one.** Vector search returns ids, scores
   and passage text together; DynamoDB leaves the retrieval path entirely.
-- **`join_chunks` becomes unnecessary.** That function — and the overlap-deduplication it
-  performs — exists *only* because chunks were the sole store of text, so reassembling a
-  document meant stitching overlapping chunks back together (measured: naive joining added
-  4,253 and 4,859 duplicated characters to two real documents). Store the normalised full
-  text as one S3 object and `document_text()` is a GET. The machinery was correct for the
-  constraint it was written under; the constraint disappears here.
+- **`join_chunks` becomes unnecessary on the READ path.** That function — and the
+  overlap-deduplication it performs — exists *only* because chunks were the sole store of
+  text, so reassembling a document meant stitching overlapping chunks back together
+  (measured: naive joining added 4,253 and 4,859 duplicated characters to two real
+  documents). Store the normalised full text as one S3 object and `document_text()` is a
+  GET. The machinery was correct for the constraint it was written under; the constraint
+  disappears for readers.
+
+### ⚠️ Correction (2026-09-10): "re-chunking reproduces the same ordinals" is false unless the ORIGINAL text is stored
+
+The claim above — that chunk text need not be stored because `chunk_text()` is
+deterministic and so reproduces the same chunks and ordinals — **was tested during the
+Phase 2 port and does not hold.** Determinism is the wrong property. What the design needs
+is a round trip: `chunk_text(stored_text)` must equal the chunks the vectors were built
+from. Measured on ten real documents in this repository, that **fails on two**:
+
+| Document | Chunks | Ordinals that differ |
+|---|---|---|
+| `docs/AWS-SERVERLESS-ARCHITECTURE.md` | 110 | **3** |
+| `README.md` | 55 | **4** |
+| the other eight | 10–81 | 0 |
+
+**Cause:** `join_chunks` is a good but not exact inverse of `chunk_text`. It reassembled
+72,149 characters from an original 72,136, and 37,359 from 37,348 — and those extra
+characters shift a few chunk boundaries downstream of where they appear.
+
+**Why it matters, and why it would not have been noticed.** The chunk *count* is
+unchanged, so any assertion on counts passes. But ordinal *N* in the re-chunked text can
+be different text from the vector built at ordinal *N*, and hybrid retrieval fuses the
+lexical and vector arms **by chunk id**. The result is a passage cited under an ordinal
+that does not contain it — a provenance error, in the one subsystem whose whole purpose is
+to make a claim traceable to its source. Nothing would report it.
+
+**Fix, applied in `storage/dynamo.py`:** store the **original extracted text**, not
+`join_chunks(chunks)`. Re-chunking then feeds the same input to the same function and
+reproduces the chunks exactly. Every caller already holds it as
+`ExtractedDocument.text`, so `add_document` gained an optional `text` parameter and the
+document row records `text_is_original` — because a document written by an older caller
+must keep its chunks rather than have them regenerated from a body that drifted.
+
+The conclusion of §4a is unchanged: chunk text does not belong in DynamoDB, and the hot
+path still drops to one round trip. What changes is that the S3 object has to be the
+original text rather than a reconstruction of it.
 
 Provenance is unaffected: `document.retrieved` already records only `chunk_id`,
 `document_id`, `ordinal`, `score`, `title` and `chars` — no content — so the trace needs
