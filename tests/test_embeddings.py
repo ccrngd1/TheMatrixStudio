@@ -213,12 +213,15 @@ def test_fusion_of_empty_and_single_lists():
 
 
 @pytest.fixture
-async def vdb(tmp_path):
-    db = Database(str(tmp_path / "vec.db"))
-    await db.connect()
+async def vdb(db):
+    """A store with a seeded run — vector retrieval needs the run to exist first.
+
+    Delegates to conftest's `db`, so it is bound to `TEST_OWNER` over the mocked
+    account. Previously it built its own SQLite file; there is no file now, and
+    without the mocked account these tests reach real AWS.
+    """
     await db.create_run(run_id="r1", topic="t", cast=[])
     yield db
-    await db.close()
 
 
 requires_vec = pytest.mark.skipif(

@@ -486,9 +486,14 @@ async def sweep_stale_running_runs(db: Database) -> List[str]:
     swept: List[str] = []
     for run in stale:
         run_id = run["id"]
-        last_turn = await db.last_event_turn(run_id)
-        next_seq = await db.max_seq(run_id) + 1
-        await db.append_event(
+        # The sweep is the one cross-tenant read in the system, so it cannot be bound
+        # to a caller — it binds to each ROW's owner instead, which keeps every write
+        # inside the partition it belongs to. A single binding here would put one
+        # user's interruption marker into another user's partition.
+        owned = db.for_owner(run["owner_sub"])
+        last_turn = await owned.last_event_turn(run_id)
+        next_seq = await owned.max_seq(run_id) + 1
+        await owned.append_event(
             run_id=run_id,
             turn=last_turn,
             seq=next_seq,
@@ -498,7 +503,7 @@ async def sweep_stale_running_runs(db: Database) -> List[str]:
                 "at_turn": last_turn,
             },
         )
-        await db.update_run_status(
+        await owned.update_run_status(
             run_id, "interrupted", completed_at=int(time.time())
         )
         swept.append(run_id)
@@ -507,19 +512,31 @@ async def sweep_stale_running_runs(db: Database) -> List[str]:
 
 def create_app(db_path: Optional[str] = None) -> FastAPI:
     """
-    Build the FastAPI app. ``db_path`` overrides the default settings-derived
-    path (used by tests).
+    Build the FastAPI app.
+
+    ``db_path`` is accepted and **ignored**, and the parameter is kept rather than
+    removed on purpose: it is passed by 23 test call sites, and a keyword that raises
+    would turn a storage migration into a mass test edit for no behavioural gain. What
+    it used to select — a SQLite file — no longer exists. The backend is DynamoDB, S3
+    and S3 Vectors, addressed by `TABLE_PREFIX`, `DATA_BUCKET`, `VECTOR_BUCKET` and
+    `VECTOR_INDEX`; tests point those at a `moto` account (see `tests/conftest.py`).
+
+    Deprecated, and logged when used, so it does not quietly become "the way tests
+    configure storage" — which would be a lie with no error attached.
     """
     settings = get_settings()
-    resolved_db_path = db_path or str(settings.db_file)
+    if db_path is not None:
+        logger.debug(
+            "create_app(db_path=%r) is ignored: storage is DynamoDB + S3 now, "
+            "configured by TABLE_PREFIX/DATA_BUCKET/VECTOR_BUCKET.", db_path,
+        )
 
-    db = Database(resolved_db_path)
+    db = Database()
     manager = RunManager(db)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         await db.connect()
-        logger.info("Database ready at %s", resolved_db_path)
         # Startup stale-run sweep: on a fresh process, no run can have a live
         # background task, so any row still marked "running" was orphaned by a
         # crash/restart mid-generation. Mark them "interrupted" (a terminal
@@ -666,14 +683,14 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
 
-        stats = await db.get_run_stats(run["id"])
+        stats = await db.for_owner(user).get_run_stats(run["id"])
         run.update(stats)
         summary = _run_summary(run)
 
         # Attach the final result (conversation + agents) from the snapshot when
         # the run is complete, so a reloaded run shows full dossier data.
         result: Optional[Dict[str, Any]] = None
-        snapshot = await db.get_snapshot(run["id"])
+        snapshot = await db.for_owner(user).get_snapshot(run["id"])
         if snapshot is not None:
             result = {
                 "conversation": snapshot.conversation,
@@ -707,7 +724,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         # branches forked from this run, so the run view can thread relationships.
         parent = None
         if run.get("parent_run_id"):
-            parent_row = await db.get_run(run["parent_run_id"])
+            parent_row = await db.for_owner(user).get_run(run["parent_run_id"])
             if parent_row:
                 parent = {
                     "run_id": parent_row["id"],
@@ -953,7 +970,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         run = await db.get_run_by_ref(ref, owner_sub=user)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
-        rows = await db.get_events_after(run["id"], after_seq=after_seq, limit=limit)
+        rows = await db.for_owner(user).get_events_after(run["id"], after_seq=after_seq, limit=limit)
         events = [event_row_to_wire(r) for r in rows]
         return {"run_id": run["id"], "events": events}
 
@@ -967,7 +984,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         run = await db.get_run_by_ref(ref, owner_sub=user)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
-        snapshots = await db.list_snapshots(run["id"])
+        snapshots = await db.for_owner(user).list_snapshots(run["id"])
         return {"run_id": run["id"], "snapshots": snapshots}
 
     @app.get("/api/runs/{ref}/snapshots/{turn}")
@@ -979,7 +996,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         run = await db.get_run_by_ref(ref, owner_sub=user)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
-        snapshot = await db.get_snapshot(run["id"], turn=turn)
+        snapshot = await db.for_owner(user).get_snapshot(run["id"], turn=turn)
         if snapshot is None:
             raise HTTPException(
                 status_code=404, detail=f"No checkpoint at turn {turn}"
@@ -1012,7 +1029,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         run = await db.get_run_by_ref(ref, owner_sub=user)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
-        snapshot = await db.get_snapshot(run["id"], turn=None)  # latest
+        snapshot = await db.for_owner(user).get_snapshot(run["id"], turn=None)  # latest
         if snapshot is None or name not in snapshot.agents:
             raise HTTPException(status_code=404, detail="Agent not found for this run")
         agent = snapshot.agents[name]
@@ -1059,7 +1076,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             for d in await db.list_documents(run["id"], persona_name=name)
         ]
         drew_on: List[Dict[str, Any]] = []
-        for row in await db.get_events(run["id"]):
+        for row in await db.for_owner(user).get_events(run["id"]):
             if row["event_type"] != "document.retrieved" or row["agent_name"] != name:
                 continue
             payload = row["payload"]
@@ -1119,7 +1136,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
 
-        snapshot = await db.get_snapshot(run["id"], turn=None)  # latest
+        snapshot = await db.for_owner(user).get_snapshot(run["id"], turn=None)  # latest
         if snapshot is None or name not in snapshot.agents:
             raise HTTPException(status_code=404, detail="Agent not found for this run")
 
@@ -1147,11 +1164,11 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         # URL built from it cache-busts itself.
         agent.portrait_key = store_avatar(portrait)
         agent.portrait = None
-        await db.save_snapshot(snapshot)
+        await db.for_owner(user).save_snapshot(snapshot)
 
-        all_events = await db.get_events_after(run["id"], after_seq=-1, limit=None)
+        all_events = await db.for_owner(user).get_events_after(run["id"], after_seq=-1, limit=None)
         next_seq = max((e["seq"] for e in all_events), default=-1) + 1
-        await db.append_event(
+        await db.for_owner(user).append_event(
             run_id=run["id"],
             turn=0,
             seq=next_seq,
@@ -1195,7 +1212,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         key = v
         if not key:
             # No key supplied: fall back to the latest snapshot's record for this agent.
-            snapshot = await db.get_snapshot(run["id"])
+            snapshot = await db.for_owner(user).get_snapshot(run["id"])
             agent = (snapshot.agents.get(name) if snapshot else None)
             key = getattr(agent, "portrait_key", None) if agent else None
         if not key:
@@ -1231,12 +1248,12 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         run = await db.get_run_by_ref(ref, owner_sub=user)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
-        rows = await db.get_events_after(run["id"], after_seq=-1, limit=None)
+        rows = await db.for_owner(user).get_events_after(run["id"], after_seq=-1, limit=None)
         events = [event_row_to_wire(r) for r in rows]
         turn_events = [e for e in events if e["turn"] == turn]
         if not any(e["event_type"] == "agent.response" for e in turn_events):
             raise HTTPException(status_code=404, detail=f"No turn {turn} in this run")
-        snapshot = await db.get_snapshot(run["id"], turn=turn)
+        snapshot = await db.for_owner(user).get_snapshot(run["id"], turn=turn)
         from matrix_studio.structured_view import build_structured_view
 
         view = build_structured_view(turn, turn_events, snapshot)
@@ -1254,7 +1271,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         run = await db.get_run_by_ref(ref, owner_sub=user)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
-        snapshot = await db.get_snapshot(run["id"], turn=None)  # latest
+        snapshot = await db.for_owner(user).get_snapshot(run["id"], turn=None)  # latest
         if snapshot is None:
             return {"run_id": run["id"], "threads": [], "stale_after": None}
         try:
@@ -1283,7 +1300,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         run = await db.get_run_by_ref(ref, owner_sub=user)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
-        rows = await db.get_events_after(run["id"], after_seq=-1, limit=None)
+        rows = await db.for_owner(user).get_events_after(run["id"], after_seq=-1, limit=None)
         events = [event_row_to_wire(r) for r in rows]
         turn_events = [e for e in events if e["turn"] == turn]
         selected = next((e for e in turn_events if e["event_type"] == "speaker.selected"), None)
@@ -1302,7 +1319,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         refs = payload.get("memory_refs") or []
         resolved: List[Dict[str, Any]] = []
         if refs:
-            snap = await db.get_snapshot(run["id"], turn=turn)
+            snap = await db.for_owner(user).get_snapshot(run["id"], turn=turn)
             if snap is not None:
                 by_id = {
                     m.id: m
@@ -1356,7 +1373,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         # The fork turn must exist in the parent's history. We validate against
         # the parent's turn count (agent.response events) so a caller can only
         # branch from a turn that actually happened.
-        stats = await db.get_run_stats(parent["id"])
+        stats = await db.for_owner(user).get_run_stats(parent["id"])
         max_turn = stats["turn_count"]
         if body.from_turn < 0 or body.from_turn > max_turn:
             raise HTTPException(
@@ -1525,7 +1542,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             else cfg.get("instructions")
         )
         saved = await service.generate_and_store_summary(
-            db,
+            db.for_owner(user),
             run,
             fields=fields,
             focus=focus,
@@ -1555,7 +1572,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         run = await _require_run(ref, user)
         try:
             thread = await service.create_thread(
-                db, run, target=body.target, persona_name=body.persona_name
+                db.for_owner(user), run, target=body.target, persona_name=body.persona_name
             )
         except ValueError as e:
             raise HTTPException(status_code=422, detail=str(e))
@@ -1593,7 +1610,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             raise HTTPException(status_code=422, detail="Message content is required")
         run = await _require_thread_run(thread, user)
         reply = await service.post_aside_message(
-            db, run, thread, user_message=body.content.strip(), model=body.model
+            db.for_owner(user), run, thread, user_message=body.content.strip(), model=body.model
         )
         cost = await db.thread_cost(thread_id)
         return {"thread_id": thread_id, "reply": reply, "total_cost_usd": cost}
@@ -1674,7 +1691,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             # server fault; the message names the cause (and any missing package).
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-        document_id = await db.add_document(
+        document_id = await db.for_owner(user).add_document(
             run_id=run["id"],
             title=doc.title,
             chunks=[c.content for c in doc.chunks],
@@ -1749,7 +1766,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         return {
             "run_id": run["id"],
             **stats,
-            "chunks_with_vectors": await db.count_chunk_vectors(run["id"]),
+            "chunks_with_vectors": await db.for_owner(user).count_chunk_vectors(run["id"]),
         }
 
     @app.get("/api/runs/{ref}/documents/search")
@@ -1848,7 +1865,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
 
         try:
             # 1. Replay everything already persisted (late-join catch-up).
-            rows = await db.get_events_after(run_id, after_seq=-1)
+            rows = await db.for_owner(user).get_events_after(run_id, after_seq=-1)
             for row in rows:
                 event = event_row_to_wire(row)
                 await websocket.send_json(event)

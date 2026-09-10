@@ -11,21 +11,6 @@ from matrix_studio.state import AgentState, MemoryItem, SimSnapshot
 from matrix_studio.storage import Database
 
 
-@pytest.fixture
-async def db():
-    """Create a temporary test database."""
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-        db_path = f.name
-
-    database = Database(db_path)
-    await database.connect()
-    yield database
-    await database.close()
-
-    # Cleanup
-    Path(db_path).unlink(missing_ok=True)
-
-
 @pytest.mark.asyncio
 async def test_create_run(db):
     """Test creating a simulation run."""
@@ -94,10 +79,16 @@ async def test_append_events(db):
         payload={"topic": "Test", "agent_count": 2},
     )
 
+    # seq is GLOBALLY monotonic per run, not per turn. The engine's `_next_seq()`
+    # never resets, and `get_events_after(after_seq)` documents its reliance on that:
+    # a client resuming from the highest seq it has seen would skip events in a log
+    # where seq restarted each turn. SQLite's `UNIQUE(run_id, turn, seq)` was looser
+    # than the real invariant, so this test used to pass while describing an event log
+    # the engine cannot produce.
     await db.append_event(
         run_id=run_id,
         turn=1,
-        seq=0,
+        seq=1,
         event_type="speaker.selected",
         agent_name="Alice",
         payload={"speaker": "Alice", "candidates": ["Alice", "Bob"]},
@@ -106,7 +97,7 @@ async def test_append_events(db):
     await db.append_event(
         run_id=run_id,
         turn=1,
-        seq=1,
+        seq=2,
         event_type="agent.response",
         agent_name="Alice",
         payload={
@@ -137,12 +128,14 @@ async def test_get_events_range(db):
         cast=[{"name": "Alice", "persona": "Test"}],
     )
 
-    # Add events across multiple turns
+    # One event per turn, with seq monotonic across the run rather than reset per
+    # turn — see the note in `test_append_events`. `seq=turn` here because there is
+    # exactly one event per turn; the two are not generally equal.
     for turn in range(5):
         await db.append_event(
             run_id=run_id,
             turn=turn,
-            seq=0,
+            seq=turn,
             event_type="test.event",
             payload={"turn": turn},
         )

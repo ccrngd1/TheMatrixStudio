@@ -61,7 +61,8 @@ from matrix_studio.retrieval import (  # noqa: E402
     select_discriminative_terms,
 )
 from matrix_studio.settings import get_settings  # noqa: E402
-from matrix_studio.storage import Database  # noqa: E402
+from matrix_studio.storage import Database
+from matrix_studio.tenancy import LOCAL_USER_SUB  # noqa: E402
 
 # Set from --embedding-model before any pipeline runs; a one-element list so
 # run_pipeline can read it without threading the value through every signature.
@@ -346,7 +347,7 @@ async def main() -> int:
         return 1
 
     with tempfile.TemporaryDirectory() as tmp:
-        db = Database(str(Path(tmp) / "eval.db"))
+        db = Database().for_owner(LOCAL_USER_SUB)
         await db.connect()
         try:
             await db.create_run(run_id="eval", topic="retrieval eval", cast=[])

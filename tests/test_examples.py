@@ -9,7 +9,20 @@ and runs via the CLI (mocked engine to avoid live LLM costs).
 import json
 from pathlib import Path
 import pytest
+
+from tests.support import TEST_OWNER
 from matrix_studio.engine import run_simulation
+
+
+@pytest.fixture(autouse=True)
+def _storage_backend(aws_backend):
+    """Storage is DynamoDB + S3 now, so these tests need a mocked account.
+
+    Autouse and explicit here rather than hidden in `conftest.py`, so the dependency
+    is visible in the file that has it. Without it a call escapes to real AWS and
+    fails with `ExpiredTokenException`, which reads like a credentials problem rather
+    than a missing fixture.
+    """
 
 
 EXAMPLES_DIR = Path(__file__).parent.parent / "examples"
@@ -95,7 +108,7 @@ async def test_example_runs_with_mocked_engine(example_path, monkeypatch, tmp_pa
     monkeypatch.setattr("matrix_studio.engine.simulator.get_settings", lambda: settings)
 
     db_path = tmp_path / "test.db"
-    db = Database(str(db_path))
+    db = Database().for_owner(TEST_OWNER)
     await db.connect()
 
     # Run simulation

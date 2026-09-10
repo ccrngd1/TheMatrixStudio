@@ -33,15 +33,16 @@ from matrix_studio.state import PendingThread
 from matrix_studio.storage import Database
 
 
-@pytest.fixture
-async def db():
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-        db_path = f.name
-    database = Database(db_path)
-    await database.connect()
-    yield database
-    await database.close()
-    Path(db_path).unlink(missing_ok=True)
+@pytest.fixture(autouse=True)
+def _storage_backend(aws_backend):
+    """Every test in this file builds the FastAPI app.
+
+    The app's lifespan connects to DynamoDB, so without a mocked account it reaches
+    real AWS — which surfaces as `ExpiredTokenException` on a `Scan` and reads like a
+    credentials problem rather than a missing fixture. Autouse and explicit here
+    rather than hidden in `conftest.py`, so the dependency is visible in the file that
+    has it.
+    """
 
 
 def _mk_settings(monkeypatch, tmp_path, **kw):
