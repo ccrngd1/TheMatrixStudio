@@ -606,7 +606,7 @@ operator-facing `/documents/search`, so BM25 stays — computed in-process over 
 document text fetched from S3 (§4a), not over DynamoDB. It is ~50 lines, needs no
 service, and now serves the one caller the measurement says it helps.
 
-### Choose the embedding dimension deliberately, not by default
+### Embedding dimension: 1024, MEASURED (2026-09-10)
 
 The AWS Well-Architected **Generative AI Lens** (Nov 2025) raises this twice, and the design
 had not addressed it at all: **GENCOST04-BP01 "Reduce vector length on embedded tokens"** and
@@ -618,19 +618,29 @@ Titan Text Embeddings v2 — the model the Phase 5f measurement used, so the mod
 numbers transfer — supports **256, 512 and 1024** output dimensions. The design should not
 simply take 1024 because it is the default. S3 Vectors accepts 1 to 4096.
 
-What to do, and it is cheap because the ground truth already exists: re-run the Phase 5f
-recall measurement at 256 and 1024 on the same corpus and queries. That is the lens's
-**GENPERF04-BP01 "Test vector embeddings for latency and relevant performance"**, and this
-repository is unusually well placed to do it — the labelled queries, the diluted/paraphrased
-arms and the recall@1/recall@5/MRR harness are all already built. If 256 holds recall, it is
-a 4× reduction in vector storage and query cost for free; if it does not, the measurement
-says so before the choice is locked in.
+**Measured, and the answer is 1024** — see `docs/EMBEDDING-DIMENSION-MEASUREMENT.md`. All
+three widths were run against an identical 128-query set (resolution 0.008 per query):
+
+| arm | 256 | 512 | 1024 |
+|---|---|---|---|
+| natural recall@1 | 0.6719 | 0.6562 | 0.6641 |
+| **paraphrased recall@1** | 0.2109 | 0.2891 | **0.3281** |
+| diluted recall@1 | 0.5625 | 0.5703 | 0.5625 |
+
+Width is irrelevant for well-formed queries and **decisive for paraphrased ones**: 256 → 1024
+is +0.117 recall@1, which is **15 queries out of 128**, and the ordering is monotonic across
+recall@1, @3, @5 and MRR. Truncating dimensions costs most exactly where the query does not
+share vocabulary with the passage — the capability embeddings were chosen for. The hoped-for
+4× saving would have been paid for with paraphrase robustness.
+
+So 1024: Titan v2's default, and what Phase 5f measured, so those numbers transfer without
+re-baselining. 512 is the fallback if storage ever becomes a real constraint (it recovers
+about two-thirds of the paraphrased gap for half the width).
 
 **Everything else previously flagged as "verify before committing" is now verified** against
 the service documentation and resolved inline: metadata size limits (§8a), filter
 expressiveness (§8a), per-index and per-bucket limits (§8b), and whether one query can span
-indexes (§8b — it cannot). The one remaining open item is the dimension choice above, and it
-is a measurement rather than a lookup.
+indexes (§8b — it cannot). The dimension choice is now measured too, so nothing in this section remains open.
 
 ### Why not feed the documents to an LLM and pass forward what it extracts
 
@@ -1207,8 +1217,9 @@ as orchestrator states; adds per-user spend caps.
 6. **Analytics.** DynamoDB serves the access patterns the UI has, but not "show me every
    run about X across the org". If that is wanted, add a DynamoDB-Streams-to-S3 path and
    query with Athena rather than distorting the operational key design.
-7. **Which embedding model, and at which dimension.** A core decision, and verified to be
-   the most expensive one to reverse: an S3 Vectors index's **dimension, distance metric and
+7. **Which embedding model, and at which dimension.** ~~Open~~ **DECIDED: Titan Text
+   Embeddings v2 at 1024** (`docs/EMBEDDING-DIMENSION-MEASUREMENT.md`). Verified to be the
+   most expensive decision to reverse: an S3 Vectors index's **dimension, distance metric and
    non-filterable metadata keys cannot be changed after creation**, so a different model or
    width means creating new indexes and re-populating every one. Titan Text Embeddings v2 is
    what Phase 5f measured, so its numbers are the ones that transfer, and it offers 256 /
