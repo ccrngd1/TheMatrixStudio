@@ -238,8 +238,18 @@ construction sites is one mechanical step rather than a partially migrated tree.
   `get_events_after` lower bound fails 1, and skipping the `Decimal` conversion
   fails 1.
 - ✅ Both GSIs deployed and **ACTIVE**.
-- ⬜ **Summaries, threads, documents** (14 methods) — the same patterns; threads and
-  thread messages are the first users of the atomic counter.
+- ✅ **Summaries, threads, documents and lineage** (14 more methods). **37 of the 46
+  public methods are ported**; the 9 that remain are all retrieval, i.e. Phase 3.
+  51 tests, and 11 mutations caught — including that removing the lineage cycle guard
+  hangs the suite (`timeout` exit 124) rather than returning a wrong answer.
+- ⚠️ **The port found §4a's "re-chunking reproduces the same ordinals" to be false.**
+  See the correction in `AWS-SERVERLESS-ARCHITECTURE.md` §4a. Determinism was the wrong
+  property — the design needs a *round trip*, and it fails on 2 of 10 real documents
+  because `join_chunks` is not an exact inverse of `chunk_text` (72,149 characters
+  reassembled from 72,136). Fixed by storing the ORIGINAL extracted text, which every
+  caller already holds. **This was on Phase 3's critical path**: had it gone unnoticed,
+  hybrid retrieval would have fused arms by chunk id across two different chunkings and
+  cited passages under ordinals that do not contain them.
 - ⬜ **The swap**: `storage/__init__.py`, then 41 construction sites and ~25 call sites
   gaining `owner_sub`. Mechanical, and the step that makes the 788 existing tests the
   acceptance criterion.

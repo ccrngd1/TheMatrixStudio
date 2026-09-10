@@ -62,19 +62,40 @@ def aws(monkeypatch):
         import boto3
 
         ddb = boto3.resource("dynamodb", region_name="us-east-1")
+        # Mirrors infra/matrix_infra/stack.py, including the two id GSIs. Kept in
+        # step by `test_the_fixture_matches_the_deployed_tables`, because a fixture
+        # that quietly diverges from the real stack is a suite that passes against
+        # infrastructure that does not exist.
+        id_index = {"threads": "thread_id", "documents": "document_id"}
         for table in ("runs", "events", "snapshots", "summaries", "threads",
                       "thread-messages", "documents"):
+            attrs = [
+                {"AttributeName": "pk", "AttributeType": "S"},
+                {"AttributeName": "sk", "AttributeType": "S"},
+            ]
+            extra = {}
+            if table in id_index:
+                attrs.append(
+                    {"AttributeName": id_index[table], "AttributeType": "S"}
+                )
+                extra["GlobalSecondaryIndexes"] = [
+                    {
+                        "IndexName": f"by-{id_index[table].replace('_', '-')}",
+                        "KeySchema": [
+                            {"AttributeName": id_index[table], "KeyType": "HASH"}
+                        ],
+                        "Projection": {"ProjectionType": "KEYS_ONLY"},
+                    }
+                ]
             ddb.create_table(
                 TableName=f"{PREFIX}-{table}",
                 KeySchema=[
                     {"AttributeName": "pk", "KeyType": "HASH"},
                     {"AttributeName": "sk", "KeyType": "RANGE"},
                 ],
-                AttributeDefinitions=[
-                    {"AttributeName": "pk", "AttributeType": "S"},
-                    {"AttributeName": "sk", "AttributeType": "S"},
-                ],
+                AttributeDefinitions=attrs,
                 BillingMode="PAY_PER_REQUEST",
+                **extra,
             )
         boto3.client("s3", region_name="us-east-1").create_bucket(Bucket=BUCKET)
         yield
@@ -574,3 +595,461 @@ async def test_list_runs_by_status_is_cross_tenant_on_purpose(store):
     assert ids == {"a1", "b1"}
 
 
+
+
+# --------------------------------------------------------------------------- #
+# Summaries
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_summaries_are_versioned_and_the_latest_per_kind_wins(store):
+    """Regenerating must not destroy the previous version, and must be the one read.
+
+    Ordered by the atomic counter rather than by timestamp: two regenerations inside
+    the same second are the normal case for a fast model, and `int(time.time())`
+    would order them arbitrarily — so the UI would sometimes show the older summary
+    with nothing wrong anywhere.
+    """
+    await _seed_run(store)
+    await store.save_summary("r1", {"overview": "first"}, kind="generated")
+    await store.save_summary("r1", {"overview": "second"}, kind="generated")
+    await store.save_summary("r1", {"overview": "third"}, kind="generated")
+
+    got = await store.get_summaries("r1")
+    assert [s["payload"]["overview"] for s in got] == ["third"]
+
+
+@pytest.mark.asyncio
+async def test_a_generated_summary_never_overwrites_an_imported_one(store):
+    """Different kinds coexist; the importer's original is not a draft to replace."""
+    await _seed_run(store)
+    await store.save_summary("r1", {"overview": "from the source"}, kind="imported")
+    await store.save_summary("r1", {"overview": "freshly analysed"})
+    by_kind = {s["kind"]: s["payload"]["overview"] for s in
+               await store.get_summaries("r1")}
+    assert by_kind == {
+        "imported": "from the source", "generated": "freshly analysed",
+    }
+
+
+@pytest.mark.asyncio
+async def test_summary_returns_the_shape_callers_index(store):
+    await _seed_run(store)
+    saved = await store.save_summary(
+        "r1", {"overview": "o"}, tokens_in=10, tokens_out=5, cost_usd=0.0012,
+        instructions="be terse",
+    )
+    assert saved["id"] == 1
+    assert saved["payload"] == {"overview": "o"}
+    read = (await store.get_summaries("r1"))[0]
+    assert read["instructions"] == "be terse"
+    assert isinstance(read["cost_usd"], float)
+    assert abs(read["cost_usd"] - 0.0012) < 1e-9
+
+
+# --------------------------------------------------------------------------- #
+# Threads
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_a_thread_is_findable_by_its_own_id(store):
+    """The GSI lookup (key design §5) — two reads, no scan.
+
+    `get_thread` is one of only two methods addressed by an id with no run context.
+    Without the index there is no partition to read, and a Scan would cross tenants.
+    """
+    await _seed_run(store)
+    await store.create_thread("t1", "r1", target="analyst")
+    got = await store.get_thread("t1")
+    assert got is not None
+    assert got["run_id"] == "r1" and got["target"] == "analyst"
+    assert await store.get_thread("nope") is None
+
+
+@pytest.mark.asyncio
+async def test_thread_messages_order_by_counter_not_by_clock(store):
+    """Fifteen messages written inside one second must still come back in order.
+
+    This is the case a timestamp key gets wrong, and the reason the counter exists.
+    Straddles a digit boundary for the same reason the event test does.
+    """
+    await _seed_run(store)
+    await store.create_thread("t1", "r1", target="analyst")
+    for i in range(15):
+        await store.add_thread_message("t1", role="user", content=f"m{i}")
+    messages = await store.get_thread_messages("t1")
+    assert [m["content"] for m in messages] == [f"m{i}" for i in range(15)]
+    assert [m["id"] for m in messages] == list(range(1, 16))
+
+
+@pytest.mark.asyncio
+async def test_thread_cost_sums_only_its_own_messages(store):
+    """Aside cost is tracked separately from the run's recorded cost."""
+    await _seed_run(store)
+    await store.create_thread("t1", "r1", target="analyst")
+    await store.create_thread("t2", "r1", target="analyst")
+    await store.add_thread_message("t1", role="target", content="a", cost_usd=0.002)
+    await store.add_thread_message("t1", role="target", content="b", cost_usd=0.003)
+    await store.add_thread_message("t2", role="target", content="c", cost_usd=0.5)
+    assert abs(await store.thread_cost("t1") - 0.005) < 1e-9
+    assert abs(await store.thread_cost("t2") - 0.5) < 1e-9
+
+
+@pytest.mark.asyncio
+async def test_list_threads_carries_counts_that_were_a_sql_join(store):
+    """`message_count` and `total_cost_usd` came from a LEFT JOIN … GROUP BY.
+
+    Derived per thread rather than maintained on the thread row, so they cannot drift
+    from the messages they describe.
+    """
+    await _seed_run(store)
+    await store.create_thread("t1", "r1", target="analyst")
+    await store.create_thread("t2", "r1", target="persona", persona_name="Dana")
+    await store.add_thread_message("t1", role="user", content="q")
+    await store.add_thread_message("t1", role="target", content="a", cost_usd=0.004)
+
+    threads = await store.list_threads("r1")
+    by_id = {t["id"]: t for t in threads}
+    assert by_id["t1"]["message_count"] == 2
+    assert abs(by_id["t1"]["total_cost_usd"] - 0.004) < 1e-9
+    assert by_id["t2"]["message_count"] == 0
+    assert by_id["t2"]["total_cost_usd"] == 0.0
+    assert by_id["t2"]["persona_name"] == "Dana"
+
+
+# --------------------------------------------------------------------------- #
+# Documents
+# --------------------------------------------------------------------------- #
+
+
+CHUNKS = [
+    "Egress inspection provides auditable evidence for the auditor.",
+    "The auditor needs a record that survives the incident review.",
+]
+
+
+@pytest.mark.asyncio
+async def test_document_text_round_trips_through_s3_without_re_overlapping(store):
+    """Chunks overlap, so the stored text must be the DE-OVERLAPPED join.
+
+    Measured on two real documents, naive concatenation added 4,253 and 4,859
+    duplicated characters. §4a says one S3 object makes `join_chunks` unnecessary —
+    true for the reader, and not for the writer, which still has to reassemble once.
+    Asserted against `join_chunks` directly so the two cannot drift.
+    """
+    from matrix_studio.documents import join_chunks
+
+    await _seed_run(store)
+    doc_id = await store.add_document(
+        run_id="r1", title="bg.md", chunks=CHUNKS, persona_name="Dana",
+        char_count=120, owner_sub=USER_A,
+    )
+    assert await store.document_text(doc_id) == join_chunks(CHUNKS)
+
+
+@pytest.mark.asyncio
+async def test_document_text_lives_under_the_owners_s3_prefix(store):
+    """As with snapshots: the prefix is what the scoped role's ARN condition matches."""
+    import boto3
+
+    await _seed_run(store)
+    doc_id = await store.add_document(
+        run_id="r1", title="bg.md", chunks=CHUNKS, owner_sub=USER_A,
+    )
+    keys = [
+        o["Key"] for o in boto3.client("s3", region_name="us-east-1")
+        .list_objects_v2(Bucket=BUCKET)["Contents"]
+    ]
+    assert keys == [f"docs/{USER_A}/r1/{doc_id}.txt"]
+
+
+@pytest.mark.asyncio
+async def test_document_metadata_carries_what_s3_cannot(store):
+    """The four facts §4a says earn the DynamoDB row.
+
+    `chunk_count` is a property of the chunking, not of the object; `media_type`
+    records that this was a PDF rather than a `.docx`, which is what the operator
+    needs to recognise their own file and is lost the moment only text is stored.
+    """
+    await _seed_run(store)
+    doc_id = await store.add_document(
+        run_id="r1", title="report.pdf", chunks=CHUNKS, persona_name="Dana",
+        source_path="/uploads/report.pdf", media_type="pdf", char_count=4321,
+        owner_sub=USER_A,
+    )
+    doc = (await store.list_documents("r1"))[0]
+    assert doc["id"] == doc_id
+    assert doc["title"] == "report.pdf"
+    assert doc["media_type"] == "pdf"
+    assert doc["chunk_count"] == len(CHUNKS)
+    assert doc["char_count"] == 4321
+    assert doc["persona_name"] == "Dana"
+
+
+@pytest.mark.asyncio
+async def test_a_persona_sees_its_own_documents_plus_cast_wide(store):
+    """The retrieval scope, at the metadata level.
+
+    A cast-wide document has a NULL persona, and `_to_ddb` drops None — so the
+    attribute is absent, not null. A filter written as `persona_name == None` against
+    the raw item would therefore match nothing, and cast-wide documents would vanish
+    from every persona's list.
+    """
+    await _seed_run(store)
+    await store.add_document(run_id="r1", title="dana.md", chunks=["d"],
+                             persona_name="Dana", owner_sub=USER_A)
+    await store.add_document(run_id="r1", title="marcus.md", chunks=["m"],
+                             persona_name="Marcus", owner_sub=USER_A)
+    await store.add_document(run_id="r1", title="everyone.md", chunks=["e"],
+                             owner_sub=USER_A)
+
+    titles = {d["title"] for d in await store.list_documents("r1", "Dana")}
+    assert titles == {"dana.md", "everyone.md"}
+    assert await store.count_documents("r1") == 3
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_document_removes_its_metadata_and_object(store):
+    import boto3
+
+    await _seed_run(store)
+    doc_id = await store.add_document(run_id="r1", title="bg.md", chunks=CHUNKS,
+                                      owner_sub=USER_A)
+    assert await store.delete_document(doc_id) is True
+    assert await store.list_documents("r1") == []
+    assert await store.document_text(doc_id) == ""
+    s3 = boto3.client("s3", region_name="us-east-1")
+    assert "Contents" not in s3.list_objects_v2(Bucket=BUCKET)
+    # Idempotent: a second delete is False, not an error.
+    assert await store.delete_document(doc_id) is False
+
+
+@pytest.mark.asyncio
+async def test_document_text_of_an_unknown_id_is_empty_not_an_error(store):
+    """Matches SQLite, which returned `join_chunks([])`.
+
+    The setup-export path calls this for every document and treats "" as nothing to
+    carry, so raising would turn one deleted document into a failed export.
+    """
+    assert await store.document_text("does-not-exist") == ""
+
+
+@pytest.mark.asyncio
+async def test_copying_documents_to_a_branch_shares_the_s3_objects(store):
+    """A branch inherits its parent's documents without duplicating bytes.
+
+    Document text is immutable once ingested, so copying it would spend storage for
+    no benefit — and sharing is the step toward Phase 6, where a branch inherits KB
+    bindings and nothing is copied at all.
+    """
+    import boto3
+
+    await _seed_run(store, "parent")
+    await _seed_run(store, "branch")
+    await store.add_document(run_id="parent", title="bg.md", chunks=CHUNKS,
+                             persona_name="Dana", owner_sub=USER_A)
+
+    copied = await store.copy_documents_to_run("parent", "branch", owner_sub=USER_A)
+    assert copied == 1
+    branch_docs = await store.list_documents("branch")
+    assert [d["title"] for d in branch_docs] == ["bg.md"]
+    assert branch_docs[0]["run_id"] == "branch"
+    # One object, two metadata rows.
+    objects = boto3.client("s3", region_name="us-east-1").list_objects_v2(
+        Bucket=BUCKET)["Contents"]
+    assert len(objects) == 1
+    # And the branch can read the text through its own row.
+    from matrix_studio.documents import join_chunks
+    assert await store.document_text(branch_docs[0]["id"]) == join_chunks(CHUNKS)
+
+
+@pytest.mark.asyncio
+async def test_rechunking_the_stored_text_reproduces_the_chunks(store):
+    """The assertion Phase 3's retrieval design rests on — and it needed `text=`.
+
+    §4a plans for the lexical arm to re-chunk the stored text rather than keep chunk
+    text anywhere, because `chunk_text()` is deterministic. Determinism is the wrong
+    property: what is needed is that `chunk_text(stored)` equals the chunks the
+    vectors were built from. Measured on ten real documents, that fails on two when
+    the stored text is `join_chunks(chunks)` — 3 of 110 ordinals on
+    AWS-SERVERLESS-ARCHITECTURE.md and 4 of 55 on README.md — because `join_chunks`
+    reassembles 72,149 characters from 72,136 and the extra ones shift boundaries.
+
+    An ordinal that points at different text from the vector built at that ordinal is
+    a passage cited under the wrong ordinal, and hybrid retrieval fuses the arms by
+    chunk id. Silent. Passing the original text removes it at the root.
+    """
+    from matrix_studio.documents import chunk_text
+
+    original = ("Egress inspection provides auditable evidence. " * 60)
+    chunks = [c.content for c in chunk_text(original)]
+    assert len(chunks) > 1, "the fixture must span several chunks to be meaningful"
+
+    await _seed_run(store)
+    doc_id = await store.add_document(
+        run_id="r1", title="bg.md", chunks=chunks, text=original,
+        owner_sub=USER_A,
+    )
+    stored = await store.document_text(doc_id)
+    assert stored == original, "the ORIGINAL text must be stored, not a reassembly"
+    assert [c.content for c in chunk_text(stored)] == chunks
+
+
+@pytest.mark.asyncio
+async def test_omitting_the_text_is_recorded_as_a_reassembly(store):
+    """An older caller still works, and the row says the text is not the original.
+
+    Phase 3 has to be able to tell: re-chunking is only safe against the original, so
+    a document written without `text=` must keep its chunks rather than have them
+    regenerated from a body that drifted.
+    """
+    from matrix_studio.documents import join_chunks
+
+    await _seed_run(store)
+    doc_id = await store.add_document(
+        run_id="r1", title="bg.md", chunks=CHUNKS, owner_sub=USER_A,
+    )
+    assert await store.document_text(doc_id) == join_chunks(CHUNKS)
+    doc = (await store.list_documents("r1"))[0]
+    assert doc["text_is_original"] is False
+
+    with_text = await store.add_document(
+        run_id="r1", title="other.md", chunks=CHUNKS, text="the real thing",
+        owner_sub=USER_A,
+    )
+    assert await store.document_text(with_text) == "the real thing"
+    flags = {d["title"]: d["text_is_original"] for d in
+             await store.list_documents("r1")}
+    assert flags == {"bg.md": False, "other.md": True}
+
+
+@pytest.mark.asyncio
+async def test_the_fixture_matches_the_deployed_tables(store):
+    """Guards the fixture against drifting from the real stack.
+
+    A fixture that creates tables the CDK does not — or omits an index it does —
+    makes this whole suite pass against infrastructure that cannot serve it. Read
+    from the CDK source rather than duplicated, so the two cannot disagree.
+    """
+    import re
+    from pathlib import Path
+
+    stack = Path(__file__).resolve().parents[1] / "infra/matrix_infra/stack.py"
+    source = stack.read_text()
+    declared = set(re.findall(r'self\._table\("([a-z-]+)"', source))
+    declared |= {
+        m for m in re.findall(r'"([a-z_]+)": self\._table\("([a-z-]+)"', source)
+    }
+    # The tables this suite creates, as the storage layer names them.
+    used = {"runs", "events", "snapshots", "summaries", "threads",
+            "thread-messages", "documents"}
+    for name in used:
+        assert f'"{name.replace("-", "_")}"' in source or f'"{name}"' in source, (
+            f"the storage layer uses a '{name}' table that the CDK stack does not "
+            "create"
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Lineage
+# --------------------------------------------------------------------------- #
+
+
+async def _branch(store, child, parent, turn, owner=USER_A):
+    await store.create_run(
+        run_id=child, topic="t", cast=[], name=child,
+        parent_run_id=parent, branch_turn=turn, owner_sub=owner,
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_tree_is_rooted_at_the_earliest_ancestor(store):
+    """Asking about a grandchild must return the whole forest, not a subtree of it.
+
+    Two recursive SQL CTEs became one partition read plus an in-memory walk: the
+    whole forest lives in one partition, so emulating recursion with a query per hop
+    would be more round trips and more code for the same answer.
+    """
+    await _seed_run(store, "root", name="root-run")
+    await _branch(store, "kid", "root", 3)
+    await _branch(store, "grandkid", "kid", 5)
+
+    tree = await store.get_run_tree("grandkid", owner_sub=USER_A)
+    assert tree["root_id"] == "root"
+    assert set(tree["nodes"]) == {"root", "kid", "grandkid"}
+    assert tree["nodes"]["grandkid"]["branch_turn"] == 5
+    assert tree["nodes"]["kid"]["parent_run_id"] == "root"
+
+
+@pytest.mark.asyncio
+async def test_the_tree_carries_config_json_for_edge_labels(store):
+    """The tree view reads `branch_mutation` off this, so a missing field is a
+    silently unlabelled edge rather than an error."""
+    await _seed_run(store, "root")
+    await store.create_run(
+        run_id="kid", topic="t", cast=[], parent_run_id="root", branch_turn=2,
+        config={"branch_mutation": {"kind": "pressure"}}, owner_sub=USER_A,
+    )
+    tree = await store.get_run_tree("root", owner_sub=USER_A)
+    assert json.loads(tree["nodes"]["kid"]["config_json"])["branch_mutation"] == \
+        {"kind": "pressure"}
+
+
+@pytest.mark.asyncio
+async def test_a_lineage_cycle_does_not_hang(store):
+    """The walk is over DATA, so a cycle has to be survivable.
+
+    It cannot arise through the normal branch path — a child always points at an
+    existing parent — but an import or a hand-edited row could produce one, and
+    without the guard that is an infinite loop inside a request handler rather than
+    a wrong answer.
+    """
+    await _seed_run(store, "a")
+    await _seed_run(store, "b")
+    # Point them at each other: a -> b -> a.
+    for child, parent in (("a", "b"), ("b", "a")):
+        await store._call(
+            store._table("runs").update_item,
+            Key={"pk": f"USER#{USER_A}", "sk": f"RUN#{child}"},
+            UpdateExpression="SET parent_run_id = :p",
+            ExpressionAttributeValues={":p": parent},
+        )
+    tree = await store.get_run_tree("a", owner_sub=USER_A)
+    assert set(tree["nodes"]) == {"a", "b"}
+
+
+@pytest.mark.asyncio
+async def test_lineage_cannot_leave_the_tenant(store):
+    """Another owner's run claiming this run as its parent must not appear.
+
+    In a correct system this is unreachable — a branch inherits its parent's owner —
+    so it is exactly the invariant worth holding a test against. Here the partition
+    itself enforces it: the walk never reads outside the caller's, so there is no
+    filter to forget in a later refactor.
+    """
+    await _seed_run(store, "root", owner=USER_A, name="root-run")
+    await _branch(store, "stolen", "root", 1, owner=USER_B)
+
+    assert await store.list_branches("root", owner_sub=USER_A) == []
+    tree = await store.get_run_tree("root", owner_sub=USER_A)
+    assert set(tree["nodes"]) == {"root"}
+
+
+@pytest.mark.asyncio
+async def test_list_branches_returns_direct_children_only(store):
+    await _seed_run(store, "root")
+    await _branch(store, "kid1", "root", 2)
+    await _branch(store, "kid2", "root", 4)
+    await _branch(store, "grandkid", "kid1", 6)
+
+    ids = {b["run_id"] for b in await store.list_branches("root", owner_sub=USER_A)}
+    assert ids == {"kid1", "kid2"}
+    assert await store.list_branches("kid2", owner_sub=USER_A) == []
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_run_has_an_empty_tree(store):
+    tree = await store.get_run_tree("nope", owner_sub=USER_A)
+    assert tree == {"root_id": "nope", "nodes": {}}

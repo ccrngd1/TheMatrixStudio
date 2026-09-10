@@ -31,6 +31,7 @@ import json
 import logging
 import os
 import time
+import uuid
 from typing import Any, Callable, Dict, List, Optional
 
 from matrix_studio.state import SimSnapshot
@@ -82,6 +83,30 @@ def _event_sk(run_id: str, seq: int) -> str:
 
 def _snapshot_sk(run_id: str, turn: int) -> str:
     return f"RUN#{run_id}#{turn:0{TURN_WIDTH}d}"
+
+
+def _run_pk(run_id: str) -> str:
+    """Partition key for run-scoped-but-not-user-scoped data.
+
+    Summaries, threads and documents are keyed by run rather than by user, and that
+    is §4's decision rather than an oversight: a shared knowledge base is read by
+    principals who do not own it, so a `USER#{sub}` prefix would make sharing
+    inexpressible. Authorisation for these is the caller's explicit ownership check
+    on the run (and, from Phase 6, the `kb_grants` check re-run at query time).
+    """
+    return f"RUN#{run_id}"
+
+
+def _thread_pk(thread_id: str) -> str:
+    return f"THREAD#{thread_id}"
+
+
+def _thread_sk(thread_id: str) -> str:
+    return f"THREAD#{thread_id}"
+
+
+def _document_sk(document_id: str) -> str:
+    return f"DOC#{document_id}"
 
 
 def _run_prefix(run_id: str) -> str:
@@ -216,6 +241,25 @@ class DynamoStorage:
             Body=body.encode("utf-8"),
             ContentType="application/json",
         )
+
+    async def _put_text(self, key: str, text: str) -> None:
+        """Write a document's normalised text. Same guard as a snapshot body."""
+        if not self.bucket:
+            raise StorageError(
+                "DATA_BUCKET is not set, so there is nowhere to write the document "
+                "text. Refusing rather than writing metadata for a document whose "
+                "content does not exist — that would list and fail to open."
+            )
+        await self._call(
+            self._s3.put_object,
+            Bucket=self.bucket,
+            Key=key,
+            Body=text.encode("utf-8"),
+            ContentType="text/plain; charset=utf-8",
+        )
+
+    async def _get_text(self, key: str) -> Optional[str]:
+        return await self._get_body(key)
 
     async def _get_body(self, key: str) -> Optional[str]:
         """Fetch a body, or None if the object is gone.
@@ -499,6 +543,110 @@ class DynamoStorage:
             "total_cost_usd": total_cost,
             "last_event_at": last_event_at,
         }
+
+    # ------------------------------------------------------------------ #
+    # Lineage
+    # ------------------------------------------------------------------ #
+
+    async def _all_runs(self, owner_sub: str) -> Dict[str, Dict[str, Any]]:
+        """Every run this owner has, keyed by id. One query.
+
+        The lineage methods below were two recursive SQL CTEs. Under a
+        user-partitioned table the whole forest lives in one partition, so reading it
+        once and walking it in memory is both simpler and fewer round trips than
+        emulating recursion with a query per hop — and it is bounded by how many runs
+        one person has, not by the table.
+
+        Scoping falls out of the partition rather than being remembered: the
+        recursion cannot leave the tenant because it never reads outside it. The SQL
+        version needed an explicit `owner_sub` filter on every hop for the same
+        guarantee, which is the kind of predicate that gets dropped in a refactor.
+        """
+        items = await self._query_all(
+            "runs",
+            KeyConditionExpression="pk = :pk AND begins_with(sk, :prefix)",
+            ExpressionAttributeValues={
+                ":pk": _user_pk(owner_sub),
+                ":prefix": "RUN#",
+            },
+        )
+        return {str(i["id"]): _from_ddb(i) for i in items if "id" in i}
+
+    async def get_run_tree(
+        self, run_id: str, *, owner_sub: str
+    ) -> Dict[str, Any]:
+        """The full lineage forest rooted at this run's earliest ancestor.
+
+        Returns `{root_id, nodes}` where each node carries the fields the tree view
+        needs, including `config_json` so the caller can read `branch_mutation` for an
+        edge label without a second round trip.
+        """
+        runs = await self._all_runs(owner_sub)
+        if run_id not in runs:
+            return {"root_id": run_id, "nodes": {}}
+
+        # Walk up to the root, guarding against a cycle. A cycle cannot occur through
+        # the normal branch path — a child always points at an existing parent — but
+        # this walk is over data, and an import or a hand-edited row could produce
+        # one. Without the guard that is an infinite loop in a request handler.
+        root_id = run_id
+        seen = {root_id}
+        while True:
+            parent = runs.get(root_id, {}).get("parent_run_id")
+            if not parent or parent not in runs or parent in seen:
+                break
+            root_id = str(parent)
+            seen.add(root_id)
+
+        children: Dict[str, List[str]] = {}
+        for rid, run in runs.items():
+            parent = run.get("parent_run_id")
+            if parent:
+                children.setdefault(str(parent), []).append(rid)
+
+        # Collect the subtree from the root down.
+        nodes: Dict[str, Any] = {}
+        frontier = [root_id]
+        while frontier:
+            rid = frontier.pop()
+            if rid in nodes or rid not in runs:
+                continue
+            run = runs[rid]
+            stats = await self.get_run_stats(rid, owner_sub=owner_sub)
+            nodes[rid] = {
+                "id": rid,
+                "name": run.get("name"),
+                "slug": run.get("slug"),
+                "status": run.get("status"),
+                "branch_turn": run.get("branch_turn"),
+                "parent_run_id": run.get("parent_run_id"),
+                "config_json": run.get("config_json"),
+                "created_at": run.get("created_at"),
+                "turn_count": stats["turn_count"],
+                "total_cost_usd": stats["total_cost_usd"],
+            }
+            frontier.extend(children.get(rid, []))
+
+        return {"root_id": root_id, "nodes": nodes}
+
+    async def list_branches(
+        self, run_id: str, *, owner_sub: str
+    ) -> List[Dict[str, Any]]:
+        """Runs forked directly from this one, newest first."""
+        runs = await self._all_runs(owner_sub)
+        out = [
+            {
+                "run_id": rid,
+                "name": run.get("name"),
+                "branch_turn": run.get("branch_turn"),
+                "status": run.get("status"),
+                "created_at": run.get("created_at"),
+            }
+            for rid, run in runs.items()
+            if run.get("parent_run_id") == run_id
+        ]
+        out.sort(key=lambda b: (-(b["created_at"] or 0), b["run_id"]))
+        return out
 
     # ------------------------------------------------------------------ #
     # Events
@@ -864,6 +1012,474 @@ class DynamoStorage:
         )
         items = result.get("Items") or []
         return int(items[0]["turn"]) if items else None
+
+    # ------------------------------------------------------------------ #
+    # Summaries
+    # ------------------------------------------------------------------ #
+
+    async def save_summary(
+        self,
+        run_id: str,
+        payload: Dict[str, Any],
+        kind: str = "generated",
+        tokens_in: int = 0,
+        tokens_out: int = 0,
+        cost_usd: float = 0.0,
+        instructions: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Append a summary version. The getters return the latest per kind.
+
+        Versioned rather than replaced, so a regenerated summary does not destroy
+        the one it replaced — and a generated summary can never overwrite an
+        imported one, because they are different `kind` values.
+
+        The sort key is `SUM#{kind}#{id:012d}` with `id` from the atomic counter, so
+        "latest of this kind" is a single backwards read on a `SUM#{kind}#` prefix
+        rather than a sort over every version. A timestamp would not do: two
+        regenerations in the same second would order arbitrarily.
+
+        No `owner_sub`: summaries are partitioned by run, and the caller reached this
+        run through `get_run_by_ref(ref, owner_sub=...)` — which is also why the
+        `documents`, `threads` and `summaries` tables are run-partitioned at all
+        (§4: a shared knowledge base is read by principals who do not own it, so a
+        user prefix would make sharing inexpressible).
+        """
+        seq = await self._next_id("summaries", _run_pk(run_id))
+        created_at = int(time.time())
+        item = {
+            "pk": _run_pk(run_id),
+            "sk": f"SUM#{kind}#{seq:0{SEQ_WIDTH}d}",
+            "id": seq,
+            "run_id": run_id,
+            "kind": kind,
+            "payload_json": json.dumps(payload),
+            "tokens_in": tokens_in,
+            "tokens_out": tokens_out,
+            "cost_usd": cost_usd,
+            "instructions": instructions,
+            "created_at": created_at,
+        }
+        await self._call(self._table("summaries").put_item, Item=_to_ddb(item))
+        return {
+            "id": seq,
+            "run_id": run_id,
+            "kind": kind,
+            "payload": payload,
+            "tokens_in": tokens_in,
+            "tokens_out": tokens_out,
+            "cost_usd": cost_usd,
+            "instructions": instructions,
+            "created_at": created_at,
+        }
+
+    async def get_summaries(self, run_id: str) -> List[Dict[str, Any]]:
+        """The latest summary of each kind, with its payload parsed."""
+        items = await self._query_all(
+            "summaries",
+            KeyConditionExpression="pk = :pk AND begins_with(sk, :prefix)",
+            ExpressionAttributeValues={":pk": _run_pk(run_id), ":prefix": "SUM#"},
+        )
+        latest: Dict[str, Dict[str, Any]] = {}
+        for raw in sorted(items, key=lambda i: int(i["id"]), reverse=True):
+            row = _from_ddb(raw)
+            if row["kind"] in latest:
+                continue
+            try:
+                parsed = json.loads(row.get("payload_json") or "{}")
+            except json.JSONDecodeError:
+                parsed = {}
+            latest[row["kind"]] = {
+                "id": row["id"],
+                "run_id": row["run_id"],
+                "kind": row["kind"],
+                "payload": parsed,
+                "tokens_in": row.get("tokens_in", 0),
+                "tokens_out": row.get("tokens_out", 0),
+                "cost_usd": row.get("cost_usd", 0.0),
+                "instructions": row.get("instructions"),
+                "created_at": row["created_at"],
+            }
+        return list(latest.values())
+
+    # ------------------------------------------------------------------ #
+    # Aside threads
+    # ------------------------------------------------------------------ #
+
+    async def create_thread(
+        self,
+        thread_id: str,
+        run_id: str,
+        target: str,
+        persona_name: Optional[str] = None,
+        mode: str = "aside",
+    ) -> Dict[str, Any]:
+        """Open an aside thread over a run.
+
+        `thread_id` is written as its own attribute as well as into the sort key,
+        because the `by-thread-id` GSI needs it as a partition key — a GSI cannot
+        key on a substring of another key.
+        """
+        created_at = int(time.time())
+        item = {
+            "pk": _run_pk(run_id),
+            "sk": _thread_sk(thread_id),
+            "thread_id": thread_id,
+            "id": thread_id,
+            "run_id": run_id,
+            "target": target,
+            "persona_name": persona_name,
+            "mode": mode,
+            "created_at": created_at,
+        }
+        await self._call(self._table("threads").put_item, Item=_to_ddb(item))
+        return {
+            "id": thread_id,
+            "run_id": run_id,
+            "target": target,
+            "persona_name": persona_name,
+            "mode": mode,
+            "created_at": created_at,
+        }
+
+    async def get_thread(self, thread_id: str) -> Optional[Dict[str, Any]]:
+        """A thread by its own id, with no run context — via the GSI (key design §5).
+
+        Two reads: the KEYS_ONLY index gives the base-table key, then a `GetItem`
+        returns the item. The index deliberately projects no attributes, so there is
+        no way to serve a thread straight off it and skip the base-table read that
+        the caller's ownership check is paired with.
+
+        Authorisation is the caller's: `api/app.py` routes both thread endpoints
+        through `_require_thread_run`, which resolves the run via the scoped
+        `get_run_by_ref` and answers 404 for another tenant's thread.
+        """
+        found = await self._call(
+            self._table("threads").query,
+            IndexName="by-thread-id",
+            KeyConditionExpression="thread_id = :tid",
+            ExpressionAttributeValues={":tid": thread_id},
+            Limit=1,
+        )
+        keys = found.get("Items") or []
+        if not keys:
+            return None
+        got = await self._call(
+            self._table("threads").get_item,
+            Key={"pk": keys[0]["pk"], "sk": keys[0]["sk"]},
+        )
+        item = got.get("Item")
+        return _from_ddb(item) if item else None
+
+    async def list_threads(self, run_id: str) -> List[Dict[str, Any]]:
+        """A run's threads, oldest first, each with its message count and cost.
+
+        The counts were a SQL `LEFT JOIN … GROUP BY`. DynamoDB has no join, so they
+        come from one query per thread. Bounded by how many asides a human opens on
+        one run — single digits — and issued concurrently rather than in series,
+        because the alternative is maintaining counters on the thread row that can
+        drift from the messages they describe.
+        """
+        items = await self._query_all(
+            "threads",
+            KeyConditionExpression="pk = :pk AND begins_with(sk, :prefix)",
+            ExpressionAttributeValues={":pk": _run_pk(run_id), ":prefix": "THREAD#"},
+        )
+        threads = [_from_ddb(i) for i in items]
+        threads.sort(key=lambda t: (t.get("created_at") or 0, t["id"]))
+        if not threads:
+            return []
+
+        message_lists = await asyncio.gather(
+            *[self.get_thread_messages(t["id"]) for t in threads]
+        )
+        for thread, messages in zip(threads, message_lists):
+            thread["message_count"] = len(messages)
+            thread["total_cost_usd"] = sum(
+                float(m.get("cost_usd") or 0.0) for m in messages
+            )
+        return threads
+
+    async def add_thread_message(
+        self,
+        thread_id: str,
+        role: str,
+        content: str,
+        speaker: Optional[str] = None,
+        tokens_in: int = 0,
+        tokens_out: int = 0,
+        cost_usd: float = 0.0,
+    ) -> Dict[str, Any]:
+        """Append a message to a thread.
+
+        The counter's main reason for existing (key design §4): messages are ordered
+        BY this id, and `int(time.time())` has one-second resolution — two fast
+        replies would order arbitrarily, which is exactly when it happens.
+        """
+        seq = await self._next_id("thread-messages", _thread_pk(thread_id))
+        created_at = int(time.time())
+        item = {
+            "pk": _thread_pk(thread_id),
+            "sk": f"MSG#{seq:0{SEQ_WIDTH}d}",
+            "id": seq,
+            "thread_id": thread_id,
+            "role": role,
+            "speaker": speaker,
+            "content": content,
+            "tokens_in": tokens_in,
+            "tokens_out": tokens_out,
+            "cost_usd": cost_usd,
+            "created_at": created_at,
+        }
+        await self._call(self._table("thread-messages").put_item, Item=_to_ddb(item))
+        return {
+            "id": seq,
+            "thread_id": thread_id,
+            "role": role,
+            "speaker": speaker,
+            "content": content,
+            "tokens_in": tokens_in,
+            "tokens_out": tokens_out,
+            "cost_usd": cost_usd,
+            "created_at": created_at,
+        }
+
+    async def get_thread_messages(self, thread_id: str) -> List[Dict[str, Any]]:
+        """A thread's messages, oldest first — native sort-key order."""
+        items = await self._query_all(
+            "thread-messages",
+            KeyConditionExpression="pk = :pk AND begins_with(sk, :prefix)",
+            ExpressionAttributeValues={
+                ":pk": _thread_pk(thread_id),
+                ":prefix": "MSG#",
+            },
+        )
+        out = [_from_ddb(i) for i in items]
+        out.sort(key=lambda m: int(m["id"]))
+        return out
+
+    async def thread_cost(self, thread_id: str) -> float:
+        """Total cost of a thread's messages, counted separately from the run's."""
+        messages = await self.get_thread_messages(thread_id)
+        return sum(float(m.get("cost_usd") or 0.0) for m in messages)
+
+    # ------------------------------------------------------------------ #
+    # Documents (metadata in DynamoDB, text in S3)
+    # ------------------------------------------------------------------ #
+
+    def _document_key(self, owner_sub: str, run_id: str, doc_id: str) -> str:
+        return f"docs/{owner_sub}/{run_id}/{doc_id}.txt"
+
+    async def add_document(
+        self,
+        run_id: str,
+        title: str,
+        chunks: List[str],
+        persona_name: Optional[str] = None,
+        source_path: Optional[str] = None,
+        media_type: Optional[str] = None,
+        char_count: int = 0,
+        document_id: Optional[str] = None,
+        text: Optional[str] = None,
+        *,
+        owner_sub: str,
+    ) -> str:
+        """Store a document: normalised text to S3, metadata to DynamoDB.
+
+        **`text` is new, and it exists because §4a's plan does not hold without it.**
+
+        §4a says chunk text need not be stored anywhere, because the lexical arm can
+        re-chunk the normalised text in memory: `chunk_text()` is deterministic, so
+        it "reproduces the same chunks and the same `ordinal`s the vectors were built
+        from". Determinism is the wrong property. What is needed is a round trip —
+        `chunk_text(stored_text)` must equal the chunks that were embedded — and
+        measured on ten real documents that **fails on two of them**:
+
+            docs/AWS-SERVERLESS-ARCHITECTURE.md   3 of 110 ordinals differ
+            README.md                             4 of  55 ordinals differ
+
+        The cause is that `join_chunks` is not a perfect inverse of `chunk_text`. It
+        de-overlaps well but not exactly — 72,149 characters reassembled from 72,136,
+        and 37,359 from 37,348 — and those extra characters shift a few chunk
+        boundaries. So an ordinal in the re-chunked text can point at *different
+        text* from the vector built at that ordinal, and hybrid retrieval fuses the
+        two arms by chunk id. A passage cited under the wrong ordinal, silently.
+
+        Passing the **original extracted text** removes the problem at the root
+        rather than papering over it: re-chunking then feeds the same input to the
+        same function, so it reproduces the chunks exactly. Every caller already
+        holds it as `ExtractedDocument.text`.
+
+        Falling back to `join_chunks(chunks)` when `text` is absent keeps the older
+        callers working, at the cost of the boundary drift above. `chunk_count` is
+        recorded either way, so a mismatch is at least detectable.
+
+        Text first, metadata second: an object with no metadata row is invisible and
+        harmless, while a row pointing at a missing object is a document that lists
+        but cannot be opened.
+        """
+        from matrix_studio.documents import join_chunks
+
+        doc_id = document_id or uuid.uuid4().hex[:12]
+        key = self._document_key(owner_sub, run_id, doc_id)
+        body = text if text is not None else join_chunks(list(chunks))
+        await self._put_text(key, body)
+
+        now = int(time.time())
+        item = {
+            "pk": _run_pk(run_id),
+            "sk": _document_sk(doc_id),
+            "document_id": doc_id,
+            "id": doc_id,
+            "run_id": run_id,
+            "persona_name": persona_name,
+            "title": title,
+            "source_path": source_path,
+            "media_type": media_type,
+            "char_count": char_count,
+            "chunk_count": len(chunks),
+            # Whether the stored text is the original or a reassembly. Phase 3 needs
+            # to know: re-chunking is only safe against the original (see above), so
+            # a document written by an older caller has to keep its chunks.
+            "text_is_original": text is not None,
+            "s3_key": key,
+            "owner_sub": owner_sub,
+            "created_at": now,
+        }
+        await self._call(self._table("documents").put_item, Item=_to_ddb(item))
+        return doc_id
+
+    async def list_documents(
+        self, run_id: str, persona_name: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """A run's documents, newest first.
+
+        `persona_name` filters to what that persona may retrieve: its own plus
+        cast-wide (a NULL persona). Applied in Python — the alternative, a
+        `FilterExpression` with `attribute_not_exists`, reads the same items and is
+        billed the same, so the only difference would be that the OR-with-NULL case
+        is harder to see.
+        """
+        items = await self._query_all(
+            "documents",
+            KeyConditionExpression="pk = :pk AND begins_with(sk, :prefix)",
+            ExpressionAttributeValues={":pk": _run_pk(run_id), ":prefix": "DOC#"},
+        )
+        docs = [_from_ddb(i) for i in items]
+        if persona_name is not None:
+            docs = [
+                d for d in docs
+                if d.get("persona_name") in (persona_name, None)
+            ]
+        docs.sort(key=lambda d: (-(d.get("created_at") or 0), d["id"]))
+        return docs
+
+    async def _find_document(self, document_id: str) -> Optional[Dict[str, Any]]:
+        """Locate a document by its own id via the GSI (key design §5)."""
+        found = await self._call(
+            self._table("documents").query,
+            IndexName="by-document-id",
+            KeyConditionExpression="document_id = :did",
+            ExpressionAttributeValues={":did": document_id},
+            Limit=1,
+        )
+        keys = found.get("Items") or []
+        if not keys:
+            return None
+        got = await self._call(
+            self._table("documents").get_item,
+            Key={"pk": keys[0]["pk"], "sk": keys[0]["sk"]},
+        )
+        item = got.get("Item")
+        return _from_ddb(item) if item else None
+
+    async def document_text(self, document_id: str) -> str:
+        """A document's full text — one S3 GET.
+
+        Empty string for a missing document, matching the SQLite version (which
+        returned `join_chunks([])`). The setup-export path calls this for every
+        document and treats an empty result as "nothing to carry", so raising would
+        turn one deleted document into a failed export.
+        """
+        doc = await self._find_document(document_id)
+        if not doc or not doc.get("s3_key"):
+            return ""
+        return await self._get_text(str(doc["s3_key"])) or ""
+
+    async def delete_document(self, document_id: str) -> bool:
+        """Delete a document's metadata and its S3 object. True if it existed.
+
+        Metadata first, then the object: it is the metadata that makes the document
+        listable and retrievable, so removing it first means a failure part-way
+        leaves an orphaned object rather than a listed document that cannot be read.
+        Phase 3 adds the third store — the document's vectors — and `chunk_count` on
+        the row is what makes those bounded to delete (§4a).
+        """
+        doc = await self._find_document(document_id)
+        if not doc:
+            return False
+        await self._call(
+            self._table("documents").delete_item,
+            Key={"pk": _run_pk(str(doc["run_id"])), "sk": _document_sk(document_id)},
+        )
+        key = doc.get("s3_key")
+        if key and self.bucket:
+            try:
+                await self._call(
+                    self._s3.delete_object, Bucket=self.bucket, Key=str(key)
+                )
+            except Exception as exc:  # noqa: BLE001
+                # The document is already gone from the user's point of view. An
+                # orphaned object costs storage, not correctness, so this must not
+                # turn a successful delete into an error the operator has to retry.
+                logger.warning(
+                    "Document %s deleted, but its S3 object %s was not: %s",
+                    document_id, key, exc,
+                )
+        return True
+
+    async def count_documents(self, run_id: str) -> int:
+        """How many documents a run has."""
+        return len(await self.list_documents(run_id))
+
+    async def copy_documents_to_run(
+        self, from_run_id: str, to_run_id: str, *, owner_sub: str
+    ) -> int:
+        """Copy a run's documents to another run — the branch path.
+
+        The S3 objects are **shared, not copied**: the destination's metadata rows
+        point at the source's `s3_key`. Document text is immutable once ingested, so
+        a copy would duplicate bytes for no benefit — and the sharing is a step
+        toward Phase 6, where a branch inherits KB *bindings* and nothing is copied
+        at all (§4a).
+
+        The cost of sharing, stated: deleting the parent's document removes the
+        object the branch's row points at, and `document_text` would then return "".
+        That is why `delete_document` logs rather than fails on a missing object, and
+        why Phase 6 replacing this with bindings is the real fix rather than a
+        tidy-up.
+        """
+        source = await self.list_documents(from_run_id)
+        if not source:
+            return 0
+        table = self._table("documents")
+
+        def write():
+            with table.batch_writer() as writer:
+                for doc in source:
+                    writer.put_item(
+                        Item=_to_ddb(
+                            {
+                                **doc,
+                                "pk": _run_pk(to_run_id),
+                                "sk": _document_sk(str(doc["id"])),
+                                "run_id": to_run_id,
+                                "owner_sub": owner_sub,
+                            }
+                        )
+                    )
+
+        await asyncio.to_thread(write)
+        return len(source)
 
     # ------------------------------------------------------------------ #
     # Paging helpers
