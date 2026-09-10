@@ -1137,3 +1137,36 @@ async def test_list_branches_returns_direct_children_only(store):
 async def test_an_unknown_run_has_an_empty_tree(store):
     tree = await store.get_run_tree("nope", owner_sub=USER_A)
     assert tree == {"root_id": "nope", "nodes": {}}
+
+
+@pytest.mark.asyncio
+async def test_updating_a_nonexistent_run_does_not_invent_one(store):
+    """DynamoDB's `UpdateItem` upserts; SQL's `UPDATE … WHERE` is a no-op.
+
+    Without a condition, updating a run that is not there CREATES one — measured: a
+    row carrying a status and a `completed_at` but no topic, no cast and no
+    `created_at`, which then shows up in the owner's history as a phantom
+    conversation. A wrong `owner_sub`, a deleted run, or resuming something already
+    gone would each manufacture one.
+
+    Ignored rather than raised, matching SQLite: the engine calls this at the end of
+    a run, so an exception there would fail a run that had already finished.
+    """
+    await store.update_run_status("ghost", "complete", 123, owner_sub=USER_A)
+    assert await store.get_run("ghost", owner_sub=USER_A) is None
+    assert await store.list_runs(owner_sub=USER_A) == []
+
+
+@pytest.mark.asyncio
+async def test_a_status_update_cannot_reach_another_owners_partition(store):
+    """The same upsert hazard, in the form that would be a cross-tenant write.
+
+    A caller holding the right run id and the wrong owner would, without the
+    condition, create a phantom row in the OTHER user's partition — a write into
+    somebody else's history rather than a failed update of their own.
+    """
+    await _seed_run(store, "r1", owner=USER_A, name="alpha-run")
+    await store.update_run_status("r1", "complete", owner_sub=USER_B)
+    assert await store.list_runs(owner_sub=USER_B) == []
+    # A's run is untouched.
+    assert (await store.get_run("r1", owner_sub=USER_A))["status"] == "pending"
