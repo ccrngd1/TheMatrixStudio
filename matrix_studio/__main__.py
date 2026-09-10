@@ -26,6 +26,7 @@ from matrix_studio import __version__
 from matrix_studio.engine import run_simulation
 from matrix_studio.settings import get_settings
 from matrix_studio.storage import Database
+from matrix_studio.tenancy import LOCAL_USER_SUB
 
 
 def setup_logging(verbose: bool = False):
@@ -73,13 +74,13 @@ async def run_from_file(
             request["config"] = {}
         request["config"]["max_messages"] = max_messages
 
-    # Setup database
+    # Setup storage. Bound to the single local user: the file-in/file-out CLI has no
+    # authenticated caller, and an unbound store refuses every call rather than
+    # guessing an owner.
     db = None
     if not no_db:
-        db_path = settings.db_file
-        db = Database(str(db_path))
+        db = Database().for_owner(LOCAL_USER_SUB)
         await db.connect()
-        logger.info(f"Using database: {db_path}")
 
     try:
         # Run simulation
@@ -163,7 +164,9 @@ async def _docs_action(args: argparse.Namespace) -> int:
     from matrix_studio.tenancy import LOCAL_USER_SUB
 
     settings = get_settings()
-    db = Database(str(settings.db_file))
+    # The CLI has no authenticated caller, so it binds to the single local user —
+    # see the note at the `get_run_by_ref` call below.
+    db = Database().for_owner(LOCAL_USER_SUB)
     await db.connect()
     try:
         # The CLI is an operator tool on the local database, and there is no

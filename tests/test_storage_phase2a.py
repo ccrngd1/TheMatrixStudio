@@ -14,17 +14,6 @@ from matrix_studio.storage import Database
 from matrix_studio.tenancy import LOCAL_USER_SUB
 
 
-@pytest.fixture
-async def db():
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-        db_path = f.name
-    database = Database(db_path)
-    await database.connect()
-    yield database
-    await database.close()
-    Path(db_path).unlink(missing_ok=True)
-
-
 async def _seed_run(db, run_id, turns, status_final="complete"):
     await db.create_run(run_id=run_id, topic="T", cast=[{"name": "A", "persona": "p"}])
     for t in range(1, turns + 1):
@@ -97,11 +86,11 @@ async def test_list_branches(db):
     await db.create_run(run_id="b2", topic="T", cast=[{"name": "A", "persona": "p"}],
                         name="child-two", parent_run_id="parent", branch_turn=3)
 
-    branches = await db.list_branches("parent", owner_sub=LOCAL_USER_SUB)
+    branches = await db.list_branches("parent")
     ids = {b["run_id"] for b in branches}
     assert ids == {"b1", "b2"}
     by_id = {b["run_id"]: b for b in branches}
     assert by_id["b1"]["branch_turn"] == 2
     assert by_id["b2"]["name"] == "child-two"
     # A run with no children returns an empty list.
-    assert await db.list_branches("b1", owner_sub=LOCAL_USER_SUB) == []
+    assert await db.list_branches("b1") == []

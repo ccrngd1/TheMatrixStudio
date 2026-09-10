@@ -12,11 +12,25 @@ analysis LLM seam is mocked by the autouse conftest fixture — no live calls.
 import time
 
 import pytest
+
+from tests.support import TEST_OWNER
 from fastapi.testclient import TestClient
 
 from matrix_studio.api.app import create_app
 from tests.test_api import make_fake_run, REQUEST
 from unittest.mock import patch
+
+
+@pytest.fixture(autouse=True)
+def _storage_backend(aws_backend):
+    """Every test in this file builds the FastAPI app.
+
+    The app's lifespan connects to DynamoDB, so without a mocked account it reaches
+    real AWS — which surfaces as `ExpiredTokenException` on a `Scan` and reads like a
+    credentials problem rather than a missing fixture. Autouse and explicit here
+    rather than hidden in `conftest.py`, so the dependency is visible in the file that
+    has it.
+    """
 
 # The client fixture records its DB path here so tests can open a second
 # connection to the same file (e.g. to seed an imported summary as the importer
@@ -317,7 +331,7 @@ def test_imported_summary_shown_separately(client):
     from matrix_studio.storage import Database
 
     async def _seed():
-        seed_db = Database(client_db_path[-1])
+        seed_db = Database().for_owner(TEST_OWNER)
         await seed_db.connect()
         await seed_db.save_summary(run_id, payload={"overview": "legacy original"},
                                    kind="imported")

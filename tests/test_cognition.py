@@ -24,17 +24,6 @@ from matrix_studio.state import CognitionConfig
 from matrix_studio.storage import Database
 
 
-@pytest.fixture
-async def db():
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-        db_path = f.name
-    database = Database(db_path)
-    await database.connect()
-    yield database
-    await database.close()
-    Path(db_path).unlink(missing_ok=True)
-
-
 class _Resp:
     def __init__(self, content):
         self.choices = [MagicMock(message=MagicMock(content=content))]
