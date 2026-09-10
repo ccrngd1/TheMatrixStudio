@@ -28,11 +28,13 @@ import logging
 import re
 import tempfile
 import time
+from functools import partial
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import (
+    Depends,
     FastAPI,
     File,
     Form,
@@ -47,6 +49,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from matrix_studio import analysis, blobs, service
+from matrix_studio.api.identity import current_user, current_user_ws
 from matrix_studio.api.manager import RunManager, TERMINAL_EVENTS, event_row_to_wire
 from matrix_studio.documents import (
     ExtractionError,
@@ -588,10 +591,16 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         }
 
     @app.get("/api/name/suggest")
-    async def suggest_name(topic: str = Query(...)) -> Dict[str, str]:
-        """Suggest a memorable codename + description for the new-run form."""
+    async def suggest_name(
+        topic: str = Query(...), user: str = Depends(current_user)
+    ) -> Dict[str, str]:
+        """Suggest a memorable codename + description for the new-run form.
+
+        The uniqueness check is scoped to the caller, so the suggestion cannot be
+        rejected by — or reveal the existence of — a run under another account.
+        """
         result = await generate_run_name(
-            topic=topic, name_exists=db.name_exists
+            topic=topic, name_exists=partial(db.name_exists, owner_sub=user)
         )
         return {
             "name": result["name"],
@@ -621,21 +630,25 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         return {"cast": cast, "count": len(cast)}
 
     @app.post("/api/runs", status_code=201)
-    async def create_run(body: CreateRunModel) -> Dict[str, Any]:
+    async def create_run(
+        body: CreateRunModel, user: str = Depends(current_user)
+    ) -> Dict[str, Any]:
         request = body.model_dump(exclude_none=True)
         if not request.get("cast"):
             raise HTTPException(status_code=422, detail="At least one persona is required")
-        result = await manager.create_run(request)
+        result = await manager.create_run(request, owner_sub=user)
         return result
 
     @app.get("/api/runs")
-    async def list_runs(q: Optional[str] = Query(default=None)) -> Dict[str, Any]:
-        runs = await db.list_runs(q=q)
+    async def list_runs(
+        q: Optional[str] = Query(default=None), user: str = Depends(current_user)
+    ) -> Dict[str, Any]:
+        runs = await db.list_runs(q=q, owner_sub=user)
         return {"runs": [_run_summary(r) for r in runs]}
 
     @app.get("/api/runs/{ref}")
-    async def get_run(ref: str) -> Dict[str, Any]:
-        run = await db.get_run_by_ref(ref)
+    async def get_run(ref: str, user: str = Depends(current_user)) -> Dict[str, Any]:
+        run = await db.get_run_by_ref(ref, owner_sub=user)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
 
@@ -687,7 +700,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
                     "name": parent_row.get("name"),
                     "branch_turn": run.get("branch_turn"),
                 }
-        branches = await db.list_branches(run["id"])
+        branches = await db.list_branches(run["id"], owner_sub=user)
 
         return {
             **summary,
@@ -823,7 +836,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
                 tmp_path.unlink(missing_ok=True)
 
     @app.get("/api/runs/{ref}/setup")
-    async def get_run_setup(ref: str) -> Dict[str, Any]:
+    async def get_run_setup(ref: str, user: str = Depends(current_user)) -> Dict[str, Any]:
         """This run's setup, shaped as a create-run request body.
 
         For "start a fresh conversation from this one": the operator gets the whole
@@ -843,7 +856,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         documents uploaded after the run started and text extracted from
         server-side paths, both of which the original request never contained.
         """
-        run = await db.get_run_by_ref(ref)
+        run = await db.get_run_by_ref(ref, owner_sub=user)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
 
@@ -921,8 +934,9 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         ref: str,
         after_seq: int = Query(default=-1),
         limit: Optional[int] = Query(default=None),
+        user: str = Depends(current_user),
     ) -> Dict[str, Any]:
-        run = await db.get_run_by_ref(ref)
+        run = await db.get_run_by_ref(ref, owner_sub=user)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
         rows = await db.get_events_after(run["id"], after_seq=after_seq, limit=limit)
@@ -935,16 +949,20 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
     # run that resumes forward — the parent is never modified.
 
     @app.get("/api/runs/{ref}/snapshots")
-    async def list_snapshots(ref: str) -> Dict[str, Any]:
-        run = await db.get_run_by_ref(ref)
+    async def list_snapshots(ref: str, user: str = Depends(current_user)) -> Dict[str, Any]:
+        run = await db.get_run_by_ref(ref, owner_sub=user)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
         snapshots = await db.list_snapshots(run["id"])
         return {"run_id": run["id"], "snapshots": snapshots}
 
     @app.get("/api/runs/{ref}/snapshots/{turn}")
-    async def get_snapshot(ref: str, turn: int) -> Dict[str, Any]:
-        run = await db.get_run_by_ref(ref)
+    async def get_snapshot(
+        ref: str,
+        turn: int,
+        user: str = Depends(current_user),
+    ) -> Dict[str, Any]:
+        run = await db.get_run_by_ref(ref, owner_sub=user)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
         snapshot = await db.get_snapshot(run["id"], turn=turn)
@@ -972,8 +990,12 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
     # the trace reports {available: false} rather than synthesizing a motive.
 
     @app.get("/api/runs/{ref}/agents/{name}/dossier")
-    async def agent_dossier(ref: str, name: str) -> Dict[str, Any]:
-        run = await db.get_run_by_ref(ref)
+    async def agent_dossier(
+        ref: str,
+        name: str,
+        user: str = Depends(current_user),
+    ) -> Dict[str, Any]:
+        run = await db.get_run_by_ref(ref, owner_sub=user)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
         snapshot = await db.get_snapshot(run["id"], turn=None)  # latest
@@ -1065,7 +1087,11 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         }
 
     @app.post("/api/runs/{ref}/agents/{name}/regenerate-avatar")
-    async def regenerate_avatar(ref: str, name: str) -> Dict[str, Any]:
+    async def regenerate_avatar(
+        ref: str,
+        name: str,
+        user: str = Depends(current_user),
+    ) -> Dict[str, Any]:
         """Regenerate the avatar for a specific agent in a run.
 
         Produces a NEW portrait (random seed) for the same persona, persists it
@@ -1075,7 +1101,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         import random
         from matrix_studio.avatar import generate_avatar, store_avatar
 
-        run = await db.get_run_by_ref(ref)
+        run = await db.get_run_by_ref(ref, owner_sub=user)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
 
@@ -1127,15 +1153,28 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         }
 
     @app.get("/api/runs/{ref}/agents/{name}/avatar")
-    async def get_avatar(ref: str, name: str, v: Optional[str] = Query(default=None)):
+    async def get_avatar(
+        ref: str,
+        name: str,
+        v: Optional[str] = Query(default=None),
+        user: str = Depends(current_user),
+    ):
         """Serve a persona's avatar image.
 
-        Route-scoped to the run rather than exposing a bare blob path, so when
-        per-user authorisation arrives it attaches here like every other run route.
+        Route-scoped to the run rather than exposing a bare blob path, which is
+        what lets per-user authorisation attach here like every other run route —
+        a bare `/blobs/{key}` would have had nothing to authorise against.
         `v` is the content-addressed key: it makes the URL change when the image
         does, which is what lets the response be cached immutably.
+
+        Note the residual exposure, since it is worth being precise about: `v` is
+        taken on trust, so a caller holding *any* valid blob key and *any* run of
+        their own can fetch that blob. Keys are SHA-256 content hashes, so this is
+        not reachable by guessing — but it is not an ownership check either, and
+        Phase 2 should key avatars under the owner's S3 prefix rather than rely on
+        that.
         """
-        run = await db.get_run_by_ref(ref)
+        run = await db.get_run_by_ref(ref, owner_sub=user)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
 
@@ -1160,7 +1199,8 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
 
     @app.get("/api/runs/{ref}/turns/{turn}/structured")
     async def structured_turn_view(
-        ref: str, turn: int, opt_in: bool = Query(default=False)
+        ref: str, turn: int, opt_in: bool = Query(default=False),
+        user: str = Depends(current_user),
     ) -> Dict[str, Any]:
         """Phase 4d: the OPTIONAL structured (Narrative / Consequences /
         Updated State / Possibilities) projection of one turn. A derived
@@ -1174,7 +1214,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
                 detail="Structured output view is disabled "
                 "(set STRUCTURED_OUTPUT=true or pass ?opt_in=true).",
             )
-        run = await db.get_run_by_ref(ref)
+        run = await db.get_run_by_ref(ref, owner_sub=user)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
         rows = await db.get_events_after(run["id"], after_seq=-1, limit=None)
@@ -1190,14 +1230,14 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         return view
 
     @app.get("/api/runs/{ref}/pending-threads")
-    async def pending_threads(ref: str) -> Dict[str, Any]:
+    async def pending_threads(ref: str, user: str = Depends(current_user)) -> Dict[str, Any]:
         """Phase 4b: the run's pending-thread ledger (setups & payoffs), read
         from the latest snapshot. Open threads older than the run's configured
         staleness age (cognition.thread_stale_after, default 5 turns) are
         flagged ``stale`` ("dangling" in the dossier UI). Distinct from the
         Phase 1.5 aside ``/threads`` routes. Empty ledger -> empty list, never
         a synthesized thread."""
-        run = await db.get_run_by_ref(ref)
+        run = await db.get_run_by_ref(ref, owner_sub=user)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
         snapshot = await db.get_snapshot(run["id"], turn=None)  # latest
@@ -1225,8 +1265,8 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         }
 
     @app.get("/api/runs/{ref}/turns/{turn}/trace")
-    async def turn_trace(ref: str, turn: int) -> Dict[str, Any]:
-        run = await db.get_run_by_ref(ref)
+    async def turn_trace(ref: str, turn: int, user: str = Depends(current_user)) -> Dict[str, Any]:
+        run = await db.get_run_by_ref(ref, owner_sub=user)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
         rows = await db.get_events_after(run["id"], after_seq=-1, limit=None)
@@ -1291,8 +1331,12 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         }
 
     @app.post("/api/runs/{ref}/branch", status_code=201)
-    async def branch_run(ref: str, body: BranchModel) -> Dict[str, Any]:
-        parent = await db.get_run_by_ref(ref)
+    async def branch_run(
+        ref: str,
+        body: BranchModel,
+        user: str = Depends(current_user),
+    ) -> Dict[str, Any]:
+        parent = await db.get_run_by_ref(ref, owner_sub=user)
         if not parent:
             raise HTTPException(status_code=404, detail="Run not found")
         # The fork turn must exist in the parent's history. We validate against
@@ -1319,15 +1363,15 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         return meta
 
     @app.get("/api/runs/{ref}/tree")
-    async def run_tree(ref: str) -> Dict[str, Any]:
+    async def run_tree(ref: str, user: str = Depends(current_user)) -> Dict[str, Any]:
         """Phase 2b branch-tree. Returns the full lineage rooted at the ancestor
         of ``ref``, with each node's mutation kind (for edge labels) and status.
         Nodes are ordered oldest-first; edges are inferred from parent_run_id.
         """
-        run = await db.get_run_by_ref(ref)
+        run = await db.get_run_by_ref(ref, owner_sub=user)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
-        tree = await db.get_run_tree(run["id"])
+        tree = await db.get_run_tree(run["id"], owner_sub=user)
         # Enrich nodes with the mutation kind from config_json for UI edge labels.
         import json as _json
         enriched: Dict[str, Any] = {}
@@ -1353,14 +1397,14 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         return {"root_id": tree["root_id"], "nodes": enriched}
 
     @app.post("/api/runs/{ref}/resume")
-    async def resume_run(ref: str) -> Dict[str, Any]:
+    async def resume_run(ref: str, user: str = Depends(current_user)) -> Dict[str, Any]:
         """
         Error-recovery: resume an interrupted/failed run forward IN PLACE (same
         run id/codename), continuing from its last checkpoint. Non-blocking —
         returns immediately; generation runs in the background and streams over
         the existing WS. A completed run cannot be resumed (branch it instead).
         """
-        run = await db.get_run_by_ref(ref)
+        run = await db.get_run_by_ref(ref, owner_sub=user)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
         try:
@@ -1369,7 +1413,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             raise HTTPException(status_code=409, detail=str(exc))
 
     @app.post("/api/runs/{ref}/stop", status_code=202)
-    async def stop_run(ref: str) -> Dict[str, Any]:
+    async def stop_run(ref: str, user: str = Depends(current_user)) -> Dict[str, Any]:
         """Ask a live run to stop after the turn it is currently generating.
 
         A request, not a kill: the in-flight turn finishes and is persisted, then
@@ -1384,7 +1428,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         Returns 202 while the request is registered, since the effect lands a turn
         later. Idempotent — a second request on the same live run is not an error.
         """
-        run = await db.get_run_by_ref(ref)
+        run = await db.get_run_by_ref(ref, owner_sub=user)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
         try:
@@ -1399,10 +1443,30 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
     # mutate the snapshot, or change the run's recorded cost. Summaries and
     # aside replies are model-generated ANALYSIS, labeled as such by the UI.
 
-    async def _require_run(ref: str) -> Dict[str, Any]:
-        run = await db.get_run_by_ref(ref)
+    async def _require_run(ref: str, owner_sub: str) -> Dict[str, Any]:
+        """Resolve one of ``owner_sub``'s runs, or 404.
+
+        ``owner_sub`` is a parameter rather than something read from an enclosing
+        scope because this helper is shared by the summary and thread routes: if it
+        closed over an identity it would be the same one for every caller, which is
+        the exact bug it exists to prevent.
+        """
+        run = await db.get_run_by_ref(ref, owner_sub=owner_sub)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
+        return run
+
+    async def _require_thread_run(
+        thread: Dict[str, Any], owner_sub: str
+    ) -> Dict[str, Any]:
+        """The run behind an aside thread, if it belongs to ``owner_sub``.
+
+        Raises 404 "Thread not found" — not "Run not found" — because the caller
+        addressed a thread, and the run's existence is not theirs to learn about.
+        """
+        run = await db.get_run_by_ref(thread["run_id"], owner_sub=owner_sub)
+        if not run:
+            raise HTTPException(status_code=404, detail="Thread not found")
         return run
 
     def _shape_summaries(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -1412,8 +1476,8 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         return {"generated": generated, "imported": imported}
 
     @app.get("/api/runs/{ref}/summary")
-    async def get_summary(ref: str) -> Dict[str, Any]:
-        run = await _require_run(ref)
+    async def get_summary(ref: str, user: str = Depends(current_user)) -> Dict[str, Any]:
+        run = await _require_run(ref, user)
         rows = await db.get_summaries(run["id"])
         # `default_instructions` is the default analyst-role framing so the client
         # can prefill the regenerate editor / offer "reset to default" even before
@@ -1426,9 +1490,10 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
 
     @app.post("/api/runs/{ref}/summary")
     async def post_summary(
-        ref: str, body: SummaryRequestModel = SummaryRequestModel()
+        ref: str, body: SummaryRequestModel = SummaryRequestModel(),
+        user: str = Depends(current_user),
     ) -> Dict[str, Any]:
-        run = await _require_run(ref)
+        run = await _require_run(ref, user)
         if run.get("status") != "complete":
             raise HTTPException(
                 status_code=409,
@@ -1462,14 +1527,18 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         }
 
     @app.get("/api/runs/{ref}/threads")
-    async def list_threads(ref: str) -> Dict[str, Any]:
-        run = await _require_run(ref)
+    async def list_threads(ref: str, user: str = Depends(current_user)) -> Dict[str, Any]:
+        run = await _require_run(ref, user)
         threads = await db.list_threads(run["id"])
         return {"run_id": run["id"], "threads": threads}
 
     @app.post("/api/runs/{ref}/threads", status_code=201)
-    async def create_thread(ref: str, body: CreateThreadModel) -> Dict[str, Any]:
-        run = await _require_run(ref)
+    async def create_thread(
+        ref: str,
+        body: CreateThreadModel,
+        user: str = Depends(current_user),
+    ) -> Dict[str, Any]:
+        run = await _require_run(ref, user)
         try:
             thread = await service.create_thread(
                 db, run, target=body.target, persona_name=body.persona_name
@@ -1479,26 +1548,36 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         return thread
 
     @app.get("/api/threads/{thread_id}")
-    async def get_thread(thread_id: str) -> Dict[str, Any]:
+    async def get_thread(
+        thread_id: str, user: str = Depends(current_user)
+    ) -> Dict[str, Any]:
+        """Read an aside thread.
+
+        The only two routes addressed by a thread id rather than a run ref, so the
+        run behind the thread has NOT been authorised by the path. Resolving it
+        through the scoped lookup is what closes that: a thread id belonging to
+        another tenant's run reads as "thread not found", identical to one that
+        never existed.
+        """
         thread = await db.get_thread(thread_id)
         if not thread:
             raise HTTPException(status_code=404, detail="Thread not found")
+        await _require_thread_run(thread, user)
         messages = await db.get_thread_messages(thread_id)
         cost = await db.thread_cost(thread_id)
         return {**thread, "messages": messages, "total_cost_usd": cost}
 
     @app.post("/api/threads/{thread_id}/messages", status_code=201)
     async def post_thread_message(
-        thread_id: str, body: ThreadMessageModel
+        thread_id: str, body: ThreadMessageModel,
+        user: str = Depends(current_user),
     ) -> Dict[str, Any]:
         thread = await db.get_thread(thread_id)
         if not thread:
             raise HTTPException(status_code=404, detail="Thread not found")
         if not body.content.strip():
             raise HTTPException(status_code=422, detail="Message content is required")
-        run = await db.get_run(thread["run_id"])
-        if not run:
-            raise HTTPException(status_code=404, detail="Run not found")
+        run = await _require_thread_run(thread, user)
         reply = await service.post_aside_message(
             db, run, thread, user_message=body.content.strip(), model=body.model
         )
@@ -1518,8 +1597,9 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             default=None,
             description="Restrict to what this persona can see (its own + cast-wide)",
         ),
+        user: str = Depends(current_user),
     ) -> Dict[str, Any]:
-        run = await db.get_run_by_ref(ref)
+        run = await db.get_run_by_ref(ref, owner_sub=user)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
         docs = await db.list_documents(run["id"], persona_name=persona)
@@ -1532,14 +1612,18 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         }
 
     @app.post("/api/runs/{ref}/documents", status_code=201)
-    async def attach_document(ref: str, body: AttachDocumentModel) -> Dict[str, Any]:
+    async def attach_document(
+        ref: str,
+        body: AttachDocumentModel,
+        user: str = Depends(current_user),
+    ) -> Dict[str, Any]:
         """Attach a document by inline text or by a server-readable path.
 
         ``persona_name`` omitted/null makes the document cast-wide. A persona
         name that is not in the run's cast is rejected rather than silently
         creating material no one can ever retrieve.
         """
-        run = await db.get_run_by_ref(ref)
+        run = await db.get_run_by_ref(ref, owner_sub=user)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
 
@@ -1596,8 +1680,12 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         }
 
     @app.delete("/api/runs/{ref}/documents/{document_id}")
-    async def delete_document(ref: str, document_id: str) -> Dict[str, Any]:
-        run = await db.get_run_by_ref(ref)
+    async def delete_document(
+        ref: str,
+        document_id: str,
+        user: str = Depends(current_user),
+    ) -> Dict[str, Any]:
+        run = await db.get_run_by_ref(ref, owner_sub=user)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
         # Confirm the document belongs to THIS run before deleting it, so a
@@ -1609,7 +1697,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         return {"run_id": run["id"], "document_id": document_id, "deleted": True}
 
     @app.post("/api/runs/{ref}/documents/reindex")
-    async def reindex_documents(ref: str) -> Dict[str, Any]:
+    async def reindex_documents(ref: str, user: str = Depends(current_user)) -> Dict[str, Any]:
         """Rebuild the search index from ``doc_chunks``, the source of truth.
 
         This is the documented recovery path for a stale or corrupt index. It is
@@ -1617,7 +1705,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         external-content, so it holds no text of its own and is always a pure
         derivative of the chunks table.
         """
-        run = await db.get_run_by_ref(ref)
+        run = await db.get_run_by_ref(ref, owner_sub=user)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
         indexed = await db.reindex_documents()
@@ -1627,6 +1715,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
     async def embed_documents(
         ref: str,
         model: Optional[str] = Query(default=None, description="LiteLLM embedding model"),
+        user: str = Depends(current_user),
     ) -> Dict[str, Any]:
         """Embed a run's chunks for vector/hybrid retrieval.
 
@@ -1637,7 +1726,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         Returns 422 (not 500) when sqlite-vec or the embedding provider is
         unavailable: that is a deployment condition the caller can act on.
         """
-        run = await db.get_run_by_ref(ref)
+        run = await db.get_run_by_ref(ref, owner_sub=user)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
         stats = await embed_pending_chunks(db, run["id"], embedding_model=model or "")
@@ -1665,6 +1754,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
                 "whole-index behaviour, kept so the difference can be seen."
             ),
         ),
+        user: str = Depends(current_user),
     ) -> Dict[str, Any]:
         """Inspect what a query retrieves, without running a simulation.
 
@@ -1673,7 +1763,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         lexical-vs-semantic gap can be quantified on a real corpus instead of
         argued about. Read-only — it performs no writes.
         """
-        run = await db.get_run_by_ref(ref)
+        run = await db.get_run_by_ref(ref, owner_sub=user)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
         fts_query = build_fts_query(q)
@@ -1718,10 +1808,14 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
 
     # --------------------------- WebSocket stream -------------------------- #
     @app.websocket("/api/runs/{ref}/stream")
-    async def stream(websocket: WebSocket, ref: str) -> None:
+    async def stream(
+        websocket: WebSocket,
+        ref: str,
+        user: str = Depends(current_user_ws),
+    ) -> None:
         await websocket.accept()
 
-        run = await db.get_run_by_ref(ref)
+        run = await db.get_run_by_ref(ref, owner_sub=user)
         if not run:
             await websocket.send_json({"event_type": "error", "payload": {"detail": "Run not found"}})
             await websocket.close()

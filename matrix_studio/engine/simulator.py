@@ -591,6 +591,11 @@ async def run_simulation(
     personas_cfg = PersonaConfig.from_config(config)
     run_name = request.get("name")
     run_description = request.get("description")
+    # Who the run belongs to. Absent for a direct engine call (CLI, tests, the
+    # measurement scripts), which have no notion of a user; the API always sets it.
+    # `create_run`'s own default handles the absent case, and it fails closed —
+    # see its docstring for why the read paths do not get that courtesy.
+    run_owner_sub = request.get("owner_sub")
 
     # Generate run ID
     if run_id is None:
@@ -669,6 +674,7 @@ async def run_simulation(
             name=run_name,
             description=run_description,
             config=config,
+            **({"owner_sub": run_owner_sub} if run_owner_sub else {}),
         )
         await db.update_run_status(run_id, "running")
 

@@ -5,6 +5,57 @@ All notable changes to TheMatrix Simulation Studio are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Pre-work for the AWS port (`docs/AWS-IMPLEMENTATION-PLAN.md` Phase 0), plus one live
+bug the investigation turned up.
+
+### Added
+- **Tenancy in the domain model** (plan item 0.2). Every run now has an `owner_sub`,
+  and no route serves another user's run. There is no authentication yet — that is
+  Phase 1's Cognito pool — but the ownership model, the storage scoping and the route
+  authorisation are complete and tested. `AUTH_MODE` selects where the identity comes
+  from: `single-user` (the default; one implicit local user, which is what this tool
+  has always been) or `jwt` (verified API Gateway claims required, unauthenticated
+  requests are 401). Verified claims win in *both* modes, so putting an authorizer in
+  front starts attributing runs correctly even if the setting is forgotten — the
+  alternative would merge every user's history into one bucket while appearing to work.
+  - Run-name uniqueness is now **per user**. It was global, so two people could not
+    both have a run called `trusted-robot` — and the collision would have been with a
+    row the second user cannot see. The migration drops the old global index
+    explicitly; leaving it would have defeated the new one silently.
+  - `owner_sub` is a **required keyword-only argument** on every read
+    (`get_run_by_ref`, `list_runs`, `name_exists`, `get_run_tree`, `list_branches`), so
+    a caller that forgets it raises `TypeError` instead of quietly returning another
+    tenant's data. It is defaulted on `create_run` alone, where a forgotten owner fails
+    closed (a run nobody can read) rather than open.
+  - "Not yours" and "does not exist" are the same 404. Run refs can be memorable names
+    from a small generated vocabulary, so a 403 would be a guessable oracle for whether
+    a given run exists under another account.
+  - Existing databases migrate in place: pre-tenancy rows are adopted by the local
+    user rather than left with a NULL owner, which would have been indistinguishable
+    from data loss. Verified on the real 38-run database.
+
+### Fixed
+- **Vector-only retrieval went silent instead of degrading**, in the two commonest
+  cases. `retrieve_for_turn` had a lexical fallback whose stated intent was "degrading
+  beats going silent", but it was nested inside the `vec_available` guard as an `elif`
+  on the query-embedding branch — so it was unreachable when the optional `sqlite-vec`
+  extra is absent (the default for any install that did not opt in) and when documents
+  were attached but never embedded. Measured: `mode="vector"` returned zero passages in
+  both, where `mode="fts"` over the same corpus returned matches, and the persona then
+  announced it had no background material while its documents sat there. The fallback
+  now covers every cause and logs which one fired; it deliberately does *not* fire when
+  the similarity floor rejected the matches, since that is a configured decision rather
+  than a missing capability.
+
+### Changed
+- `docs/AWS-IMPLEMENTATION-PLAN.md` item 0.3 (make vector retrieval the default) moved
+  to Phase 3, where SQLite and FTS disappear anyway. Flipping the default today would
+  change the behaviour of a working product for a benefit that only materialises after
+  the port — and, until the fix above, would have exposed every install without the
+  optional extra to the silent-retrieval bug.
+
 ## [0.6.0] - 2026-09-09
 
 Interface and correctness, not new engine capability. Phase 6 became visible and

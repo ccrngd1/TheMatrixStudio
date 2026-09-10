@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from matrix_studio.storage import Database
+from matrix_studio.tenancy import LOCAL_USER_SUB
 
 
 @pytest.fixture
@@ -37,21 +38,28 @@ async def test_create_run_with_name_description_slug(db):
 
 @pytest.mark.asyncio
 async def test_name_exists(db):
-    assert not await db.name_exists("trusted-robot")
+    assert not await db.name_exists("trusted-robot", owner_sub="u1")
     await db.create_run(run_id="r1", topic="t", cast=[{"name": "A", "persona": "p"}],
-                        name="trusted-robot")
-    assert await db.name_exists("trusted-robot")
+                        name="trusted-robot", owner_sub="u1")
+    assert await db.name_exists("trusted-robot", owner_sub="u1")
+    # Uniqueness is PER USER: the same codename is still free for someone else.
+    assert not await db.name_exists("trusted-robot", owner_sub="u2")
 
 
 @pytest.mark.asyncio
 async def test_get_run_by_ref_id_or_name(db):
     await db.create_run(run_id="r1", topic="t", cast=[{"name": "A", "persona": "p"}],
-                        name="summit-compass")
-    by_id = await db.get_run_by_ref("r1")
-    by_name = await db.get_run_by_ref("summit-compass")
+                        name="summit-compass", owner_sub="u1")
+    by_id = await db.get_run_by_ref("r1", owner_sub="u1")
+    by_name = await db.get_run_by_ref("summit-compass", owner_sub="u1")
     assert by_id["id"] == "r1"
     assert by_name["id"] == "r1"
-    assert await db.get_run_by_ref("nope") is None
+    assert await db.get_run_by_ref("nope", owner_sub="u1") is None
+    # Another user's ref resolves to nothing by BOTH forms. The name form matters
+    # most: run names come from a small generated vocabulary and are guessable, so
+    # a name lookup that ignored the owner would be trivially exploitable.
+    assert await db.get_run_by_ref("r1", owner_sub="u2") is None
+    assert await db.get_run_by_ref("summit-compass", owner_sub="u2") is None
 
 
 @pytest.mark.asyncio
@@ -61,16 +69,16 @@ async def test_list_and_search_runs(db):
     await db.create_run(run_id="r2", topic="hiking trip", cast=[{"name": "B", "persona": "p"}],
                         name="summit-compass", description="outdoors")
 
-    all_runs = await db.list_runs()
+    all_runs = await db.list_runs(owner_sub=LOCAL_USER_SUB)
     assert len(all_runs) == 2
 
-    hits = await db.list_runs(q="trusted")
+    hits = await db.list_runs(q="trusted", owner_sub=LOCAL_USER_SUB)
     assert len(hits) == 1 and hits[0]["name"] == "trusted-robot"
 
-    topic_hits = await db.list_runs(q="hiking")
+    topic_hits = await db.list_runs(q="hiking", owner_sub=LOCAL_USER_SUB)
     assert len(topic_hits) == 1 and topic_hits[0]["name"] == "summit-compass"
 
-    assert await db.list_runs(q="nomatch") == []
+    assert await db.list_runs(q="nomatch", owner_sub=LOCAL_USER_SUB) == []
 
 
 @pytest.mark.asyncio
@@ -124,6 +132,10 @@ async def test_phase0_migration_adds_columns(tmp_path):
         # And new named runs still work on the migrated DB.
         await database.create_run(run_id="new1", topic="t",
                                   cast=[{"name": "A", "persona": "p"}], name="new-name")
-        assert await database.name_exists("new-name")
+        assert await database.name_exists("new-name", owner_sub=LOCAL_USER_SUB)
+        # The legacy row was back-filled to the local user, so it is still visible
+        # rather than orphaned by the tenancy migration. Losing a pre-tenancy run
+        # to a NULL owner would be indistinguishable from data loss.
+        assert run["owner_sub"] == LOCAL_USER_SUB
     finally:
         await database.close()

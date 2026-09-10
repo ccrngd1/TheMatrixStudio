@@ -31,6 +31,7 @@ is expected and correct — we never re-run the original.
 import json
 import logging
 import time
+from functools import partial
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from matrix_studio.engine import resume_simulation
@@ -47,6 +48,7 @@ from matrix_studio.state import (
     SimSnapshot,
 )
 from matrix_studio.storage import Database
+from matrix_studio.tenancy import LOCAL_USER_SUB
 
 logger = logging.getLogger(__name__)
 
@@ -212,10 +214,16 @@ async def create_branch_run(
     The heavy work (event copy + resume) is done separately in
     ``execute_branch`` on a background task — this function does NOT block on
     generation and does NOT touch the parent.
+
+    The branch inherits the parent's ``owner_sub``. It is read off the parent row
+    rather than passed in, because the caller already had to authorise the parent
+    to get here, and a separately-supplied owner could disagree with it — which
+    would let a branch escape its parent's tenant.
     """
     import uuid
 
     branch_run_id = str(uuid.uuid4())
+    owner_sub = parent_run.get("owner_sub") or LOCAL_USER_SUB
     topic = parent_run.get("topic", "")
     cast = _load_cast(parent_run)
     cast_names = [c.get("name", "") for c in cast]
@@ -240,11 +248,11 @@ async def create_branch_run(
     # Naming never blocks a branch.
     supplied = (name or "").strip().lower() or None
     name_source: Optional[str] = "user" if supplied else None
-    if supplied and await db.name_exists(supplied):
+    if supplied and await db.name_exists(supplied, owner_sub=owner_sub):
         base = supplied
         for suffix in range(2, 100):
             candidate = f"{base}-{suffix}"
-            if not await db.name_exists(candidate):
+            if not await db.name_exists(candidate, owner_sub=owner_sub):
                 supplied = candidate
                 break
 
@@ -256,7 +264,8 @@ async def create_branch_run(
             topic=topic,
             cast_names=cast_names,
             model=resolved_model,
-            name_exists=db.name_exists,
+            # Uniqueness is per user, so the predicate has to carry the owner.
+            name_exists=partial(db.name_exists, owner_sub=owner_sub),
         )
         codename = naming["name"]
         slug = naming["slug"]
@@ -295,6 +304,7 @@ async def create_branch_run(
         config=cfg,
         parent_run_id=parent_run["id"],
         branch_turn=from_turn,
+        owner_sub=owner_sub,
     )
 
     return {

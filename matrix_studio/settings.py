@@ -8,7 +8,7 @@ Settings precedence: environment variables > .env file > config.json defaults
 import os
 from pathlib import Path
 from typing import Optional
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -145,6 +145,43 @@ class Settings(BaseSettings):
         ge=1000,
         description="Largest extracted text accepted from one file (MAX_DOCUMENT_CHARS).",
     )
+
+    # Multi-tenancy. Every run belongs to one user; this only decides where that
+    # user's identity comes from.
+    #
+    # "single-user" — no authentication; every request is `identity.LOCAL_USER_SUB`.
+    #   What this tool has always been, and what the local dev server stays.
+    # "jwt" — the identity must arrive as verified claims from an API Gateway
+    #   authorizer, and an unauthenticated request is a 401.
+    #
+    # The default is the permissive value, which is only defensible because the
+    # server binds 127.0.0.1 by default. Verified claims take precedence in BOTH
+    # modes, so putting an authorizer in front starts attributing runs correctly
+    # even if this setting is forgotten — the failure mode that would otherwise
+    # merge every user's history into one bucket while appearing to work.
+    auth_mode: str = Field(
+        default="single-user",
+        description="Where the caller's identity comes from: 'single-user' (no "
+        "auth, one implicit local user) or 'jwt' (API Gateway verified claims "
+        "required). AUTH_MODE.",
+    )
+
+    @field_validator("auth_mode")
+    @classmethod
+    def _known_auth_mode(cls, value: str) -> str:
+        """Reject an unrecognised mode at startup rather than at the first request.
+
+        A typo like ``AUTH_MODE=JWT`` must not silently land on the permissive
+        branch: that is a whole-system authorisation bypass caused by a
+        capitalisation error, discovered by nobody.
+        """
+        from matrix_studio.tenancy import AUTH_MODES
+
+        if value not in AUTH_MODES:
+            raise ValueError(
+                f"auth_mode must be one of {AUTH_MODES}, got {value!r}"
+            )
+        return value
 
     # Storage
     data_dir: str = Field(default="./data", description="Directory for SQLite database")

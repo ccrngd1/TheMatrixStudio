@@ -3,7 +3,7 @@
 Companion to `AWS-SERVERLESS-ARCHITECTURE.md`, which is the *what* and *why*. This is the
 *in what order*, and what proves each step worked.
 
-Status: **in progress**, updated 2026-09-10. Phase 0.1 and 0.4 are done — see Progress at the end.
+Status: **in progress**, updated 2026-09-10. **Phase 0 is complete** — see Progress at the end.
 
 ## Principles for sequencing
 
@@ -42,24 +42,45 @@ location and put the key in the event.
 still renders them.
 *Effort:* small. Already logged in `BACKLOG.md`.
 
-**0.2 Tenancy in the domain model.** The largest and most under-estimated item.
-- Add `owner_sub` to runs; thread it through every query.
-- Make run-name uniqueness **per user** (today `runs_name_unique ON runs(name)` is global,
-  so two people could not both have `trusted-robot`), and scope the name-generation
-  collision check accordingly.
-- `get_run_by_ref` accepts an id *or* a name: scope name lookups to the caller and verify
-  ownership on id lookups.
-- Add an authorisation check to every route that takes a `ref`.
-*Done when:* a test suite proves user A cannot read, branch, resume, stop, summarise,
-delete-documents-from, or export the setup of user B's run — one negative test per route,
-because a single missed route is the whole vulnerability.
-*Effort:* the biggest item in Phase 0. Touches most of `api/app.py`.
+**0.2 Tenancy in the domain model.** ✅ **DONE 2026-09-10.** The largest item, as
+predicted — 28 routes and every read in the storage layer.
+- `owner_sub` on runs, threaded through every query. Required and **keyword-only** on
+  each read, so a caller that forgets it raises `TypeError` rather than serving another
+  tenant's data; defaulted only on `create_run`, where a forgotten owner fails closed.
+- Run-name uniqueness is now **per user**. The migration has to DROP the old global
+  index, not merely add the new one — `CREATE INDEX IF NOT EXISTS` is satisfied either
+  way, and a surviving global index would go on rejecting cross-user duplicates while
+  every "the new index exists" assertion passed.
+- `get_run_by_ref(ref, *, owner_sub)` is the single authorisation choke point for all 23
+  `ref`-taking routes. "Not yours" and "not found" are the same 404: run refs can be
+  memorable names from a small generated vocabulary, so a 403 would be a guessable
+  oracle. The two `{thread_id}` routes resolve their run through the same path, since a
+  thread id does not authorise anything by itself.
+- `AUTH_MODE` decides where the identity comes from (`single-user` | `jwt`), and
+  verified claims win in **both** modes so an authorizer added later takes effect even
+  if the setting is forgotten. Authentication itself is Phase 1.
 
-**0.3 Make vector retrieval a first-class path.** `RetrievalConfig.mode` defaults to `fts`
-and `vector` needs the optional `sqlite-vec` extra plus an embedding provider, so the mode
-the AWS design depends on has never been the default. Flip the default, make the embedding
-provider a hard dependency, and confirm the existing vector-mode tests still pass.
-*Done when:* a run with documents retrieves via embeddings with no extra configuration.
+*Done:* 47 tests. The central one is **table-driven over every route** that takes a
+`ref` or `thread_id`, paired with a guard that walks the app's own route table and fails
+if a route has no case — a hand-written list is complete the day it is written and
+silently incomplete after the next route is added. Each case asserts B gets 404 **and A
+gets non-404**, because otherwise a path typo would 404 for both and pass while proving
+nothing. Mutation-tested: removing the owner filter from `get_run_by_ref` fails 31 of
+47; the AND/OR precedence slip in the search filter fails its own test; keeping the old
+global index fails two.
+
+**0.3 Make vector retrieval a first-class path.** ⏩ **Moved to Phase 3.** Flipping
+`RetrievalConfig.mode` today would change the behaviour of a working product for a
+benefit that only materialises after the port — and Phase 3 deletes FTS anyway, so the
+default becomes moot rather than needing to be flipped twice.
+
+Investigating it was still worth it: it surfaced a live bug. `mode="vector"` returned
+**zero passages** both when `sqlite-vec` was absent and when chunks were never embedded,
+while `mode="fts"` over the same corpus returned matches. The lexical fallback that was
+supposed to prevent exactly this was nested inside the `vec_available` guard, so it was
+unreachable in both cases. Fixed, with the fallback now logging which cause fired. Had
+0.3 been done as written, flipping the default would have exposed every install without
+the optional extra to it.
 
 **0.4 Decide the embedding dimension, with evidence.** ✅ **DONE 2026-09-10 — 1024.**
 See `docs/EMBEDDING-DIMENSION-MEASUREMENT.md`. Width is irrelevant for natural queries and
@@ -189,7 +210,7 @@ Deliberately coarse, because a precise estimate here would be invented:
 
 | Phase | Relative size | Main risk |
 |---|---|---|
-| 0 | medium | 0.2 touches most routes and is easy to under-scope |
+| 0 | ~~medium~~ **done** | 0.2 was indeed the big one: 28 routes |
 | 1 | small–medium | container image size; IAM shape |
 | 2 | **large** | 53 methods; tests surfacing SQLite assumptions |
 | 3 | medium | quality regression hiding behind green plumbing tests |
@@ -208,10 +229,16 @@ debuggable.
   plan had listed separately.
 - ✅ **0.4 embedding dimension** (2026-09-10). 1024, measured. Plus two measurement-harness
   defects fixed.
-- ⬜ **0.3 make vector retrieval the default path** — small; `dimensions` is now threaded
-  through the embedding layer, so what remains is flipping the default and making the
-  embedding provider a hard dependency.
-- ⬜ **0.2 tenancy in the domain model** — the large one, and the next thing worth a
-  dedicated stretch.
+- ✅ **0.2 tenancy in the domain model** (2026-09-10). 28 routes scoped, per-user name
+  uniqueness, 47 tests including a route-table completeness guard. The real 38-run
+  database migrated in place with every run still visible.
+- ⏩ **0.3 vector retrieval as the default** — moved to Phase 3. The investigation found
+  and fixed a live silent-degradation bug in vector mode, which was the valuable part.
 
-Nothing in Phase 0 depends on an AWS account.
+**Phase 0 is complete.** Nothing in it depended on an AWS account, which is why it went
+first: the two hardest changes (tenancy, and avatars out of the event log) are now done
+and debugged against 786 fast local tests rather than through a deployment.
+
+**Next: Phase 1**, the CDK skeleton. It needs an AWS account, and it deliberately stands
+up nothing but infrastructure so the boring blockers — container image size, IAM shape,
+the `s3vectors` API — surface while there is nothing else to blame.

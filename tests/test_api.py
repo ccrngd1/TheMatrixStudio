@@ -55,6 +55,12 @@ def make_fake_run(turns=2, fail=False, delay=0.0):
                 run_id=run_id, topic=topic, cast=cast,
                 name=request.get("name"), description=request.get("description"),
                 slug=request.get("name"), config=request.get("config"),
+                # The real engine honours this, so the fake must too. A fake that
+                # silently drops the run's owner would make every isolation test
+                # pass against a backend that had lost the owner — the fake would
+                # be asserting its own behaviour, not the system's.
+                **({"owner_sub": request["owner_sub"]}
+                   if request.get("owner_sub") else {}),
             )
             await db.update_run_status(run_id, "running")
 
