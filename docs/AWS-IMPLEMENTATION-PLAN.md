@@ -3,7 +3,7 @@
 Companion to `AWS-SERVERLESS-ARCHITECTURE.md`, which is the *what* and *why*. This is the
 *in what order*, and what proves each step worked.
 
-Status: **plan**, 2026-09-09. Nothing built.
+Status: **in progress**, updated 2026-09-10. Phase 0.1 and 0.4 are done — see Progress at the end.
 
 ## Principles for sequencing
 
@@ -61,12 +61,17 @@ the AWS design depends on has never been the default. Flip the default, make the
 provider a hard dependency, and confirm the existing vector-mode tests still pass.
 *Done when:* a run with documents retrieves via embeddings with no extra configuration.
 
-**0.4 Decide the embedding dimension, with evidence.** Titan Text Embeddings v2 offers
-256/512/1024, and an S3 Vectors index's dimension is **immutable after creation**. Re-run the
-Phase 5f recall measurement at 256 and 1024 on the existing ground truth.
-*Done when:* a recorded recall@1/@5/MRR comparison and a chosen dimension. If 256 holds
-recall it is a 4× reduction in vector storage and query cost.
-*Effort:* small — the harness, labelled queries and diluted/paraphrased arms already exist.
+**0.4 Decide the embedding dimension, with evidence.** ✅ **DONE 2026-09-10 — 1024.**
+See `docs/EMBEDDING-DIMENSION-MEASUREMENT.md`. Width is irrelevant for natural queries and
+decisive for paraphrased ones (256 → 1024 is +0.117 recall@1, 15 of 128 queries, monotonic
+across four metrics), so the hoped-for 4× saving would have been paid for in paraphrase
+robustness. Two instrument defects were found and fixed on the way: query generation had been
+failing on *every* sample because of a hardcoded `temperature=0` the configured model rejects
+— reported as a table of zeros rather than an error — and comparisons were silently
+incomparable because generation is non-deterministic, now fixed with a reusable query cache.
+
+*Why it had to be decided first:* an S3 Vectors index's dimension is immutable after
+creation, so a later change means rebuilding every index.
 
 ---
 
@@ -196,10 +201,17 @@ Deliberately coarse, because a precise estimate here would be invented:
 Phase 2 dominates. Phases 0 and 1 are worth doing carefully because they make Phase 2
 debuggable.
 
-## What I would build first, concretely
+## Progress
 
-Phase 0.1 (avatars) and 0.4 (dimension measurement) in either order — both are small,
-independently valuable, and testable today. Then 0.2 (tenancy), which is the real work and
-wants a dedicated stretch.
+- ✅ **0.1 avatars out of the event log** (2026-09-10). Event payload 2,000,012 B → 117 B and
+  snapshots ~1,958× smaller on a realistic image; also fixed the snapshot blocker, which the
+  plan had listed separately.
+- ✅ **0.4 embedding dimension** (2026-09-10). 1024, measured. Plus two measurement-harness
+  defects fixed.
+- ⬜ **0.3 make vector retrieval the default path** — small; `dimensions` is now threaded
+  through the embedding layer, so what remains is flipping the default and making the
+  embedding provider a hard dependency.
+- ⬜ **0.2 tenancy in the domain model** — the large one, and the next thing worth a
+  dedicated stretch.
 
-Nothing in Phase 0 depends on an AWS account, so it can start immediately.
+Nothing in Phase 0 depends on an AWS account.
