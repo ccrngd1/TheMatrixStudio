@@ -332,8 +332,22 @@ async def test_one_owner_cannot_reuse_a_name(store):
     so it has to raise something recognisable.
     """
     await _seed_run(store, "a1", owner=USER_A, name="trusted-robot")
-    with pytest.raises(DuplicateNameError):
+    with pytest.raises(DuplicateNameError, match="named 'trusted-robot'"):
         await _seed_run(store, "a2", owner=USER_A, name="trusted-robot")
+
+
+@pytest.mark.asyncio
+async def test_a_duplicate_run_id_is_distinguished_from_a_duplicate_name(store):
+    """The two causes have different remedies, so the error has to say which.
+
+    A duplicate NAME is expected and callers recover from it — `manager.create_run`
+    appends a suffix. A duplicate run ID is a caller bug. `CancellationReasons` from
+    the transaction is positionally aligned with the items, so it says which condition
+    failed; without reading it the message named both and left the reader to guess.
+    """
+    await _seed_run(store, "a1", owner=USER_A, name="first-name")
+    with pytest.raises(DuplicateNameError, match="id 'a1' already exists"):
+        await _seed_run(store, "a1", owner=USER_A, name="a-different-name")
 
 
 @pytest.mark.asyncio
@@ -862,7 +876,11 @@ async def test_document_metadata_carries_what_s3_cannot(store):
     assert doc["id"] == doc_id
     assert doc["title"] == "report.pdf"
     assert doc["media_type"] == "pdf"
-    assert doc["chunk_count"] == len(CHUNKS)
+    # The chunking OF THE STORED TEXT, which is what retrieval sees — not the length
+    # of the list passed in. These two short chunks reassemble into one chunk.
+    from matrix_studio.documents import chunk_text, join_chunks
+
+    assert doc["chunk_count"] == len(chunk_text(join_chunks(CHUNKS)))
     assert doc["char_count"] == 4321
     assert doc["persona_name"] == "Dana"
 
@@ -1469,13 +1487,27 @@ async def test_embedding_ingest_is_resumable(store):
 async def test_chunk_count_is_read_from_metadata_not_by_refetching(store):
     """One of the four jobs §4a says the document row earns its place with."""
     await _seed_run(store)
-    await store.add_document(run_id="r1", title="a.md", chunks=["x", "y", "z"],
-                             persona_name="Dana", owner_sub=USER_A)
-    await store.add_document(run_id="r1", title="b.md", chunks=["p", "q"],
-                             owner_sub=USER_A)
-    assert await store.chunk_count("r1") == 5
-    assert await store.chunk_count("r1", "Dana") == 5
-    assert await store.chunk_count("r1", "Marcus") == 2
+    # Long enough that each document really is several chunks — short strings
+    # reassemble into one, and then the count would be about the fixture rather than
+    # about the scoping this test is checking.
+    dana_text = "Dana's briefing on egress inspection. " * 60
+    cast_text = "A note shared with the whole cast. " * 60
+    from matrix_studio.documents import chunk_text
+
+    dana_n = len(chunk_text(dana_text))
+    cast_n = len(chunk_text(cast_text))
+    assert dana_n > 1 and cast_n > 1
+
+    await store.add_document(run_id="r1", title="a.md",
+                             chunks=[c.content for c in chunk_text(dana_text)],
+                             text=dana_text, persona_name="Dana", owner_sub=USER_A)
+    await store.add_document(run_id="r1", title="b.md",
+                             chunks=[c.content for c in chunk_text(cast_text)],
+                             text=cast_text, owner_sub=USER_A)
+    assert await store.chunk_count("r1") == dana_n + cast_n
+    assert await store.chunk_count("r1", "Dana") == dana_n + cast_n
+    # Marcus sees only the cast-wide document.
+    assert await store.chunk_count("r1", "Marcus") == cast_n
 
 
 # --------------------------------------------------------------------------- #
@@ -1620,10 +1652,16 @@ async def test_reindex_reports_the_chunk_count_rather_than_pretending(store):
     answer is now "it cannot be otherwise", and the useful number is how many chunks
     there are.
     """
+    from matrix_studio.documents import chunk_text
+
+    text = "Egress inspection provides auditable evidence. " * 60
+    expected = len(chunk_text(text))
+    assert expected > 1
     await _seed_run(store)
-    await store.add_document(run_id="r1", title="a.md", chunks=["x", "y", "z"],
-                             owner_sub=USER_A)
-    assert await store.reindex_documents() == 3
+    await store.add_document(run_id="r1", title="a.md",
+                             chunks=[c.content for c in chunk_text(text)],
+                             text=text, owner_sub=USER_A)
+    assert await store.reindex_documents() == expected
 
 
 # --------------------------------------------------------------------------- #
@@ -1725,3 +1763,82 @@ async def test_two_bindings_do_not_interfere(aws):
         assert a._owner_sub == USER_A and b._owner_sub == USER_B
     finally:
         await s.close()
+
+
+@pytest.mark.asyncio
+async def test_chunk_count_records_the_stored_chunking_not_the_input_list(store):
+    """The recorded count has to be what retrieval will actually see.
+
+    Retrieval re-chunks the stored body, so that chunking is what a passage's
+    `ordinal` refers to and what the document-frequency ratio's denominator must match.
+    Three short hand-supplied chunks reassemble into a body that re-chunks to ONE — so
+    recording `len(chunks)` would put 3 in the metadata while retrieval saw 1, and the
+    ratio's numerator and denominator would disagree.
+
+    On the real ingest path the two always agree, because the chunks came from
+    `chunk_text` of that same text. This only bites hand-supplied chunks — the import
+    script and fixtures — which is exactly the case a caller cannot be relied on to get
+    right.
+    """
+    from matrix_studio.documents import chunk_text, join_chunks
+
+    await _seed_run(store)
+    short = ["egress inspection", "egress evidence", "unrelated text"]
+    assert len(chunk_text(join_chunks(short))) == 1, (
+        "the fixture depends on these merging; if chunking changed, pick shorter text"
+    )
+    doc_id = await store.add_document(
+        run_id="r1", title="short.md", chunks=short, owner_sub=USER_A,
+    )
+    doc = (await store._find_document(doc_id))
+    assert doc["chunk_count"] == 1, "recorded the input length, not the real chunking"
+    assert await store.chunk_count("r1") == 1
+
+    # And the consistent case still records the true number.
+    text = "Egress inspection provides auditable evidence. " * 60
+    real = [c.content for c in chunk_text(text)]
+    assert len(real) > 1
+    other = await store.add_document(
+        run_id="r1", title="long.md", chunks=real, text=text, owner_sub=USER_A,
+    )
+    assert (await store._find_document(other))["chunk_count"] == len(real)
+
+
+def test_the_stemmer_handles_inflection_but_not_derivation():
+    """Pins a documented limitation, so it is known rather than discovered.
+
+    The in-process BM25 unifies inflectional endings (`audit`/`auditing`/`audited`) and
+    NOT derivational pairs (`migrate`/`migration`). FTS5's Porter stemmer did both, so
+    this is a real reduction in the lexical arm — accepted deliberately: extending the
+    suffix rules was measured to unify 1 of 11 derivational pairs while introducing 2
+    false collisions, so the honest options are a full Porter implementation or none,
+    and none is right for an inspection endpoint whose arm is 22× worse than the vector
+    one at recall@1.
+
+    Asserted in BOTH directions. Without the second half a future "improvement" that
+    over-stemmed (`ration` → `rat`) would pass, and false matches in an inspection tool
+    are worse than missing ones: they look like findings.
+    """
+    from matrix_studio.storage.lexical import tokenize
+
+    def stem(word):
+        return tokenize(word)[0]
+
+    # Inflection: unified.
+    for base, inflected in (("audit", "auditing"), ("audit", "audited"),
+                            ("cost", "costs"), ("test", "tested")):
+        assert stem(base) == stem(inflected), (base, inflected)
+
+    # Derivation: NOT unified, and that is the documented limit.
+    for base, derived in (("migrate", "migration"), ("allocate", "allocation"),
+                          ("produce", "production")):
+        assert stem(base) != stem(derived), (
+            f"{base}/{derived} now unify — if that came from a real Porter "
+            "implementation, update this test and the docstring; if it came from more "
+            "suffix rules, check the collision cases below first"
+        )
+
+    # And distinct words must stay distinct.
+    for a, b in (("ration", "rat"), ("region", "reg"), ("cost", "coast"),
+                 ("policy", "police"), ("nation", "rate")):
+        assert stem(a) != stem(b), f"over-stemming collided {a} and {b}"

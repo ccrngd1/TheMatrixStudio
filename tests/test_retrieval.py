@@ -32,6 +32,32 @@ async def run_db(db):
     return db
 
 
+async def attach(db, run_id, title, passages, persona_name=None):
+    """Attach a document whose chunks survive re-chunking as separate chunks.
+
+    Retrieval re-chunks the stored text, so a document handed three ten-word "chunks"
+    is one chunk by the time anything searches it — `chunk_text` merges anything that
+    fits its window. Tests that need N distinct chunks have to supply text that
+    genuinely spans N.
+
+    Each passage is padded to comfortably exceed the chunk window and the result is
+    fed in as `text=`, so the stored body is the original and re-chunking reproduces
+    exactly these boundaries. Returns the chunk count actually stored.
+    """
+    from matrix_studio.documents import chunk_text
+
+    # ~900-char window with 150 overlap, so ~1,200 characters per passage keeps them
+    # in separate chunks with the seam inside the padding rather than the content.
+    text = "\n\n".join(f"{p} " + ("filler sentence for chunk separation. " * 30)
+                        for p in passages)
+    stored = [c.content for c in chunk_text(text)]
+    await db.add_document(
+        run_id=run_id, title=title, chunks=stored, text=text,
+        persona_name=persona_name,
+    )
+    return len(stored)
+
+
 # --------------------------------------------------------------------------
 # Query sanitisation — a correctness requirement, not hardening
 # --------------------------------------------------------------------------
@@ -162,14 +188,21 @@ async def test_list_documents_scoped_by_persona(run_db):
 
 
 async def test_document_metadata_recorded(run_db):
+    from matrix_studio.documents import chunk_text
+
+    text = "\n\n".join(f"passage {w} " + ("padding to force a chunk break. " * 30)
+                        for w in ("one", "two", "three"))
+    stored = [c.content for c in chunk_text(text)]
     doc_id = await run_db.add_document(
-        run_id="r1", title="spec.pdf", chunks=["one", "two", "three"],
+        run_id="r1", title="spec.pdf", chunks=stored, text=text,
         persona_name="A", source_path="/tmp/spec.pdf", media_type="pdf",
         char_count=4242,
     )
     doc = (await run_db.list_documents("r1"))[0]
     assert doc["id"] == doc_id
-    assert doc["chunk_count"] == 3
+    # The chunking of the STORED text, which is what retrieval sees. Handing in three
+    # short strings would record 3 and retrieval would find 1.
+    assert doc["chunk_count"] == len(stored)
     assert doc["char_count"] == 4242
     assert doc["media_type"] == "pdf"
     assert doc["source_path"] == "/tmp/spec.pdf"
@@ -201,58 +234,75 @@ async def test_count_documents(run_db):
 # --------------------------------------------------------------------------
 
 
-async def test_search_survives_a_corrupt_index_because_it_reads_the_chunks(run_db):
-    """
-    Search no longer depends on the persistent FTS index at all.
+async def test_lexical_search_survives_losing_every_vector(run_db):
+    """Lexical search must not depend on any derived structure.
 
-    Run-scoped scoring builds a scratch index from ``doc_chunks``, which is the source
-    of truth, so a stale or emptied ``doc_chunks_fts`` cannot silently make a persona's
-    background material unfindable. Before run-scoping, this same corruption returned
-    zero results — the behaviour this test used to assert.
+    The same property this asserted under SQLite, where the derived structure was the
+    FTS5 index and the test emptied it with `delete-all`. There is no persistent
+    lexical index now — the BM25 index is built per query from the stored document text
+    — so the derived structure that CAN be lost is the vector index. Destroying it must
+    leave the lexical arm working, because that arm reads S3, which is the source of
+    truth.
+
+    Ported rather than deleted because the property is the same one and still matters:
+    a persona's background material must not become unfindable through the loss of
+    something regenerable.
     """
+    from matrix_studio.documents import chunk_text
+    import boto3
+
+    text = ("egress inspection evidence. " * 40
+            + "\n\nlatency and cost tradeoffs. " * 40)
     await run_db.add_document(
         run_id="r1", title="spec.md",
-        chunks=["egress inspection evidence", "latency and cost tradeoffs"],
-        persona_name="A",
+        chunks=[c.content for c in chunk_text(text)], text=text, persona_name="A",
     )
     q = build_fts_query("egress inspection")
     assert await run_db.search_documents("r1", q, "A", 5)
 
-    # Simulate a corrupt/stale index by emptying it behind the retrieval layer.
-    await run_db._conn.execute("INSERT INTO doc_chunks_fts(doc_chunks_fts) VALUES('delete-all')")
-    await run_db._conn.commit()
+    # Destroy the derived structure: every vector for this run.
+    from tests.support import TEST_VECTOR_BUCKET, TEST_VECTOR_INDEX
+
+    client = boto3.client("s3vectors", region_name="us-east-1")
+    keys = [
+        v["key"] for v in client.list_vectors(
+            vectorBucketName=TEST_VECTOR_BUCKET, indexName=TEST_VECTOR_INDEX,
+        ).get("vectors", [])
+    ]
+    if keys:
+        client.delete_vectors(
+            vectorBucketName=TEST_VECTOR_BUCKET, indexName=TEST_VECTOR_INDEX,
+            keys=keys,
+        )
 
     assert await run_db.search_documents("r1", q, "A", 5), (
-        "run-scoped search should read doc_chunks, not the derived index"
+        "lexical search should read the stored text, not a derived index"
     )
-    # The legacy whole-database scorer did depend on it, which is what made the
-    # rebuild path a hard prerequisite.
-    assert await run_db.search_documents("r1", q, "A", 5, corpus="database") == []
-
-
-async def test_reindex_rebuilds_the_index_that_term_selection_uses(run_db):
-    """
-    ``reindex_documents`` still matters: term_document_frequencies reads the
-    persistent index, and discriminative-term selection is built on those counts.
-    """
-    await run_db.add_document(
-        run_id="r1", title="spec.md",
-        chunks=["egress inspection evidence", "latency and cost tradeoffs"],
-        persona_name="A",
+    # The legacy whole-database scorer DID depend on the persistent index, which is
+    # what made a rebuild path a hard prerequisite. It no longer exists: the index is
+    # built from the run's own chunks either way, so `corpus="database"` cannot diverge
+    # from `corpus="run"`. Asserted so the two cannot quietly come apart again — that
+    # divergence was the v0.6 contamination bug.
+    assert (
+        await run_db.search_documents("r1", q, "A", 5, corpus="database")
+        == await run_db.search_documents("r1", q, "A", 5, corpus="run")
     )
-    assert await run_db.term_document_frequencies("r1", ["egress"], "A") == {"egress": 1}
 
-    await run_db._conn.execute("INSERT INTO doc_chunks_fts(doc_chunks_fts) VALUES('delete-all')")
-    await run_db._conn.commit()
-    assert await run_db.term_document_frequencies("r1", ["egress"], "A") == {"egress": 0}
 
-    indexed = await run_db.reindex_documents()
-    assert indexed == 2
-    assert await run_db.term_document_frequencies("r1", ["egress"], "A") == {"egress": 1}
-    assert await run_db.search_documents(
-        "r1", build_fts_query("egress inspection"), "A", 5, corpus="database"
-    ), "rebuild did not restore whole-database search"
-
+# `test_reindex_rebuilds_the_index_that_term_selection_uses` was removed here.
+#
+# It emptied the persistent FTS5 index, asserted `term_document_frequencies` then
+# returned zero, called `reindex_documents()` and asserted the counts came back. Every
+# step depended on there BEING a persistent derived index that could go stale.
+#
+# There is not one. The BM25 index is built per query from the stored document text and
+# discarded, so it cannot be stale, and `reindex_documents` is now a report rather than
+# a rebuild — its new contract is asserted by
+# `test_reindex_reports_the_chunk_count_rather_than_pretending` in
+# test_dynamo_storage.py. The property this test protected (a lost derived structure
+# does not make material unfindable) is asserted by
+# `test_lexical_search_survives_losing_every_vector` above, against the derived
+# structure that can still be lost.
 
 async def test_reindex_is_idempotent(run_db):
     await run_db.add_document(
@@ -513,14 +563,15 @@ def test_retrieval_config_experimental_knobs_default_off():
 
 async def test_retrieve_for_turn_defaults_do_not_apply_the_knobs(run_db):
     """Default retrieval must behave as the measured-best baseline."""
-    await run_db.add_document(
-        run_id="r1", title="a.md",
-        chunks=[f"retrieval design passage {i} with egress inspection" for i in range(6)],
+    stored = await attach(
+        run_db, "r1", "a.md",
+        [f"retrieval design passage {i} with egress inspection" for i in range(6)],
         persona_name="A",
     )
+    assert stored >= 5, f"the fixture must span at least 5 chunks, got {stored}"
     passages, query, _rej = await retrieve_for_turn(
         run_db, "r1", "A", "retrieval design egress inspection",
-        conversation=[], k=5, max_chars=5000,
+        conversation=[], k=5, max_chars=50_000,
     )
     # All terms retained (no discriminative narrowing) and no tail trimming.
     assert query.count(" OR ") >= 3
@@ -528,23 +579,23 @@ async def test_retrieve_for_turn_defaults_do_not_apply_the_knobs(run_db):
 
 
 async def test_term_document_frequencies_counts_within_scope(run_db):
-    await run_db.add_document(
-        run_id="r1", title="a.md",
-        chunks=["egress inspection", "egress evidence", "unrelated text"],
-        persona_name="A",
-    )
-    await run_db.add_document(
-        run_id="r1", title="b.md", chunks=["egress elsewhere"], persona_name="B",
-    )
-    df = await run_db.term_document_frequencies("r1", ["egress", "inspection", "absent"], "A")
+    # Two chunks containing "egress" and one that does not, in A's slice; plus a
+    # chunk in B's slice that also contains it. The point is that B's does not count.
+    await attach(run_db, "r1", "a.md",
+                 ["egress inspection", "egress evidence", "unrelated text"],
+                 persona_name="A")
+    await attach(run_db, "r1", "b.md", ["egress elsewhere"], persona_name="B")
+    df = await run_db.term_document_frequencies(
+        "r1", ["egress", "inspection", "absent"], "A")
     assert df["egress"] == 2, "counted outside the persona's slice"
     assert df["inspection"] == 1
     assert df["absent"] == 0
 
 
 async def test_chunk_count_is_scoped(run_db):
-    await run_db.add_document(run_id="r1", title="a", chunks=["x", "y"], persona_name="A")
-    await run_db.add_document(run_id="r1", title="b", chunks=["z"], persona_name="B")
-    await run_db.add_document(run_id="r1", title="s", chunks=["w"], persona_name=None)
-    assert await run_db.chunk_count("r1") == 4
-    assert await run_db.chunk_count("r1", "A") == 3  # own + cast-wide
+    a = await attach(run_db, "r1", "a", ["x", "y"], persona_name="A")
+    b = await attach(run_db, "r1", "b", ["z"], persona_name="B")
+    shared = await attach(run_db, "r1", "s", ["w"], persona_name=None)
+    assert await run_db.chunk_count("r1") == a + b + shared
+    # Own plus cast-wide, never another persona's.
+    assert await run_db.chunk_count("r1", "A") == a + shared

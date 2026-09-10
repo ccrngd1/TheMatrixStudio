@@ -52,14 +52,29 @@ def words(text: str) -> List[str]:
 
 
 def tokenize(text: str) -> List[str]:
-    """Lowercase alphanumeric tokens, stemmed — the INDEXING path.
+    """Lowercase alphanumeric tokens, lightly stemmed — the INDEXING path.
 
-    FTS5 was configured with `porter unicode61`, so it stemmed. This does a crude
-    approximation rather than a real Porter implementation, and the reason is worth
-    being explicit about: full stemming would be a dependency or a few hundred lines
-    for a code path that exists to inspect a 22×-worse retrieval arm. The consequence
-    is that a query for "auditing" may miss a chunk containing "audited" — a slightly
-    worse inspection tool, not a worse product.
+    FTS5 was configured with `porter unicode61`, so it stemmed properly. This handles
+    only inflectional endings — `-ing`, `-edly`, `-ed`, `-es`, `-s` — which covers
+    `audit`/`auditing`/`audited`/`costs` and **not** derivational pairs like
+    `migrate`/`migration`, `allocate`/`allocation` or `produce`/`production`.
+
+    That limit is a decision, and it was measured rather than assumed. Extending the
+    rules to `-ion`/`-ation` was tried: it unified 1 of 11 derivational pairs and
+    introduced 2 false collisions (`ration`/`rat`, `region`/`reg`), because unifying
+    them correctly needs Porter's measure conditions rather than more suffixes. So the
+    choice is a real Porter implementation or none, and none is right here:
+
+    * this serves `/documents/search`, an INSPECTION endpoint. The engine retrieves by
+      embedding, measured 22× better at recall@1 (0.367 vs 0.017,
+      `PHASE5-RETRIEVAL-MEASUREMENT.md` §5f);
+    * handling morphological variation is precisely what embeddings do, and the
+      measurement that chose them over lexical was largely a measurement of that;
+    * a hundred lines of Porter, or a dependency, to improve the arm that was measured
+      not to work is effort spent in the wrong place.
+
+    Stated here rather than left to be discovered, and pinned by
+    `test_the_stemmer_handles_inflection_but_not_derivation`.
     """
     return [_stem(t) for t in words(text)]
 

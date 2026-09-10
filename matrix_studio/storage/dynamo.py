@@ -494,11 +494,23 @@ class DynamoStorage:
         try:
             await self._call(self._client.transact_write_items, TransactItems=writes)
         except Exception as exc:  # noqa: BLE001
-            if "ConditionalCheckFailed" in str(exc) or "TransactionCanceled" in str(exc):
+            reasons = getattr(exc, "response", {}).get("CancellationReasons") or []
+            codes = [r.get("Code") for r in reasons]
+            if not any(c == "ConditionalCheckFailed" for c in codes):
+                raise
+            # `CancellationReasons` is positionally aligned with `TransactItems`, so it
+            # says WHICH condition failed. Worth extracting: the two causes have
+            # different remedies — a duplicate run id is a caller bug, while a
+            # duplicate name is expected and callers recover from it by appending a
+            # suffix (see `manager.create_run`). An error naming both leaves whoever
+            # reads it to guess, and they will guess the wrong one.
+            if codes[0] == "ConditionalCheckFailed":
                 raise DuplicateNameError(
-                    f"run id {run_id!r} or name {name!r} already exists for this owner"
+                    f"a run with id {run_id!r} already exists for this owner"
                 ) from exc
-            raise
+            raise DuplicateNameError(
+                f"this owner already has a run named {name!r}"
+            ) from exc
 
     async def name_exists(self, name: str, *, owner_sub: Optional[str] = None) -> bool:
         """Whether THIS OWNER already has a run with this name.
@@ -1502,10 +1514,27 @@ class DynamoStorage:
         owner_sub = self._owner(owner_sub)
         from matrix_studio.documents import join_chunks
 
+        from matrix_studio.documents import chunk_text
+
         doc_id = document_id or uuid.uuid4().hex[:12]
         key = self._document_key(owner_sub, run_id, doc_id)
         body = text if text is not None else join_chunks(list(chunks))
         await self._put_text(key, body)
+
+        # `chunk_count` records the chunking OF THE STORED TEXT, not the length of the
+        # list that was passed in. Those can differ, and when they do the recorded
+        # number is the wrong one: retrieval re-chunks the stored body, so that is what
+        # a passage's `ordinal` refers to and what the document-frequency ratio's
+        # denominator has to match.
+        #
+        # Measured: three short hand-supplied chunks ("egress inspection", "egress
+        # evidence", "unrelated text") reassemble into a body that re-chunks to ONE, so
+        # a recorded 3 would make the df ratio's numerator and denominator disagree. On
+        # the real ingest path the two always agree — the chunks came from `chunk_text`
+        # of that same text — so this only bites hand-supplied chunks (the import
+        # script, fixtures). Deriving it removes the class of mismatch rather than
+        # relying on every caller being consistent.
+        stored_chunks = len(chunk_text(body))
 
         now = int(time.time())
         item = {
@@ -1519,7 +1548,7 @@ class DynamoStorage:
             "source_path": source_path,
             "media_type": media_type,
             "char_count": char_count,
-            "chunk_count": len(chunks),
+            "chunk_count": stored_chunks,
             # Whether the stored text is the original or a reassembly. Phase 3 needs
             # to know: re-chunking is only safe against the original (see above), so
             # a document written by an older caller has to keep its chunks.

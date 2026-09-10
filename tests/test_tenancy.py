@@ -197,70 +197,53 @@ async def test_two_users_can_hold_the_same_run_name(db):
 
 @pytest.mark.asyncio
 async def test_one_user_still_cannot_reuse_their_own_run_name(db):
-    """Per-user uniqueness must still be uniqueness, or refs stop resolving."""
-    import aiosqlite
+    """Per-user uniqueness must still be uniqueness, or refs stop resolving.
+
+    `get_run_by_ref` accepts a name, so two runs sharing one under the same owner
+    would make that ref ambiguous — whichever the marker item happened to point at
+    would win, and the other run would become unreachable by name.
+
+    The exception type changed with the backend: SQLite raised
+    `aiosqlite.IntegrityError` from a unique index, and DynamoDB has no unique
+    constraint beyond the primary key, so uniqueness is a conditional `NAME#{name}`
+    marker written in the same transaction as the run. `DuplicateNameError` exists
+    precisely so callers can still detect this — `manager.create_run` and
+    `branching.create_branch_run` both recover from it by appending a suffix rather
+    than failing.
+    """
+    from matrix_studio.storage import DuplicateNameError
 
     await db.create_run(run_id="a1", topic="t", cast=[], name="trusted-robot",
                         owner_sub=USER_A)
-    with pytest.raises(aiosqlite.IntegrityError):
+    with pytest.raises(DuplicateNameError, match="named 'trusted-robot'"):
         await db.create_run(run_id="a2", topic="t", cast=[], name="trusted-robot",
                             owner_sub=USER_A)
 
 
-@pytest.mark.asyncio
-async def test_the_old_global_name_index_is_dropped(db):
-    """The migration's actual job, asserted directly.
-
-    `CREATE UNIQUE INDEX IF NOT EXISTS runs_owner_name_unique` succeeds whether or
-    not the old global index survives — and a surviving global index would go on
-    rejecting cross-user duplicates, so per-user uniqueness would be defeated
-    while every "the new index exists" assertion passed. Only the DROP makes it
-    real, so only checking the absence proves it.
-    """
-    names = set()
-    async with db._conn.execute(
-        "SELECT name FROM sqlite_master WHERE type = 'index'"
-    ) as cursor:
-        names = {r[0] for r in await cursor.fetchall()}
-    assert "runs_name_unique" not in names
-    assert "runs_owner_name_unique" in names
-
-
-@pytest.mark.asyncio
-async def test_a_pre_tenancy_row_is_adopted_by_the_local_user(tmp_path):
-    """Existing installs must not lose their history to the migration.
-
-    A NULL owner is a run nobody can read, which is indistinguishable from data
-    loss for the person who created it — and this project has already shipped one
-    bug where the history list silently went empty.
-    """
-    import aiosqlite
-
-    path = str(tmp_path / "legacy.db")
-    async with aiosqlite.connect(path) as conn:
-        await conn.execute(
-            """
-            CREATE TABLE runs (
-                id TEXT PRIMARY KEY, name TEXT, description TEXT, slug TEXT,
-                topic TEXT NOT NULL, cast_json TEXT NOT NULL, config_json TEXT,
-                status TEXT, parent_run_id TEXT, branch_turn INTEGER,
-                created_at INTEGER NOT NULL, completed_at INTEGER
-            )
-            """
-        )
-        await conn.execute(
-            "INSERT INTO runs (id, name, topic, cast_json, status, created_at) "
-            "VALUES ('old1', 'legacy-name', 't', '[]', 'complete', 1)"
-        )
-        await conn.commit()
-
-    database = Database().for_owner(TEST_OWNER)
-    await database.connect()
-    try:
-        run = await database.get_run_by_ref("legacy-name", owner_sub=LOCAL_USER_SUB)
-        assert run is not None and run["id"] == "old1"
-    finally:
-        await database.close()
+# Two tests were removed here, both of which asserted a SQLite MECHANISM rather than
+# a property, and neither of which has an analogue on DynamoDB.
+#
+# `test_the_old_global_name_index_is_dropped` read `sqlite_master` to prove the
+# migration DROPped the old global unique index — because `CREATE INDEX IF NOT EXISTS`
+# is satisfied by adding the per-user one, so a surviving global index would defeat it
+# silently. There is no index now: per-user uniqueness is a `NAME#{name}` marker item
+# under `USER#{sub}`, and there is no global equivalent that could survive. The
+# PROPERTY it protected is still asserted, by
+# `test_two_users_can_hold_the_same_run_name` above and
+# `test_one_user_still_cannot_reuse_their_own_run_name` below.
+#
+# `test_a_pre_tenancy_row_is_adopted_by_the_local_user` built a pre-tenancy SQLite
+# `runs` table by hand and asserted that `connect()` back-filled `owner_sub` to the
+# local user, so an existing install did not lose its history to a NULL owner. There is
+# no connect-time migration to test: DynamoDB tables start empty, and an existing
+# SQLite file is not read by the application at all.
+#
+# **That leaves a real gap, named here rather than quietly dropped:** the 38 runs in an
+# existing `data/matrix_studio.db` are no longer reachable through the app. Moving them
+# is a migration script — read with the retained `storage/database.py`, write with
+# `DynamoStorage` — and it does not exist yet. It is a product decision whether those
+# runs are worth carrying; this comment is here so the decision is deliberate rather
+# than discovered.
 
 
 @pytest.mark.asyncio
@@ -324,14 +307,22 @@ def app_and_db(tmp_path, monkeypatch):
     app = create_app(db_path)
 
     async def seed() -> str:
-        database = Database().for_owner(TEST_OWNER)
+        # Bound to USER_A, not to the suite's default owner.
+        #
+        # The run row alone is not enough: its EVENTS, SNAPSHOTS and DOCUMENTS live in
+        # the owner's partition too. Creating the run with an explicit
+        # `owner_sub=USER_A` while the store stayed bound elsewhere put the run in one
+        # partition and everything about it in another — so six routes 404'd for their
+        # own owner, and the negative assertions below would have passed for entirely
+        # the wrong reason. The non-vacuity check is what caught it.
+        database = Database().for_owner(USER_A)
         await database.connect()
         try:
             await database.create_run(
                 run_id="run-a", topic="a topic",
                 cast=[{"name": "Dana", "persona": "p", "goals": []}],
                 name="alpha-run", description="A's run",
-                config={"cognition": {"enabled": True}}, owner_sub=USER_A,
+                config={"cognition": {"enabled": True}},
             )
             await database.append_event(
                 run_id="run-a", turn=0, seq=0, event_type="sim.started",
