@@ -3,10 +3,14 @@
 CDK app for the AWS deployment. See `docs/AWS-SERVERLESS-ARCHITECTURE.md` for the
 design and `docs/AWS-IMPLEMENTATION-PLAN.md` for the phase ordering.
 
+**Status: deployed** to account 791580863750, us-east-1, on 2026-09-10. All four
+acceptance checks pass, including a live Bedrock call from the Lambda.
+
 **What Phase 1 gives you:** a Cognito login, the SPA on CloudFront, and an
-authenticated API that answers `/api/health`. **Nothing is wired to storage yet** —
-see [Known state](#known-state-read-this-before-demoing) below, which matters if
-you are about to show it to someone.
+authenticated API that answers `/api/health`. **Nothing is wired to storage yet, and
+creating a run silently loses it** — see
+[Known state](#known-state--read-this-before-demoing) below. Read that before
+showing this to anyone.
 
 ## What this creates
 
@@ -17,8 +21,8 @@ you are about to show it to someone.
 | **S3** | one data bucket (per-user prefixes, versioned) + one private SPA bucket |
 | **S3 Vectors** | one vector bucket, one probe index — 1024-dim, cosine, `text` non-filterable |
 | **API Gateway** | HTTP API, JWT authorizer on **every** route, CORS pinned to the CloudFront origin |
-| **Lambda** | container image (~790 MB), Bedrock-only IAM |
-| **CloudFront** | SPA distribution, `index.html` no-cache + `/assets/*` immutable, 403/404 → `/index.html` |
+| **Lambda** | container image (791 MB measured), Bedrock-only IAM |
+| **CloudFront** | SPA distribution, `index.html` no-store + `/assets/*` immutable (cache policy **and** response header), 403/404 → `/index.html` |
 
 ## Prerequisites
 
@@ -56,7 +60,7 @@ Context flags:
 | `prefix` | `matrix-studio` | Resource name prefix, so two deployments can share an account. |
 | `retain_data` | `true` | Tables and the data bucket survive `cdk destroy`. Set `false` **deliberately** for a throwaway demo. |
 | `extra_callback_urls` | *none* | Extra OAuth redirect URLs, comma-separated (e.g. `http://localhost:5173`). Also added to the API's CORS allowlist. |
-| `region` | CLI default | Region for everything except the Stability image model, which is pinned to `us-west-2`. |
+| `region` | CLI default | Region for everything except the Stability image model, which is pinned to `us-west-2`. Must be bootstrapped. |
 
 Then deploy the frontend:
 
@@ -107,13 +111,27 @@ aws cognito-idp admin-create-user --user-pool-id "$POOL_ID" \
 
 ## Known state — read this before demoing
 
-Phase 1 is infrastructure only, and two consequences are visible in the UI:
+Phase 1 is infrastructure only. Two consequences are visible in the UI, and the
+first one looks like a working feature:
 
-1. **Run history does not persist.** The Lambda still uses the SQLite storage layer,
-   writing to `/tmp`, which is per-sandbox and ephemeral. Two concurrent requests
-   see two different databases and neither survives the sandbox. This is not a
-   misconfiguration — it is the reason **Phase 2** replaces the storage layer with
-   DynamoDB and S3. The tables above exist and are empty.
+1. **Creating a run appears to work and then loses it.** `POST /api/runs` returns
+   **201 with a real LLM-generated codename** — and the run then never appears in
+   `GET /api/runs`, and `GET /api/runs/{name}` is 404.
+
+   Two independent causes, both phase boundaries rather than misconfigurations:
+
+   - **Lambda freezes the execution environment when the handler returns**, so the
+     `asyncio` background task that runs the conversation never gets scheduled. The
+     logs show one line — `Starting simulation …` — and an **8 ms billed duration**.
+     The run row is never written. This is why **Phase 4 of the plan was cancelled**
+     and Step Functions (Phase 5) is a prerequisite for a run to execute at all, not
+     an optimisation.
+   - **Storage is SQLite in `/tmp`**, which is per-sandbox and ephemeral. Two
+     concurrent requests see two different databases and neither survives the
+     sandbox. **Phase 2** replaces it with DynamoDB and S3.
+
+   The tables above exist and are empty. Everything up to and including the Bedrock
+   call works.
 2. **`STARTUP_SWEEP=false`** is set on the function, and it has to be. The sweep
    assumes it is the only process; with concurrent sandboxes, two cold starts would
    each mark the other's in-flight run as interrupted.
@@ -130,7 +148,7 @@ optional without anything failing.
 cd infra && .venv/bin/python -m pytest tests/ -q
 ```
 
-39 assertions over the synthesized template — no AWS account, no credentials, a few
+41 assertions over the synthesized template — no AWS account, no credentials, a few
 seconds. They deliberately do not restate the stack; each one covers a property
 whose absence is a **working deployment with a real defect**: `index.html` cached
 (silent blank page), a JWT authorizer with no audience (accepts any client's
