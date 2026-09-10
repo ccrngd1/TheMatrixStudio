@@ -178,12 +178,56 @@ Replace the SQLite implementation with DynamoDB + S3. One implementation, no abs
 - Per-request `sts:AssumeRole` scoped with `dynamodb:LeadingKeys` (§3), so a missing tenant
   filter in application code cannot leak data.
 
-*Done when:* the **709 existing tests pass against the new backend** under `moto`, plus the
+*Done when:* the **788 existing tests pass against the new backend** under `moto`, plus the
 Phase 0.2 cross-tenant negative tests, plus a test asserting the scoped role actually refuses
 a cross-partition read — that last one is what proves §3 rather than assuming it.
 
 *Risk:* the tests are the contract, and any that only passed because of a SQLite behaviour
 will surface here. Treat each as a question about the test, not an obstacle.
+
+### Key design settled first — `docs/PHASE2-STORAGE-KEY-DESIGN.md`
+
+The port turned out to have six places where the existing methods rely on something
+SQLite makes free. Each is a decision that, made wrong, is found *after* the port is
+written and costs a rewrite of the key schema — and two of them are silent. Recorded
+before implementation rather than discovered during it:
+
+1. **Numeric sort-key components must be zero-padded.** §4's literal
+   `RUN#{run_id}#{seq}` sorts lexicographically, so `…#10 < …#9` and
+   `get_events_after` — the most-used access pattern in the app — would silently skip
+   and mis-order events. The event log is what `reconstruct_at_turn` replays, so
+   mis-ordering it corrupts branch and resume rather than looking odd.
+2. **`get_events` filters by turn, which is not in the sort key.** Query the run
+   prefix and filter the attribute; no second index, because a GSI keyed on turn would
+   add write cost to the hottest write path to save a filter over ~80 items.
+3. **`list_snapshots` reads `status` out of the snapshot body.** With bodies in S3
+   that is one GET per checkpoint to render a list of turn numbers. Denormalised onto
+   the pointer, with the same "S3 is authoritative if they disagree" caveat §4a already
+   applies to documents.
+4. **`AUTOINCREMENT` has no equivalent, and the ids are load-bearing** — returned to
+   callers and used as the ordering key for thread messages. Solved with an atomic
+   `UpdateItem … ADD :1` counter, which *is* an autoincrement and is correct under
+   concurrency. Deliberately not used for `events`, whose `seq` the engine already
+   assigns.
+5. **Two lookups address an item by id with no run or user context** (`get_thread`,
+   `document_text`/`delete_document`). Needs a GSI on each of `threads` and
+   `documents` — **absent from the Phase 1 stack**, and found by designing the port
+   rather than by running it. A `Scan` is not the fallback: it reads across tenants, so
+   a tenancy slip would become a full-table disclosure. ✅ **Added and deployed.**
+6. **`owner_sub` has to reach the user-partitioned tables and most signatures lack
+   it.** Resolving it internally from `run_id` was tempting and is wrong: the lookup
+   item sits outside `USER#{sub}`, so the scoped credentials could not read it, which
+   reintroduces exactly the ambient authority §3 exists to remove. So it becomes a
+   **required keyword-only argument** on ~25 methods — the Phase 0.2 rule, for the
+   Phase 0.2 reason. The callers already hold the value.
+
+*Verified premise:* `asyncio.to_thread` + plain boto3 is intercepted by `moto`,
+including concurrent writes and sort-key range reads — so the storage layer keeps its
+`async def` signatures with no async AWS client and no event-loop blocking.
+
+*Build order:* `storage/dynamo.py` complete → tested against `moto` → swap
+`storage/__init__.py` last. Nothing is broken until the swap, and the swap plus the 41
+construction sites is one mechanical step rather than a partially migrated tree.
 
 ---
 

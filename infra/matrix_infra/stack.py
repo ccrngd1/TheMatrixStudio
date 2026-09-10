@@ -197,6 +197,33 @@ class MatrixStudioStack(Stack):
             ),
         )
 
+        # Two lookups address an item by its own id with no run or user context:
+        #   get_thread(thread_id) · document_text/delete_document(document_id)
+        # Both partitions are keyed by run, so without an index there is no way to
+        # know which partition to read. A Scan is not the fallback: it is O(table)
+        # and reads ACROSS TENANTS, so a tenancy slip would become a full-table
+        # disclosure rather than a mistake confined to one partition.
+        #
+        # KEYS_ONLY, so the index stays small and cheap to write: the lookup is
+        # GSI query -> base-table GetItem. The GSI makes an item *findable*, never
+        # *readable* — authorisation is still the explicit `owner_sub` check
+        # against the resolved run, which `api/app.py` performs for both thread
+        # routes via `_require_thread_run`.
+        #
+        # See docs/PHASE2-STORAGE-KEY-DESIGN.md §5. Missing from the first Phase 1
+        # deploy, and found by designing the port rather than by running it.
+        for table_name, id_attr in (
+            ("threads", "thread_id"),
+            ("documents", "document_id"),
+        ):
+            self.tables[table_name].add_global_secondary_index(
+                index_name=f"by-{id_attr.replace('_', '-')}",
+                partition_key=dynamodb.Attribute(
+                    name=id_attr, type=dynamodb.AttributeType.STRING
+                ),
+                projection_type=dynamodb.ProjectionType.KEYS_ONLY,
+            )
+
         # One bucket, four per-user prefixes (§5.1). One rather than four because
         # the isolation boundary is the `{sub}/` prefix in the scoped role's
         # policy, not the bucket name — four buckets would multiply the policy
