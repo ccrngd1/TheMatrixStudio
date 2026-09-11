@@ -593,6 +593,29 @@ First-class KBs, grants, run-level and persona-level bindings (§8b). Deferred t
 because Phases 0–5 can carry per-conversation documents as an implicit run-scoped KB, and
 doing it later means designing it against a working system.
 
+**Design settled 2026-09-11 — `docs/PHASE6-KB-DESIGN.md`.** The deferral paid off: the
+design could be written against a deployed system, and two of its conclusions depend on
+facts that only existed once there was one.
+
+- **It introduces the first exception to §3's tenancy invariant, and that is inherent
+  rather than a flaw.** A shared KB is read by someone who does not own it, so access
+  stops being a partition constraint (`dynamodb:LeadingKeys`) and becomes an
+  authorisation decision. The design gives that decision one fail-closed chokepoint,
+  makes scope the *intersection* of bindings and grants rather than their union, and
+  states the one staleness window it accepts (group membership, bounded by token TTL —
+  not the revoked-grant leak §8b names, which is closed by the query-time re-check).
+- **The migration is cheaper and safer than expected.** `ListVectors(returnData=True)`
+  returns the full 1024-float vector, verified against the service — so vectors are
+  COPIED into per-KB indexes rather than re-embedded. Zero Bedrock cost, and recall is
+  identical by construction rather than being a thing to measure.
+- **All 48 existing documents are test data** (46 from the recall-measurement `eval-*`
+  runs, 2 from Phase 2 verification). So the migration script is rehearsed on disposable
+  data before it can ever touch anything that matters.
+- **The embedding-model marker has to move onto the KB.** It is a global singleton today;
+  under index-per-KB two KBs may legitimately hold vectors from different models, and a
+  query embedded with one against an index built with the other returns confident
+  nonsense.
+
 *Done when:* one document, uploaded once, is searchable by two personas in two different
 conversations; a revoked grant stops working **at query time**, not just at binding time.
 
