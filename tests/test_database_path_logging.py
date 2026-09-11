@@ -58,7 +58,16 @@ async def test_an_empty_store_warns_and_names_what_it_opened(caplog):
     assert records, "connect() logged nothing about what it opened"
     warning = [r for r in records if r.levelno >= logging.WARNING]
     assert warning, f"an empty store must WARN, not inform: {[r.levelname for r in records]}"
-    assert "EMPTY" in warning[0].getMessage()
+    text = warning[0].getMessage()
+    # "reports no run items", not "is empty". DynamoDB's ItemCount lags by up to six
+    # hours, so a table populated minutes ago still reports zero — observed on the first
+    # real deployment, which warned EMPTY with two runs present. A warning that is
+    # sometimes wrong teaches an operator to ignore it, and then it cannot work on the
+    # day the prefix really is wrong.
+    assert "reports NO run items" in text, text
+    assert "approximate" in text and "lags" in text, (
+        "the warning must say the count is approximate, or it will cry wolf"
+    )
     # And it must name what to check, or the warning is just alarming.
     assert "TABLE_PREFIX" in warning[0].getMessage()
 
@@ -130,7 +139,9 @@ async def test_a_missing_table_is_a_different_message_from_an_empty_one(caplog):
     assert warning, "a missing table must warn"
     text = warning[0].getMessage()
     assert "DOES NOT EXIST" in text, text
-    assert "EMPTY" not in text, "a missing table is not an empty one"
+    assert "reports NO run items" not in text, (
+        "a missing table is not an empty one — different fixes"
+    )
     assert "TABLE_PREFIX" in text
 
 

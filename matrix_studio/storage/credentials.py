@@ -172,6 +172,28 @@ def session_policy(
                 "Resource": bucket_arn,
                 "Condition": {"StringLike": {"s3:prefix": f"*/{prefix}*"}},
             },
+            {
+                # S3 Vectors, and this statement is why the policy has to enumerate
+                # every service the storage layer touches rather than the ones that
+                # look tenant-shaped.
+                #
+                # Effective permissions are the INTERSECTION of the role's policy and
+                # this one. The tenant ROLE was granted `s3vectors:*` by the CDK, and
+                # omitting it here silently removed it — so embedding failed with
+                # AccessDenied against the tenant role, which reads like a broken role
+                # rather than a narrow session policy. Exactly the "narrow role, broad
+                # session policy" inversion this function's docstring warns about,
+                # arrived at from the other direction.
+                #
+                # NOT scoped per tenant, and it cannot be: S3 Vectors has no per-tenant
+                # resource to name. Isolation for vectors is the metadata filter on
+                # `owner_sub`, which is verified against the real service by
+                # `scripts/verify_vector_retrieval.py`. Stated plainly because it is the
+                # one place in this policy that is not a partition boundary.
+                "Effect": "Allow",
+                "Action": "s3vectors:*",
+                "Resource": "*",
+            },
         ]
     )
     policy = {"Version": "2012-10-17", "Statement": statements}
@@ -198,6 +220,85 @@ USER_PARTITIONED = ("runs", "events", "snapshots")
 def _is_user_partitioned(table_arn: str) -> bool:
     name = table_arn.rsplit("/", 1)[-1]
     return any(name.endswith(f"-{suffix}") for suffix in USER_PARTITIONED)
+
+
+def scoped_session(
+    owner_sub: str,
+    *,
+    role_arn: str,
+    table_arns: list,
+    bucket_arn: str,
+    region: str,
+):
+    """A boto3 Session whose every call uses credentials scoped to one tenant.
+
+    **Why a session with deferred credentials rather than an explicit STS call.**
+    Assuming the role is a network round trip, and the natural place to bind a tenant
+    (`DynamoStorage.for_owner`) is synchronous and called inline in route expressions —
+    making it `async` would change ~30 call sites into awaits for no gain. botocore's
+    `DeferredRefreshableCredentials` resolves this exactly: the `AssumeRole` happens
+    lazily, inside the first real API call, and refreshes itself before expiry. Since
+    every call in the storage layer already runs in `asyncio.to_thread`, that
+    synchronous STS request costs a worker thread rather than the event loop.
+
+    The session policy travels in `extra_args`, so it is applied on every refresh and
+    cannot be lost when credentials roll over — which is the failure that would
+    otherwise appear as isolation working for fifteen minutes and then stopping.
+
+    Cached per (sub, role) for the process, because a Lambda sandbox serves one request
+    at a time and re-assuming per request would add a round trip to every call. The
+    cache is keyed on the sub and never consulted without one.
+    """
+    import boto3
+    from botocore.credentials import (
+        AssumeRoleCredentialFetcher,
+        DeferredRefreshableCredentials,
+    )
+    from botocore.session import get_session
+
+    cache_key = (owner_sub, role_arn, region)
+    cached = _SESSION_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    policy = session_policy(
+        owner_sub, table_arns=table_arns, bucket_arn=bucket_arn
+    )
+    base = get_session()
+    fetcher = AssumeRoleCredentialFetcher(
+        client_creator=base.create_client,
+        source_credentials=base.get_credentials(),
+        role_arn=role_arn,
+        extra_args={
+            "RoleSessionName": _session_name(owner_sub),
+            "Policy": json.dumps(policy, separators=(",", ":")),
+            "DurationSeconds": SESSION_SECONDS,
+        },
+    )
+    botocore_session = get_session()
+    botocore_session._credentials = DeferredRefreshableCredentials(
+        method="assume-role", refresh_using=fetcher.fetch_credentials,
+    )
+    botocore_session.set_config_variable("region", region)
+    session = boto3.Session(botocore_session=botocore_session)
+    _SESSION_CACHE[cache_key] = session
+    logger.debug("Built a tenant-scoped session for %s", owner_sub)
+    return session
+
+
+#: Sessions by (sub, role, region). See `scoped_session` for why this is safe.
+_SESSION_CACHE: Dict[Any, Any] = {}
+
+
+def tenant_role_arn() -> str:
+    """The role to assume per tenant, or "" when scoped credentials are not configured.
+
+    Empty means the storage layer uses the ambient role — the local single-user server,
+    and Phase 1's deployment. That is a real reduction in guarantee rather than a
+    neutral default, so it is something callers can read and log rather than a silent
+    difference in behaviour.
+    """
+    return os.environ.get("TENANT_ROLE_ARN", "")
 
 
 class TenantCredentials:
