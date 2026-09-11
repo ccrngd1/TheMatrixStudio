@@ -32,7 +32,7 @@ import logging
 import os
 import time
 import uuid
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from matrix_studio.state import SimSnapshot
 from matrix_studio.tenancy import LOCAL_USER_SUB
@@ -54,6 +54,11 @@ TURN_WIDTH = 6
 _TABLES = (
     "runs", "events", "snapshots", "summaries", "threads", "thread-messages",
     "documents",
+    # Phase 6. Neither is under a user partition, and that is §8b's point rather than
+    # an oversight: a shared KB is read by principals who do not own it, so a
+    # `USER#{sub}` prefix would make sharing inexpressible. Authorisation for these is
+    # an explicit grant check, not a partition constraint — see `may_read_kb`.
+    "knowledge-bases", "kb-grants",
 )
 
 
@@ -123,6 +128,11 @@ _RUN_FIELDS = (
 _EVENT_FIELDS = (
     "run_id", "turn", "seq", "event_type", "agent_name", "payload", "created_at",
 )
+_KB_FIELDS = (
+    "id", "name", "description", "owner_sub", "embedding_model", "document_count",
+    "created_at",
+)
+_GRANT_FIELDS = ("kb_id", "principal", "kind", "granted_by", "created_at")
 _DOCUMENT_FIELDS = (
     "id", "document_id", "run_id", "persona_name", "title", "source_path",
     "media_type", "char_count", "chunk_count", "s3_key", "owner_sub",
@@ -187,6 +197,31 @@ def _thread_sk(thread_id: str) -> str:
 
 def _document_sk(document_id: str) -> str:
     return f"DOC#{document_id}"
+
+
+def _kb_pk(kb_id: str) -> str:
+    """Partition key for a knowledge base and its grants.
+
+    `KB#{kb_id}`, deliberately NOT under a user partition. §8b: a shared KB is read by
+    someone who does not own it, so isolation here cannot be
+    `dynamodb:LeadingKeys` on a `USER#` prefix. It is an authorisation decision
+    instead, and `may_read_kb` is the one place that decision is made.
+    """
+    return f"KB#{kb_id}"
+
+
+def _principal_sk(*, user: Optional[str] = None, group: Optional[str] = None) -> str:
+    """Sort key for one grant. Exactly one of `user` or `group`.
+
+    The two namespaces are kept distinct in the key rather than sharing one string,
+    because a Cognito group could otherwise be named to collide with a `sub` and
+    silently inherit its grants.
+    """
+    if bool(user) == bool(group):
+        raise ValueError("a grant names exactly one of user or group")
+    if user:
+        return f"PRINCIPAL#USER#{user}"
+    return f"PRINCIPAL#GROUP#{group}"
 
 
 def _run_prefix(run_id: str) -> str:
@@ -1605,6 +1640,247 @@ class DynamoStorage:
             "instructions": instructions,
             "created_at": created_at,
         }
+
+    # ------------------------------------------------------------------ #
+    # Phase 6: knowledge bases, grants, and the one authorisation decision
+    # ------------------------------------------------------------------ #
+
+    async def create_knowledge_base(
+        self,
+        name: str,
+        *,
+        owner_sub: Optional[str] = None,
+        description: Optional[str] = None,
+        kb_id: Optional[str] = None,
+        embedding_model: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Create a KB. Returns the row, including its generated id.
+
+        `embedding_model` is recorded per KB rather than globally, and that is the fix
+        for what was a global singleton (`pk="EMBEDDING"` in the `documents` table).
+        Two KBs may legitimately hold vectors from different models; a query embedded
+        with one against an index built with the other returns confident nonsense, so
+        the model has to be a property of the collection being searched. `None` means
+        "not yet indexed", set on the first `PutVectors`.
+        """
+        owner_sub = self._owner(owner_sub)
+        kb_id = kb_id or uuid.uuid4().hex[:12]
+        row = {
+            "id": kb_id,
+            "name": name,
+            "description": description,
+            "owner_sub": owner_sub,
+            "embedding_model": embedding_model,
+            "document_count": 0,
+            "created_at": int(time.time()),
+        }
+        await self._call(
+            self._table("knowledge-bases").put_item,
+            Item=_to_ddb({"pk": _kb_pk(kb_id), "sk": "META", **row}),
+            # A KB id is generated, so a collision is a bug rather than a race — but an
+            # unconditional put would silently overwrite an existing KB's metadata,
+            # including its owner, which is the one field authorisation depends on.
+            ConditionExpression="attribute_not_exists(pk)",
+        )
+        return _row({}, _KB_FIELDS) | row
+
+    async def get_knowledge_base(self, kb_id: str) -> Optional[Dict[str, Any]]:
+        """A KB's metadata by id, with no authorisation check.
+
+        Deliberately unauthorised: this is the read `may_read_kb` itself needs, because
+        the owner shortcut requires knowing who the owner is. Callers that are serving a
+        user must go through `may_read_kb` or `searchable_kbs` — the same shape as
+        `get_run`, whose docstring says the equivalent.
+        """
+        got = await self._call(
+            self._table("knowledge-bases").get_item,
+            Key={"pk": _kb_pk(kb_id), "sk": "META"},
+        )
+        item = got.get("Item")
+        return _row(item, _KB_FIELDS) if item else None
+
+    async def list_knowledge_bases(
+        self, *, owner_sub: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """The KBs this owner created, plus every KB granted to them.
+
+        Two reads rather than one, because they are genuinely different questions and
+        neither subsumes the other: ownership is an attribute of the KB, and a grant is
+        a row in another table. A single query cannot express "mine or shared with me"
+        when the two live in different partitions — which is the cost §8b names for
+        making sharing possible at all.
+        """
+        owner_sub = self._owner(owner_sub)
+        mine = await self._scan_all(
+            "knowledge-bases",
+            FilterExpression="sk = :meta AND owner_sub = :o",
+            ExpressionAttributeValues={":meta": "META", ":o": owner_sub},
+        )
+        out = {str(i["id"]): _row(i, _KB_FIELDS) for i in mine}
+        for kb_id in await self._granted_kb_ids(owner_sub):
+            if kb_id in out:
+                continue
+            kb = await self.get_knowledge_base(kb_id)
+            if kb:
+                out[kb_id] = kb
+        return sorted(out.values(), key=lambda k: (k.get("created_at") or 0))
+
+    async def _granted_kb_ids(self, owner_sub: str) -> List[str]:
+        """KB ids granted directly to this user.
+
+        A scan on the grants table, which is the shape the key design forces: grants are
+        partitioned by KB so that checking "may this user read KB X" is a point read, and
+        that is the operation on the per-turn hot path. Listing "every KB granted to a
+        user" is the inverse and runs on a settings page, not per turn. A GSI on the
+        principal would make it a query, and is the right change if listing ever becomes
+        hot — recorded rather than built, because a GSI costs a write on every grant to
+        speed up a page nobody loads in a loop.
+        """
+        items = await self._scan_all(
+            "kb-grants",
+            FilterExpression="principal = :p",
+            ExpressionAttributeValues={":p": owner_sub},
+        )
+        return [str(i["kb_id"]) for i in items if i.get("kb_id")]
+
+    async def grant_kb(
+        self,
+        kb_id: str,
+        *,
+        user: Optional[str] = None,
+        group: Optional[str] = None,
+        granted_by: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Grant read access to a KB, to one user or one Cognito group."""
+        sk = _principal_sk(user=user, group=group)
+        row = {
+            "kb_id": kb_id,
+            "principal": user or group,
+            "kind": "user" if user else "group",
+            "granted_by": granted_by,
+            "created_at": int(time.time()),
+        }
+        await self._call(
+            self._table("kb-grants").put_item,
+            Item=_to_ddb({"pk": _kb_pk(kb_id), "sk": sk, **row}),
+        )
+        return row
+
+    async def revoke_kb(
+        self, kb_id: str, *, user: Optional[str] = None, group: Optional[str] = None
+    ) -> None:
+        """Remove a grant. Takes effect on the next query, not the next binding.
+
+        That is §8b's stated requirement and the reason `searchable_kbs` re-checks per
+        query: a binding created while the grant existed must stop working, or a
+        revocation is cosmetic.
+        """
+        await self._call(
+            self._table("kb-grants").delete_item,
+            Key={"pk": _kb_pk(kb_id), "sk": _principal_sk(user=user, group=group)},
+        )
+
+    async def list_kb_grants(self, kb_id: str) -> List[Dict[str, Any]]:
+        """Every grant on a KB. One query — this is what the partitioning buys."""
+        items = await self._query_all(
+            "kb-grants",
+            KeyConditionExpression="pk = :pk AND begins_with(sk, :prefix)",
+            ExpressionAttributeValues={":pk": _kb_pk(kb_id), ":prefix": "PRINCIPAL#"},
+        )
+        return [_row(i, _GRANT_FIELDS) for i in items]
+
+    async def may_read_kb(
+        self, kb_id: str, owner_sub: str, groups: Optional[Sequence[str]] = None
+    ) -> bool:
+        """**The authorisation decision.** Whether this principal may read this KB.
+
+        The single place it is made, in the same spirit as `_slice_filter` being the
+        single place retrieval scoping is expressed: the failure mode being guarded
+        against is a future caller that checks two of the three conditions.
+
+        The owner needs no grant row. Without that shortcut every private KB would need
+        a grant to its own creator — a row that can be forgotten, failing in a way that
+        looks like a bug in sharing rather than a missing record.
+
+        Groups come from the caller's verified token, not from a Cognito lookup. The
+        consequence, stated rather than hidden: a user removed from a group keeps that
+        group's access until their token expires. That is bounded by token lifetime and
+        is NOT the leak §8b names — that one is a revoked grant outliving a binding, and
+        it is closed because this runs per query.
+
+        Returns False for a KB that does not exist, rather than raising: "no such KB"
+        and "not yours" are the same answer to a caller who should not learn which.
+        """
+        kb = await self.get_knowledge_base(kb_id)
+        if kb is None:
+            return False
+        if kb.get("owner_sub") == owner_sub:
+            return True
+        sort_keys = [_principal_sk(user=owner_sub)]
+        sort_keys += [_principal_sk(group=g) for g in (groups or ())]
+
+        # Concurrent point reads rather than `BatchGetItem`, and the reason is that the
+        # batch API is client-level: it speaks the wire format, so keys and results need
+        # `_to_wire`/`_from_wire` conversion, and it can return `UnprocessedKeys` under
+        # throttling — which, if dropped, turns a throttle into a DENIAL that only
+        # happens under load. Point reads through the resource take plain Python, cannot
+        # partially succeed, and `gather` gives the same one-round-trip latency.
+        table = self._table("kb-grants")
+
+        async def exists(sk: str) -> bool:
+            got = await self._call(
+                table.get_item, Key={"pk": _kb_pk(kb_id), "sk": sk}
+            )
+            return bool(got.get("Item"))
+
+        return any(await asyncio.gather(*(exists(sk) for sk in sort_keys)))
+
+    async def searchable_kbs(
+        self,
+        bound: Sequence[str],
+        owner_sub: str,
+        groups: Optional[Sequence[str]] = None,
+    ) -> List[str]:
+        """Which of the KBs bound to this turn the caller may actually read.
+
+        **The intersection, not the union.** Binding is not permission: §8b — "a grant
+        says *may* read, a binding says *does* read in this conversation". A run bound to
+        a KB whose grant was revoked must retrieve nothing from it, which is exactly the
+        stale-binding leak the query-time re-check exists to close.
+
+        **Fails closed.** An error here yields the empty list, so retrieval finds
+        nothing and the prompt says so honestly. This is the opposite of the rule
+        everywhere else in retrieval, where a failure degrades to lexical — because this
+        is an authorisation decision, and the natural `try/except` written for
+        availability would return "everything bound" and hand over another tenant's
+        corpus.
+
+        Order is preserved and duplicates removed, so a caller's fan-out is deterministic.
+        """
+        seen: set = set()
+        out: List[str] = []
+        for kb_id in bound or ():
+            kb_id = str(kb_id)
+            if kb_id in seen:
+                continue
+            seen.add(kb_id)
+            try:
+                permitted = await self.may_read_kb(kb_id, owner_sub, groups)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Grant check for KB %s failed (%s); treating it as NOT readable. "
+                    "An authorisation failure denies rather than degrading.",
+                    kb_id, exc,
+                )
+                continue
+            if permitted:
+                out.append(kb_id)
+            else:
+                logger.info(
+                    "KB %s is bound but not readable by %s; excluded from this turn",
+                    kb_id, owner_sub,
+                )
+        return out
 
     async def get_summaries(self, run_id: str) -> List[Dict[str, Any]]:
         """The latest summary of each kind, with its payload parsed."""
