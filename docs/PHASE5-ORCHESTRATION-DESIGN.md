@@ -8,7 +8,14 @@ Written before the implementation. Phase 4's cancellation is the argument for do
 that phase was planned from Lambda's *documented* limits and died on its *actual*
 execution model, discovered only after deployment.
 
-Status: **design settled, implementation in progress.**
+Status: **implemented, deployed and verified 2026-09-11** —
+`scripts/verify_turn_loop.py`, 20 checks against the real state machine.
+
+One thing this document got wrong, corrected below in §6: it said the stop check was
+"exact at `turn_budget=1`". It was not. The engine's `should_stop` is synchronous and
+closes over the run row read at the slice's *start*, so a stop arriving during a turn
+was invisible and the machine looped once more — measured as two turns past the request
+rather than one. Fixed with a re-read at the end of each slice.
 
 ---
 
@@ -135,6 +142,21 @@ concurrency is close to never.
 Ordering is preserved: the check happens **after** the turn is emitted and checkpointed,
 so a stop lets the turn in flight finish. That is `_run_turns`'s existing contract and it
 does not move.
+
+**Correction, from the deployment.** The engine's `should_stop` is a synchronous
+callable, so it cannot await a DynamoDB read — it can only report what was known when
+the slice started. A stop requested *during* a turn was therefore invisible: the slice
+returned `running`, the machine looped, and one more turn was generated. Measured:
+asking during turn 2 produced a log ending at turn 4, where the contract says turn 3.
+
+`execute_slice` now re-reads the flag after generating and ends the run itself when it
+is set. One `GetItem` per slice, which is the cheapest thing in a turn by orders of
+magnitude, and it restores the semantics the local path always had — there the
+predicate is a live closure over an in-memory set, so it was never stale.
+
+The verification script's original check for this was `len(turns) >= asked_at`, a lower
+bound. It passed on both the broken and the correct behaviour. The bound that mattered
+was the upper one, and it is now asserted.
 
 ## 7. `POST /api/runs` writes the run row synchronously
 
