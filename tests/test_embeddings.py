@@ -760,3 +760,135 @@ async def test_floor_rejection_is_reported_to_the_caller(vdb):
         )
     assert rejected == 2, "orthogonal matches should have been floored"
     assert passages == [], "nothing should survive an orthogonal-only result set"
+
+
+# --------------------------------------------------------------------------- #
+# The embedding-model marker, which was WRITE-ONLY.
+#
+# `embedding_model()` existed, `store_chunk_vectors` wrote it on every call, and
+# nothing in the application read it — the guard lived in the SQLite layer and was
+# never ported. The mechanism was there, the value was recorded, and no code
+# consulted it.
+# --------------------------------------------------------------------------- #
+
+
+async def _one_chunk_run(db, run_id: str):
+    """A run with one document, returning its real chunk ids.
+
+    Chunk ids are derived from `(document_id, ordinal)`, so they cannot be invented —
+    `store_vectors` needs the metadata the store demands and looks it up by id.
+    """
+    await db.create_run(run_id=run_id, topic="t", cast=[])
+    await db.add_document(
+        run_id=run_id, title="a.md",
+        chunks=["alpha " * 200, "beta " * 200],
+        text=("alpha " * 200) + "\n\n" + ("beta " * 200),
+    )
+    ids = [c["chunk_id"] for c in await db.chunks_missing_vectors(run_id)]
+    assert len(ids) >= 2, f"fixture must produce at least two chunks, got {len(ids)}"
+    return ids
+
+
+async def test_a_same_width_model_swap_is_refused(db):
+    """The case the marker exists for, and the only one not covered for free.
+
+    A different WIDTH is refused by S3 Vectors itself, since an index's dimension is
+    fixed at creation. A different model at the SAME width is accepted by the service
+    and every distance afterwards is arithmetic nonsense — the same shape as the
+    `distance_to_cosine` bug: a metric that looks fine and means nothing.
+    """
+    from matrix_studio.storage import StorageError
+    from tests.support import store_vectors, unit_vector
+
+    ids = await _one_chunk_run(db, "mm")
+    await store_vectors(db, "mm", {ids[0]: unit_vector(1.0, 0.0)}, model="model-a")
+    assert await db.embedding_model() == "model-a"
+
+    with pytest.raises(StorageError, match="built with 'model-a'"):
+        await store_vectors(db, "mm", {ids[1]: unit_vector(0.0, 1.0)}, model="model-b")
+
+
+async def test_the_same_model_is_accepted_again(db):
+    """Non-vacuity: the guard must not refuse the normal case.
+
+    Without this, a guard that refused everything would pass the test above.
+    """
+    from tests.support import store_vectors, unit_vector
+
+    ids = await _one_chunk_run(db, "mm-ok")
+    await store_vectors(db, "mm-ok", {ids[0]: unit_vector(1.0, 0.0)}, model="model-a")
+    stored = await store_vectors(
+        db, "mm-ok", {ids[1]: unit_vector(0.0, 1.0)}, model="model-a"
+    )
+    assert stored == 1
+
+
+async def test_the_first_model_is_recorded_not_refused(db):
+    """An empty index accepts whatever it is given; there is nothing to disagree with."""
+    from tests.support import store_vectors, unit_vector
+
+    ids = await _one_chunk_run(db, "mm-first")
+    assert await db.embedding_model() is None
+    assert await store_vectors(
+        db, "mm-first", {ids[0]: unit_vector(1.0, 0.0)}, model="fresh"
+    ) == 1
+    assert await db.embedding_model() == "fresh"
+
+
+async def test_a_model_mismatch_degrades_to_lexical_rather_than_failing_the_run(db):
+    """`embed_pending_chunks` documents itself as never raising. It did.
+
+    `StorageError` is a `RuntimeError`, and the handler caught only `ValueError` — the
+    shape the SQLite layer raised. So every refusal the DynamoDB path makes escaped a
+    function whose contract is to return `{"error": ...}`, landed in the engine's outer
+    `except Exception`, and FAILED THE WHOLE RUN. A misconfigured `VECTOR_BUCKET` was
+    enough to do it, when the documented behaviour is to fall back to lexical retrieval.
+    """
+    from matrix_studio.retrieval import embed_pending_chunks
+    from tests.support import store_vectors, unit_vector
+
+    ids = await _one_chunk_run(db, "mm-run")
+    # Pin the index to one model, then ask the pipeline to embed with another.
+    await store_vectors(db, "mm-run", {ids[0]: unit_vector(1.0, 0.0)}, model="model-a")
+
+    class _R:
+        def __init__(self):
+            self.vectors = [unit_vector(0.0, 1.0)]
+            self.tokens = 5
+            self.cost_usd = 0.0
+            self.model = "model-b"
+
+    async def fake_embed(*_a, **_k):
+        return _R()
+
+    with patch("matrix_studio.retrieval.embed_texts", side_effect=fake_embed, create=True):
+        with patch("matrix_studio.embeddings.embed_texts", side_effect=fake_embed):
+            stats = await embed_pending_chunks(db, "mm-run", embedding_model="model-b")
+
+    assert stats["embedded"] == 0
+    assert "error" in stats, "the refusal escaped instead of being reported"
+    assert "model-a" in stats["error"]
+
+
+async def test_a_missing_vector_bucket_degrades_rather_than_raising(db, monkeypatch):
+    """The same escape, reached by the other refusal in `store_chunk_vectors`."""
+    from matrix_studio.retrieval import embed_pending_chunks
+    from tests.support import unit_vector
+
+    await _one_chunk_run(db, "mm-nb")
+    monkeypatch.setenv("VECTOR_BUCKET", "")
+
+    class _R:
+        def __init__(self):
+            self.vectors = [unit_vector(1.0, 0.0), unit_vector(0.0, 1.0)]
+            self.tokens = 5
+            self.cost_usd = 0.0
+            self.model = "model-a"
+
+    async def fake_embed(*_a, **_k):
+        return _R()
+
+    with patch("matrix_studio.embeddings.embed_texts", side_effect=fake_embed):
+        stats = await embed_pending_chunks(db, "mm-nb", embedding_model="model-a")
+    assert stats["embedded"] == 0
+    assert "VECTOR_BUCKET" in stats.get("error", "")
