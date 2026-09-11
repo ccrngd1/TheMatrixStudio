@@ -271,10 +271,19 @@ def provenance_payload(citations: Sequence[Citation]) -> List[Dict[str, Any]]:
     This is what makes an evidence chain machine-readable: a later export can
     trace a claim back through the participant who surfaced it to the document
     itself, instead of the hop being invisible.
+
+    ``title`` is carried alongside ``label`` even though ``label`` contains it,
+    because the two are not interchangeable in the direction that matters.
+    ``label`` is ``"title #ordinal"`` when there is an ordinal, so recovering the
+    title from it means splitting on `` #`` — which is a guess about titles, and
+    wrong for any document whose own name contains that sequence. The first-hand
+    ledger is rebuilt from these events (`reconstruct_at_turn`), and it keys on
+    the title, so the log has to state the title rather than imply it.
     """
     return [
         {
             "label": c.label,
+            "title": c.title,
             "kind": c.kind,
             "attributive": c.attributive,
             **({"via": c.via} if c.via else {}),

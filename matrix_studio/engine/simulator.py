@@ -1009,6 +1009,7 @@ async def _run_turns(
     retrieval: Optional[RetrievalConfig] = None,
     personas: Optional[PersonaConfig] = None,
     should_stop: Optional[Callable[[], bool]] = None,
+    firsthand_citations: Optional[List[List[str]]] = None,
 ) -> Dict[str, Any]:
     """
     Shared turn loop + completion/failure handling for both a fresh run and a
@@ -1050,7 +1051,11 @@ async def _run_turns(
     # far. A second-hand attribution ("Priya cited X as saying Y") is only accepted
     # when the credited participant appears here, which is what makes crediting
     # verifiable rather than merely plausible.
-    firsthand_citations: List[tuple] = []
+    # Seeded from the caller, NOT always empty. This was `= []` unconditionally, which
+    # meant a resumed or branched run forgot who had cited what first-hand and treated
+    # every legitimate second-hand credit as unverifiable. See
+    # `SimSnapshot.firsthand_citations` for why that matters more under Phase 5.
+    ledger: List[list] = [list(pair) for pair in (firsthand_citations or [])]
 
     try:
         while turn < max_messages:
@@ -1183,7 +1188,7 @@ async def _run_turns(
             # byte-for-byte pre-4a behavior (regression-locked by test).
             citation_ctx = (
                 CitationContext.build(
-                    own_passages=passages, prior_firsthand=firsthand_citations
+                    own_passages=passages, prior_firsthand=ledger
                 )
                 if retrieval_on else None
             )
@@ -1323,7 +1328,7 @@ async def _run_turns(
                     response_payload["citation_provenance"] = provenance_payload(cites)
                     for c in cites:
                         if c.kind == "firsthand":
-                            firsthand_citations.append((speaker_name, c.title))
+                            ledger.append([speaker_name, c.title])
             await emit(
                 turn=turn,
                 seq=next_seq(),
@@ -1497,6 +1502,7 @@ async def _run_turns(
                         agents=agents,
                         conversation=conversation,
                         pending_threads=pending_threads,
+                        firsthand_citations=ledger,
                         status="running",
                         created_at=int(time.time()),
                         total_turns=turn,
@@ -1537,6 +1543,7 @@ async def _run_turns(
                         agents=agents,
                         conversation=conversation,
                         pending_threads=pending_threads,
+                        firsthand_citations=ledger,
                         status="stopped",
                         created_at=completion_time,
                         completed_at=completion_time,
@@ -1586,6 +1593,7 @@ async def _run_turns(
                             agents=agents,
                             conversation=conversation,
                             pending_threads=pending_threads,
+                            firsthand_citations=ledger,
                             status="capped",
                             created_at=completion_time,
                             completed_at=completion_time,
@@ -1630,6 +1638,7 @@ async def _run_turns(
                 agents=agents,
                 conversation=conversation,
                 pending_threads=pending_threads,
+                firsthand_citations=ledger,
                 status="complete",
                 created_at=completion_time,
                 completed_at=completion_time,
@@ -1986,6 +1995,7 @@ async def resume_simulation(
     retrieval: Optional[RetrievalConfig] = None,
     personas: Optional[PersonaConfig] = None,
     should_stop: Optional[Callable[[], bool]] = None,
+    firsthand_citations: Optional[List[List[str]]] = None,
 ) -> Dict[str, Any]:
     """
     Phase 2a branch primitive — RESUME generating forward from a checkpoint.
@@ -2114,6 +2124,7 @@ async def resume_simulation(
         model=model,
         cognition=cognition,
         pending_threads=pending_threads,
+        firsthand_citations=firsthand_citations,
         retrieval=retrieval,
         personas=personas,
         should_stop=should_stop,

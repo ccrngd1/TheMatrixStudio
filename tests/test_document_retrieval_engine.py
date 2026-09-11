@@ -687,3 +687,272 @@ async def test_no_citation_checking_when_retrieval_is_off(db, tmp_path):
     assert all(
         c["payload"].get("principle") != "citation_integrity" for c in checked
     )
+
+
+# --------------------------------------------------------------------------- #
+# Phase 5i: the first-hand ledger is cross-turn state and must survive a
+# resume, a branch and a per-turn Lambda boundary.
+#
+# It did not. `_run_turns` initialised it to `[]` at both call sites, so a
+# resumed or branched run treated every legitimate second-hand credit as
+# unverifiable. Latent while resume was rare; permanent under Phase 5, where
+# every turn is a resume.
+# --------------------------------------------------------------------------- #
+
+
+async def test_firsthand_ledger_rides_the_snapshot(db, tmp_path):
+    """The ledger has to be ON the snapshot, because that is what a turn Lambda loads.
+
+    Reconstruction from the log is the fallback; the snapshot is the O(1) path Phase 2a
+    chose precisely so a turn need not replay history.
+    """
+    def fake(*args, **kwargs):
+        text = " ".join(m["content"] for m in kwargs["messages"])
+        if "conversation moderator" in text:
+            return _Resp(json.dumps({"speaker": "Dana", "reason": "her turn"}))
+        return _Resp(
+            "Per dana.md #0, egress inspection is what gives the auditor evidence."
+        )
+
+    # max_messages=2 on purpose: turn 1's snapshot is then the per-turn RUNNING one
+    # (the write a turn Lambda's successor actually loads), not the terminal
+    # completion snapshot. With max_messages=1 the two coincide and deleting the
+    # field from the running write left the whole suite green.
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=fake):
+        await run_simulation(
+            _request(tmp_path, retrieval={"enabled": True, "k": 2, "max_chars": 900},
+                     max_messages=2),
+            db=db, run_id="cite-snap",
+        )
+    snap = await db.get_snapshot("cite-snap", 1)
+    assert snap.status == "running", "meant to assert the per-turn write, not the final one"
+    assert snap is not None
+    titles = [title for _speaker, title in snap.firsthand_citations]
+    assert "dana.md" in titles, (
+        f"the snapshot lost the first-hand ledger: {snap.firsthand_citations}"
+    )
+    assert all(s == "Dana" for s, _t in snap.firsthand_citations)
+
+
+async def test_firsthand_ledger_is_replayed_from_the_event_log(db, tmp_path):
+    """reconstruct_at_turn must rebuild it, which is what fixes resume and branch."""
+    from matrix_studio.branching import reconstruct_at_turn
+
+    def fake(*args, **kwargs):
+        text = " ".join(m["content"] for m in kwargs["messages"])
+        if "conversation moderator" in text:
+            return _Resp(json.dumps({"speaker": "Dana", "reason": "her turn"}))
+        return _Resp(
+            "Per dana.md #0, egress inspection is what gives the auditor evidence."
+        )
+
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=fake):
+        await run_simulation(
+            _request(tmp_path, retrieval={"enabled": True, "k": 2, "max_chars": 900},
+                     max_messages=1),
+            db=db, run_id="cite-replay",
+        )
+    run = await db.get_run("cite-replay")
+    *_rest, replayed = await reconstruct_at_turn(db, run, 1)
+    snap = await db.get_snapshot("cite-replay", 1)
+    # The two sources must AGREE. Either alone could be self-consistently wrong;
+    # a snapshot written by the loop and a ledger replayed from the log are
+    # independent derivations of the same fact.
+    assert [list(p) for p in replayed] == [list(p) for p in snap.firsthand_citations]
+    assert replayed, "replay produced an empty ledger"
+
+
+async def test_provenance_carries_the_bare_title_not_only_the_label(db, tmp_path):
+    """The replay keys on title, and `label` is "title #ordinal".
+
+    Recovering the title by splitting the label is a guess about titles, and wrong
+    for any document whose own name contains " #". So the event has to state it.
+    """
+    def fake(*args, **kwargs):
+        text = " ".join(m["content"] for m in kwargs["messages"])
+        if "conversation moderator" in text:
+            return _Resp(json.dumps({"speaker": "Dana", "reason": "her turn"}))
+        return _Resp("Per dana.md #0, egress inspection gives the auditor evidence.")
+
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=fake):
+        await run_simulation(
+            _request(tmp_path, retrieval={"enabled": True, "k": 2, "max_chars": 900},
+                     max_messages=1),
+            db=db, run_id="cite-title",
+        )
+    responses = await _events(db, "cite-title", "agent.response")
+    prov = responses[0]["payload"]["citation_provenance"]
+    assert prov[0]["title"] == "dana.md"
+    # The label keeps its ordinal, so the two are genuinely different strings and
+    # the test is not tautological.
+    assert prov[0]["label"] == "dana.md #0"
+
+
+async def test_a_second_turn_still_sees_the_first_turn_s_firsthand_citation(db, tmp_path):
+    """The behaviour the ledger exists for, across a turn boundary.
+
+    Dana cites dana.md first-hand on turn 1. On turn 2 Marcus credits Dana for it,
+    which is legitimate ONLY because the ledger remembers turn 1. With an empty
+    ledger the same utterance is an unverified citation and the gate rejects it —
+    so this test fails if the ledger is dropped between turns, which is exactly
+    what a per-turn Lambda does when the state is not persisted.
+    """
+    turns = {"n": 0}
+
+    def fake(*args, **kwargs):
+        text = " ".join(m["content"] for m in kwargs["messages"])
+        if "conversation moderator" in text:
+            turns["n"] += 1
+            speaker = "Dana" if turns["n"] == 1 else "Marcus"
+            return _Resp(json.dumps({"speaker": speaker, "reason": "their turn"}))
+        if "consistency validator" in text:
+            return _Resp(json.dumps({"violation": False}))
+        if "Dana" in text and "dana.md" in text and turns["n"] >= 2:
+            # Marcus, crediting Dana second-hand.
+            return _Resp(
+                "Dana cited dana.md as saying egress inspection is the evidence, "
+                "and I will take that at face value."
+            )
+        return _Resp("Per dana.md #0, egress inspection is the auditor's evidence.")
+
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=fake):
+        await run_simulation(
+            _request(tmp_path, retrieval={"enabled": True, "k": 2, "max_chars": 900},
+                     max_messages=2),
+            db=db, run_id="cite-carry",
+        )
+
+    snap = await db.get_snapshot("cite-carry", 2)
+    assert snap is not None
+    # Turn 1's entry must still be present at turn 2 — the ledger accumulates
+    # rather than being rebuilt per turn.
+    assert any(t == "dana.md" for _s, t in snap.firsthand_citations), (
+        f"turn 1's first-hand citation was lost by turn 2: {snap.firsthand_citations}"
+    )
+
+    responses = await _events(db, "cite-carry", "agent.response")
+    second = next((r for r in responses if r["turn"] == 2), None)
+    if second is not None and "Dana cited dana.md" in second["payload"]["message"]:
+        prov = second["payload"].get("citation_provenance") or []
+        kinds = {p["kind"] for p in prov if p.get("title") == "dana.md"}
+        assert "unverified" not in kinds, (
+            "a legitimate second-hand credit was judged unverifiable, which means "
+            f"the ledger did not survive the turn boundary: {prov}"
+        )
+
+
+async def test_a_branch_carries_the_parent_s_firsthand_ledger_into_new_turns(db, tmp_path):
+    """THE test for the original bug, and the one the others missed.
+
+    `_run_turns` used to do `firsthand_citations = []` unconditionally. On a fresh
+    run that is indistinguishable from correct — the ledger legitimately starts
+    empty and fills as the run proceeds — so every fresh-run test passes with the
+    bug in place. The defect only shows where the ledger is *supplied*: a branch or
+    a resume. Under Phase 5 that is every turn.
+
+    So: parent cites dana.md first-hand at turn 1, branch at turn 1, let the branch
+    generate turn 2, and require the parent's entry to still be in the branch's own
+    turn-2 snapshot.
+    """
+    from matrix_studio import branching
+
+    # The branch's generated turn must NOT cite dana.md again. If it did, its own
+    # snapshot would hold the entry whether or not the parent's ledger was
+    # inherited, and the test would pass with the bug in place — which is exactly
+    # what the first version of it did.
+    utterances = {"n": 0}
+
+    def fake(*args, **kwargs):
+        text = " ".join(m["content"] for m in kwargs["messages"])
+        if "conversation moderator" in text:
+            return _Resp(json.dumps({"speaker": "Dana", "reason": "her turn"}))
+        if "consistency validator" in text:
+            return _Resp(json.dumps({"violation": False}))
+        utterances["n"] += 1
+        if utterances["n"] == 1:
+            return _Resp("Per dana.md #0, egress inspection is the auditor's evidence.")
+        return _Resp("I have said my piece and will let the point stand for now.")
+
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=fake):
+        await run_simulation(
+            _request(tmp_path, retrieval={"enabled": True, "k": 2, "max_chars": 900},
+                     max_messages=1),
+            db=db, run_id="cite-parent",
+        )
+        parent = await db.get_run("cite-parent")
+        meta = await branching.create_branch_run(db, parent, from_turn=1)
+        branch_id = meta["run_id"]
+        await branching.execute_branch(
+            db, parent, branch_run_id=branch_id, from_turn=1,
+            max_messages=meta["max_messages"],
+        )
+
+    fork = await db.get_snapshot(branch_id, 1)
+    assert any(t == "dana.md" for _s, t in fork.firsthand_citations), (
+        "the fork snapshot lost the parent's ledger"
+    )
+
+    # The generated turn is the part `_run_turns` owns, and the part the bug broke.
+    generated = await db.get_snapshot(branch_id, 2)
+    assert generated is not None, "the branch generated no turn, so nothing is proved"
+    # Non-vacuity: turn 2 cited nothing, so the ONLY way dana.md can be here is
+    # inheritance from the parent's ledger.
+    turn2 = [r for r in await _events(db, branch_id, "agent.response") if r["turn"] == 2]
+    assert turn2, "no generated response at turn 2"
+    assert "dana.md" not in turn2[0]["payload"]["message"], (
+        "the branch's own turn cited dana.md, so this test cannot distinguish "
+        "inheritance from a fresh citation"
+    )
+    assert any(t == "dana.md" for _s, t in generated.firsthand_citations), (
+        "the branch's generated turn dropped the inherited ledger: "
+        f"{generated.firsthand_citations}"
+    )
+
+
+async def test_replay_admits_only_firsthand_entries(db):
+    """A second-hand credit must not vouch for the next one.
+
+    The ledger answers "did this participant actually read that document". If
+    replay folded a `secondhand` entry in, an unverified chain would bootstrap
+    itself: Marcus credits Dana, that credit enters the ledger, and now Priya can
+    credit Marcus for a document nobody ever retrieved.
+
+    Written against the log directly rather than through a run, because the point
+    is the filter, and a generated conversation is a slow and indirect way to
+    control what kinds of citation appear.
+    """
+    from matrix_studio.branching import reconstruct_at_turn
+
+    await db.create_run(
+        run_id="cite-kinds", topic="t",
+        cast=[{"name": "Dana", "persona": "p"}, {"name": "Marcus", "persona": "p"}],
+    )
+    await db.append_event(
+        run_id="cite-kinds", turn=1, seq=0, event_type="agent.response",
+        agent_name="Dana",
+        payload={
+            "speaker": "Dana", "message": "Per real.md #0, yes.",
+            "tokens_in": 1, "tokens_out": 1, "cost_usd": 0.0,
+            "citation_provenance": [{"label": "real.md #0", "title": "real.md",
+                                     "kind": "firsthand", "attributive": False}],
+        },
+    )
+    await db.append_event(
+        run_id="cite-kinds", turn=2, seq=1, event_type="agent.response",
+        agent_name="Marcus",
+        payload={
+            "speaker": "Marcus", "message": "Dana cited real.md, and also ghost.md.",
+            "tokens_in": 1, "tokens_out": 1, "cost_usd": 0.0,
+            "citation_provenance": [
+                {"label": "real.md", "title": "real.md", "kind": "secondhand",
+                 "attributive": True, "via": "Dana"},
+                {"label": "ghost.md", "title": "ghost.md", "kind": "unverified",
+                 "attributive": False, "reason": "never retrieved"},
+            ],
+        },
+    )
+    run = await db.get_run("cite-kinds")
+    *_rest, ledger = await reconstruct_at_turn(db, run, 2)
+    assert ledger == [["Dana", "real.md"]], (
+        f"only Dana's first-hand citation belongs in the ledger, got {ledger}"
+    )

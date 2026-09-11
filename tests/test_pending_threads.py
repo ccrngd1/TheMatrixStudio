@@ -278,13 +278,13 @@ async def test_threads_survive_branch_reconstruction(db):
     run = await db.get_run("thr-branch")
 
     # Fork at turn 1: thread open, not yet resolved.
-    _, _, _, threads_at_1 = await reconstruct_at_turn(db, run, 1)
+    _, _, _, threads_at_1, _ = await reconstruct_at_turn(db, run, 1)
     assert len(threads_at_1) == 1
     assert threads_at_1[0].status == "open"
     assert threads_at_1[0].description == "the missing logs"
 
     # Fork at turn 2: same thread, now resolved — matches the stored snapshot.
-    _, _, _, threads_at_2 = await reconstruct_at_turn(db, run, 2)
+    _, _, _, threads_at_2, _ = await reconstruct_at_turn(db, run, 2)
     snap = await db.get_snapshot("thr-branch", 2)
     assert [t.model_dump() for t in threads_at_2] == \
         [t.model_dump() for t in snap.pending_threads]
