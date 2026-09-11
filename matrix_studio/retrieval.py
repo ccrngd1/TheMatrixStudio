@@ -716,13 +716,27 @@ async def embed_pending_chunks(
         for chunk in pending
         if "document_id" in chunk
     }
+    # Imported here rather than at module scope: `matrix_studio.storage` imports the
+    # engine's state models, and a top-level import would make this module and the
+    # storage layer mutually dependent.
+    from matrix_studio.storage import StorageError
+
     try:
         stored = await db.store_chunk_vectors(
             run_id, pairs, result.model,
             **({"chunks": chunk_meta} if chunk_meta else {}),
         )
-    except ValueError as exc:
-        # Dimension mismatch against an existing index — refuse, do not corrupt.
+    except (ValueError, StorageError) as exc:
+        # Refuse, do not corrupt: a width or model mismatch against the existing index,
+        # a missing VECTOR_BUCKET, or a chunk with no scoping metadata.
+        #
+        # `StorageError` was missing, and it is a `RuntimeError` rather than a
+        # `ValueError` — so every refusal the DynamoDB path raises escaped this handler
+        # and propagated out of a function whose docstring says it never raises. It
+        # landed in the engine's outer `except Exception`, which means a misconfigured
+        # `VECTOR_BUCKET` FAILED THE WHOLE RUN rather than degrading to lexical
+        # retrieval. The SQLite layer raised `ValueError` here, so the handler was
+        # correct when written and was not revisited with the backend.
         out["error"] = str(exc)
         return out
 
