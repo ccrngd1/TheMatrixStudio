@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { api } from '../api'
 import type { Persona, RunDetail } from '../types'
 import { useRunStream } from '../hooks/useRunStream'
+import { isLive, isResumable, isTerminal } from '../lib/runStatus'
 import { CastBoard } from '../components/CastBoard'
 import { ConversationFeed } from '../components/ConversationFeed'
 import { CostMeter } from '../components/CostMeter'
@@ -86,11 +87,12 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh }: Props) {
     ENDED_WITH_TRANSCRIPT.includes(state.status ?? '')
   // Error-recovery / deliberate stop: continue forward in place. Mirrors
   // branching.RESUMABLE_STATUSES server-side, which rejects anything else.
-  const resumable = ['interrupted', 'failed', 'stopped'].includes(detail?.status ?? '')
+  const resumable = isResumable(detail?.status)
   // Only a run this server is actively generating can be stopped; the API answers
   // 409 otherwise, so the button is hidden rather than offered and refused.
-  const TERMINAL = ['complete', 'failed', 'stopped', 'capped', 'interrupted']
-  const running = detail?.status === 'running' && !TERMINAL.includes(state.status)
+  // `pending` counts as stoppable — see LIVE_STATUSES. Gating on `running` alone hid
+  // the Stop button for the window a run spends preparing, on a request the API accepts.
+  const running = isLive(detail?.status) && !isTerminal(state.status)
   const lineage = detail?.lineage
   const maxTurn = detail?.result?.total_turns ?? detail?.turn_count ?? 0
 

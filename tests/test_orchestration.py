@@ -1165,3 +1165,77 @@ def _terminals(events):
         e["event_type"] for e in events
         if e["event_type"].startswith("sim.") and e["event_type"] != "sim.started"
     ]
+
+
+# --------------------------------------------------------------------------- #
+# The status vocabulary is duplicated across two languages, and drift between
+# the copies has already caused two bugs. This pins them together.
+# --------------------------------------------------------------------------- #
+
+
+def _ts_string_list(source: str, name: str) -> set:
+    """Extract a `const NAME = [...]` string array from the TypeScript source.
+
+    Parsed rather than substring-searched. A substring check ("is 'sim.stopped' in the
+    file") is satisfied by the name appearing in a comment, which is exactly how the
+    fixture-vs-stack test in infra/ was once too weak to notice a mismatch.
+    """
+    import re
+
+    m = re.search(rf"{name}\s*=\s*(?:new Set\()?\[(.*?)\]", source, re.DOTALL)
+    assert m, f"could not find {name} in runStatus.ts"
+    return set(re.findall(r"'([^']+)'", m.group(1)))
+
+
+def _run_status_ts() -> str:
+    from pathlib import Path
+
+    path = (
+        Path(__file__).resolve().parent.parent / "frontend" / "src" / "lib" / "runStatus.ts"
+    )
+    assert path.exists(), f"{path} is missing"
+    return path.read_text()
+
+
+async def test_the_frontend_agrees_on_terminal_statuses():
+    """`orchestration.TERMINAL_STATUSES` vs the SPA's list.
+
+    One side deciding a run is finished while the other does not is a stream that never
+    ends or a button that never appears. Both have happened.
+    """
+    assert _ts_string_list(_run_status_ts(), "TERMINAL_STATUSES") == set(
+        orchestration.TERMINAL_STATUSES
+    )
+
+
+async def test_the_frontend_agrees_on_terminal_events():
+    """`storage.dynamo.TERMINAL_EVENT_TYPES` and `api/manager.TERMINAL_EVENTS`."""
+    from matrix_studio.api.manager import TERMINAL_EVENTS as MANAGER_EVENTS
+    from matrix_studio.storage.dynamo import TERMINAL_EVENT_TYPES
+
+    ts = _ts_string_list(_run_status_ts(), "TERMINAL_EVENTS")
+    assert ts == set(TERMINAL_EVENT_TYPES), f"SPA {ts} vs storage {set(TERMINAL_EVENT_TYPES)}"
+    # And the two PYTHON copies agree with each other, which nothing checked either.
+    assert set(MANAGER_EVENTS) == set(TERMINAL_EVENT_TYPES), (
+        f"manager {set(MANAGER_EVENTS)} vs storage {set(TERMINAL_EVENT_TYPES)}"
+    )
+
+
+async def test_the_frontend_agrees_on_resumable_statuses():
+    """`branching.RESUMABLE_STATUSES`. An extra entry offers a button the API 409s."""
+    from matrix_studio.branching import RESUMABLE_STATUSES
+
+    assert _ts_string_list(_run_status_ts(), "RESUMABLE_STATUSES") == set(
+        RESUMABLE_STATUSES
+    )
+
+
+async def test_pending_is_live_on_both_sides():
+    """A run is created `pending` and its first turn flips it to `running`.
+
+    So `pending` must be absent from the terminal set on both sides — a `pending` run
+    treated as terminal would show a finished run that had never spoken.
+    """
+    assert "pending" not in orchestration.TERMINAL_STATUSES
+    assert "pending" in _ts_string_list(_run_status_ts(), "LIVE_STATUSES")
+    assert "pending" not in _ts_string_list(_run_status_ts(), "TERMINAL_STATUSES")
