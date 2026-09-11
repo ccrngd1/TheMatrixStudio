@@ -697,3 +697,79 @@ async def test_the_stop_route_works_with_no_live_task_in_this_process(db, monkey
     out = await manager.request_stop_durable(run)
     assert out["stop_requested"] is True
     assert (await db.get_run("st-remote"))["stop_requested"] is True
+
+
+async def test_a_stop_requested_during_a_turn_ends_the_run_at_that_turn(db):
+    """The documented contract: the turn in flight finishes, the NEXT is prevented.
+
+    The engine's `should_stop` closes over the run row read at the slice's start, so a
+    stop arriving mid-turn is invisible to it — the slice returns `running`, the state
+    machine loops, and one more turn is generated. Measured on the deployed stack:
+    asking during turn 3 produced a log ending at turn 4.
+
+    Simulated by setting the flag from inside the LLM stub, i.e. while the turn is
+    being generated, which is the only moment that reproduces it.
+    """
+    await _make_run(db, "sl-midstop", max_messages=10)
+
+    set_during = {"done": False}
+
+    def fake(*args, **kwargs):
+        text = " ".join(m["content"] for m in kwargs["messages"])
+        if "conversation moderator" in text:
+            return _Resp(json.dumps({"speaker": "Ada", "reason": "her turn"}))
+        if "consistency validator" in text:
+            return _Resp(json.dumps({"violation": False}))
+        if not set_during["done"]:
+            set_during["done"] = True
+            # Mid-turn, exactly like an operator clicking stop while a turn runs.
+            import asyncio as _a
+            _a.get_event_loop().create_task(db.set_stop_requested("sl-midstop"))
+        return _Resp("A short contribution.")
+
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=fake):
+        out = await orchestration.execute_slice(db, "sl-midstop", turn=0, turn_budget=1)
+        # The state machine would loop while the status is `running`. Under the bug it
+        # does exactly that and generates a second turn, so the loop is reproduced here
+        # rather than asserted away.
+        while out["status"] == "running":
+            out = await orchestration.execute_slice(
+                db, "sl-midstop", turn=out["turn"], turn_budget=1
+            )
+
+    assert out["status"] == "stopped", out
+    assert (await db.get_run("sl-midstop"))["status"] == "stopped"
+    # THE assertion. Both the fixed and the broken version end up `stopped`; they
+    # differ only in how many turns were generated first, so a status check alone is
+    # vacuous — it passed with the re-read removed.
+    responses = [
+        e for e in await db.get_events("sl-midstop")
+        if e["event_type"] == "agent.response"
+    ]
+    assert len(responses) == 1, (
+        f"the stop arrived during turn 1, so the run must end at turn 1; "
+        f"{len(responses)} turns were generated"
+    )
+    # And the log carries the marker, not just the row: replay and export read the
+    # log, so a run with no terminal event replays as one still going.
+    assert [
+        e["event_type"] for e in await db.get_events("sl-midstop")
+        if e["event_type"].startswith("sim.") and e["event_type"] != "sim.started"
+    ] == ["sim.stopped"]
+
+
+async def test_stop_now_writes_the_terminal_event_and_snapshot(db):
+    """`finalise` writes a status but no event; a log with no terminal marker
+    replays as a run that is still going."""
+    await _make_run(db, "sl-stopnow", max_messages=5)
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake_llm):
+        await orchestration.execute_slice(db, "sl-stopnow", turn=0, turn_budget=1)
+    out = await orchestration.stop_now(db, "sl-stopnow", turn=1)
+    assert out["status"] == "stopped"
+    snap = await db.get_snapshot("sl-stopnow", 1)
+    assert snap.status == "stopped"
+    assert len(snap.conversation) == 1
+    types = [e["event_type"] for e in await db.get_events("sl-stopnow")]
+    assert types.count("sim.stopped") == 1
+    seqs = [e["seq"] for e in await db.get_events("sl-stopnow")]
+    assert seqs == sorted(seqs) and len(seqs) == len(set(seqs)), seqs
