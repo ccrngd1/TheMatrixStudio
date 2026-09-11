@@ -139,13 +139,41 @@ class RetrievalConfig(BaseModel):
         default=3, ge=1,
         description="How many recent messages contribute terms to the query",
     )
-    # Phase 5f: retrieval mode. "fts" is lexical BM25 only (the default, no
-    # embedding provider needed). "vector" is embeddings only. "hybrid" fuses both
-    # by Reciprocal Rank Fusion. vector/hybrid require the sqlite-vec extra AND an
-    # embedding provider, and cost one embedding call per turn plus one per chunk
-    # at ingest — which is why they are opt-in rather than the default.
+    # Retrieval mode. "fts" is lexical BM25 only, "vector" is embeddings only,
+    # "hybrid" fuses both by Reciprocal Rank Fusion.
+    #
+    # **The default is now "vector".** It was "fts" because vector/hybrid needed the
+    # optional `sqlite-vec` extra AND an embedding provider that a local user might
+    # not have — a real reason then, and simply untrue on the AWS target: the vector
+    # store is a managed service that is always present, and Bedrock is already a hard
+    # dependency because generation uses it. Nothing is opt-in about a capability every
+    # deployment has.
+    #
+    # What settles the value is measurement, not availability. Re-measured against
+    # S3 Vectors on this project's own docs (22 files, 666 chunks, n=40 — see
+    # `docs/PHASE3-RECALL-MEASUREMENT.md`), on the **diluted** arm that models the
+    # engine's actual query shape (a question buried in conversational filler):
+    #
+    #                     recall@1   recall@5
+    #     fts (BM25)         0.125      0.650
+    #     vector             0.650      0.825
+    #     hybrid             0.450      0.875
+    #
+    # `recall@1` is the figure that matters: a turn injects only `k` passages and the
+    # first one dominates the prompt. Lexical put the right passage first 1 turn in 8.
+    #
+    # Pure vector beats hybrid at k=1 by a wide margin, and that ordering also held in
+    # the earlier sqlite-vec measurement, so it is reproduced rather than a one-off:
+    # equal-weight RRF lets a confident lexical wrong answer outrank a correct semantic
+    # one. Hybrid's win on recall@5 does not buy back the top slot.
+    #
+    # Cost of the change is one embedding call per turn (~$1e-7). A run whose chunks
+    # were never embedded degrades to lexical rather than returning nothing.
+    #
+    # "fts" is kept as a name for compatibility with stored `config_json`, though it is
+    # in-process BM25 now and there is no FTS5 anywhere in the system.
     mode: str = Field(
-        default="fts", description="Retrieval mode: fts | vector | hybrid",
+        default="vector", description="Retrieval mode: fts | vector | hybrid",
     )
     embedding_model: str = Field(
         default="", description="LiteLLM embedding model ('' = module default)",

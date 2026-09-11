@@ -70,10 +70,17 @@ nothing. Mutation-tested: removing the owner filter from `get_run_by_ref` fails 
 47; the AND/OR precedence slip in the search filter fails its own test; keeping the old
 global index fails two.
 
-**0.3 Make vector retrieval a first-class path.** ⏩ **Moved to Phase 3.** Flipping
-`RetrievalConfig.mode` today would change the behaviour of a working product for a
-benefit that only materialises after the port — and Phase 3 deletes FTS anyway, so the
-default becomes moot rather than needing to be flipped twice.
+**0.3 Make vector retrieval a first-class path.** ⏩ **Moved to Phase 3 → ✅ DONE there
+2026-09-11.** Flipping `RetrievalConfig.mode` at the time would have changed the
+behaviour of a working product for a benefit that only materialises after the port —
+and Phase 3 deletes FTS anyway, so the default becomes moot rather than needing to be
+flipped twice.
+
+The deferral paid off precisely as hoped: by Phase 3 the old justification for `"fts"`
+had become *false* rather than merely outweighed (no optional extra exists to be
+missing, and Bedrock is already a hard dependency), and the flip could be made on a
+measurement taken against the stack it would actually run on. See
+`docs/PHASE3-RECALL-MEASUREMENT.md`.
 
 Investigating it was still worth it: it surfaced a live bug. `mode="vector"` returned
 **zero passages** both when `sqlite-vec` was absent and when chunks were never embedded,
@@ -358,17 +365,47 @@ ordering tests therefore assert sequences, never lengths, and straddle a digit b
 
 *Done when:* the **Phase 5f recall numbers are reproduced on the new stack** — not just
 "search returns something". This is the phase where a green plumbing suite would happily hide
-a retrieval-quality regression, so the measurement is the acceptance test.
+a retrieval-quality regression, so the measurement is the acceptance test. ✅ **Met
+2026-09-11**, and the premise proved right twice over: the suite was green throughout
+while the measurement instrument itself was broken three ways.
 
-### Progress: all 46 methods ported; the recall measurement remains
+### Progress: COMPLETE — all 46 methods ported and the recall measurement passed
 
 - ✅ **The 9 retrieval methods are implemented**, so `DynamoStorage` now covers all 46
   of the SQLite layer's public methods. 73 tests under `moto`.
 - ✅ **`QueryVectors` scoping verified against the real service**
   (`scripts/verify_vector_retrieval.py`, 8 checks): tenant, run and persona filtering
   all hold, and passages return inline as §4a's one-round-trip design requires.
-- ⬜ **The recall measurement** — reproducing §5f's numbers on S3 Vectors. Still the
-  acceptance test, and it needs real Bedrock embeddings over a real corpus.
+- ✅ **The recall measurement** (2026-09-11, `docs/PHASE3-RECALL-MEASUREMENT.md`).
+  40 queries × 3 arms × 3 modes over 666 chunks in the deployed account, $0.15.
+  **The vector arm reproduced**: diluted recall@5 0.817 → 0.825, paraphrased
+  0.617 → 0.650. The conclusion held decisively — diluted recall@1 is 0.125 lexical
+  vs **0.650** vector, so lexical put the right passage first in 1 turn out of 8.
+  Hybrid still loses the top slot to pure vector on the engine-shaped arm.
+
+  Two arms came out *higher* than §5f (lexical diluted recall@5 0.400 → 0.650), but
+  the corpus grew with the project (16 files → 22), so that is a reproduction on a
+  different corpus rather than a controlled A/B and is **not attributed** to the BM25
+  reimplementation. The metric fix cannot explain it either: both formulas are
+  monotonic in distance and so rank identically.
+
+  **The similarity floor is validated for the first time.** It was inert before the
+  port. Lowest best-match cosine across 120 real queries is 0.253, so the 0.15 default
+  costs nothing — and a sourdough-recipe query against this corpus now scores 0.130 and
+  is **rejected**, where the old L2 formula read 0.622 and kept it.
+
+- ✅ **0.3's deferred flip, done here as planned.** `RetrievalConfig.mode` is now
+  `"vector"` in all three places that default it. Its old justification (needs the
+  `sqlite-vec` extra and an embedding provider) is simply false on this target.
+  The suite passed both before and after the flip, so the default was unguarded;
+  `test_retrieval_mode_default_is_vector` now pins it, mutation-tested.
+
+- ⚠️ **The measurement script had to be repaired first, and two of three faults were
+  silent.** It read chunks with raw SQL against a table that no longer exists (loud);
+  `max_tokens=300` truncated Sonnet 5 mid-JSON and discarded **30% of the sample**
+  through four bare `return None` paths, under a loss threshold that only fired below
+  *half* (silent); and the query cache was keyed on a storage id that is no longer
+  stable across ingests (silent). Details in the measurement doc.
 
 **One shared index, not one per run.** §8b recommends index-per-KB and that reasoning
 is sound *for KBs*: 10,000 indexes per bucket, a company has few KBs, and per-index IAM

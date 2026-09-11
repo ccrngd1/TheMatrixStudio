@@ -138,8 +138,10 @@ class RetrievalConfigModel(BaseModel):
     k: int = Field(default=3, ge=0)
     max_chars: int = Field(default=1200, ge=0)
     recent_turns: int = Field(default=3, ge=1)
-    # Phase 5f: fts (default, no embedding provider needed) | vector | hybrid.
-    mode: str = Field(default="fts")
+    # fts (in-process BM25) | vector (default) | hybrid. Kept in step with
+    # `RetrievalConfig.mode`, whose docstring carries the measurement that chose
+    # "vector" — three defaults that disagree is how a setting looks ignored.
+    mode: str = Field(default="vector")
     embedding_model: str = ""
     rrf_k: int = Field(default=60, ge=1)
     # Phase 5h: absolute cosine floor for vector/hybrid (off-topic guard, 0 = off).
