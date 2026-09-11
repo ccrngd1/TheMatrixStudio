@@ -296,7 +296,9 @@ async def test_convictions_survive_reconstruction_at_a_fork(db):
 
     await _run(db, "fork", personas={"enabled": True})
     run = await db.get_run("fork")
-    _topic, agents, _conversation, _threads = await reconstruct_at_turn(db, run, 1)
+    _topic, agents, _conversation, _threads, _cites = await reconstruct_at_turn(
+        db, run, 1
+    )
     dana = agents["Dana"]
     assert dana.structured is not None
     assert dana.structured.viewpoints[0].firmness == "firm"

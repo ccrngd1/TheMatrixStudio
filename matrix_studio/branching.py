@@ -95,19 +95,37 @@ def branch_budget(parent_run: Dict[str, Any], from_turn: int) -> int:
 
 async def reconstruct_at_turn(
     db: Database, parent_run: Dict[str, Any], from_turn: int
-) -> Tuple[str, Dict[str, "AgentState"], List[Dict[str, Any]], List["PendingThread"]]:
+) -> Tuple[
+    str,
+    Dict[str, "AgentState"],
+    List[Dict[str, Any]],
+    List["PendingThread"],
+    List[List[str]],
+]:
     """
     Reconstruct the exact engine state as of ``from_turn`` for ``parent_run`` by
     replaying its event log (read-only — the parent is never touched).
 
-    Returns ``(topic, agents, conversation, pending_threads)`` where ``agents``
-    is a name-> :class:`AgentState` dict seeded from the run's cast (real
-    persona/goals) and populated with the per-agent conversation history +
+    Returns ``(topic, agents, conversation, pending_threads, firsthand_citations)``
+    where ``agents`` is a name-> :class:`AgentState` dict seeded from the run's cast
+    (real persona/goals) and populated with the per-agent conversation history +
     accumulated token/cost as of the fork, ``conversation`` is the transcript up
     to and including ``from_turn``, and ``pending_threads`` is the Phase 4b
     ledger replayed from ``thread.opened/resolved/abandoned`` events (each
     event payload carries the full thread entry, so replay is lossless; [] for
     runs that never used threads).
+
+    ``firsthand_citations`` is the Phase 5i ledger of ``[speaker, title]`` pairs,
+    replayed from ``agent.response``'s ``citation_provenance``. **This used to be
+    lost.** Both callers of `_run_turns` started the ledger empty, so a resumed or
+    branched run treated every legitimate second-hand credit as unverifiable — a
+    latent bug that Phase 5 would have made permanent, since there every turn is a
+    resume. See `SimSnapshot.firsthand_citations`.
+
+    A fifth element on an already-long positional tuple is a smell, and it is taken
+    knowingly: the alternative — a result object — is a wider change than this phase
+    should carry, and a caller that unpacks four values now fails loudly with a
+    `ValueError` rather than silently binding the wrong thing.
 
     ``agent.response`` payloads are tolerated in both shapes: the live engine
     writes ``message`` + token/cost fields; imported runs write ``content`` and
@@ -131,6 +149,7 @@ async def reconstruct_at_turn(
     conversation: List[Dict[str, Any]] = []
     pending_threads: List[PendingThread] = []
     threads_by_id: Dict[str, PendingThread] = {}
+    firsthand_citations: List[List[str]] = []
 
     # Replay only up to and including the fork turn.
     events = await db.get_events(parent_run["id"], from_turn=0, to_turn=from_turn)
@@ -191,7 +210,22 @@ async def reconstruct_at_turn(
         agent.total_tokens_out += int(payload.get("tokens_out") or 0)
         agent.total_cost_usd += float(payload.get("cost_usd") or 0.0)
 
-    return topic, agents, conversation, pending_threads
+        # Phase 5i ledger. Only FIRST-hand entries go in: the ledger's whole job is
+        # to answer "did this participant actually read that document", so admitting
+        # a second-hand credit would let one unverified claim vouch for the next.
+        #
+        # `title` is read rather than `label`, because `label` is "title #ordinal"
+        # and splitting it back apart is a guess about titles. Older events predate
+        # the `title` key, so `label` is the fallback there — approximate for a
+        # document whose ordinal was recorded, and better than dropping the entry.
+        for cite in payload.get("citation_provenance") or []:
+            if cite.get("kind") != "firsthand":
+                continue
+            title = cite.get("title") or cite.get("label")
+            if title:
+                firsthand_citations.append([speaker, str(title)])
+
+    return topic, agents, conversation, pending_threads, firsthand_citations
 
 
 async def create_branch_run(
@@ -349,7 +383,7 @@ async def execute_branch(
     """
     await db.update_run_status(branch_run_id, "running")
 
-    topic, agents, conversation, pending_threads = await reconstruct_at_turn(
+    topic, agents, conversation, pending_threads, firsthand = await reconstruct_at_turn(
         db, parent_run, from_turn
     )
 
@@ -373,6 +407,7 @@ async def execute_branch(
             agents=agents,
             conversation=conversation,
             pending_threads=pending_threads,
+            firsthand_citations=firsthand,
             status="running",
             created_at=int(time.time()),
             total_turns=from_turn,
@@ -426,6 +461,10 @@ async def execute_branch(
         mutation=resolved_mutation,
         cognition=cognition,
         pending_threads=pending_threads,
+        # Phase 5i: the first-hand citation ledger as of the fork. Without it a
+        # branch would treat a second-hand credit for a document the parent's
+        # participants really had read as an unverifiable claim.
+        firsthand_citations=firsthand,
         retrieval=retrieval,
         # Phase 6: a branch keeps the parent's structured personas. Convictions
         # are exactly the state a "what if they had held firm" branch is asking
@@ -534,7 +573,7 @@ async def resume_run_in_place(
     )
 
     # 3. Reconstruct state at the checkpoint (read-only replay of the log).
-    topic, agents, conversation, pending_threads = await reconstruct_at_turn(
+    topic, agents, conversation, pending_threads, firsthand = await reconstruct_at_turn(
         db, run, resume_turn
     )
 
@@ -549,6 +588,7 @@ async def resume_run_in_place(
                 agents=agents,
                 conversation=conversation,
                 pending_threads=pending_threads,
+                firsthand_citations=firsthand,
                 status="running",
                 created_at=int(time.time()),
                 total_turns=resume_turn,
@@ -581,6 +621,8 @@ async def resume_run_in_place(
         # config + replayed thread ledger (a run that used threads keeps them).
         cognition=CognitionConfig.from_config(resume_cfg),
         pending_threads=pending_threads,
+        # Phase 5i: and its own replayed citation ledger, for the same reason.
+        firsthand_citations=firsthand,
         # Phase 5: an in-place resume keeps its own documents — they are already
         # attached to this run_id, so nothing needs copying.
         retrieval=RetrievalConfig.from_config(resume_cfg),

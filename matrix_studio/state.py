@@ -321,6 +321,26 @@ class SimSnapshot(BaseModel):
     pending_threads: List[PendingThread] = Field(
         default_factory=list, description="Global pending-thread ledger (Phase 4b)"
     )
+    # Phase 5i's first-hand citation ledger: ``[[speaker, document_title], ...]`` for
+    # every first-hand citation so far. It is what makes a SECOND-hand attribution
+    # verifiable — "Priya cited X as saying Y" is accepted only if Priya really cited
+    # X first-hand earlier — so losing it does not merely forget history, it turns
+    # legitimate crediting into an unverifiable claim.
+    #
+    # It lives on the snapshot because it is cross-turn state and every other piece of
+    # cross-turn state already does (2c pattern, same as pending_threads). It did not,
+    # and the omission was a live bug: `_run_turns` initialises the ledger to `[]` at
+    # both call sites, so a resumed or branched run started with an empty one. Rare
+    # enough to go unnoticed — until Phase 5, where every turn is a resume and the
+    # ledger would be empty on every turn but the first, permanently.
+    #
+    # A list of pairs rather than a dict because JSON keys must be strings and the
+    # natural key here is the pair itself; `CitationContext.build` consumes exactly
+    # this shape. Default [] so every snapshot written before the field parses.
+    firsthand_citations: List[List[str]] = Field(
+        default_factory=list,
+        description="[[speaker, document_title], ...] first-hand citations so far",
+    )
     status: str = Field(description="Simulation status: pending|running|complete|failed")
     created_at: int = Field(description="Unix timestamp of snapshot creation")
     completed_at: Optional[int] = Field(default=None, description="Unix timestamp of completion")
