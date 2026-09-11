@@ -539,3 +539,161 @@ async def test_finalise_does_not_summarise_a_stopped_run(db):
     with patch("matrix_studio.service.maybe_autogenerate_summary") as gen:
         await orchestration.finalise(db, "fin-stop")
     gen.assert_not_called()
+
+
+# --------------------------------------------------------------------------- #
+# POST /api/runs under an orchestrator
+# --------------------------------------------------------------------------- #
+
+
+async def test_create_run_writes_the_row_synchronously_when_orchestrated(
+    db, monkeypatch
+):
+    """The exact Phase 4 failure, guarded.
+
+    On the Phase 1 deployment this route returned 201 with a real generated codename
+    and then the run vanished: the row was written by a background task, and Lambda
+    freezes the sandbox when the handler returns. The client held a 201 for a run that
+    did not exist — nothing to poll, and not even a broken run to resume.
+
+    So: the row must be readable the instant the call returns, with no waiting.
+    """
+    from matrix_studio.api.manager import RunManager
+    from tests.support import TEST_OWNER
+
+    monkeypatch.setenv("TURN_LOOP_ARN", "arn:aws:states:us-east-1:1:stateMachine:sm")
+    started = {}
+
+    async def fake_start(run_id, owner_sub, *, max_messages):
+        started.update(run_id=run_id, owner_sub=owner_sub, max_messages=max_messages)
+        return "arn:aws:states:us-east-1:1:execution:sm:run"
+
+    monkeypatch.setattr(orchestration, "start_execution", fake_start)
+    manager = RunManager(db)
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake_llm):
+        with patch("matrix_studio.naming.generate_run_name", return_value={
+            "name": "quiet-harbour", "description": "d", "slug": "quiet-harbour",
+            "source": "llm",
+        }):
+            out = await manager.create_run(
+                {"topic": "whether to ship", "cast": CAST,
+                 "config": {"max_messages": 7, "generate_avatars": False}},
+                owner_sub=TEST_OWNER,
+            )
+
+    assert out["status"] == "pending"
+    row = await db.get_run(out["run_id"])
+    assert row is not None, "the run row was not written synchronously"
+    assert row["status"] == "pending"
+    assert row["topic"] == "whether to ship"
+    # And the execution was started, with the budget it needs to know.
+    assert started["run_id"] == out["run_id"]
+    assert started["owner_sub"] == TEST_OWNER
+    assert started["max_messages"] == 7
+
+
+async def test_create_run_starts_no_execution_without_an_orchestrator(db, monkeypatch):
+    """Local dev keeps the background-task path: uvicorn is one long-lived process."""
+    from matrix_studio.api.manager import RunManager
+    from tests.support import TEST_OWNER
+
+    monkeypatch.delenv("TURN_LOOP_ARN", raising=False)
+    calls = []
+    monkeypatch.setattr(
+        orchestration, "start_execution",
+        lambda *a, **k: calls.append(a) or None,
+    )
+    manager = RunManager(db)
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake_llm):
+        with patch("matrix_studio.naming.generate_run_name", return_value={
+            "name": "still-water", "description": "d", "slug": "still-water",
+            "source": "llm",
+        }):
+            out = await manager.create_run(
+                {"topic": "t", "cast": CAST,
+                 "config": {"max_messages": 1, "generate_avatars": False}},
+                owner_sub=TEST_OWNER,
+            )
+    assert out["status"] == "running"
+    assert calls == [], "an execution was started with no state machine configured"
+    await manager.shutdown()
+
+
+async def test_start_execution_names_the_execution_after_the_run(db, monkeypatch):
+    """Two executions on one run id would both append to the same event log.
+
+    Deriving the name from the run id makes Step Functions itself refuse the second,
+    which is the only place that check can be race-free.
+    """
+    monkeypatch.setenv("TURN_LOOP_ARN", "arn:aws:states:us-east-1:1:stateMachine:sm")
+    seen = {}
+
+    class FakeSfn:
+        def start_execution(self, **kwargs):
+            seen.update(kwargs)
+            return {"executionArn": "arn:exec"}
+
+    monkeypatch.setattr("boto3.client", lambda *a, **k: FakeSfn())
+    arn = await orchestration.start_execution("abc-123", "user-1", max_messages=5)
+    assert arn == "arn:exec"
+    assert seen["name"] == "run-abc-123"
+    payload = json.loads(seen["input"])
+    assert payload == {
+        "run_id": "abc-123", "owner_sub": "user-1", "turn": 0,
+        "max_messages": 5, "total_cost_usd": 0.0,
+    }
+
+
+async def test_a_duplicate_execution_is_not_an_error(db, monkeypatch):
+    """It means the run is already executing, which is the desired end state."""
+    from botocore.exceptions import ClientError
+
+    monkeypatch.setenv("TURN_LOOP_ARN", "arn:aws:states:us-east-1:1:stateMachine:sm")
+
+    class FakeSfn:
+        def start_execution(self, **kwargs):
+            raise ClientError(
+                {"Error": {"Code": "ExecutionAlreadyExists", "Message": "x"}},
+                "StartExecution",
+            )
+
+    monkeypatch.setattr("boto3.client", lambda *a, **k: FakeSfn())
+    assert await orchestration.start_execution("r", "u", max_messages=1) is None
+
+
+async def test_other_start_execution_errors_do_raise(db, monkeypatch):
+    """A missing state machine or a denied call must not look like success —
+    the run would sit at `pending` with nothing explaining why."""
+    from botocore.exceptions import ClientError
+
+    monkeypatch.setenv("TURN_LOOP_ARN", "arn:aws:states:us-east-1:1:stateMachine:sm")
+
+    class FakeSfn:
+        def start_execution(self, **kwargs):
+            raise ClientError(
+                {"Error": {"Code": "AccessDeniedException", "Message": "no"}},
+                "StartExecution",
+            )
+
+    monkeypatch.setattr("boto3.client", lambda *a, **k: FakeSfn())
+    with pytest.raises(ClientError):
+        await orchestration.start_execution("r", "u", max_messages=1)
+
+
+async def test_the_stop_route_works_with_no_live_task_in_this_process(db, monkeypatch):
+    """The deployed case: the turn is generated by a worker Lambda.
+
+    `request_stop`'s in-memory `self._tasks` check would refuse every stop on the
+    deployed system while working perfectly on a laptop — the worst shape a bug can
+    have, since local testing confirms it.
+    """
+    from matrix_studio.api.manager import RunManager
+
+    await _make_run(db, "st-remote", max_messages=5, status="running")
+    manager = RunManager(db)
+    run = await db.get_run("st-remote")
+    assert "st-remote" not in manager._tasks, "fixture must have no local task"
+
+    out = await manager.request_stop_durable(run)
+    assert out["stop_requested"] is True
+    assert (await db.get_run("st-remote"))["stop_requested"] is True

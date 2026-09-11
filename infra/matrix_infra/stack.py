@@ -35,6 +35,8 @@ from aws_cdk import aws_iam as iam
 from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_s3 as s3
 from aws_cdk import aws_s3vectors as s3vectors
+from aws_cdk import aws_stepfunctions as sfn
+from aws_cdk import aws_stepfunctions_tasks as sfn_tasks
 from constructs import Construct
 
 from matrix_infra.config import (
@@ -70,6 +72,7 @@ class MatrixStudioStack(Stack):
         self._create_spa_hosting()
         self._create_user_pool()
         self._create_api()
+        self._create_turn_loop()
         self._outputs()
 
     # ------------------------------------------------------------------ #
@@ -840,6 +843,236 @@ class MatrixStudioStack(Stack):
             path="/{proxy+}",
             methods=[apigw.HttpMethod.ANY],
             integration=integration,
+        )
+
+    # ------------------------------------------------------------------ #
+
+    def _worker(
+        self, construct_id: str, name: str, handler: str, timeout: Duration
+    ) -> lambda_.DockerImageFunction:
+        """A worker Lambda on the SAME image as the API, with a different handler.
+
+        One image, three entry points. A second image would double build time and
+        upload size, and — more to the point — let the worker's dependencies drift
+        from the API's, so a run could execute against a different engine than the
+        one the API validated its request with.
+
+        Each worker gets the storage environment and Bedrock, but **no storage rights
+        of its own**: like the API it assumes the tenant role per run with a session
+        policy scoped to one `sub`. That is §3's mechanism and it does not get an
+        exception for being a background worker — a worker with ambient table access
+        is exactly the hole `dynamodb:LeadingKeys` exists to close.
+        """
+        fn = lambda_.DockerImageFunction(
+            self,
+            construct_id,
+            function_name=f"{self.config.prefix}-{name}",
+            code=lambda_.DockerImageCode.from_image_asset(
+                PROJECT_ROOT,
+                file="Dockerfile.lambda",
+                # `cmd` overrides the image's own CMD, which is the API handler.
+                cmd=[handler],
+                exclude=[
+                    "frontend", "tests", "docs", "scripts", "examples",
+                    "*.md", "!README.md",
+                ],
+            ),
+            memory_size=2048,
+            timeout=timeout,
+            environment={
+                # No AUTH_MODE: a worker has no request and no JWT. Its tenant comes
+                # from the execution input, which the API wrote from verified claims.
+                "STARTUP_SWEEP": "false",
+                "DATA_DIR": "/tmp/data",
+                "DATA_BUCKET": self.data_bucket.bucket_name,
+                "VECTOR_BUCKET": self.vector_bucket.vector_bucket_name,
+                "VECTOR_INDEX": self.chunks_index.index_name,
+                "TABLE_PREFIX": self.config.prefix,
+                "TENANT_ROLE_ARN": self.tenant_role.role_arn,
+                **{
+                    f"TABLE_{n.upper()}": t.table_name
+                    for n, t in self.tables.items()
+                },
+            },
+        )
+        fn.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "bedrock:InvokeModel",
+                    "bedrock:InvokeModelWithResponseStream",
+                ],
+                # Same region wildcard and same reason as the API's grant: a global
+                # inference profile is authorised against a region-LESS ARN.
+                resources=[
+                    "arn:aws:bedrock:*::foundation-model/*",
+                    f"arn:aws:bedrock:*:{self.account}:inference-profile/*",
+                    f"arn:aws:bedrock:*:{self.account}:application-inference-profile/*",
+                ],
+            )
+        )
+        fn.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["sts:AssumeRole"], resources=[self.tenant_role.role_arn]
+            )
+        )
+        # The tenant role trusts each worker explicitly. Adding the principal here
+        # rather than widening the role's `assumed_by` keeps the trust policy an
+        # enumeration of known callers instead of a pattern.
+        self.tenant_role.assume_role_policy.add_statements(
+            iam.PolicyStatement(
+                actions=["sts:AssumeRole"],
+                principals=[iam.ArnPrincipal(fn.role.role_arn)],
+            )
+        )
+        return fn
+
+    def _create_turn_loop(self) -> None:
+        """§5.2's turn loop, as a Standard workflow.
+
+        **This is the first phase in which a run can execute at all.** Phase 4 planned
+        to run the loop in the API Lambda's background task and was cancelled on
+        measurement: Lambda freezes the sandbox when the handler returns, so the run
+        died in 8 ms having logged one line. API Gateway's 30-second integration
+        timeout rules out the obvious repair. See `docs/AWS-IMPLEMENTATION-PLAN.md`.
+
+        Standard rather than Express: no duration ceiling (a 40-turn conversation at
+        6–13 s/turn is minutes, and the budget is user-controlled), and Express's
+        at-least-once execution would be wrong for a loop whose states append to an
+        event log.
+        """
+        self.prepare_lambda = self._worker(
+            "PrepareFunction", "prepare",
+            "matrix_studio.step_handlers.prepare",
+            # Generous, because this state ingests and embeds the whole corpus. The
+            # 666-chunk measurement corpus took ~90 s of Bedrock calls.
+            Duration.minutes(10),
+        )
+        self.turn_lambda = self._worker(
+            "TurnFunction", "turn",
+            "matrix_studio.step_handlers.turn",
+            # A turn is 6–13 s measured. Five minutes is room for the validation
+            # gate's regeneration and a slow provider, without being so long that a
+            # wedged turn holds a run open for a quarter of an hour.
+            Duration.minutes(5),
+        )
+        self.finalise_lambda = self._worker(
+            "FinaliseFunction", "finalise",
+            "matrix_studio.step_handlers.finalise",
+            # Writes the terminal status and generates the run summary, which is one
+            # LLM call over the whole transcript.
+            Duration.minutes(5),
+        )
+
+        prepare = sfn_tasks.LambdaInvoke(
+            self, "Prepare",
+            lambda_function=self.prepare_lambda,
+            # `payload_response_only` keeps the state's output as the handler's return
+            # value rather than wrapping it in Lambda's envelope. Without it every
+            # downstream Choice and every input path would have to reach through
+            # `$.Payload`, and the handlers' event shape — deliberately identical
+            # across the three — would stop being the contract.
+            payload_response_only=True,
+        )
+        turn = sfn_tasks.LambdaInvoke(
+            self, "Turn",
+            lambda_function=self.turn_lambda,
+            payload_response_only=True,
+        )
+        finalise = sfn_tasks.LambdaInvoke(
+            self, "Finalise",
+            lambda_function=self.finalise_lambda,
+            payload_response_only=True,
+        )
+
+        # Retry, which is the operational reason this is an orchestrator rather than
+        # a loop. §7 names Bedrock throttling as the real risk at company scale:
+        # quotas are per-account per-model, so many concurrent users hit them.
+        #
+        # Retrying the whole turn is safe because a slice is idempotent by
+        # construction — it trims dangling events past the last checkpoint before
+        # generating, so a turn that died half-written is not appended twice.
+        for task in (prepare, turn, finalise):
+            task.add_retry(
+                errors=["States.TaskFailed", "States.Timeout"],
+                interval=Duration.seconds(5),
+                max_attempts=4,
+                backoff_rate=2.0,
+                max_delay=Duration.minutes(2),
+            )
+            # Lambda's own transient failures get a separate, faster policy: a
+            # throttle or a service exception is not a turn that went wrong.
+            task.add_retry(
+                errors=[
+                    "Lambda.TooManyRequestsException",
+                    "Lambda.ServiceException",
+                    "Lambda.AWSLambdaException",
+                    "Lambda.SdkClientException",
+                ],
+                interval=Duration.seconds(2),
+                max_attempts=6,
+                backoff_rate=2.0,
+            )
+
+        # A turn that exhausts its retries must still leave the run in a terminal
+        # status. Without this the run sits at `running` for ever with no execution
+        # behind it, which is indistinguishable to a user from a run that is simply
+        # slow — and is the failure mode the startup sweep used to paper over.
+        mark_failed = sfn_tasks.LambdaInvoke(
+            self, "MarkFailed",
+            lambda_function=self.finalise_lambda,
+            payload=sfn.TaskInput.from_object({
+                "run_id": sfn.JsonPath.string_at("$.run_id"),
+                "owner_sub": sfn.JsonPath.string_at("$.owner_sub"),
+                "status": "failed",
+            }),
+            payload_response_only=True,
+        )
+        for task in (prepare, turn):
+            task.add_catch(
+                mark_failed,
+                errors=["States.ALL"],
+                # The error is discarded rather than merged into the state, because
+                # the payload MarkFailed needs is `run_id` and `owner_sub` and a
+                # Step Functions error object can be large enough to matter against
+                # the 256 KB state I/O quota.
+                result_path=sfn.JsonPath.DISCARD,
+            )
+
+        # CheckContinue is a pure Choice over the turn's own output — no DynamoDB read.
+        #
+        # Step Functions can read DynamoDB natively, and §6 originally described the
+        # stop check that way. Rejected: a native integration reads with the STATE
+        # MACHINE's role, which is not per-tenant, so `dynamodb:LeadingKeys` cannot
+        # constrain it. Every other storage access in this system goes through
+        # credentials scoped to one `sub`; this would have been the single exception,
+        # on the hottest path. The turn Lambda already reads the run row for its
+        # config and returns the verdict, so the same guarantee costs nothing.
+        check = (
+            sfn.Choice(self, "CheckContinue")
+            .when(sfn.Condition.boolean_equals("$.done", True), finalise)
+            .otherwise(turn)
+        )
+
+        turn.next(check)
+        definition = prepare.next(turn)
+
+        self.turn_loop = sfn.StateMachine(
+            self,
+            "TurnLoop",
+            state_machine_name=f"{self.config.prefix}-turn-loop",
+            definition_body=sfn.DefinitionBody.from_chainable(definition),
+            state_machine_type=sfn.StateMachineType.STANDARD,
+            # A ceiling, not an expectation. A 40-turn run is minutes; a day means
+            # something is wedged, and an execution that never ends is one that keeps
+            # a run listed as `running` for ever.
+            timeout=Duration.days(1),
+            tracing_enabled=True,
+        )
+
+        # The API starts executions; nothing else does.
+        self.turn_loop.grant_start_execution(self.api_lambda)
+        self.api_lambda.add_environment(
+            "TURN_LOOP_ARN", self.turn_loop.state_machine_arn
         )
 
     # ------------------------------------------------------------------ #
