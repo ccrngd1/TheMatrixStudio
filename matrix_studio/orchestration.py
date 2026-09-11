@@ -367,20 +367,93 @@ async def execute_slice(
     )
 
     fresh = await db.get_run(run_id) or run
+    status = str(result.get("status", "running"))
+    turn_now = int(result.get("total_turns") or start_turn)
+
+    # Re-read the stop flag before letting the machine loop.
+    #
+    # The engine's `should_stop` closes over the run row this slice read at its START,
+    # so a stop requested WHILE the turn was generating is invisible to it — the slice
+    # returns `running`, the machine loops, and one more turn is generated. Measured
+    # on the deployed stack: asking after turn 2 produced a log ending at turn 4, when
+    # the documented contract is that the turn in flight finishes and "only the NEXT
+    # one is prevented".
+    #
+    # One `GetItem` per slice closes that window exactly. It is the cheapest thing in
+    # a turn by orders of magnitude — a turn is a Bedrock call — and it buys back the
+    # semantics the local path has always had, where the predicate is a live closure
+    # over an in-memory set.
+    if status == "running" and fresh.get("stop_requested"):
+        logger.info(
+            "Run %s: stop requested during turn %d; ending here rather than "
+            "generating another", run_id, turn_now,
+        )
+        return await stop_now(db, run_id, turn=turn_now)
+
     return _payload(
-        run_id, result.get("status", "running"), fresh,
-        int(result.get("total_turns") or start_turn),
+        run_id, status, fresh, turn_now,
         total_cost_usd=float(result.get("total_cost_usd") or 0.0),
         max_messages=max_messages,
     )
 
 
+async def stop_now(db: Database, run_id: str, *, turn: int) -> Dict[str, Any]:
+    """End a run as `stopped` at ``turn``, with the event the log needs.
+
+    `finalise` writes the status and a snapshot but no event, and a run whose log has
+    no terminal marker replays as one that is still going — `reconstruct_at_turn` and
+    every export read the log, not the row. So the event is emitted here, matching
+    what `_run_turns` writes when it notices the stop itself.
+    """
+    snap = await db.get_snapshot(run_id, turn=turn)
+    total_cost = (
+        sum(a.total_cost_usd for a in snap.agents.values()) if snap else 0.0
+    )
+    emit, next_seq = _emitter(db, run_id, start_seq=await db.max_seq(run_id) + 1)
+    await emit(
+        turn=turn,
+        seq=next_seq(),
+        event_type="sim.stopped",
+        payload={
+            "total_turns": turn,
+            "message_count": len(snap.conversation) if snap else 0,
+            "total_cost_usd": total_cost,
+        },
+    )
+    completion_time = int(time.time())
+    if snap is not None:
+        await db.save_snapshot(
+            SimSnapshot(
+                run_id=run_id,
+                turn=turn,
+                topic=snap.topic,
+                agents=snap.agents,
+                conversation=snap.conversation,
+                pending_threads=snap.pending_threads,
+                firsthand_citations=snap.firsthand_citations,
+                status="stopped",
+                created_at=completion_time,
+                completed_at=completion_time,
+                total_turns=turn,
+            )
+        )
+    await db.update_run_status(run_id, "stopped", completion_time)
+    fresh = await db.get_run(run_id) or {}
+    return _payload(run_id, "stopped", fresh, turn, total_cost_usd=total_cost)
+
+
 def _stop_predicate(run: Dict[str, Any]) -> Callable[[], bool]:
     """Whether a stop was requested, as of the run row this slice already read.
 
-    Read once per slice rather than per turn, which is exact at `turn_budget=1` and
-    at most one turn stale above it. Re-reading per turn would add a DynamoDB call to
-    the hot path to shorten a window that the default budget closes anyway.
+    Deliberately stale, and the staleness is handled elsewhere. The engine's
+    `should_stop` is a synchronous callable — it cannot await a DynamoDB read — so this
+    can only report what was known when the slice started. A stop requested *during*
+    the turn is caught by the re-read at the end of `execute_slice`, which is where an
+    `await` is available.
+
+    An earlier version of this docstring claimed the arrangement was "exact at
+    `turn_budget=1`". It was not, and the deployment said so: a stop asked for during
+    turn 3 produced a log ending at turn 4.
     """
     requested = bool(run.get("stop_requested"))
     return lambda: requested

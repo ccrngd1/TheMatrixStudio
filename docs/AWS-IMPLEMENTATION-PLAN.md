@@ -3,8 +3,9 @@
 Companion to `AWS-SERVERLESS-ARCHITECTURE.md`, which is the *what* and *why*. This is the
 *in what order*, and what proves each step worked.
 
-Status: **in progress**, updated 2026-09-10. **Phase 0 complete; Phase 1 written and
-verified locally, not yet deployed** — see Progress at the end.
+Status: **in progress**, updated 2026-09-11. **Phases 0, 1, 2, 3 and 5 are complete,
+deployed and verified against the real account; Phase 4 is cancelled** (see its entry —
+the reason is instructive). A run executes end to end on AWS. Phases 6 and 7 remain.
 
 ## Principles for sequencing
 
@@ -522,6 +523,50 @@ which is precisely the failure observed above.
 
 *Done when:* a 40+ turn run completes (impossible in one Lambda), a stop lands **after the
 turn in flight is persisted**, and a cost cap terminates a run as `capped`.
+
+### Status: COMPLETE, deployed and verified 2026-09-11
+
+All three criteria met against the deployed state machine —
+`scripts/verify_turn_loop.py`, 20 checks. **A run executes on AWS.**
+
+- **40 turns in 3.4 minutes for $0.086.** Contiguous turn numbers 1–40, 162 events with
+  strictly increasing seqs across every slice boundary, exactly one terminal event, a
+  40-message final snapshot and a generated summary. A single Lambda cannot do this;
+  the point of the phase is that it no longer has to.
+- **A stop lands after the turn in flight.** Asked during turn 2, log ends at turn 3.
+- **A cost cap terminates as `capped`**, after one turn with the cap set to $1e-6.
+
+Design decisions and the two deliberate deviations from §5.2/§6 are in
+`docs/PHASE5-ORCHESTRATION-DESIGN.md`. The short version: `PrepareTurn` and
+`GenerateTurn` collapse into one Lambda because a Step Functions state's I/O caps at
+256 KB while snapshots reach 2.2 MB, and `CheckContinue` is a pure `Choice` rather than
+a native DynamoDB read because that read would use the state machine's role, which is
+not per-tenant.
+
+**One defect only the deployment could show, and it is the same shape as Phase 4's.**
+The first verification run passed every check while generating **two** turns past the
+stop request, not one. The engine's `should_stop` is a synchronous callable closing
+over the run row read at the slice's start, so a stop arriving *during* a turn was
+invisible: the slice returned `running`, the machine looped, and one more turn was
+generated. Fixed with one `GetItem` at the end of each slice — the cheapest thing in a
+turn by orders of magnitude, and it restores the semantics the local path always had.
+
+Worth recording that the check which *should* have caught it was `>= at`, a lower bound
+only. It passed on both the broken and the fixed behaviour. The bound that matters here
+was the upper one.
+
+Deferred, deliberately, with reasons:
+
+- **WebSocket fan-out stays v2.** The viewer polls `events?after_seq=` every 3 s
+  against a measured 5–13 s turn. The `connections` table exists for the eventual
+  push implementation; §5.1 already marked it v2.
+- **Branch and resume still use the in-process path.** Both already reconstruct and
+  generate forward, so each is "a new execution with a different `from_turn`" — but
+  neither is wired to the machine yet, so on the deployed stack they are subject to
+  exactly the Phase 4 freeze. **This is the next thing to fix**, and it is small:
+  `execute_branch` and `resume_run_in_place` need the same `StartExecution` treatment
+  `POST /api/runs` got.
+- **Per-user monthly caps** (§7) remain Phase 7. The per-run cap works.
 
 ---
 
