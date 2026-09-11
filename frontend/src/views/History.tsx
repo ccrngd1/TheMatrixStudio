@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
 import type { RunSummary } from '../types'
+import { isStalled } from '../lib/runStatus'
 
 interface Props {
   onOpen: (runId: string) => void
@@ -66,7 +67,15 @@ export function History({ onOpen, onNew }: Props) {
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <span className="font-semibold text-matrix-accent">{r.name ?? r.run_id.slice(0, 8)}</span>
-                  <StatusPill status={r.status} />
+                  {/* `lastEventAt` and `createdAt` were never passed, so the
+                      staleness branch inside StatusPill could not fire: a run orphaned
+                      by a restart rendered as a healthy "running" for ever. The API has
+                      supplied `last_event_at` for exactly this since it was added. */}
+                  <StatusPill
+                    status={r.status}
+                    lastEventAt={r.last_event_at}
+                    createdAt={r.created_at}
+                  />
                   {r.parent_run_id && (
                     <span
                       title={`Branched @ turn ${r.branch_turn}`}
@@ -96,14 +105,25 @@ export function History({ onOpen, onNew }: Props) {
 // Generous so a slow multi-agent turn is never mislabelled.
 const STALL_SECONDS = 120
 
-function StatusPill({ status, lastEventAt }: { status: string; lastEventAt?: number | null }) {
+function StatusPill({
+  status,
+  lastEventAt,
+  createdAt,
+}: {
+  status: string
+  lastEventAt?: number | null
+  createdAt?: number | null
+}) {
   // Item 2: a "running" row in history has no live stream by definition; if it
   // also has no recent events, show it as stalled rather than falsely live.
-  const nowSec = Date.now() / 1000
-  const stalled =
-    status === 'running' &&
-    lastEventAt != null &&
-    nowSec - lastEventAt > STALL_SECONDS
+  //
+  // `pending` is included, and that is the more important half now. A run is created
+  // `pending` and its first turn flips it to `running` — so a run stuck at `pending` is
+  // one whose execution never started, which is a real and silent failure mode
+  // (`start_execution` returning None, a denied StartExecution, a state machine that is
+  // not there). Without this it renders as "pending" for ever, indistinguishable from a
+  // run that is about to begin.
+  const stalled = isStalled(status, lastEventAt, createdAt, STALL_SECONDS)
   const shown = stalled ? 'stalled' : status
   const color =
     shown === 'complete'
@@ -116,7 +136,9 @@ function StatusPill({ status, lastEventAt }: { status: string; lastEventAt?: num
             ? 'bg-amber-900/40 text-amber-300'
             : 'bg-matrix-border text-slate-400'
   const title = stalled
-    ? 'Marked running but no recent events — likely orphaned by a server restart mid-run'
+    ? status === 'pending'
+      ? 'Created but never started generating — its execution may have failed to start'
+      : 'Marked running but no recent events — likely orphaned by a server restart mid-run'
     : undefined
   return (
     <span

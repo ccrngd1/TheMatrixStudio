@@ -10,24 +10,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, streamUrl } from '../api'
+// `sim.stopped` and `sim.capped` were once missing from this set — see runStatus.ts
+// for what that cost. It lives there now so there is one copy.
+import { TERMINAL_EVENTS } from '../lib/runStatus'
 import type { Persona, SimEvent } from '../types'
 import { deriveState, initialState } from '../lib/simState'
 
 export type PlaybackMode = 'live' | 'paused'
-
-// Every event that means the engine will send no more. `sim.stopped` and
-// `sim.capped` were MISSING, and each omission had two consequences: the viewer
-// went on showing a stopped run as live, and — once polling exists — it would poll
-// that run for ever. The list matches TERMINAL_EVENTS in api/manager.py; they must
-// agree, because one side deciding a run is finished while the other does not is
-// exactly a stream that never ends.
-const TERMINAL_EVENTS = new Set([
-  'sim.completed',
-  'sim.failed',
-  'sim.interrupted',
-  'sim.stopped',
-  'sim.capped',
-])
 
 // How often to poll for new events while a run is live.
 //
