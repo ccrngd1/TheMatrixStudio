@@ -85,6 +85,30 @@ def _cast(run: Dict[str, Any]) -> List[Dict[str, Any]]:
     return cast if isinstance(cast, list) else []
 
 
+def budget_of(run: Dict[str, Any]) -> int:
+    """A run's effective turn budget: the `budget` attribute, else its config, else the
+    settings default.
+
+    The precedence is the point. Branch and resume both compute a budget that differs
+    from the one in `config_json` — `branch_budget` extends it when the fork is already
+    at or past it, and an `inject_message` mutation bumps it by one — and while the loop
+    lived in one process that number was a local variable nobody had to store. Under
+    Step Functions each turn is a fresh Lambda reading the run row, so a resume whose
+    checkpoint sits at its configured budget would read `turn >= max_messages` and
+    finalise immediately, generating nothing. The run would go straight from `resuming`
+    to `complete` and look like it had simply had nothing left to say.
+    """
+    explicit = run.get("budget")
+    if explicit:
+        return int(explicit)
+    configured = int(_config(run).get("max_messages") or 0)
+    if configured > 0:
+        return configured
+    from matrix_studio.settings import get_settings
+
+    return get_settings().max_messages
+
+
 async def load_state(db: Database, run: Dict[str, Any], turn: int):
     """Engine state as of ``turn``: ``(topic, agents, conversation, threads, ledger)``.
 
@@ -147,7 +171,12 @@ def turn_loop_arn() -> str:
 
 
 async def start_execution(
-    run_id: str, owner_sub: str, *, max_messages: int
+    run_id: str,
+    owner_sub: str,
+    *,
+    max_messages: int,
+    mode: str = "fresh",
+    extra: Optional[Dict[str, Any]] = None,
 ) -> Optional[str]:
     """Start the turn loop for a run. Returns the execution ARN, or None if disabled.
 
@@ -168,16 +197,46 @@ async def start_execution(
     from botocore.exceptions import ClientError
 
     client = boto3.client("stepfunctions", region_name=os.environ.get("AWS_REGION"))
-    payload = json.dumps({
+    body: Dict[str, Any] = {
         "run_id": run_id,
         "owner_sub": owner_sub,
         "turn": 0,
         "max_messages": int(max_messages),
         "total_cost_usd": 0.0,
-    })
+        # Which prepare the machine's first state should run. `fresh` is explicit
+        # rather than implied by absence, so a payload read in a log says what it did.
+        "mode": mode,
+    }
+    # Branch and resume need a few identifiers that a fresh run does not. Kept in a
+    # nested object so the flat keys `next_input` carries between states cannot
+    # collide with them, and so this stays a handful of bytes rather than growing —
+    # nothing engine-sized may enter an execution payload (256 KB state I/O).
+    if extra:
+        body["extra"] = dict(extra)
+    payload = json.dumps(body)
     # Step Functions allows [0-9A-Za-z-_] and 80 characters. A run id is a uuid4 hex
-    # with hyphens (36), so `run-` plus it fits with room to spare.
-    name = f"run-{run_id}"[:80]
+    # with hyphens (36), so a short prefix plus it fits with room to spare.
+    #
+    # A RESUME must not reuse the run-derived name. Execution names are unique for 90
+    # days, so a resume of a run that already executed would be rejected as
+    # `ExecutionAlreadyExists` — which this function treats as success — and the resume
+    # would silently generate nothing. The run would sit at `running` for ever with no
+    # execution behind it, which is the exact failure the machine's Catch state exists
+    # to prevent, arrived at from outside the machine.
+    #
+    # Losing the run-derived name is safe for a resume specifically, because the guard
+    # against concurrent executions is elsewhere and durable: `resume_run` refuses a run
+    # whose status is not resumable, and it flips the status to `running` synchronously
+    # before starting. A second resume request therefore sees `running` and is refused
+    # by the row, not by the name.
+    #
+    # Fresh runs and branches keep the run-derived name, where it is doing real work: a
+    # retried `POST /api/runs` must not start a rival execution that would append to the
+    # same event log.
+    if mode == "resume":
+        name = f"resume-{run_id}-{int(time.time())}"[:80]
+    else:
+        name = f"run-{run_id}"[:80]
 
     def _start() -> str:
         return client.start_execution(
@@ -215,6 +274,201 @@ def _emitter(db: Database, run_id: str, start_seq: int = 0):
         )
 
     return emit, next_seq
+
+
+async def prepare(
+    db: Database, run_id: str, *, mode: str = "fresh", **kwargs: Any
+) -> Dict[str, Any]:
+    """Dispatch the machine's first state by what kind of run this is.
+
+    Three shapes, one loop. A fresh run needs turn 0's work; a branch needs the
+    parent's log copied and a fork snapshot; a resume needs its dangling tail trimmed.
+    After any of them the state is "a checkpoint exists at turn N", which is the only
+    thing a slice requires — so `Turn`, `CheckContinue` and `Finalise` are shared
+    verbatim, exactly as §6 predicted ("branch and resume need no new machinery").
+    """
+    if mode == "branch":
+        return await prepare_branch(db, run_id, **kwargs)
+    if mode == "resume":
+        return await prepare_resume(db, run_id, **kwargs)
+    if mode != "fresh":
+        raise ValueError(f"unknown prepare mode {mode!r}")
+    return await prepare_run(db, run_id)
+
+
+async def prepare_branch(
+    db: Database,
+    run_id: str,
+    *,
+    parent_run_id: str,
+    from_turn: int,
+    mutation: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """A branch's non-generating half: copy the parent's log, seed the fork, mutate.
+
+    This is `branching.execute_branch` up to — but not including — its
+    `resume_simulation` call. Splitting there is what lets a branch use the same turn
+    loop as a fresh run: everything before it establishes a checkpoint at `from_turn`,
+    and everything after it is generating turns, which is what a slice does.
+
+    **The mutation has to be applied HERE, once.** `resume_simulation` applies it
+    before its loop, and a slice calls `resume_simulation` per turn — so leaving it to
+    the engine would re-inject the message on every single turn. It is also the reason
+    this returns an effective budget: `inject_message` bumps it by one so the injection
+    does not consume a generation slot, and that number has to survive into a different
+    Lambda.
+
+    Idempotent, guarded on the branch already holding events. The event copy does not
+    actually need the guard — `copy_events_upto` preserves turn and seq, so re-copying
+    overwrites the same sort keys rather than appending. Two other things in here are
+    not so forgiving, and they are the reason it exists:
+
+    - `copy_documents_to_run` **mints a new document id and a new S3 object per copy**,
+      deliberately (see its docstring — sharing them let a delete on one run destroy
+      another's background material). Re-running it therefore doubles the branch's
+      corpus, and the persona would retrieve every passage twice.
+    - The mutation would be applied twice, injecting the same message into the
+      transcript at two turns.
+
+    Discovered by mutation testing: removing the guard left 45 tests green, because the
+    test asserting it counted EVENTS — the one thing here that is naturally idempotent.
+    """
+    from matrix_studio.branching import (
+        _parse_config,
+        _resolve_promote_aside,
+        reconstruct_at_turn,
+    )
+    from matrix_studio.engine.simulator import _apply_branch_mutation
+
+    branch = await db.get_run(run_id)
+    if branch is None:
+        raise ValueError(f"branch run {run_id!r} does not exist")
+    parent = await db.get_run(parent_run_id)
+    if parent is None:
+        raise ValueError(f"parent run {parent_run_id!r} does not exist")
+
+    cfg = _parse_config(branch)
+    effective_max = budget_of(branch)
+
+    already = await db.get_events(run_id)
+    if already:
+        logger.info(
+            "Branch %s already holds %d events; not copying the parent again",
+            run_id, len(already),
+        )
+        return _payload(run_id, "running", branch, from_turn,
+                        max_messages=effective_max)
+
+    await db.update_run_status(run_id, "running")
+    topic, agents, conversation, threads, ledger = await reconstruct_at_turn(
+        db, parent, from_turn
+    )
+    copied = await db.copy_events_upto(parent_run_id, run_id, from_turn)
+    # A fork at the parent's LAST turn copies the parent's terminal event with it, and
+    # the branch is about to generate more turns — so the branch's log would claim to
+    # be finished before it started.
+    cleared = await db.clear_terminal_events(run_id)
+    logger.info(
+        "Branch %s: copied %d parent events up to turn %d (cleared %d inherited "
+        "terminal marker(s))", run_id, copied, from_turn, cleared,
+    )
+    await db.save_snapshot(SimSnapshot(
+        run_id=run_id, turn=from_turn, topic=topic, agents=agents,
+        conversation=conversation, pending_threads=threads,
+        firsthand_citations=ledger, status="running",
+        created_at=int(time.time()), total_turns=from_turn,
+    ))
+
+    retrieval = RetrievalConfig.from_config(cfg)
+    if retrieval.enabled:
+        n = await db.copy_documents_to_run(parent_run_id, run_id)
+        if n:
+            logger.info("Branch %s: copied %d parent documents", run_id, n)
+
+    effective_from = from_turn
+    if mutation:
+        resolved = mutation
+        if mutation.get("kind") == "promote_aside":
+            resolved = await _resolve_promote_aside(db, mutation, run_id)
+        from matrix_studio.settings import get_settings
+
+        emit, next_seq = _emitter(db, run_id, start_seq=await db.max_seq(run_id) + 1)
+        effective_from, effective_max = await _apply_branch_mutation(
+            mutation=resolved,
+            run_id=run_id,
+            from_turn=from_turn,
+            topic=topic,
+            agents=agents,
+            conversation=conversation,
+            max_messages=effective_max,
+            db=db,
+            emit=emit,
+            next_seq=next_seq,
+            pending_threads=threads,
+            settings=get_settings(),
+            model=cfg.get("model") or None,
+        )
+
+    # Persist the effective budget, because the next turn is a different Lambda and
+    # will read the run row rather than inherit a local variable.
+    await db.set_run_budget(run_id, effective_max)
+    fresh = await db.get_run(run_id) or branch
+    return _payload(run_id, "running", fresh, effective_from,
+                    max_messages=effective_max)
+
+
+async def prepare_resume(db: Database, run_id: str) -> Dict[str, Any]:
+    """A resume's non-generating half: trim the dangling tail, seed a checkpoint.
+
+    This is `branching.resume_run_in_place` up to its `resume_simulation` call, and it
+    splits at the same seam a branch does — after it, a checkpoint exists at the resume
+    turn and the shared loop takes over.
+
+    Note the budget. `branch_budget` EXTENDS the run's configured budget when the
+    checkpoint already sits at or past it, so a resume always moves forward. That
+    number lived in a local variable; persisted here because the slice that generates
+    the next turn reads the run row instead.
+    """
+    from matrix_studio.branching import branch_budget, reconstruct_at_turn
+
+    run = await db.get_run(run_id)
+    if run is None:
+        raise ValueError(f"run {run_id!r} does not exist")
+
+    resume_turn = await db.last_checkpoint_turn(run_id)
+    if resume_turn is None:
+        resume_turn = 0
+    removed = await db.truncate_after_turn(run_id, resume_turn)
+    # And the terminal event AT the checkpoint, which the trim above cannot reach — a
+    # resumed run is not finished, and a log saying it is stops the viewer polling at
+    # the old final turn. Reachable via stop-then-resume, not just contrived cases.
+    cleared = await db.clear_terminal_events(run_id)
+    logger.info(
+        "Resume %s: trimmed %d dangling event(s) past checkpoint turn %d and cleared "
+        "%d terminal marker(s)", run_id, removed, resume_turn, cleared,
+    )
+
+    topic, agents, conversation, threads, ledger = await reconstruct_at_turn(
+        db, run, resume_turn
+    )
+    if await db.get_snapshot(run_id, turn=resume_turn) is None:
+        await db.save_snapshot(SimSnapshot(
+            run_id=run_id, turn=resume_turn, topic=topic, agents=agents,
+            conversation=conversation, pending_threads=threads,
+            firsthand_citations=ledger, status="running",
+            created_at=int(time.time()), total_turns=resume_turn,
+        ))
+
+    effective_max = branch_budget(run, resume_turn)
+    await db.set_run_budget(run_id, effective_max)
+    # Clear the stop flag. A run stopped once would otherwise stop one turn into every
+    # later resume, which reads as the resume silently not working — the same reasoning
+    # `RunManager._finish` carries for the in-memory version.
+    await db.set_stop_requested(run_id, False)
+    await db.update_run_status(run_id, "running")
+    fresh = await db.get_run(run_id) or run
+    return _payload(run_id, "running", fresh, resume_turn,
+                    max_messages=effective_max)
 
 
 async def prepare_run(db: Database, run_id: str) -> Dict[str, Any]:
@@ -295,10 +549,7 @@ async def execute_slice(
         return _payload(run_id, status, run, turn or 0)
 
     cfg = _config(run)
-    max_messages = int(cfg.get("max_messages") or 0)
-    if max_messages <= 0:
-        from matrix_studio.settings import get_settings
-        max_messages = get_settings().max_messages
+    max_messages = budget_of(run)
 
     # Where to resume from. The caller's `turn` is a hint the machine carries forward;
     # the checkpoint is the truth, because it is what was actually persisted. Trusting

@@ -304,6 +304,39 @@ class RunManager:
         max_messages = meta["max_messages"]
         branch_model = meta.get("model")
 
+        # Phase 5: hand the branch to the state machine. `create_branch_run` above has
+        # already written the row synchronously — which is why a branch never showed the
+        # Phase 4 symptom that `POST /api/runs` did — but everything after it ran in a
+        # background task, so on the deployed stack a branch was created, named, and
+        # then never generated a turn.
+        #
+        # The copy-and-seed half becomes the machine's `branch` prepare mode; the
+        # generating half is the shared loop. §6 said branch and resume "need no new
+        # machinery" because both already reconstruct-and-generate-forward, and that
+        # holds: only the first state differs.
+        if orchestration.turn_loop_arn():
+            execution = await orchestration.start_execution(
+                branch_run_id,
+                parent_run.get("owner_sub") or LOCAL_USER_SUB,
+                max_messages=max_messages,
+                mode="branch",
+                extra={
+                    "parent_run_id": parent_run["id"],
+                    "from_turn": from_turn,
+                    # The mutation travels in the payload rather than being applied
+                    # here, because applying it needs the reconstructed fork state —
+                    # and reconstructing that in the request is the O(N) read this
+                    # phase moved out of the request path.
+                    **({"mutation": mutation} if mutation else {}),
+                },
+            )
+            if execution is None:
+                logger.warning(
+                    "Branch %s was created but no execution started; it will sit at "
+                    "'running' with no turns until one is.", branch_run_id,
+                )
+            return meta
+
         broker = RunBroker()
         self._brokers[branch_run_id] = broker
 
@@ -426,6 +459,34 @@ class RunManager:
         # disagree with it.
         owned = self.db.for_owner(run.get("owner_sub") or LOCAL_USER_SUB)
         await owned.update_run_status(run_id, "running")
+
+        # Phase 5: the resume runs on the state machine. The trim-and-reconstruct half
+        # is the machine's `resume` prepare mode; generating forward is the shared loop.
+        #
+        # The status flip above stays synchronous and stays HERE, because it is what
+        # makes a duplicate resume fail the live-task guard and what an immediate
+        # re-read of the run has to reflect.
+        if orchestration.turn_loop_arn():
+            # Clear the stop flag before starting. A run stopped once would otherwise
+            # stop one turn into this resume, which reads as the resume not working —
+            # `prepare_resume` clears it too, and doing it here as well means a resume
+            # is honest even if its execution is slow to start.
+            await owned.set_stop_requested(run_id, False)
+            execution = await orchestration.start_execution(
+                run_id,
+                run.get("owner_sub") or LOCAL_USER_SUB,
+                # A placeholder: `prepare_resume` computes the real budget with
+                # `branch_budget`, which may EXTEND it so the resume always moves
+                # forward, and persists it on the run row for the slices to read.
+                max_messages=0,
+                mode="resume",
+            )
+            if execution is None:
+                logger.warning(
+                    "Resume of %s started no execution; the run will sit at 'running' "
+                    "with no turns until one is.", run_id,
+                )
+            return {"run_id": run_id, "name": run.get("name"), "status": "running"}
 
         broker = RunBroker()
         self._brokers[run_id] = broker

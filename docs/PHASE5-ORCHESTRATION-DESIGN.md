@@ -184,6 +184,50 @@ only thing that gives sub-second latency and it still works there.
 
 ---
 
+## 9. Branch and resume are the same machine with a different first state
+
+§6 says branch and resume "need no new machinery" because both already
+reconstruct-and-generate-forward. That is right, and the seam is precise: both
+`execute_branch` and `resume_run_in_place` split cleanly at their `resume_simulation`
+call. Everything before it establishes a checkpoint; everything after it generates
+turns, which is what a slice does.
+
+**Decision:** the execution payload carries a `mode` (`fresh` | `branch` | `resume`),
+and the machine's first state dispatches on it. `Turn`, `CheckContinue` and `Finalise`
+are shared verbatim.
+
+Three things this exposed that were harmless in one process and are not across Lambdas:
+
+1. **The effective budget was never stored anywhere.** `branch_budget` extends a run's
+   budget when the fork or checkpoint already sits at it, and an `inject_message`
+   mutation bumps it by one. Both were local variables. A slice reads the run row, so
+   without persisting it a resume reads `turn >= max_messages`, finalises immediately,
+   and reports `complete` having generated nothing. Now a `budget` attribute, preferred
+   over `config_json` by `budget_of`.
+2. **The mutation must be applied in prepare, exactly once.** `resume_simulation`
+   applies it before its loop; a slice calls `resume_simulation` per turn. Leaving it
+   to the engine would re-inject the same message on every turn of the branch.
+3. **A resume cannot reuse the run-derived execution name.** Names are unique for 90
+   days and `ExecutionAlreadyExists` is deliberately treated as success, so a resume of
+   a run that already executed would start nothing and say it was fine. Varying it is
+   safe for a resume because the concurrency guard there is the run's status, which is
+   checked and flipped synchronously before the call.
+
+### And one real bug the deployment found
+
+Resuming a run whose log already ended produced **two `sim.completed` events**.
+`truncate_after_turn` removes events *past* the checkpoint, and a terminal event is
+emitted *at* the last turn — so it survived the trim by exactly one turn.
+
+Nothing raised, because `reconstruct_at_turn` ignores `sim.*` and state replay was
+unaffected. The consequence is in the reader: the viewer marks a run finished on the
+first terminal event it sees and stops polling, so the resumed turns never appear.
+Reachable without contrivance — stop a run, then resume it.
+
+Fixed with `clear_terminal_events`, called by both the resume and the branch paths
+(a fork at the parent's last turn copies the parent's marker too) and in both the
+orchestrated and local implementations, so the two cannot diverge.
+
 ## Build order
 
 1. `firsthand_citations` on the snapshot and in `reconstruct_at_turn` — independent, and

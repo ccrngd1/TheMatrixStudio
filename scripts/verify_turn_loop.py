@@ -102,14 +102,23 @@ async def make_run(db, run_id: str, *, turns: int, name: str) -> None:
     )
 
 
-def start(run_id: str, *, turns: int) -> str:
+def start(
+    run_id: str,
+    *,
+    turns: int,
+    mode: str = "fresh",
+    extra: Optional[Dict[str, Any]] = None,
+) -> str:
+    body: Dict[str, Any] = {
+        "run_id": run_id, "owner_sub": OWNER, "turn": 0,
+        "max_messages": turns, "total_cost_usd": 0.0, "mode": mode,
+    }
+    if extra:
+        body["extra"] = extra
     return sfn().start_execution(
         stateMachineArn=machine_arn(),
-        name=f"verify-{run_id}"[:80],
-        input=json.dumps({
-            "run_id": run_id, "owner_sub": OWNER, "turn": 0,
-            "max_messages": turns, "total_cost_usd": 0.0,
-        }),
+        name=f"verify-{mode}-{run_id}-{int(time.time())}"[:80],
+        input=json.dumps(body),
     )["executionArn"]
 
 
@@ -336,11 +345,128 @@ async def verify_cap(db) -> None:
         print("   (restored the worker's cost-cap setting)")
 
 
+async def verify_branch(db) -> None:
+    """A branch forks a parent and generates forward, on the same machine.
+
+    §6 claims branch and resume "need no new machinery" because both already
+    reconstruct-and-generate-forward. This is that claim tested: only the machine's
+    first state differs, and the parent must come out untouched.
+    """
+    print("\n4. A branch forks a parent and generates forward")
+    from matrix_studio import branching
+
+    parent_id = f"verify-parent-{int(time.time())}"
+    await make_run(db, parent_id, turns=4, name=parent_id)
+    out = await watch(db, parent_id, start(parent_id, turns=4), timeout_s=60 * 15)
+    check("the parent ran to completion first", len(out["turns"]) == 4,
+          f"{len(out['turns'])} turns")
+
+    parent = await db.get_run(parent_id)
+    meta = await branching.create_branch_run(db, parent, from_turn=2)
+    branch_id = meta["run_id"]
+    print(f"   branch {meta['name']} ({branch_id[:8]}) forked at turn 2", flush=True)
+
+    arn = start(branch_id, turns=meta["max_messages"], mode="branch",
+                extra={"parent_run_id": parent_id, "from_turn": 2})
+    bout = await watch(db, branch_id, arn, timeout_s=60 * 15)
+
+    check("the branch execution succeeded",
+          bout["execution"]["status"] == "SUCCEEDED", bout["execution"]["status"])
+    branch = await db.get_run(branch_id)
+    check("the branch reads complete", branch["status"] == "complete",
+          str(branch["status"]))
+    check(
+        "the branch holds the parent's turns up to the fork PLUS new ones",
+        len(bout["turns"]) > 2,
+        f"{len(bout['turns'])} turns (fork was at 2)",
+    )
+    bsnap = await db.get_snapshot(branch_id)
+    check(
+        "the branch transcript continues rather than restarting",
+        bsnap is not None and len(bsnap.conversation) == len(bout["turns"]),
+        f"{len(bsnap.conversation) if bsnap else 0} messages",
+    )
+    # The immutability invariant: forking must not touch the parent.
+    pafter = await db.get_run(parent_id)
+    pevents = await db.get_events(parent_id)
+    check(
+        "the parent run is untouched",
+        pafter["status"] == "complete"
+        and len([e for e in pevents if e["event_type"] == "agent.response"]) == 4,
+        f"status={pafter['status']}, "
+        f"{len([e for e in pevents if e['event_type'] == 'agent.response'])} turns",
+    )
+    check(
+        "exactly one terminal event on the branch",
+        terminal_events(bout["events"]).count("sim.completed") == 1,
+        str(terminal_events(bout["events"])),
+    )
+
+
+async def verify_resume(db) -> None:
+    """An interrupted run resumes forward in place, with an extended budget.
+
+    The budget matters: `branch_budget` extends it when the checkpoint already sits at
+    the run's limit, and that number used to live in a local variable. Unpersisted, a
+    slice reads `turn >= max_messages` and finalises immediately — the resume reports
+    `complete` having generated nothing.
+    """
+    print("\n5. An interrupted run resumes forward in place")
+    run_id = f"verify-resume-{int(time.time())}"
+    await make_run(db, run_id, turns=3, name=run_id)
+    out = await watch(db, run_id, start(run_id, turns=3), timeout_s=60 * 15)
+    check("the run reached its budget first", len(out["turns"]) == 3,
+          f"{len(out['turns'])} turns")
+
+    # Make it resumable, as a run whose process died would be.
+    await db.update_run_status(run_id, "interrupted")
+    before = len(out["turns"])
+
+    arn = start(run_id, turns=0, mode="resume")
+    rout = await watch(db, run_id, arn, timeout_s=60 * 15)
+
+    check("the resume execution succeeded",
+          rout["execution"]["status"] == "SUCCEEDED", rout["execution"]["status"])
+    check(
+        "the resume generated NEW turns past the old budget",
+        len(rout["turns"]) > before,
+        f"{before} turns before, {len(rout['turns'])} after",
+    )
+    run = await db.get_run(run_id)
+    check("the resumed run reads complete", run["status"] == "complete",
+          str(run["status"]))
+    check(
+        "the effective budget was persisted on the run row",
+        bool(run.get("budget")) and int(run["budget"]) > 3,
+        f"budget={run.get('budget')}",
+    )
+    check(
+        "turn numbers stayed contiguous across the resume",
+        rout["turns"] == list(range(1, len(rout["turns"]) + 1)),
+        f"{rout['turns'][:3]} … {rout['turns'][-3:]}",
+    )
+    seqs = [e["seq"] for e in rout["events"]]
+    check(
+        "event seqs stayed increasing across the resume boundary",
+        seqs == sorted(seqs) and len(seqs) == len(set(seqs)),
+        f"{len(seqs)} events",
+    )
+    check(
+        "the interrupted marker was trimmed, leaving one terminal event",
+        terminal_events(rout["events"]) == ["sim.completed"],
+        str(terminal_events(rout["events"])),
+    )
+
+
 async def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--turns", type=int, default=40,
                     help="Turns for the completion check (the criterion says 40+)")
-    ap.add_argument("--only", choices=["completion", "stop", "cap"], default=None)
+    ap.add_argument(
+        "--only",
+        choices=["completion", "stop", "cap", "branch", "resume"],
+        default=None,
+    )
     args = ap.parse_args()
 
     os.environ.setdefault("AWS_REGION", "us-east-1")
@@ -361,6 +487,10 @@ async def main() -> int:
             await verify_stop(db)
         if args.only in (None, "cap"):
             await verify_cap(db)
+        if args.only in (None, "branch"):
+            await verify_branch(db)
+        if args.only in (None, "resume"):
+            await verify_resume(db)
     finally:
         await store.close()
 

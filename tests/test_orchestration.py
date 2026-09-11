@@ -640,8 +640,54 @@ async def test_start_execution_names_the_execution_after_the_run(db, monkeypatch
     payload = json.loads(seen["input"])
     assert payload == {
         "run_id": "abc-123", "owner_sub": "user-1", "turn": 0,
-        "max_messages": 5, "total_cost_usd": 0.0,
+        "max_messages": 5, "total_cost_usd": 0.0, "mode": "fresh",
     }
+
+
+async def test_a_resume_does_not_reuse_the_run_derived_execution_name(db, monkeypatch):
+    """Execution names are unique for 90 days, so reuse would silently do nothing.
+
+    `ExecutionAlreadyExists` is treated as success — it means the run is already
+    executing — so a resume named after the run would return None, generate no turns,
+    and leave the run at `running` for ever with no execution behind it.
+
+    Safe for a resume specifically because the concurrency guard is the run's own
+    status, which `resume_run` checks and flips synchronously before starting.
+    """
+    monkeypatch.setenv("TURN_LOOP_ARN", "arn:aws:states:us-east-1:1:stateMachine:sm")
+    names = []
+
+    class FakeSfn:
+        def start_execution(self, **kwargs):
+            names.append(kwargs["name"])
+            return {"executionArn": "arn:exec"}
+
+    monkeypatch.setattr("boto3.client", lambda *a, **k: FakeSfn())
+    await orchestration.start_execution("abc-123", "u", max_messages=0, mode="resume")
+    await orchestration.start_execution("abc-123", "u", max_messages=0, mode="resume")
+    assert all(n != "run-abc-123" for n in names), names
+    assert all(n.startswith("resume-abc-123-") for n in names), names
+
+
+async def test_a_branch_keeps_the_run_derived_execution_name(db, monkeypatch):
+    """A branch has a fresh run id, so the name is unique AND still guards a retry."""
+    monkeypatch.setenv("TURN_LOOP_ARN", "arn:aws:states:us-east-1:1:stateMachine:sm")
+    seen = {}
+
+    class FakeSfn:
+        def start_execution(self, **kwargs):
+            seen.update(kwargs)
+            return {"executionArn": "arn:exec"}
+
+    monkeypatch.setattr("boto3.client", lambda *a, **k: FakeSfn())
+    await orchestration.start_execution(
+        "branch-9", "u", max_messages=8, mode="branch",
+        extra={"parent_run_id": "p1", "from_turn": 3},
+    )
+    assert seen["name"] == "run-branch-9"
+    payload = json.loads(seen["input"])
+    assert payload["mode"] == "branch"
+    assert payload["extra"] == {"parent_run_id": "p1", "from_turn": 3}
 
 
 async def test_a_duplicate_execution_is_not_an_error(db, monkeypatch):
@@ -773,3 +819,349 @@ async def test_stop_now_writes_the_terminal_event_and_snapshot(db):
     assert types.count("sim.stopped") == 1
     seqs = [e["seq"] for e in await db.get_events("sl-stopnow")]
     assert seqs == sorted(seqs) and len(seqs) == len(set(seqs)), seqs
+
+
+# --------------------------------------------------------------------------- #
+# Branch and resume on the shared loop. §6 says they "need no new machinery"
+# because both already reconstruct-and-generate-forward; only the first state
+# differs. These check that claim rather than trusting it.
+# --------------------------------------------------------------------------- #
+
+
+async def test_a_branch_prepares_and_then_runs_on_the_shared_loop(db):
+    from matrix_studio import branching
+
+    await _make_run(db, "br-parent", max_messages=3)
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake_llm):
+        await orchestration.prepare_run(db, "br-parent")
+        for t in range(3):
+            await orchestration.execute_slice(db, "br-parent", turn=t, turn_budget=1)
+
+        parent = await db.get_run("br-parent")
+        meta = await branching.create_branch_run(db, parent, from_turn=2)
+        branch_id = meta["run_id"]
+
+        prepared = await orchestration.prepare(
+            db, branch_id, mode="branch",
+            parent_run_id="br-parent", from_turn=2,
+        )
+        assert prepared["turn"] == 2
+        # The parent's log was copied, so the branch replays identically to the fork.
+        copied = [
+            e for e in await db.get_events(branch_id)
+            if e["event_type"] == "agent.response"
+        ]
+        assert len(copied) == 2, f"expected the parent's first 2 turns, got {len(copied)}"
+        fork = await db.get_snapshot(branch_id, 2)
+        assert fork is not None and len(fork.conversation) == 2
+
+        payload = prepared
+        guard = 0
+        while not payload["done"] and guard < 20:
+            guard += 1
+            payload = await orchestration.execute_slice(
+                db, branch_id, turn=payload["turn"], turn_budget=1
+            )
+
+    assert payload["status"] == "complete", payload
+    branch = await db.get_run(branch_id)
+    assert branch["status"] == "complete"
+    # The branch generated forward from the fork rather than restarting.
+    snap = await db.get_snapshot(branch_id)
+    assert len(snap.conversation) == payload["turn"] >= 3
+    # And the PARENT is untouched — the immutability invariant.
+    assert (await db.get_run("br-parent"))["status"] == "complete"
+    assert len(
+        [e for e in await db.get_events("br-parent") if e["event_type"] == "agent.response"]
+    ) == 3
+
+
+async def test_branch_prepare_is_idempotent_where_it_actually_matters(db):
+    """A Retry on the prepare state must not double the branch's DOCUMENTS or mutation.
+
+    Counting events proves nothing: `copy_events_upto` preserves turn and seq, so
+    re-copying overwrites the same sort keys. The first version of this test counted
+    events and stayed green with the guard removed.
+
+    Documents are the sharp edge — `copy_documents_to_run` mints a NEW id and a new S3
+    object per copy, on purpose, so a second prepare gives the branch two of everything
+    and its personas retrieve every passage twice.
+    """
+    from matrix_studio import branching
+
+    await db.create_run(
+        run_id="br-idem", topic="t", cast=CAST,
+        config={"max_messages": 2, "generate_avatars": False,
+                "retrieval": {"enabled": True, "k": 2, "max_chars": 500, "mode": "fts"}},
+    )
+    await db.add_document(
+        run_id="br-idem", title="brief.md",
+        chunks=["egress inspection is the evidence the auditor wants"],
+        text="egress inspection is the evidence the auditor wants",
+    )
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake_llm):
+        await orchestration.prepare_run(db, "br-idem")
+        for t in range(2):
+            await orchestration.execute_slice(db, "br-idem", turn=t, turn_budget=1)
+        parent = await db.get_run("br-idem")
+        meta = await branching.create_branch_run(db, parent, from_turn=1)
+        bid = meta["run_id"]
+        await orchestration.prepare(db, bid, mode="branch",
+                                   parent_run_id="br-idem", from_turn=1)
+        docs_after_first = len(await db.list_documents(bid))
+        events_after_first = len(await db.get_events(bid))
+        await orchestration.prepare(db, bid, mode="branch",
+                                    parent_run_id="br-idem", from_turn=1)
+
+    assert docs_after_first == 1, f"the branch should hold one document, got {docs_after_first}"
+    assert len(await db.list_documents(bid)) == docs_after_first, (
+        "the second prepare copied the parent's documents again, so the branch now "
+        "holds duplicates with different ids"
+    )
+    assert len(await db.get_events(bid)) == events_after_first
+
+
+async def test_a_resume_prepares_with_an_extended_budget(db):
+    """`branch_budget` extends the budget when the checkpoint is at or past it.
+
+    That number used to be a local variable. Under the machine the next turn is a
+    different Lambda reading the run row, so an unpersisted budget means the slice sees
+    `turn >= max_messages`, finalises immediately, and the resume generates nothing
+    while reporting `complete`.
+    """
+    await _make_run(db, "rs-budget", max_messages=2)
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake_llm):
+        await orchestration.prepare_run(db, "rs-budget")
+        for t in range(2):
+            await orchestration.execute_slice(db, "rs-budget", turn=t, turn_budget=1)
+    # The run is at its budget. Mark it interrupted, as a died-mid-run would be.
+    await db.update_run_status("rs-budget", "interrupted")
+
+    prepared = await orchestration.prepare_resume(db, "rs-budget")
+    assert prepared["turn"] == 2
+    assert prepared["max_messages"] > 2, (
+        f"the resume budget was not extended: {prepared['max_messages']}"
+    )
+    run = await db.get_run("rs-budget")
+    assert int(run["budget"]) == prepared["max_messages"], "the budget was not persisted"
+    assert run["status"] == "running"
+
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake_llm):
+        out = await orchestration.execute_slice(db, "rs-budget", turn=2, turn_budget=1)
+    assert out["turn"] == 3, "the resume generated no new turn"
+    assert out["status"] == "running"
+
+
+async def test_budget_of_prefers_the_row_over_the_config(db):
+    assert orchestration.budget_of(
+        {"budget": 12, "config_json": json.dumps({"max_messages": 4})}
+    ) == 12
+    assert orchestration.budget_of(
+        {"config_json": json.dumps({"max_messages": 4})}
+    ) == 4
+    # Neither present falls back to the settings default rather than to zero, which
+    # would finalise every run before its first turn.
+    assert orchestration.budget_of({}) > 0
+
+
+async def test_a_resume_clears_a_previous_stop(db):
+    """A run stopped once would otherwise stop one turn into every later resume."""
+    await _make_run(db, "rs-stop", max_messages=6)
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake_llm):
+        await orchestration.prepare_run(db, "rs-stop")
+        await db.set_stop_requested("rs-stop")
+        out = await orchestration.execute_slice(db, "rs-stop", turn=0, turn_budget=1)
+    assert out["status"] == "stopped"
+    assert (await db.get_run("rs-stop"))["stop_requested"] is True
+
+    await orchestration.prepare_resume(db, "rs-stop")
+    assert (await db.get_run("rs-stop"))["stop_requested"] is False
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake_llm):
+        out = await orchestration.execute_slice(db, "rs-stop", turn=1, turn_budget=1)
+    assert out["status"] == "running", "the resume stopped again on its first turn"
+
+
+async def test_prepare_rejects_an_unknown_mode(db):
+    """Loud, because a typo'd mode would otherwise silently run the fresh path and
+    re-emit sim.started onto a branch."""
+    await _make_run(db, "pm-bad", max_messages=1)
+    with pytest.raises(ValueError, match="unknown prepare mode"):
+        await orchestration.prepare(db, "pm-bad", mode="branchh")
+
+
+async def test_the_branch_route_starts_an_execution_when_orchestrated(db, monkeypatch):
+    """The branch's row was always written synchronously, so it never showed the
+    Phase 4 symptom — it was created, named, and then never generated a turn."""
+    from matrix_studio.api.manager import RunManager
+    from tests.support import TEST_OWNER
+
+    await _make_run(db, "br-route", max_messages=3)
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake_llm):
+        await orchestration.prepare_run(db, "br-route")
+        await orchestration.execute_slice(db, "br-route", turn=0, turn_budget=1)
+
+    monkeypatch.setenv("TURN_LOOP_ARN", "arn:aws:states:us-east-1:1:stateMachine:sm")
+    started = {}
+
+    async def fake_start(run_id, owner_sub, *, max_messages, mode="fresh", extra=None):
+        started.update(run_id=run_id, mode=mode, extra=extra or {})
+        return "arn:exec"
+
+    monkeypatch.setattr(orchestration, "start_execution", fake_start)
+    manager = RunManager(db)
+    parent = await db.get_run("br-route")
+    parent["owner_sub"] = TEST_OWNER
+    with patch("matrix_studio.naming.generate_run_name", return_value={
+        "name": "forked-path", "description": "d", "slug": "forked-path", "source": "llm",
+    }):
+        meta = await manager.create_branch(parent, from_turn=1)
+
+    assert started["mode"] == "branch"
+    assert started["run_id"] == meta["run_id"]
+    assert started["extra"]["parent_run_id"] == "br-route"
+    assert started["extra"]["from_turn"] == 1
+    # No background task was created — that path is the local one.
+    assert meta["run_id"] not in manager._tasks
+
+
+async def test_the_resume_route_starts_an_execution_when_orchestrated(db, monkeypatch):
+    from matrix_studio.api.manager import RunManager
+
+    await _make_run(db, "rs-route", max_messages=4, status="interrupted")
+    monkeypatch.setenv("TURN_LOOP_ARN", "arn:aws:states:us-east-1:1:stateMachine:sm")
+    started = {}
+
+    async def fake_start(run_id, owner_sub, *, max_messages, mode="fresh", extra=None):
+        started.update(run_id=run_id, mode=mode)
+        return "arn:exec"
+
+    monkeypatch.setattr(orchestration, "start_execution", fake_start)
+    manager = RunManager(db)
+    out = await manager.resume_run(await db.get_run("rs-route"))
+    assert out["status"] == "running"
+    assert started == {"run_id": "rs-route", "mode": "resume"}
+    # The status flip stays synchronous: a duplicate resume must be refused by the row.
+    assert (await db.get_run("rs-route"))["status"] == "running"
+    assert "rs-route" not in manager._tasks
+
+
+# --------------------------------------------------------------------------- #
+# A resumed or forked run must not carry a log that says it is finished.
+#
+# Found on the deployed stack, not here: resuming a run whose log already ended
+# produced TWO `sim.completed` events. `truncate_after_turn` removes events PAST
+# the checkpoint, and a terminal event sits AT the last turn, so it survived by
+# one. Nothing raised, because `reconstruct_at_turn` ignores `sim.*` — but the
+# viewer marks a run done on the first terminal event and stops polling, so the
+# resumed turns never appear.
+# --------------------------------------------------------------------------- #
+
+
+async def test_a_resumed_run_has_exactly_one_terminal_event(db):
+    """Reachable through the UI: stop a run, then resume it."""
+    await _make_run(db, "rs-term", max_messages=2)
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake_llm):
+        await orchestration.prepare_run(db, "rs-term")
+        for t in range(2):
+            await orchestration.execute_slice(db, "rs-term", turn=t, turn_budget=1)
+    assert (await db.get_run("rs-term"))["status"] == "complete"
+    assert _terminals(await db.get_events("rs-term")) == ["sim.completed"]
+
+    await db.update_run_status("rs-term", "interrupted")
+    prepared = await orchestration.prepare_resume(db, "rs-term")
+    assert _terminals(await db.get_events("rs-term")) == [], (
+        "the old terminal event survived the resume"
+    )
+
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake_llm):
+        payload = prepared
+        guard = 0
+        while not payload["done"] and guard < 20:
+            guard += 1
+            payload = await orchestration.execute_slice(
+                db, "rs-term", turn=payload["turn"], turn_budget=1
+            )
+    assert _terminals(await db.get_events("rs-term")) == ["sim.completed"], (
+        "the resumed run's log claims to have finished twice"
+    )
+
+
+async def test_a_stopped_then_resumed_run_has_one_terminal_event(db):
+    """The path a user actually takes, rather than a contrived interrupt."""
+    await _make_run(db, "rs-sr", max_messages=6)
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake_llm):
+        await orchestration.prepare_run(db, "rs-sr")
+        await db.set_stop_requested("rs-sr")
+        out = await orchestration.execute_slice(db, "rs-sr", turn=0, turn_budget=1)
+    assert out["status"] == "stopped"
+    assert _terminals(await db.get_events("rs-sr")) == ["sim.stopped"]
+
+    prepared = await orchestration.prepare_resume(db, "rs-sr")
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake_llm):
+        payload = prepared
+        guard = 0
+        while not payload["done"] and guard < 20:
+            guard += 1
+            payload = await orchestration.execute_slice(
+                db, "rs-sr", turn=payload["turn"], turn_budget=1
+            )
+    assert _terminals(await db.get_events("rs-sr")) == ["sim.completed"], (
+        "a stopped-then-resumed run kept its sim.stopped alongside the new completion"
+    )
+
+
+async def test_a_branch_forked_at_the_parents_last_turn_drops_the_inherited_marker(db):
+    """`copy_events_upto(last_turn)` brings the parent's terminal event with it."""
+    from matrix_studio import branching
+
+    await _make_run(db, "br-term", max_messages=2)
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake_llm):
+        await orchestration.prepare_run(db, "br-term")
+        for t in range(2):
+            await orchestration.execute_slice(db, "br-term", turn=t, turn_budget=1)
+        parent = await db.get_run("br-term")
+        # Fork at the parent's LAST turn, which is where the marker gets copied.
+        meta = await branching.create_branch_run(db, parent, from_turn=2)
+        bid = meta["run_id"]
+        prepared = await orchestration.prepare(
+            db, bid, mode="branch", parent_run_id="br-term", from_turn=2
+        )
+        assert _terminals(await db.get_events(bid)) == [], (
+            "the branch inherited the parent's completion marker"
+        )
+        payload = prepared
+        guard = 0
+        while not payload["done"] and guard < 20:
+            guard += 1
+            payload = await orchestration.execute_slice(
+                db, bid, turn=payload["turn"], turn_budget=1
+            )
+    assert _terminals(await db.get_events(bid)) == ["sim.completed"]
+    # The parent keeps its own marker — clearing is per-run, not shared.
+    assert _terminals(await db.get_events("br-term")) == ["sim.completed"]
+
+
+async def test_clear_terminal_events_leaves_everything_else_alone(db):
+    """It must not take the conversation with it."""
+    await _make_run(db, "ct-safe", max_messages=2)
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake_llm):
+        await orchestration.prepare_run(db, "ct-safe")
+        for t in range(2):
+            await orchestration.execute_slice(db, "ct-safe", turn=t, turn_budget=1)
+    before = await db.get_events("ct-safe")
+    n = await db.clear_terminal_events("ct-safe")
+    after = await db.get_events("ct-safe")
+    assert n == 1
+    assert len(after) == len(before) - 1
+    assert [e["event_type"] for e in after if e["event_type"] == "agent.response"] == \
+        [e["event_type"] for e in before if e["event_type"] == "agent.response"]
+    assert any(e["event_type"] == "sim.started" for e in after), (
+        "sim.started is not terminal and must survive"
+    )
+
+
+def _terminals(events):
+    return [
+        e["event_type"] for e in events
+        if e["event_type"].startswith("sim.") and e["event_type"] != "sim.started"
+    ]

@@ -560,12 +560,29 @@ Deferred, deliberately, with reasons:
 - **WebSocket fan-out stays v2.** The viewer polls `events?after_seq=` every 3 s
   against a measured 5–13 s turn. The `connections` table exists for the eventual
   push implementation; §5.1 already marked it v2.
-- **Branch and resume still use the in-process path.** Both already reconstruct and
-  generate forward, so each is "a new execution with a different `from_turn`" — but
-  neither is wired to the machine yet, so on the deployed stack they are subject to
-  exactly the Phase 4 freeze. **This is the next thing to fix**, and it is small:
-  `execute_branch` and `resume_run_in_place` need the same `StartExecution` treatment
-  `POST /api/runs` got.
+- ~~Branch and resume still use the in-process path.~~ ✅ **Done, deployed and
+  verified.** §6's claim that they "need no new machinery" holds: only the machine's
+  *first* state differs, so `prepare` dispatches on a `mode` in the execution payload
+  (`fresh` | `branch` | `resume`) and `Turn`, `CheckContinue` and `Finalise` are shared
+  verbatim. 15 more checks against the real machine — a branch forks and generates
+  forward with the parent untouched, and an interrupted run resumes past its old budget
+  with contiguous turns and increasing seqs.
+
+  Three things that only became bugs once every turn was a fresh Lambda:
+
+  1. **The effective budget was never persisted.** `branch_budget` extends a run's
+     budget when the checkpoint already sits at it, and an `inject_message` mutation
+     bumps it by one — both fine while the loop held the number in a local variable.
+     Under the machine a slice reads the run row, so a resume would read
+     `turn >= max_messages`, finalise at once, and report `complete` having generated
+     nothing. Now a `budget` attribute on the run row.
+  2. **A resume would have reused the run-derived execution name.** Names are unique
+     for 90 days and `ExecutionAlreadyExists` is treated as success, so the resume
+     would have silently started nothing. Safe to vary for a resume specifically,
+     because the guard against concurrent executions there is the run's own status.
+  3. **The mutation had to move into prepare.** `resume_simulation` applies it before
+     its loop, and a slice calls `resume_simulation` per turn — so leaving it to the
+     engine would have re-injected the message on every single turn.
 - **Per-user monthly caps** (§7) remain Phase 7. The per-run cap works.
 
 ---
