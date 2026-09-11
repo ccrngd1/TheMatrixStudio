@@ -248,11 +248,15 @@ async def create_branch_run(
     # Naming never blocks a branch.
     supplied = (name or "").strip().lower() or None
     name_source: Optional[str] = "user" if supplied else None
-    if supplied and await db.name_exists(supplied, owner_sub=owner_sub):
+    # `db` arrives already bound to the parent's owner (the manager binds it), so the
+    # explicit `owner_sub=` these calls used to carry was redundant — and after the
+    # mixed-idiom bug it is worse than redundant: it is the idiom that does NOT attach
+    # credentials, sitting next to one that does.
+    if supplied and await db.name_exists(supplied):
         base = supplied
         for suffix in range(2, 100):
             candidate = f"{base}-{suffix}"
-            if not await db.name_exists(candidate, owner_sub=owner_sub):
+            if not await db.name_exists(candidate):
                 supplied = candidate
                 break
 
@@ -264,8 +268,8 @@ async def create_branch_run(
             topic=topic,
             cast_names=cast_names,
             model=resolved_model,
-            # Uniqueness is per user, so the predicate has to carry the owner.
-            name_exists=partial(db.name_exists, owner_sub=owner_sub),
+            # Uniqueness is per user; the bound store carries the owner.
+            name_exists=db.name_exists,
         )
         codename = naming["name"]
         slug = naming["slug"]

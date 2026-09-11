@@ -631,7 +631,11 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         rejected by — or reveal the existence of — a run under another account.
         """
         result = await generate_run_name(
-            topic=topic, name_exists=partial(db.name_exists, owner_sub=user)
+            # Bound, not `owner_sub=`: the two are not equivalent. An explicit owner
+            # scopes the QUERY; binding also attaches the tenant-scoped credentials
+            # (§3). Mixing the idioms is what left half the routes calling DynamoDB
+            # with the Lambda's own role, which held no storage rights at all.
+            topic=topic, name_exists=db.for_owner(user).name_exists
         )
         return {
             "name": result["name"],
@@ -674,12 +678,12 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
     async def list_runs(
         q: Optional[str] = Query(default=None), user: str = Depends(current_user)
     ) -> Dict[str, Any]:
-        runs = await db.list_runs(q=q, owner_sub=user)
+        runs = await db.for_owner(user).list_runs(q=q)
         return {"runs": [_run_summary(r) for r in runs]}
 
     @app.get("/api/runs/{ref}")
     async def get_run(ref: str, user: str = Depends(current_user)) -> Dict[str, Any]:
-        run = await db.get_run_by_ref(ref, owner_sub=user)
+        run = await db.for_owner(user).get_run_by_ref(ref)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
 
@@ -716,7 +720,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
 
         # Phase 1.5: attach any stored summaries (generated + imported original)
         # so a reloaded run shows its analysis panel immediately.
-        summary_rows = await db.get_summaries(run["id"])
+        summary_rows = await db.for_owner(user).get_summaries(run["id"])
         generated = next((r for r in summary_rows if r["kind"] == "generated"), None)
         imported = next((r for r in summary_rows if r["kind"] == "imported"), None)
 
@@ -731,7 +735,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
                     "name": parent_row.get("name"),
                     "branch_turn": run.get("branch_turn"),
                 }
-        branches = await db.list_branches(run["id"], owner_sub=user)
+        branches = await db.for_owner(user).list_branches(run["id"])
 
         return {
             **summary,
@@ -887,7 +891,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         documents uploaded after the run started and text extracted from
         server-side paths, both of which the original request never contained.
         """
-        run = await db.get_run_by_ref(ref, owner_sub=user)
+        run = await db.for_owner(user).get_run_by_ref(ref)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
 
@@ -898,8 +902,8 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         # Text is rebuilt per document, so a persona's background survives even
         # though the uploaded file itself was never stored.
         docs_by_persona: Dict[Optional[str], List[Dict[str, str]]] = {}
-        for doc in await db.list_documents(run["id"]):
-            text = await db.document_text(doc["id"])
+        for doc in await db.for_owner(user).list_documents(run["id"]):
+            text = await db.for_owner(user).document_text(doc["id"])
             if not text.strip():
                 warnings.append(
                     f'Document "{doc["title"]}" had no recoverable text and was skipped.'
@@ -967,7 +971,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         limit: Optional[int] = Query(default=None),
         user: str = Depends(current_user),
     ) -> Dict[str, Any]:
-        run = await db.get_run_by_ref(ref, owner_sub=user)
+        run = await db.for_owner(user).get_run_by_ref(ref)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
         rows = await db.for_owner(user).get_events_after(run["id"], after_seq=after_seq, limit=limit)
@@ -981,7 +985,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
 
     @app.get("/api/runs/{ref}/snapshots")
     async def list_snapshots(ref: str, user: str = Depends(current_user)) -> Dict[str, Any]:
-        run = await db.get_run_by_ref(ref, owner_sub=user)
+        run = await db.for_owner(user).get_run_by_ref(ref)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
         snapshots = await db.for_owner(user).list_snapshots(run["id"])
@@ -993,7 +997,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         turn: int,
         user: str = Depends(current_user),
     ) -> Dict[str, Any]:
-        run = await db.get_run_by_ref(ref, owner_sub=user)
+        run = await db.for_owner(user).get_run_by_ref(ref)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
         snapshot = await db.for_owner(user).get_snapshot(run["id"], turn=turn)
@@ -1026,7 +1030,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         name: str,
         user: str = Depends(current_user),
     ) -> Dict[str, Any]:
-        run = await db.get_run_by_ref(ref, owner_sub=user)
+        run = await db.for_owner(user).get_run_by_ref(ref)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
         snapshot = await db.for_owner(user).get_snapshot(run["id"], turn=None)  # latest
@@ -1073,7 +1077,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
                 "chunk_count": d["chunk_count"],
                 "cast_wide": d["persona_name"] is None,
             }
-            for d in await db.list_documents(run["id"], persona_name=name)
+            for d in await db.for_owner(user).list_documents(run["id"], persona_name=name)
         ]
         drew_on: List[Dict[str, Any]] = []
         for row in await db.for_owner(user).get_events(run["id"]):
@@ -1132,7 +1136,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         import random
         from matrix_studio.avatar import generate_avatar, store_avatar
 
-        run = await db.get_run_by_ref(ref, owner_sub=user)
+        run = await db.for_owner(user).get_run_by_ref(ref)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
 
@@ -1205,7 +1209,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         Phase 2 should key avatars under the owner's S3 prefix rather than rely on
         that.
         """
-        run = await db.get_run_by_ref(ref, owner_sub=user)
+        run = await db.for_owner(user).get_run_by_ref(ref)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
 
@@ -1245,7 +1249,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
                 detail="Structured output view is disabled "
                 "(set STRUCTURED_OUTPUT=true or pass ?opt_in=true).",
             )
-        run = await db.get_run_by_ref(ref, owner_sub=user)
+        run = await db.for_owner(user).get_run_by_ref(ref)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
         rows = await db.for_owner(user).get_events_after(run["id"], after_seq=-1, limit=None)
@@ -1268,7 +1272,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         flagged ``stale`` ("dangling" in the dossier UI). Distinct from the
         Phase 1.5 aside ``/threads`` routes. Empty ledger -> empty list, never
         a synthesized thread."""
-        run = await db.get_run_by_ref(ref, owner_sub=user)
+        run = await db.for_owner(user).get_run_by_ref(ref)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
         snapshot = await db.for_owner(user).get_snapshot(run["id"], turn=None)  # latest
@@ -1297,7 +1301,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
 
     @app.get("/api/runs/{ref}/turns/{turn}/trace")
     async def turn_trace(ref: str, turn: int, user: str = Depends(current_user)) -> Dict[str, Any]:
-        run = await db.get_run_by_ref(ref, owner_sub=user)
+        run = await db.for_owner(user).get_run_by_ref(ref)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
         rows = await db.for_owner(user).get_events_after(run["id"], after_seq=-1, limit=None)
@@ -1367,7 +1371,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         body: BranchModel,
         user: str = Depends(current_user),
     ) -> Dict[str, Any]:
-        parent = await db.get_run_by_ref(ref, owner_sub=user)
+        parent = await db.for_owner(user).get_run_by_ref(ref)
         if not parent:
             raise HTTPException(status_code=404, detail="Run not found")
         # The fork turn must exist in the parent's history. We validate against
@@ -1399,10 +1403,10 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         of ``ref``, with each node's mutation kind (for edge labels) and status.
         Nodes are ordered oldest-first; edges are inferred from parent_run_id.
         """
-        run = await db.get_run_by_ref(ref, owner_sub=user)
+        run = await db.for_owner(user).get_run_by_ref(ref)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
-        tree = await db.get_run_tree(run["id"], owner_sub=user)
+        tree = await db.for_owner(user).get_run_tree(run["id"])
         # Enrich nodes with the mutation kind from config_json for UI edge labels.
         import json as _json
         enriched: Dict[str, Any] = {}
@@ -1435,7 +1439,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         returns immediately; generation runs in the background and streams over
         the existing WS. A completed run cannot be resumed (branch it instead).
         """
-        run = await db.get_run_by_ref(ref, owner_sub=user)
+        run = await db.for_owner(user).get_run_by_ref(ref)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
         try:
@@ -1459,7 +1463,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         Returns 202 while the request is registered, since the effect lands a turn
         later. Idempotent — a second request on the same live run is not an error.
         """
-        run = await db.get_run_by_ref(ref, owner_sub=user)
+        run = await db.for_owner(user).get_run_by_ref(ref)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
         try:
@@ -1482,7 +1486,9 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         closed over an identity it would be the same one for every caller, which is
         the exact bug it exists to prevent.
         """
-        run = await db.get_run_by_ref(ref, owner_sub=owner_sub)
+        # Bound, not `owner_sub=`: binding is what attaches the tenant-scoped
+        # credentials as well as scoping the query. See `for_owner`.
+        run = await db.for_owner(owner_sub).get_run_by_ref(ref)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
         return run
@@ -1495,10 +1501,24 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         Raises 404 "Thread not found" — not "Run not found" — because the caller
         addressed a thread, and the run's existence is not theirs to learn about.
         """
-        run = await db.get_run_by_ref(thread["run_id"], owner_sub=owner_sub)
+        run = await db.for_owner(owner_sub).get_run_by_ref(thread["run_id"])
         if not run:
             raise HTTPException(status_code=404, detail="Thread not found")
         return run
+
+    def _public_documents(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Strip the storage layer's own keys before a document reaches a client.
+
+        `pk`, `sk` and `s3_key` are how the backend addresses an item; a client that
+        started reading them would be coupled to the key design, and the key design is
+        the thing most likely to change (Phase 6 re-partitions documents by knowledge
+        base). `owner_sub` goes too — the caller already knows who they are, and echoing
+        another tenant's sub back would be a disclosure if it were ever wrong.
+        """
+        internal = {"pk", "sk", "s3_key", "owner_sub", "document_id"}
+        return [
+            {k: v for k, v in row.items() if k not in internal} for row in rows
+        ]
 
     def _shape_summaries(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Split stored summaries into generated + imported for the client."""
@@ -1509,7 +1529,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
     @app.get("/api/runs/{ref}/summary")
     async def get_summary(ref: str, user: str = Depends(current_user)) -> Dict[str, Any]:
         run = await _require_run(ref, user)
-        rows = await db.get_summaries(run["id"])
+        rows = await db.for_owner(user).get_summaries(run["id"])
         # `default_instructions` is the default analyst-role framing so the client
         # can prefill the regenerate editor / offer "reset to default" even before
         # any generation. The guardrails are enforced separately and not editable.
@@ -1549,7 +1569,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             model=body.model,
             instructions=instructions,
         )
-        rows = await db.get_summaries(run["id"])
+        rows = await db.for_owner(user).get_summaries(run["id"])
         return {
             "run_id": run["id"],
             "generated": saved,
@@ -1560,7 +1580,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
     @app.get("/api/runs/{ref}/threads")
     async def list_threads(ref: str, user: str = Depends(current_user)) -> Dict[str, Any]:
         run = await _require_run(ref, user)
-        threads = await db.list_threads(run["id"])
+        threads = await db.for_owner(user).list_threads(run["id"])
         return {"run_id": run["id"], "threads": threads}
 
     @app.post("/api/runs/{ref}/threads", status_code=201)
@@ -1590,12 +1610,12 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         another tenant's run reads as "thread not found", identical to one that
         never existed.
         """
-        thread = await db.get_thread(thread_id)
+        thread = await db.for_owner(user).get_thread(thread_id)
         if not thread:
             raise HTTPException(status_code=404, detail="Thread not found")
         await _require_thread_run(thread, user)
-        messages = await db.get_thread_messages(thread_id)
-        cost = await db.thread_cost(thread_id)
+        messages = await db.for_owner(user).get_thread_messages(thread_id)
+        cost = await db.for_owner(user).thread_cost(thread_id)
         return {**thread, "messages": messages, "total_cost_usd": cost}
 
     @app.post("/api/threads/{thread_id}/messages", status_code=201)
@@ -1603,7 +1623,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         thread_id: str, body: ThreadMessageModel,
         user: str = Depends(current_user),
     ) -> Dict[str, Any]:
-        thread = await db.get_thread(thread_id)
+        thread = await db.for_owner(user).get_thread(thread_id)
         if not thread:
             raise HTTPException(status_code=404, detail="Thread not found")
         if not body.content.strip():
@@ -1612,7 +1632,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         reply = await service.post_aside_message(
             db.for_owner(user), run, thread, user_message=body.content.strip(), model=body.model
         )
-        cost = await db.thread_cost(thread_id)
+        cost = await db.for_owner(user).thread_cost(thread_id)
         return {"thread_id": thread_id, "reply": reply, "total_cost_usd": cost}
 
     # ------------------- Phase 5: per-persona documents -------------------- #
@@ -1630,10 +1650,12 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         ),
         user: str = Depends(current_user),
     ) -> Dict[str, Any]:
-        run = await db.get_run_by_ref(ref, owner_sub=user)
+        run = await db.for_owner(user).get_run_by_ref(ref)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
-        docs = await db.list_documents(run["id"], persona_name=persona)
+        docs = _public_documents(
+            await db.for_owner(user).list_documents(run["id"], persona_name=persona)
+        )
         return {
             "run_id": run["id"],
             "persona": persona,
@@ -1654,7 +1676,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         name that is not in the run's cast is rejected rather than silently
         creating material no one can ever retrieve.
         """
-        run = await db.get_run_by_ref(ref, owner_sub=user)
+        run = await db.for_owner(user).get_run_by_ref(ref)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
 
@@ -1699,6 +1721,17 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             source_path=doc.source_path,
             media_type=doc.media_type,
             char_count=doc.char_count,
+            # The ORIGINAL extracted text, not just the chunks. Without it the stored
+            # body is `join_chunks(chunks)`, which is not an exact inverse — measured
+            # on two real documents it shifts 2–7% of chunk boundaries, so an
+            # `ordinal` can point at different text from the vector built at that
+            # ordinal, and hybrid retrieval fuses the two arms by chunk id. See the
+            # §4a correction in AWS-SERVERLESS-ARCHITECTURE.md.
+            #
+            # This route was writing `text_is_original: false` on every upload, which
+            # is exactly the condition that correction exists to avoid, on the ONE
+            # path a user actually uses.
+            text=doc.text,
         )
         return {
             "run_id": run["id"],
@@ -1716,15 +1749,15 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         document_id: str,
         user: str = Depends(current_user),
     ) -> Dict[str, Any]:
-        run = await db.get_run_by_ref(ref, owner_sub=user)
+        run = await db.for_owner(user).get_run_by_ref(ref)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
         # Confirm the document belongs to THIS run before deleting it, so a
         # document id from another run cannot be removed through this route.
-        owned = {d["id"] for d in await db.list_documents(run["id"])}
+        owned = {d["id"] for d in await db.for_owner(user).list_documents(run["id"])}
         if document_id not in owned:
             raise HTTPException(status_code=404, detail="Document not found for this run")
-        await db.delete_document(document_id)
+        await db.for_owner(user).delete_document(document_id)
         return {"run_id": run["id"], "document_id": document_id, "deleted": True}
 
     @app.post("/api/runs/{ref}/documents/reindex")
@@ -1736,10 +1769,10 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         external-content, so it holds no text of its own and is always a pure
         derivative of the chunks table.
         """
-        run = await db.get_run_by_ref(ref, owner_sub=user)
+        run = await db.for_owner(user).get_run_by_ref(ref)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
-        indexed = await db.reindex_documents()
+        indexed = await db.for_owner(user).reindex_documents()
         return {"run_id": run["id"], "reindexed_chunks": indexed}
 
     @app.post("/api/runs/{ref}/documents/embed")
@@ -1757,7 +1790,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         Returns 422 (not 500) when the embedding provider is unavailable: that is a
         deployment condition the caller can act on rather than a server fault.
         """
-        run = await db.get_run_by_ref(ref, owner_sub=user)
+        run = await db.for_owner(user).get_run_by_ref(ref)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
         # A BOUND store: `embed_pending_chunks` reaches `chunks_missing_vectors` and
@@ -1799,7 +1832,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         lexical-vs-semantic gap can be quantified on a real corpus instead of
         argued about. Read-only — it performs no writes.
         """
-        run = await db.get_run_by_ref(ref, owner_sub=user)
+        run = await db.for_owner(user).get_run_by_ref(ref)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
         fts_query = build_fts_query(q)
@@ -1812,7 +1845,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
                 "passages": [],
                 "note": "No searchable terms in the query after removing stopwords.",
             }
-        rows = await db.search_documents(
+        rows = await db.for_owner(user).search_documents(
             run_id=run["id"], query=fts_query, persona_name=persona, k=k, corpus=corpus
         )
         passages = apply_budget(rows, max_chars=max_chars)
@@ -1851,7 +1884,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
     ) -> None:
         await websocket.accept()
 
-        run = await db.get_run_by_ref(ref, owner_sub=user)
+        run = await db.for_owner(user).get_run_by_ref(ref)
         if not run:
             await websocket.send_json({"event_type": "error", "payload": {"detail": "Run not found"}})
             await websocket.close()

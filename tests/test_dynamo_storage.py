@@ -1051,31 +1051,66 @@ async def test_omitting_the_text_is_recorded_as_a_reassembly(store):
     assert flags == {"bg.md": False, "other.md": True}
 
 
-@pytest.mark.asyncio
-async def test_the_fixture_matches_the_deployed_tables(store):
-    """Guards the fixture against drifting from the real stack.
+def test_table_names_match_the_storage_layer():
+    """The storage layer, the CDK stack and the test fixture must name the same tables.
 
-    A fixture that creates tables the CDK does not — or omits an index it does —
-    makes this whole suite pass against infrastructure that cannot serve it. Read
-    from the CDK source rather than duplicated, so the two cannot disagree.
+    **This replaces a test that was too weak to do its job.** The previous version
+    substring-searched the CDK source for each table name, which `"thread_messages"`
+    satisfied — so it passed while the real table was `matrix-studio-thread_messages`
+    and the storage layer asked for `matrix-studio-thread-messages`. Every
+    thread-message operation would have failed in production with
+    `ResourceNotFoundException`, and the moto fixture created the hyphen form so nothing
+    local disagreed. Found by deploying and reading the Lambda's environment.
+
+    So this extracts the actual name strings from all three places and compares them as
+    sets. A substring check cannot detect a near-miss; only the real strings can.
     """
     import re
     from pathlib import Path
 
-    stack = Path(__file__).resolve().parents[1] / "infra/matrix_infra/stack.py"
-    source = stack.read_text()
-    declared = set(re.findall(r'self\._table\("([a-z-]+)"', source))
-    declared |= {
-        m for m in re.findall(r'"([a-z_]+)": self\._table\("([a-z-]+)"', source)
+    root = Path(__file__).resolve().parents[1]
+
+    # 1. What the storage layer asks for.
+    layer = set(re.findall(
+        r'_table\("([a-z-]+)"\)',
+        (root / "matrix_studio/storage/dynamo.py").read_text(),
+    ))
+    assert layer, "found no _table() calls; the extraction pattern has gone stale"
+
+    # 2. What the CDK stack creates. `_table("name", ...)` plus the one inline Table.
+    stack_src = (root / "infra/matrix_infra/stack.py").read_text()
+    stack = set(re.findall(r'self\._table\(\s*"([a-z-]+)"', stack_src))
+    stack |= {
+        m for m in re.findall(r'table_name=f"\{self\.config\.prefix\}-([a-z-]+)"',
+                              stack_src)
     }
-    # The tables this suite creates, as the storage layer names them.
-    used = {"runs", "events", "snapshots", "summaries", "threads",
-            "thread-messages", "documents"}
-    for name in used:
-        assert f'"{name.replace("-", "_")}"' in source or f'"{name}"' in source, (
-            f"the storage layer uses a '{name}' table that the CDK stack does not "
-            "create"
-        )
+    assert stack, "found no table definitions in the CDK stack"
+
+    # 3. What the fixture provisions.
+    fixture = set(re.findall(
+        r'^\s+for table in \(([^)]+)\)', 
+        (root / "tests/conftest.py").read_text(), re.M | re.S,
+    )[0].replace('"', "").replace("\n", " ").split(","))
+    fixture = {f.strip() for f in fixture if f.strip()}
+
+    missing_from_stack = layer - stack
+    assert not missing_from_stack, (
+        f"the storage layer reads tables the CDK does not create: "
+        f"{sorted(missing_from_stack)}"
+    )
+    missing_from_fixture = layer - fixture
+    assert not missing_from_fixture, (
+        f"the storage layer reads tables the test fixture does not create, so these "
+        f"are exercised against nothing: {sorted(missing_from_fixture)}"
+    )
+    # The fixture may create MORE than the layer reads (Phase 6's tables exist
+    # already), but it must not invent names the stack does not have — that is how the
+    # divergence above happened.
+    invented = fixture - stack
+    assert not invented, (
+        f"the fixture creates tables the CDK stack does not: {sorted(invented)}"
+    )
+
 
 
 # --------------------------------------------------------------------------- #
@@ -1842,3 +1877,209 @@ def test_the_stemmer_handles_inflection_but_not_derivation():
     for a, b in (("ration", "rat"), ("region", "reg"), ("cost", "coast"),
                  ("policy", "police"), ("nation", "rate")):
         assert stem(a) != stem(b), f"over-stemming collided {a} and {b}"
+
+
+# --------------------------------------------------------------------------- #
+# Scoped credentials (§3) — what can be asserted without a real IAM evaluation
+# --------------------------------------------------------------------------- #
+
+
+def test_binding_builds_a_tenant_scoped_session_when_a_role_is_configured(monkeypatch):
+    """`for_owner` must attach scoped credentials, not just record a string.
+
+    This is the gap that shipped: the tenant role, the session-policy builder and the
+    CDK wiring all existed and were verified against the real account, and NOTHING
+    CONNECTED THEM to the storage layer — so the deployed API called DynamoDB with the
+    Lambda's own credentials and got AccessDenied on every read.
+
+    `moto` does not evaluate IAM, so no test can prove the credentials are *enforced*;
+    that is what `scripts/verify_tenant_isolation.py` does against the real account.
+    What a test CAN prove is that binding produces a session at all, and that an
+    unbound store does not — which is precisely what was missing.
+    """
+    monkeypatch.setenv("TENANT_ROLE_ARN", "arn:aws:iam::111122223333:role/tenant")
+    from matrix_studio.storage.credentials import _SESSION_CACHE
+
+    _SESSION_CACHE.clear()
+
+    store = DynamoStorage(table_prefix=PREFIX, bucket=BUCKET, region="us-east-1")
+    assert store._session is None, "the unbound store must not carry credentials"
+
+    bound = store.for_owner(USER_A)
+    assert bound._session is not None, (
+        "for_owner produced no scoped session, so storage would use the ambient role"
+    )
+    # And the clients are rebuilt from it rather than inherited by the shallow copy.
+    assert bound._ddb is None and bound._tables == {}
+
+
+def test_no_tenant_role_means_the_ambient_credentials(monkeypatch):
+    """The local single-user server has no role to assume, and must still work.
+
+    A reduction in guarantee rather than a neutral default — which is why it is
+    asserted explicitly instead of left to be inferred from an absence.
+    """
+    monkeypatch.delenv("TENANT_ROLE_ARN", raising=False)
+    store = DynamoStorage(table_prefix=PREFIX, bucket=BUCKET, region="us-east-1")
+    assert store.for_owner(USER_A)._session is None
+
+
+def test_the_session_policy_grants_exactly_the_tables_the_layer_reads(monkeypatch):
+    """A policy narrower than the code is an AccessDenied on a path nobody tested.
+
+    Both directions matter. Missing a table breaks that table's routes in production
+    only; granting extra ones widens the boundary for no reason. Derived from `_TABLES`
+    so the two cannot drift.
+    """
+    from matrix_studio.storage.credentials import session_policy
+    from matrix_studio.storage.dynamo import _TABLES
+
+    arns = [f"arn:aws:dynamodb:us-east-1:*:table/matrix-studio-{t}" for t in _TABLES]
+    policy = session_policy(
+        USER_A, table_arns=arns, bucket_arn="arn:aws:s3:::a-bucket")
+    granted = " ".join(
+        str(r) for st in policy["Statement"] for r in (
+            st["Resource"] if isinstance(st["Resource"], list) else [st["Resource"]]
+        )
+    )
+    for table in _TABLES:
+        assert f"matrix-studio-{table}" in granted, table
+
+
+def test_the_user_partitioned_tables_are_the_ones_leadingkeys_covers():
+    """`LeadingKeys` only works on tables keyed `USER#{sub}`.
+
+    Getting this list wrong is silent in both directions: a run-partitioned table listed
+    here would be refused every read (its pk is not `USER#...`), and a user-partitioned
+    table omitted would fall into the unconditioned statement and lose its isolation
+    while still working.
+    """
+    from matrix_studio.storage.credentials import USER_PARTITIONED, session_policy
+    from matrix_studio.storage.dynamo import _TABLES
+
+    assert set(USER_PARTITIONED) == {"runs", "events", "snapshots"}
+    assert set(USER_PARTITIONED) <= set(_TABLES)
+
+    arns = [f"arn:aws:dynamodb:us-east-1:*:table/matrix-studio-{t}" for t in _TABLES]
+    policy = session_policy(
+        USER_A, table_arns=arns, bucket_arn="arn:aws:s3:::a-bucket")
+    conditioned = [st for st in policy["Statement"] if "Condition" in st
+                   and "dynamodb:LeadingKeys" in str(st["Condition"])]
+    assert len(conditioned) == 1, "expected exactly one LeadingKeys statement"
+    covered = str(conditioned[0]["Resource"])
+    for table in USER_PARTITIONED:
+        assert f"matrix-studio-{table}" in covered, table
+    # And the run-partitioned ones must NOT be under the condition, or every read of
+    # them is refused: their partition key is `RUN#...`, not `USER#...`.
+    for table in set(_TABLES) - set(USER_PARTITIONED):
+        assert f"matrix-studio-{table}" not in covered, (
+            f"{table} is run-partitioned; LeadingKeys would refuse every read of it"
+        )
+
+
+@pytest.mark.asyncio
+async def test_overriding_the_owner_on_a_credentialed_store_is_refused(
+    monkeypatch, aws
+):
+    """A query for one tenant signed for another can only ever be AccessDenied.
+
+    And the failure says nothing about the mismatch, which makes it the worst kind: the
+    message blames permissions when the cause is two idioms disagreeing. Refusing here
+    names it instead.
+
+    Checked only when a scoped session exists. Without one the override is exactly how a
+    negative case proves another tenant's data is unreachable, so
+    `test_an_explicit_owner_overrides_the_binding` must keep working — the two tests
+    together are what pin the distinction.
+    """
+    monkeypatch.setenv("TENANT_ROLE_ARN", "arn:aws:iam::111122223333:role/tenant")
+    from matrix_studio.storage.credentials import _SESSION_CACHE
+
+    _SESSION_CACHE.clear()
+
+    store = DynamoStorage(table_prefix=PREFIX, bucket=BUCKET, region="us-east-1")
+    bound = store.for_owner(USER_A)
+    assert bound._session is not None, "the fixture needs a scoped session to matter"
+
+    with pytest.raises(StorageError, match="bound to"):
+        await bound.get_run("r1", owner_sub=USER_B)
+
+    # An explicit owner AGREEING with the binding is fine — it is redundant, not wrong.
+    assert bound._owner(USER_A) == USER_A
+
+
+def test_the_session_policy_covers_every_service_the_layer_calls():
+    """A service missing from the session policy is silently removed from the role.
+
+    Effective permissions are the INTERSECTION of the tenant role's policy and the
+    per-request session policy. The role was granted `s3vectors:*` by the CDK and the
+    session policy omitted it, so embedding failed with AccessDenied *against the tenant
+    role* — which reads like a broken role rather than a narrow session policy. Found by
+    deploying; no unit test could have, because moto does not evaluate IAM.
+
+    So this derives the services from the CLIENTS THE LAYER ACTUALLY BUILDS rather than
+    from a hand-kept list. A new client added without a matching grant fails here
+    instead of in production.
+    """
+    import re
+    from pathlib import Path
+
+    from matrix_studio.storage.credentials import session_policy
+    from matrix_studio.storage.dynamo import _TABLES
+
+    source = (
+        Path(__file__).resolve().parents[1] / "matrix_studio/storage/dynamo.py"
+    ).read_text()
+    services = set(re.findall(r'_make\(\s*"(?:client|resource)",\s*"([a-z0-9]+)"', source))
+    assert services, "found no _make() calls; the extraction pattern has gone stale"
+
+    policy = session_policy(
+        "a-sub",
+        table_arns=[f"arn:aws:dynamodb:us-east-1:*:table/p-{t}" for t in _TABLES],
+        bucket_arn="arn:aws:s3:::a-bucket",
+    )
+    granted = {
+        action.split(":")[0]
+        for st in policy["Statement"]
+        for action in (
+            st["Action"] if isinstance(st["Action"], list) else [st["Action"]]
+        )
+    }
+    missing = services - granted
+    assert not missing, (
+        f"the storage layer builds clients for {sorted(missing)} but the session "
+        "policy grants them nothing, so those calls will be AccessDenied against the "
+        "tenant role in any deployment with scoped credentials"
+    )
+
+
+def test_the_session_policy_stays_under_the_sts_limit():
+    """2,048 characters is a hard STS cap, and exceeding it fails at AssumeRole.
+
+    That is on a user's request, not at deploy time, and the error names a length rather
+    than the statement that grew. Checked with a realistic UUID sub, because the sub
+    appears three times in the policy and a short test value would understate it.
+    """
+    import json
+
+    from matrix_studio.storage.credentials import (
+        MAX_SESSION_POLICY_CHARS,
+        session_policy,
+    )
+    from matrix_studio.storage.dynamo import _TABLES
+
+    policy = session_policy(
+        "12345678-1234-1234-1234-123456789012",
+        table_arns=[
+            f"arn:aws:dynamodb:us-east-1:123456789012:table/matrix-studio-{t}"
+            for t in _TABLES
+        ],
+        bucket_arn="arn:aws:s3:::matrix-studio-data-123456789012-us-east-1",
+    )
+    size = len(json.dumps(policy, separators=(",", ":")))
+    assert size <= MAX_SESSION_POLICY_CHARS, size
+    # Enough headroom that adding a statement is not a surprise.
+    assert size < MAX_SESSION_POLICY_CHARS - 200, (
+        f"{size} characters leaves under 200 to spare; the next statement added will "
+        "break AssumeRole on a real request"
+    )

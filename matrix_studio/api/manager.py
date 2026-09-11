@@ -99,6 +99,14 @@ class RunManager:
 
         run_id = str(uuid.uuid4())
 
+        # Bound up front, because the name checks below are the first storage calls and
+        # `owner_sub=` alone does NOT attach the tenant-scoped credentials — it scopes
+        # the query only. That distinction cost two deploys: the reads used the
+        # function's own role, which by design holds no storage rights, so every
+        # create returned 500 with an AccessDenied that named permissions rather than
+        # the mixed idiom.
+        owned = self.db.for_owner(owner_sub)
+
         # Resolve a memorable name. Honour a user-supplied name; otherwise
         # generate one. Naming never blocks a run — generate_run_name falls back
         # internally on any LLM failure.
@@ -107,14 +115,12 @@ class RunManager:
         slug = None
         name_source = "user" if supplied_name else None
 
-        if supplied_name and await self.db.name_exists(
-            supplied_name, owner_sub=owner_sub
-        ):
+        if supplied_name and await owned.name_exists(supplied_name):
             # Disambiguate a user-supplied duplicate rather than rejecting.
             base = supplied_name
             for suffix in range(2, 100):
                 candidate = f"{base}-{suffix}"
-                if not await self.db.name_exists(candidate, owner_sub=owner_sub):
+                if not await owned.name_exists(candidate):
                     supplied_name = candidate
                     break
 
@@ -128,8 +134,8 @@ class RunManager:
                 topic=topic,
                 cast_names=cast_names,
                 model=model,
-                # Uniqueness is per user, so the predicate carries the owner.
-                name_exists=partial(self.db.name_exists, owner_sub=owner_sub),
+                # Uniqueness is per user; the bound store carries the owner.
+                name_exists=owned.name_exists,
             )
             name = naming["name"]
             description = description or naming["description"]
@@ -142,15 +148,11 @@ class RunManager:
         engine_request["description"] = description
         engine_request["owner_sub"] = owner_sub
 
-        # The engine, the summariser and everything downstream get a store already
-        # bound to this run's owner.
-        #
-        # This is what made the swap tractable: binding once here removed the need
-        # for `owner_sub` at 15 call sites in the engine and 13 in `branching.py`,
-        # none of which has any business knowing about tenants. The engine's job is
-        # to run a conversation; WHOSE conversation was decided at the request
-        # boundary, and a bound store carries that decision without restating it.
-        owned = self.db.for_owner(owner_sub)
+        # `owned` (bound above) is what the engine, the summariser and everything
+        # downstream receive. Binding once removed the need for `owner_sub` at 15 call
+        # sites in the engine and 13 in `branching.py`, none of which has any business
+        # knowing about tenants: the engine's job is to run a conversation, and WHOSE
+        # conversation was decided at the request boundary.
 
 
         # Phase 1.5: fold an optional top-level `summary` config into the run's
