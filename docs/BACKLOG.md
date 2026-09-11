@@ -467,6 +467,127 @@ makes any provider choice reversible.
 
 ---
 
+## Open — the AWS port's leftovers
+
+Phases 0–3 and 5 are deployed and verified against account 791580863750/us-east-1
+(Phase 4 is cancelled; see `docs/AWS-IMPLEMENTATION-PLAN.md` for why, it is
+instructive). A run executes end to end: 40 turns in 3.8 min for $0.089, and branch,
+resume, stop and the cost cap all work — 35 checks in `scripts/verify_turn_loop.py`.
+These are what is left.
+
+### The 38 local runs have no migration path — DECISION NEEDED
+**Status:** OPEN. Needs a product call before any code.
+
+`data/matrix_studio.db` holds 38 real runs (the validation arms, the dismissal-retune
+measurements, the `bridge-kibble` import). SQLite is deleted, so they exist only in
+that file and are invisible to the deployed system.
+
+**The decision is whether they are worth carrying**, and it is not obviously yes: they
+are measurement artefacts rather than user data, every finding drawn from them is
+already written up in `docs/`, and the raw event logs are only needed to re-derive a
+number nobody disputes. Carrying them means a script that reads SQLite, mints per-user
+partitions, uploads snapshot bodies to S3 and re-embeds any documents — a day's work
+plus embedding cost, for data whose value is historical.
+
+*Revisit trigger:* the first time somebody wants to re-run `scripts/score_validation.py`
+against an original arm, or to branch one of the recorded conversations. Until then the
+write-ups are the artefact.
+
+### An orphaned DynamoDB table — NEEDS CONFIRMATION TO DELETE
+**Status:** BLOCKED on an explicit go-ahead, because deleting a table in a live account
+is not reversible.
+
+`matrix-studio-thread_messages` (underscore) sits alongside the real
+`matrix-studio-thread-messages` (hyphen). It is the residue of the logical-id incident
+recorded in the Phase 2 progress notes: a CDK "tidy" changed a construct's logical id,
+CloudFormation treated the resource as new, and the old one was orphaned rather than
+replaced. It is **empty and unreferenced** — nothing in `TABLE_*` env or the code names
+the underscore form — so it costs nothing but on-demand storage of zero bytes.
+
+Left in place deliberately until asked: the cost of keeping it is zero and the cost of
+deleting the wrong one is every thread message in the system.
+
+### Per-user monthly spend caps
+**Status:** OPEN. §7 of the architecture calls this a **rollout prerequisite** — "a
+company will require this before rollout" — so it gates real multi-user use rather
+than being a nicety.
+
+The per-run cap works and is verified on the deployed machine (a run terminates as
+`capped`). What is missing is the per-user rolling total. §7 already specifies the
+shape: a monthly total on the user's row, checked in `CheckContinue`, and **refuse to
+start** a run when a user is over budget rather than stopping one midway — cheaper and
+clearer than killing a conversation in progress.
+
+The machinery is now in place for it: `CheckContinue` is a `Choice` over the turn
+Lambda's own output, and that Lambda already reads the run row with scoped credentials.
+A per-user counter is one more attribute and one more `Choice` branch.
+
+*Revisit trigger:* before any second user is added to the pool.
+
+### Model invocation logging
+**Status:** OPEN. §7: "security review will ask for it."
+
+Bedrock model-invocation logging to S3 or CloudWatch. Also the right place for
+per-model accountability, which is why the Bedrock IAM grant is deliberately broad
+(`foundation-model/*`) rather than enumerating models — narrowing it would couple the
+IAM policy to `AVAILABLE_MODELS`, so an operator changing a config value would need an
+infrastructure deploy.
+
+### WebSocket push instead of polling
+**Status:** DEFERRED, with the polling numbers to justify it.
+
+The viewer polls `events?after_seq=` every 3 s against a measured 5–13 s turn, so a
+turn appears within roughly half its own duration. Push would make it sub-second.
+
+Deferred because the turn loop runs in worker Lambdas with no process holding a socket,
+so push needs API Gateway's WebSocket API plus the management API to fan out from a
+worker — a real sub-project. The `connections` table already exists for it (created in
+Phase 1 only because its TTL attribute must be declared at table creation), and §5.1
+marks the fan-out itself as v2.
+
+*Revisit trigger:* a user complains about latency, or the polling cost becomes visible
+— at 3 s per open viewer it is one DynamoDB query per tick, which is negligible for
+tens of viewers and worth re-costing at hundreds.
+
+### The turn budget is a knob nobody has needed to turn
+**Status:** OPEN, informational.
+
+`turn_budget=1` ships, so a slice is a turn. That buys one-turn retry granularity on
+Bedrock throttling (§7's named operational risk), a uniform ~5 s invocation with no
+risk of a 15-minute timeout mid-run, and one-turn stop latency. The cost is one
+snapshot load and a few state transitions per turn — measured at 3.8 min for 40 turns
+end to end, or ~5.7 s per turn against a 5–13 s generation, so the overhead is not the
+bottleneck.
+
+`_run_turns` accepts any budget, so batching is a config change rather than a rewrite.
+
+*Revisit trigger:* if per-turn overhead ever exceeds generation time, or Step Functions
+state-transition cost becomes visible in the bill.
+
+### A recurring defect class worth checking for in review
+**Status:** OPEN as a review heuristic, not a code change.
+
+Phase 5 found **three** instances of the same thing: a guard that could never fire.
+
+1. `useRunStream.stalled` — `pushEvents` set a local `added` flag inside a
+   `setBuffer(prev => …)` updater and read it on the next line. React runs a functional
+   updater during the re-render, so the flag was always false, `lastEventAt` was never
+   set, and the stall warning was dead from the day it was written.
+2. `StatusPill`'s staleness branch — took `lastEventAt` as an optional prop and the
+   call site never passed it.
+3. The stop verification's `len(turns) >= asked_at` — a lower bound only, which passed
+   on both the broken and the correct behaviour while the deployment generated two
+   turns past the request instead of one.
+
+The pattern: a condition whose inputs are never supplied, or a bound in only the
+direction that cannot fail. All three were found by trying to make the guard work for
+a *new* case, never by the guard firing.
+
+**What to do about it:** when adding or reviewing a guard, assert it fires — a test
+where it is expected to be TRUE, not only false. And prefer two-sided bounds.
+
+---
+
 ## Blocked
 
 - ~~**Push to origin.**~~ RESOLVED 2026-09-06. `origin/master` is current, and
@@ -497,6 +618,16 @@ makes any provider choice reversible.
 - **`PROJECT-SPEC.md` §4a is stale** — it says the priority hierarchy is "a design
   principle, not yet a code gate". It has been a code gate since Phase 4a, and 5i
   added `citation_integrity` to it.
+- **`PROJECT-SPEC.md` and the README still describe a local SQLite product.** The
+  deployed thing is AWS-only — no supported laptop mode, no SQLite — and that was a
+  product decision, not a migration side effect. Anyone reading the spec today gets the
+  wrong system. Lower priority than it sounds only because the AWS docs are accurate
+  and cross-linked; the trigger is the first outside reader.
+- **`scripts/verify_turn_loop.py` and the two other verify scripts are run by hand.**
+  Nothing runs them on a change, so a regression in the deployed turn loop is found
+  when somebody thinks to look. They cost real Bedrock money (~$0.10 for the full
+  sweep), so a per-commit hook is wrong; a nightly or pre-release run is the right
+  shape. *Revisit trigger:* the first regression that a manual run catches late.
 
 ### Config could silently come from the wrong place: FIXED
 
