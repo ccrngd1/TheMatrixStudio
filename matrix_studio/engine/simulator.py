@@ -1010,6 +1010,7 @@ async def _run_turns(
     personas: Optional[PersonaConfig] = None,
     should_stop: Optional[Callable[[], bool]] = None,
     firsthand_citations: Optional[List[List[str]]] = None,
+    turn_budget: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Shared turn loop + completion/failure handling for both a fresh run and a
@@ -1057,9 +1058,22 @@ async def _run_turns(
     # `SimSnapshot.firsthand_citations` for why that matters more under Phase 5.
     ledger: List[list] = [list(pair) for pair in (firsthand_citations or [])]
 
+    # How many turns THIS call may generate, as distinct from `max_messages`, which is
+    # the run's total budget. `None` means "as many as the run's budget allows", which
+    # is every existing caller and the unchanged local/CLI behaviour.
+    #
+    # This is what lets Step Functions own the loop without the loop being rewritten:
+    # a turn Lambda passes 1, gets one turn, and receives a NON-terminal status so the
+    # state machine decides what happens next. Extracting a single iteration into a
+    # standalone function was the alternative, and it means moving 680 lines of closure
+    # state — mechanical, large, and exactly the kind of change that silently drops one
+    # of the seven things a turn carries.
+    generated = 0
+
     try:
-        while turn < max_messages:
+        while turn < max_messages and (turn_budget is None or generated < turn_budget):
             turn += 1
+            generated += 1
 
             # Phase 1: Select next speaker
             speaker_name, selection_reason = await _select_next_speaker(
@@ -1613,6 +1627,31 @@ async def _run_turns(
                         "cap_usd": cap,
                     }
 
+        # The loop exited. Two reasons are possible now, and conflating them would be
+        # the worst bug in this phase: the run reached its budget (terminal), or THIS
+        # CALL spent its per-invocation budget while the run has turns left
+        # (non-terminal). Falling through to `sim.completed` in the second case would
+        # write a terminal event and a `complete` status onto a run that is still
+        # going — after which the state machine's next turn appends events past a
+        # completion marker, and replay sees a run that finished twice.
+        #
+        # Nothing is emitted and no status is written here: the run is mid-flight and
+        # its last turn already checkpointed itself. The caller gets `running`, which
+        # is what `CheckContinue` routes on.
+        if turn < max_messages:
+            return {
+                "run_id": run_id,
+                "status": "running",
+                "topic": topic,
+                "conversation": conversation,
+                "agents": {n: a.model_dump() for n, a in agents.items()},
+                "total_turns": turn,
+                "total_cost_usd": sum(a.total_cost_usd for a in agents.values()),
+                # The ledger travels back so a caller that is NOT reloading from the
+                # snapshot (an in-process batch loop) can hand it to the next call.
+                "firsthand_citations": [list(p) for p in ledger],
+            }
+
         # Simulation complete
         completion_time = int(time.time())
         total_cost = sum(a.total_cost_usd for a in agents.values())
@@ -1996,6 +2035,10 @@ async def resume_simulation(
     personas: Optional[PersonaConfig] = None,
     should_stop: Optional[Callable[[], bool]] = None,
     firsthand_citations: Optional[List[List[str]]] = None,
+    # Phase 5: turns THIS call may generate (None = the run's whole remaining budget).
+    # Passed straight through to `_run_turns`, which returns a non-terminal "running"
+    # when the per-call budget rather than the run's budget is what stopped it.
+    turn_budget: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Phase 2a branch primitive — RESUME generating forward from a checkpoint.
@@ -2125,6 +2168,7 @@ async def resume_simulation(
         cognition=cognition,
         pending_threads=pending_threads,
         firsthand_citations=firsthand_citations,
+        turn_budget=turn_budget,
         retrieval=retrieval,
         personas=personas,
         should_stop=should_stop,
