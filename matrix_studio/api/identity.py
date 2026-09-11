@@ -25,7 +25,7 @@ is the part that is expensive to retrofit and easy to get subtly wrong; verifyin
 a JWT is a well-trodden problem that API Gateway solves for us.
 """
 
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 from fastapi import HTTPException, Request, WebSocket
 
@@ -103,6 +103,48 @@ def _resolve(connection: Union[Request, WebSocket]) -> str:
         return LOCAL_USER_SUB
 
     raise HTTPException(status_code=401, detail="Authentication required")
+
+
+def _groups(connection: Union[Request, WebSocket]) -> List[str]:
+    """The caller's Cognito groups, from the VERIFIED claims. Empty when there are none.
+
+    Phase 6 needs these because a KB may be granted to a group rather than a user. They
+    come from the token API Gateway already validated — the same source as ``sub`` — and
+    NOT from a Cognito lookup.
+
+    **The consequence, stated rather than hidden:** a user removed from a group keeps that
+    group's access until their token expires. That window is the token lifetime, not
+    indefinite, and it is deliberately not the leak §8b names — that one is a revoked
+    GRANT outliving a binding, and it is closed because the grant is re-read on every
+    query. The alternative here, `AdminListGroupsForUser` per turn, puts an API call on
+    the hot path and a new failure mode inside an authorisation decision. If a deployment
+    needs immediate group revocation the answer is a shorter token lifetime.
+
+    Cognito serialises `cognito:groups` inconsistently depending on the integration: a
+    real list under some authorizers, and a bracketed string like ``"[a b]"`` under
+    others. Both are accepted rather than guessed at, because guessing wrong means group
+    grants silently never match and the failure looks like a missing grant.
+    """
+    claims = claims_from_scope(connection) or {}
+    raw = claims.get("cognito:groups")
+    if raw is None:
+        return []
+    if isinstance(raw, (list, tuple)):
+        return [str(g).strip() for g in raw if str(g).strip()]
+    text = str(raw).strip()
+    if text.startswith("[") and text.endswith("]"):
+        text = text[1:-1]
+    return [g for g in (part.strip() for part in text.replace(",", " ").split()) if g]
+
+
+async def current_groups(request: Request) -> List[str]:
+    """The caller's groups, as a FastAPI dependency. Never raises.
+
+    Separate from `current_user` because a missing subject is a 401 while missing groups
+    are simply no groups — most users belong to none, and treating that as an error would
+    refuse every request on a pool with no groups defined.
+    """
+    return _groups(request)
 
 
 async def current_user(request: Request) -> str:
