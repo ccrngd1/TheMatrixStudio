@@ -143,15 +143,29 @@ need. A KB created with the wrong dimension cannot be repaired, only rebuilt.
 
 ### 3.4 The embedding-model marker must become per-KB
 
-Today `embedding_model()` reads a **global singleton** — `pk="EMBEDDING", sk="META"` in
-the `documents` table — recording which model produced the stored vectors. It exists to
-catch a same-width model swap, whose vectors are not comparable even though the service
-would accept them.
+`embedding_model()` reads a **global singleton** — `pk="EMBEDDING", sk="META"` in the
+`documents` table — recording which model produced the stored vectors, so a same-width
+model swap can be refused. A different *width* is refused by the service for free, since
+an index's dimension is fixed at creation; a different model at the same width is
+accepted, and every distance afterwards is arithmetic nonsense.
 
-Under index-per-KB a global marker is wrong: two KBs may legitimately have been indexed
-at different times with different models, and a query embedded with model B against a KB
-indexed with model A returns confident nonsense. **Decision:** the model moves onto the
-KB's `META` item, and the mismatch check runs per KB at query time.
+**The marker was write-only when this document was first drafted, and that has since been
+fixed** (`store_chunk_vectors` now reads it and refuses a mismatch). The original draft
+here described the guard as though it existed, which is precisely how the next person
+decides not to write one — worth recording as an error in this document rather than
+quietly correcting.
+
+Under index-per-KB the global scope becomes wrong. It is *correct* today because there is
+one shared index, so all tenants' vectors genuinely share a space and mixing models
+corrupts everyone's distances. With per-KB indexes, two KBs may legitimately have been
+indexed at different times with different models, and only a query crossing them is a
+problem. **Decision:** the model moves onto the KB's `META` item, and the mismatch check
+runs per KB at query time.
+
+The migration must carry it: each new per-KB `META` records the model its copied vectors
+were actually made with, read from the existing global marker. If that marker is absent —
+a corpus embedded before it existed — the migration **refuses rather than defaults**,
+because writing a guess asserts a fact nobody knows and defeats the check.
 
 This also removes an oddity: that marker is the one item in the `documents` table that is
 not under a user partition, so it already sat outside `LeadingKeys`.

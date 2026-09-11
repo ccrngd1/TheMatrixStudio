@@ -588,6 +588,39 @@ where it is expected to be TRUE, not only false. And prefer two-sided bounds.
 
 ---
 
+### The embedding-model marker was write-only: FIXED
+
+Found 2026-09-11 while designing Phase 6, by asking what the marker was *for*.
+
+`store_chunk_vectors` wrote `pk="EMBEDDING", sk="META"` on every call and
+`embedding_model()` read it back — but **nothing in the application called the reader.**
+The guard it exists for lived in the SQLite layer (`storage/database.py`, which raises on
+a width change) and was never ported to DynamoDB. The mechanism was in place, the value
+was recorded, and no code consulted it. Two tests asserted the round trip, which is why
+it looked covered.
+
+What was unguarded is narrow but nasty: a different embedding *width* is refused by S3
+Vectors for free, since an index's dimension is fixed at creation. A **different model at
+the same width** is accepted, and every distance afterwards is arithmetic nonsense —
+retrieval returns confident garbage and the similarity floor cannot help, because the
+numbers are meaningless rather than low. The same shape as the `distance_to_cosine` bug.
+
+Fixed: `store_chunk_vectors` reads the recorded model and refuses a mismatch, naming the
+recorded model and noting the index is shared so it may have been chosen elsewhere.
+
+**And a second escape found on the way.** `embed_pending_chunks` documents itself as
+"Never raises — a failure returns `embedded: 0` with an `error` key", and caught only
+`ValueError` around the store call. `StorageError` is a `RuntimeError`, so every refusal
+the DynamoDB path makes — a missing `VECTOR_BUCKET`, a chunk with no scoping metadata,
+and now a model mismatch — escaped that handler, propagated into the engine's outer
+`except Exception`, and **failed the whole run**. The documented behaviour is to degrade
+to lexical retrieval. The handler was correct when written against SQLite and was not
+revisited with the backend.
+
+Six tests, three mutants killed (guard removed, guard made over-strict, handler narrowed
+back to `ValueError`). The over-strict mutant matters: without a test for the *accepted*
+case, a guard that refused everything would have passed.
+
 ## Blocked
 
 - ~~**Push to origin.**~~ RESOLVED 2026-09-06. `origin/master` is current, and

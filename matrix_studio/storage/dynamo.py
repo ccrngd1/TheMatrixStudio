@@ -2196,6 +2196,38 @@ class DynamoStorage:
                 "VECTOR_BUCKET is not set, so there is nowhere to store embeddings."
             )
 
+        # Refuse a model that disagrees with the one the index was built from.
+        #
+        # **The marker was write-only.** `embedding_model()` existed, was written on
+        # every call below, and had no reader anywhere in the application — the guard
+        # lived in the SQLite layer and was never ported. So the mechanism was in place,
+        # the value was recorded, and nothing consulted it.
+        #
+        # The width case is covered for free here: an S3 Vectors index's dimension is
+        # fixed at creation, so a genuinely different width is refused by the service.
+        # What is NOT covered, and is the case the marker exists for, is a **same-width
+        # model whose vectors are not comparable** — another 1024-dimensional model would
+        # be accepted and every distance afterwards would be arithmetic nonsense.
+        # Retrieval would return confident garbage, and the similarity floor could not
+        # help because the numbers would be meaningless rather than low. That is the same
+        # shape as the `distance_to_cosine` bug: a metric that looks fine and means
+        # nothing.
+        #
+        # Scoped GLOBALLY rather than per tenant, and that is correct for now rather than
+        # sloppy: there is ONE shared index, so all tenants' vectors genuinely share a
+        # space and mixing models corrupts everyone's distances, not just the switcher's.
+        # Phase 6's per-KB indexes make it per-KB naturally, which is where it belongs.
+        recorded = await self.embedding_model()
+        if recorded and recorded != model:
+            raise StorageError(
+                f"The vector index was built with {recorded!r} but {model!r} was used "
+                f"for these embeddings. Distances between vectors from different models "
+                f"are meaningless even at the same width, so this is refused rather "
+                f"than stored. To switch model, delete the affected documents and "
+                f"re-attach them. (The index is shared, so {recorded!r} may have been "
+                f"chosen by another conversation.)"
+            )
+
         payload = []
         for chunk_id, vector in vectors:
             meta = chunks.get(int(chunk_id))
