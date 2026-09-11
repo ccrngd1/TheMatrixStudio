@@ -35,8 +35,10 @@ is why it is not the default.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import os
 import time
 from typing import Any, Callable, Dict, List, Optional
 
@@ -131,6 +133,64 @@ async def load_state(db: Database, run: Dict[str, Any], turn: int):
         run["id"], turn,
     )
     return await reconstruct_at_turn(db, run, turn)
+
+
+def turn_loop_arn() -> str:
+    """The state machine's ARN, or "" when there is none.
+
+    Empty is not a misconfiguration — it is the local case. `uvicorn` is one process
+    that stays alive, so a background asyncio task there genuinely runs to completion
+    and needs no orchestrator. The presence of this variable is what selects between
+    the two, so a laptop keeps the fast path and Lambda gets the only one that works.
+    """
+    return os.environ.get("TURN_LOOP_ARN", "")
+
+
+async def start_execution(
+    run_id: str, owner_sub: str, *, max_messages: int
+) -> Optional[str]:
+    """Start the turn loop for a run. Returns the execution ARN, or None if disabled.
+
+    The name is derived from the run id so a second `StartExecution` for the same run
+    is rejected by Step Functions rather than starting a rival execution. That matters
+    more than it sounds: two executions on one run id would both append to the same
+    event log and both write snapshots at the same turns, which is corruption rather
+    than duplication — and it is exactly what a retried API call would cause.
+
+    ``ExecutionAlreadyExists`` is therefore a success, not an error: it means the run
+    is already executing.
+    """
+    arn = turn_loop_arn()
+    if not arn:
+        return None
+
+    import boto3
+    from botocore.exceptions import ClientError
+
+    client = boto3.client("stepfunctions", region_name=os.environ.get("AWS_REGION"))
+    payload = json.dumps({
+        "run_id": run_id,
+        "owner_sub": owner_sub,
+        "turn": 0,
+        "max_messages": int(max_messages),
+        "total_cost_usd": 0.0,
+    })
+    # Step Functions allows [0-9A-Za-z-_] and 80 characters. A run id is a uuid4 hex
+    # with hyphens (36), so `run-` plus it fits with room to spare.
+    name = f"run-{run_id}"[:80]
+
+    def _start() -> str:
+        return client.start_execution(
+            stateMachineArn=arn, name=name, input=payload
+        )["executionArn"]
+
+    try:
+        return await asyncio.to_thread(_start)
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ExecutionAlreadyExists":
+            logger.info("Run %s already has an execution; not starting another", run_id)
+            return None
+        raise
 
 
 def _emitter(db: Database, run_id: str, start_seq: int = 0):
