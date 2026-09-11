@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Measure FTS5 retrieval recall on a real corpus (Phase 5 step 5b-4).
+"""Measure retrieval recall on a real corpus.
 
-`docs/PHASE5-RETRIEVAL-DESIGN.md` chose SQLite FTS5 over vectors on operational
-grounds and deferred the quality question to a measurement. This is that
-measurement. It exists to produce a number that can justify keeping FTS5 or
-justify adding embeddings — not to confirm a preference.
+Written for Phase 5 step 5b-4, when `docs/PHASE5-RETRIEVAL-DESIGN.md` had chosen
+SQLite FTS5 over vectors on operational grounds and deferred the quality question to
+a measurement. It exists to produce a number that can justify a retrieval choice —
+not to confirm a preference. Results: `docs/PHASE5-RETRIEVAL-MEASUREMENT.md` (the
+original, on FTS5 + sqlite-vec) and `docs/PHASE3-RECALL-MEASUREMENT.md` (the AWS
+port, on in-process BM25 + S3 Vectors).
+
+**It runs against whatever backend `matrix_studio.storage.Database` is**, which is
+DynamoDB + S3 + S3 Vectors, so it needs `TABLE_PREFIX`, `DATA_BUCKET`,
+`VECTOR_BUCKET`, `VECTOR_INDEX` and credentials — and it **writes a real run** into
+that account. The run id defaults to `eval-{timestamp}`; see `--run-id`.
 
 ## Method
 
@@ -33,10 +40,18 @@ single number would hide it.
   understates real-world usefulness, lenient alone overstates it.
 - A random-guess baseline is computed so the reader can tell the metric apart
   from chance on this corpus size.
+- **n is load-bearing.** Any sampled chunk that fails to produce a question is
+  reported with its reason, because a run that quietly measured 28 of 40 once
+  published a table nothing in the output explained.
 
 Usage:
-    scripts/measure_retrieval_recall.py docs README.md PHASE4-REPORT.md
-    scripts/measure_retrieval_recall.py docs --sample 40 --json-out /tmp/r.json
+    scripts/measure_retrieval_recall.py docs README.md
+    scripts/measure_retrieval_recall.py docs README.md --sample 40 --diluted \\
+        --modes baseline,vector,hybrid --dimensions 1024 \\
+        --queries-out /tmp/q.json --json-out /tmp/r.json
+
+Pass `--queries-in /tmp/q.json` for any A/B: generation is non-deterministic, so two
+runs otherwise compare different ground truth.
 """
 
 from __future__ import annotations
@@ -47,7 +62,7 @@ import json
 import random
 import re
 import sys
-import tempfile
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -73,6 +88,11 @@ EMBED_DIMS: list = [None]
 # Best-match cosine of the most recent vector query, stashed so the caller can
 # record it per result. Calibration data for the absolute score floor.
 BEST_COS = [None]
+# The run the eval corpus is written under. Was the literal "eval" everywhere; it
+# has to be settable now because the store is a shared AWS account rather than a
+# throwaway temp file, and a second run under a fixed id collides with the
+# per-user run-name uniqueness guard.
+RUN_ID = ["eval"]
 
 GEN_PROMPT = """You are building an evaluation set for a document search system.
 
@@ -113,6 +133,25 @@ def collect_files(targets: Sequence[str]) -> List[Path]:
     return out
 
 
+def chunk_key(content: str) -> str:
+    """Stable identity for a passage, for the query cache only.
+
+    The cache used to be keyed on the chunk's storage id, which worked when the
+    store was a fresh SQLite file with `AUTOINCREMENT` ids: the same corpus always
+    produced the same ids. On DynamoDB a document gets a new uuid per ingest and the
+    chunk id is a hash of `(document_id, ordinal)`, so ids change on every run and an
+    id-keyed cache silently matches nothing — which `--queries-in` would report as
+    "re-run with the same seed", sending the reader to look for a mistake they did
+    not make.
+
+    Content hashing is also the more honest key: a generated question is ground truth
+    about a *passage*, not about a database row.
+    """
+    import hashlib
+
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
+
+
 def lexical_overlap(query: str, passage: str) -> float:
     """Fraction of the query's content terms that literally appear in the passage.
 
@@ -128,7 +167,7 @@ def lexical_overlap(query: str, passage: str) -> float:
 
 
 async def generate_queries(
-    passage: str, model: str, semaphore: asyncio.Semaphore
+    passage: str, model: str, semaphore: asyncio.Semaphore, max_tokens: int = 1000
 ) -> Optional[Dict[str, str]]:
     import litellm
 
@@ -144,20 +183,48 @@ async def generate_queries(
                 model=model,
                 messages=[{"role": "user", "content": GEN_PROMPT.format(passage=passage)}],
                 temperature=0,
-                max_tokens=300,
+                # Was 300, which silently cost 30% of the sample. Two questions need
+                # ~120 tokens, so 300 looked generous — but Sonnet 5 runs to the cap
+                # (`finish_reason: length` on every call), and when it pads before
+                # closing the JSON the object arrives truncated and unparseable. The
+                # measured loss was 12 of 40 chunks, versus 1 of 60 on the model the
+                # original run used. Headroom is far cheaper than a smaller n.
+                max_tokens=max_tokens,
             )
         except Exception as exc:  # noqa: BLE001
             print(f"warning: query generation failed: {exc}", file=sys.stderr)
             return None
     raw = resp.choices[0].message.content or ""
+    finish = getattr(resp.choices[0], "finish_reason", "")
+    # Every rejection below says WHY, and that is the point rather than tidiness.
+    # These four paths used to `return None` in silence, so a truncated response was
+    # indistinguishable from a passage that legitimately produced no question — the
+    # sample just came out smaller, with nothing in the output to explain it. This
+    # script's job is to be an instrument, and an instrument that discards readings
+    # without a word is worse than one that fails.
     match = re.search(r"\{.*\}", raw, re.DOTALL)
     if not match:
+        print(
+            f"warning: no JSON object in the reply (finish_reason={finish!r}); "
+            f"got {raw[:120]!r}",
+            file=sys.stderr,
+        )
         return None
     try:
         obj = json.loads(match.group(0))
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as exc:
+        print(
+            f"warning: unparseable JSON (finish_reason={finish!r}, {exc}); "
+            f"raise --gen-max-tokens if this says the response was truncated",
+            file=sys.stderr,
+        )
         return None
     if not obj.get("natural") or not obj.get("paraphrased"):
+        print(
+            f"warning: reply lacked both question variants "
+            f"(finish_reason={finish!r}, keys={sorted(obj)})",
+            file=sys.stderr,
+        )
         return None
     cost = 0.0
     try:
@@ -222,7 +289,7 @@ async def run_pipeline(
         semantic: List[Dict[str, Any]] = []
         if result and result.vectors and result.vectors[0]:
             semantic = await db.vector_search(
-                run_id="eval", vector=result.vectors[0], persona_name=None,
+                run_id=RUN_ID[0], vector=result.vectors[0], persona_name=None,
                 k=max(k * 2, k),
             )
         if pipeline == "vector":
@@ -246,8 +313,8 @@ async def run_pipeline(
     if not terms:
         return [], ""
     if pipeline == "tuned":
-        doc_freq = await db.term_document_frequencies("eval", terms, persona_name=None)
-        total = await db.chunk_count("eval", persona_name=None)
+        doc_freq = await db.term_document_frequencies(RUN_ID[0], terms, persona_name=None)
+        total = await db.chunk_count(RUN_ID[0], persona_name=None)
         terms = select_discriminative_terms(
             terms, doc_freq, total, limit=term_limit, max_df_ratio=max_df_ratio
         )
@@ -255,7 +322,7 @@ async def run_pipeline(
     if not fts:
         return [], ""
     rows = await db.search_documents(
-        run_id="eval", query=fts, persona_name=None, k=max(k * 2, k)
+        run_id=RUN_ID[0], query=fts, persona_name=None, k=max(k * 2, k)
     )
     if pipeline == "tuned":
         rows = filter_by_score(rows, score_ratio)
@@ -335,233 +402,285 @@ async def main() -> int:
              "Worth measuring rather than defaulting: it drives vector storage and query "
              "cost, and on S3 Vectors an index's dimension is fixed at creation.",
     )
+    ap.add_argument(
+        "--run-id", default=None,
+        help="Run id to index the eval corpus under. Defaults to a timestamped id, "
+             "because the store is now a shared account: a fixed id collides with the "
+             "existing run on the second attempt, and re-using one would mix a new "
+             "corpus into an old run's documents.",
+    )
+    ap.add_argument(
+        "--gen-max-tokens", type=int, default=1000,
+        help="Token cap for query generation. The old 300 truncated Sonnet 5 "
+             "mid-JSON and silently lost 30%% of the sample.",
+    )
     ap.add_argument("--term-limit", type=int, default=8)
     ap.add_argument("--max-df-ratio", type=float, default=0.5)
     ap.add_argument("--score-ratio", type=float, default=0.25)
     args = ap.parse_args()
 
+    RUN_ID[0] = args.run_id or f"eval-{int(time.time())}"
     model = args.model or get_settings().litellm_model
     files = collect_files(args.targets)
     if not files:
         print("No ingestible files found.", file=sys.stderr)
         return 1
 
-    with tempfile.TemporaryDirectory() as tmp:
-        db = Database().for_owner(LOCAL_USER_SUB)
-        await db.connect()
-        try:
-            await db.create_run(run_id="eval", topic="retrieval eval", cast=[])
-            total_chars = 0
-            for f in files:
-                try:
-                    doc = ingest_file(f)
-                except ExtractionError as exc:
-                    print(f"warning: {exc}", file=sys.stderr)
-                    continue
-                await db.add_document(
-                    run_id="eval",
-                    title=doc.title,
-                    chunks=[c.content for c in doc.chunks],
-                    persona_name=None,
-                    source_path=doc.source_path,
-                    media_type=doc.media_type,
-                    char_count=doc.char_count,
-                )
-                total_chars += doc.char_count
-
-            async with db._conn.execute(
-                "SELECT id, document_id, ordinal, content FROM doc_chunks WHERE run_id='eval'"
-            ) as cur:
-                chunks = [dict(r) for r in await cur.fetchall()]
-
-            print(f"corpus: {len(files)} files, {len(chunks)} chunks, "
-                  f"{total_chars:,} chars")
-            EMBED_MODEL[0] = args.embedding_model or ""
-            EMBED_DIMS[0] = args.dimensions
-            if any(m in args.modes for m in ("vector", "hybrid")):
-                from matrix_studio.retrieval import embed_pending_chunks
-                if not db.vec_available:
-                    print("sqlite-vec unavailable; cannot evaluate vector modes.",
-                          file=sys.stderr)
-                    return 1
-                stats = await embed_pending_chunks(
-                    db, "eval", embedding_model=args.embedding_model,
-                    dimensions=args.dimensions,
-                )
-                if stats.get("error"):
-                    print(f"embedding failed: {stats['error']}", file=sys.stderr)
-                    return 1
-                EMBED_MODEL[0] = stats["model"]
-                print(f"embedded {stats['embedded']} chunks with {stats['model']} "
-                      f"(${stats['cost_usd']:.6f}, {stats['tokens']:,} tokens)")
-            if not chunks:
-                print("Nothing indexed.", file=sys.stderr)
-                return 1
-
-            # Only sample chunks with enough substance to ask a specific question
-            # about; a 40-character fragment cannot ground a fair query.
-            eligible = [c for c in chunks if len(c["content"]) >= 300]
-            rng = random.Random(args.seed)
-            sample = rng.sample(eligible, min(args.sample, len(eligible)))
-            print(f"sampling {len(sample)} of {len(eligible)} eligible chunks "
-                  f"(>=300 chars), k={args.k}\n")
-
-            if args.queries_in:
-                # Reuse a previous run's queries so an A/B differs in ONE variable.
-                cached = json.loads(args.queries_in.read_text())
-                by_id = {int(k): v for k, v in cached["queries"].items()}
-                generated = [by_id.get(c["id"]) for c in sample]
-                reused = sum(1 for g in generated if g)
-                # A cache legitimately covers fewer chunks than were sampled: some
-                # passages never produced usable queries. What matters for an A/B is
-                # that both runs use the SAME set, which reusing the file guarantees.
-                # Zero overlap means the sample does not match the cache at all —
-                # different targets, --sample or --seed — and that is an error.
-                if reused == 0:
-                    print(
-                        f"ERROR: --queries-in matched none of the {len(sample)} "
-                        f"sampled chunks. Re-run with the same targets, --sample "
-                        f"and --seed that produced it.",
-                        file=sys.stderr,
-                    )
-                    return 1
-                print(f"reusing {reused} cached queries from {args.queries_in} "
-                      f"(of {len(sample)} sampled; the rest never produced one)")
-            else:
-                sem = asyncio.Semaphore(args.concurrency)
-                generated = await asyncio.gather(
-                    *(generate_queries(c["content"], model, sem) for c in sample)
-                )
-                if args.queries_out:
-                    args.queries_out.write_text(json.dumps({
-                        "model": model, "seed": args.seed, "sample": len(sample),
-                        "queries": {
-                            str(c["id"]): g
-                            for c, g in zip(sample, generated) if g
-                        },
-                    }, indent=2) + "\n")
-                    print(f"wrote queries to {args.queries_out}")
-
-            # Fail rather than report zeros. A table of dashes is indistinguishable
-            # from "retrieval found nothing", and this script exists to be an
-            # instrument you can trust — a broken run must look broken. The cause is
-            # usually a provider rejecting a sampling parameter, which is printed above.
-            usable = sum(1 for g in generated if g)
-            if usable == 0:
-                print(
-                    f"\nERROR: 0 of {len(sample)} queries were generated, so nothing "
-                    f"can be measured. See the warnings above.",
-                    file=sys.stderr,
-                )
-                return 1
-            if usable < len(sample) // 2:
-                print(
-                    f"\nWARNING: only {usable} of {len(sample)} queries generated; "
-                    f"treat the numbers below as indicative, not comparable.",
-                    file=sys.stderr,
-                )
-
-            gen_cost = sum(g.get("_cost", 0.0) for g in generated if g)
-            pipelines = tuple(
-                m.strip() for m in args.modes.split(",") if m.strip()
+    db = Database().for_owner(LOCAL_USER_SUB)
+    await db.connect()
+    try:
+        await db.create_run(run_id=RUN_ID[0], topic="retrieval eval", cast=[])
+        total_chars = 0
+        for f in files:
+            try:
+                doc = ingest_file(f)
+            except ExtractionError as exc:
+                print(f"warning: {exc}", file=sys.stderr)
+                continue
+            await db.add_document(
+                run_id=RUN_ID[0],
+                title=doc.title,
+                chunks=[c.content for c in doc.chunks],
+                persona_name=None,
+                source_path=doc.source_path,
+                media_type=doc.media_type,
+                char_count=doc.char_count,
+                # Required, not cosmetic. Without it the store keeps a
+                # `join_chunks` reassembly, which re-chunks to 2–7% different
+                # ordinals — so the gold chunk id below would name different text
+                # from the vector stored at that ordinal, and recall would read
+                # low for a reason that has nothing to do with retrieval quality.
+                text=doc.text,
             )
-            if args.compare and "tuned" not in pipelines:
-                pipelines = pipelines + ("tuned",)
-            arms = ["natural", "paraphrased"]
-            if args.diluted:
-                # The engine does not query with a tidy question — it ORs terms
-                # from a window of recent conversation, so the real query is a
-                # good question buried in unrelated chatter. This arm models that
-                # by padding the natural question with terms from an unrelated
-                # chunk, which is the case discriminative term selection targets.
-                arms.append("diluted")
-            results: List[Dict[str, Any]] = []
-            for chunk, queries in zip(sample, generated):
-                if not queries:
-                    continue
-                filler_pool = [c for c in chunks if c["id"] != chunk["id"]]
-                filler = " ".join(
-                    extract_terms(rng.choice(filler_pool)["content"], limit=18)
-                ) if filler_pool else ""
-                queries = dict(queries)
-                queries["diluted"] = f"{queries['natural']} {filler}"
-                for arm in arms:
-                    query = queries[arm]
-                    for pipeline in pipelines:
-                        BEST_COS[0] = None
-                        rows, fts = await run_pipeline(
-                            db, query, args.k, pipeline,
-                            args.term_limit, args.max_df_ratio, args.score_ratio,
-                        )
-                        results.append({
-                            "arm": arm,
-                            "pipeline": pipeline,
-                            "query": query,
-                            "fts_query": fts,
-                            "gold_chunk_id": chunk["id"],
-                            "matched": len(rows),
-                            "best_cos": BEST_COS[0],
-                            "overlap": lexical_overlap(query, chunk["content"]),
-                            "rank": rank_of_gold(
-                                rows, chunk["id"], chunk["document_id"], chunk["ordinal"]
-                            ),
-                        })
+            total_chars += doc.char_count
 
-            ks = [k for k in (1, 3, args.k) if k <= args.k]
-            ks = sorted(set(ks))
-            summary = {
-                f"{arm}/{pipeline}": summarise(results, arm, ks, pipeline)
-                for arm in arms
-                for pipeline in pipelines
+        # The chunk inventory comes from the store, via the SAME call the embedder
+        # uses, and it is read BEFORE embedding so "missing vectors" means "all of
+        # them". Deriving the sample independently would be the classic
+        # instrument bug: the script would score ids the retriever never returns
+        # and report a quality problem that is really a key mismatch.
+        chunks = [
+            {
+                "id": c["chunk_id"],
+                "document_id": c["document_id"],
+                "ordinal": c["ordinal"],
+                "content": c["content"],
             }
+            for c in await db.chunks_missing_vectors(RUN_ID[0])
+        ]
 
-            # Chance baseline: probability a uniformly random top-k selection
-            # contains the gold chunk, for this corpus size.
-            baseline = round(min(1.0, args.k / len(chunks)), 6)
+        print(f"corpus: {len(files)} files, {len(chunks)} chunks, "
+              f"{total_chars:,} chars")
+        EMBED_MODEL[0] = args.embedding_model or ""
+        EMBED_DIMS[0] = args.dimensions
+        if any(m in args.modes for m in ("vector", "hybrid")):
+            from matrix_studio.retrieval import embed_pending_chunks
+            if not db.vec_available:
+                print("the storage layer reports vector retrieval unavailable; "
+                      "cannot evaluate vector modes.", file=sys.stderr)
+                return 1
+            stats = await embed_pending_chunks(
+                db, RUN_ID[0], embedding_model=args.embedding_model,
+                dimensions=args.dimensions,
+            )
+            if stats.get("error"):
+                print(f"embedding failed: {stats['error']}", file=sys.stderr)
+                return 1
+            EMBED_MODEL[0] = stats["model"]
+            print(f"embedded {stats['embedded']} chunks with {stats['model']} "
+                  f"(${stats['cost_usd']:.6f}, {stats['tokens']:,} tokens)")
+        if not chunks:
+            print("Nothing indexed.", file=sys.stderr)
+            return 1
 
-            cols = list(summary)
-            width = max(12, max(len(c) for c in cols) + 1)
-            header = f"{'metric':28s}" + "".join(f"{c:>{width}s}" for c in cols)
-            print(header)
-            print("-" * len(header))
-            for key in [f"recall@{k}_strict" for k in ks] + \
-                       [f"recall@{k}_lenient" for k in ks] + \
-                       ["mrr_strict", "mrr_lenient", "zero_result_rate",
-                        "mean_lexical_overlap"]:
-                line = f"{key:28s}"
-                for c in cols:
-                    line += f"{summary[c].get(key, '-')!s:>{width}s}"
-                print(line)
-            print("-" * len(header))
-            line = f"{'n (queries)':28s}"
+        # Only sample chunks with enough substance to ask a specific question
+        # about; a 40-character fragment cannot ground a fair query.
+        eligible = [c for c in chunks if len(c["content"]) >= 300]
+        rng = random.Random(args.seed)
+        sample = rng.sample(eligible, min(args.sample, len(eligible)))
+        print(f"sampling {len(sample)} of {len(eligible)} eligible chunks "
+              f"(>=300 chars), k={args.k}\n")
+
+        if args.queries_in:
+            # Reuse a previous run's queries so an A/B differs in ONE variable.
+            cached = json.loads(args.queries_in.read_text())
+            if cached.get("key") != "content-sha256":
+                print(
+                    f"ERROR: {args.queries_in} is an id-keyed cache from the SQLite "
+                    f"era. Chunk ids are now derived from a per-run document id, so "
+                    f"they do not survive a re-ingest and the file cannot be matched. "
+                    f"Regenerate it with --queries-out.",
+                    file=sys.stderr,
+                )
+                return 1
+            by_key = cached["queries"]
+            generated = [by_key.get(chunk_key(c["content"])) for c in sample]
+            reused = sum(1 for g in generated if g)
+            # A cache legitimately covers fewer chunks than were sampled: some
+            # passages never produced usable queries. What matters for an A/B is
+            # that both runs use the SAME set, which reusing the file guarantees.
+            # Zero overlap means the sample does not match the cache at all —
+            # different targets, --sample or --seed — and that is an error.
+            if reused == 0:
+                print(
+                    f"ERROR: --queries-in matched none of the {len(sample)} "
+                    f"sampled chunks. Re-run with the same targets, --sample "
+                    f"and --seed that produced it.",
+                    file=sys.stderr,
+                )
+                return 1
+            print(f"reusing {reused} cached queries from {args.queries_in} "
+                  f"(of {len(sample)} sampled; the rest never produced one)")
+        else:
+            sem = asyncio.Semaphore(args.concurrency)
+            generated = await asyncio.gather(
+                *(generate_queries(c["content"], model, sem, args.gen_max_tokens)
+                  for c in sample)
+            )
+            if args.queries_out:
+                args.queries_out.write_text(json.dumps({
+                    "model": model, "seed": args.seed, "sample": len(sample),
+                    "key": "content-sha256",
+                    "queries": {
+                        chunk_key(c["content"]): g
+                        for c, g in zip(sample, generated) if g
+                    },
+                }, indent=2) + "\n")
+                print(f"wrote queries to {args.queries_out}")
+
+        # Fail rather than report zeros. A table of dashes is indistinguishable
+        # from "retrieval found nothing", and this script exists to be an
+        # instrument you can trust — a broken run must look broken. The cause is
+        # usually a provider rejecting a sampling parameter, which is printed above.
+        usable = sum(1 for g in generated if g)
+        if usable == 0:
+            print(
+                f"\nERROR: 0 of {len(sample)} queries were generated, so nothing "
+                f"can be measured. See the warnings above.",
+                file=sys.stderr,
+            )
+            return 1
+        # ANY loss is reported, not just catastrophic loss. The threshold used to be
+        # `usable < len(sample) // 2`, and a run that kept 28 of 40 sailed past it
+        # without a word — so the headline said "n (queries) 28" against a `--sample 40`
+        # in the command line, and reconciling those two numbers was left to a reader
+        # who had no reason to try. n is the first thing that makes a recall figure
+        # trustworthy or not; losing 30% of it is exactly what the reader needs told.
+        if usable < len(sample):
+            lost = len(sample) - usable
+            severity = "WARNING" if usable < len(sample) // 2 else "note"
+            print(
+                f"\n{severity}: {usable} of {len(sample)} sampled chunks produced "
+                f"queries ({lost} lost); every failure is explained in a warning above."
+                + (
+                    " Below half the sample — treat the numbers as indicative, not "
+                    "comparable."
+                    if usable < len(sample) // 2 else ""
+                ),
+                file=sys.stderr,
+            )
+
+        gen_cost = sum(g.get("_cost", 0.0) for g in generated if g)
+        pipelines = tuple(
+            m.strip() for m in args.modes.split(",") if m.strip()
+        )
+        if args.compare and "tuned" not in pipelines:
+            pipelines = pipelines + ("tuned",)
+        arms = ["natural", "paraphrased"]
+        if args.diluted:
+            # The engine does not query with a tidy question — it ORs terms
+            # from a window of recent conversation, so the real query is a
+            # good question buried in unrelated chatter. This arm models that
+            # by padding the natural question with terms from an unrelated
+            # chunk, which is the case discriminative term selection targets.
+            arms.append("diluted")
+        results: List[Dict[str, Any]] = []
+        for chunk, queries in zip(sample, generated):
+            if not queries:
+                continue
+            filler_pool = [c for c in chunks if c["id"] != chunk["id"]]
+            filler = " ".join(
+                extract_terms(rng.choice(filler_pool)["content"], limit=18)
+            ) if filler_pool else ""
+            queries = dict(queries)
+            queries["diluted"] = f"{queries['natural']} {filler}"
+            for arm in arms:
+                query = queries[arm]
+                for pipeline in pipelines:
+                    BEST_COS[0] = None
+                    rows, fts = await run_pipeline(
+                        db, query, args.k, pipeline,
+                        args.term_limit, args.max_df_ratio, args.score_ratio,
+                    )
+                    results.append({
+                        "arm": arm,
+                        "pipeline": pipeline,
+                        "query": query,
+                        "fts_query": fts,
+                        "gold_chunk_id": chunk["id"],
+                        "matched": len(rows),
+                        "best_cos": BEST_COS[0],
+                        "overlap": lexical_overlap(query, chunk["content"]),
+                        "rank": rank_of_gold(
+                            rows, chunk["id"], chunk["document_id"], chunk["ordinal"]
+                        ),
+                    })
+
+        ks = [k for k in (1, 3, args.k) if k <= args.k]
+        ks = sorted(set(ks))
+        summary = {
+            f"{arm}/{pipeline}": summarise(results, arm, ks, pipeline)
+            for arm in arms
+            for pipeline in pipelines
+        }
+
+        # Chance baseline: probability a uniformly random top-k selection
+        # contains the gold chunk, for this corpus size.
+        baseline = round(min(1.0, args.k / len(chunks)), 6)
+
+        cols = list(summary)
+        width = max(12, max(len(c) for c in cols) + 1)
+        header = f"{'metric':28s}" + "".join(f"{c:>{width}s}" for c in cols)
+        print(header)
+        print("-" * len(header))
+        for key in [f"recall@{k}_strict" for k in ks] + \
+                   [f"recall@{k}_lenient" for k in ks] + \
+                   ["mrr_strict", "mrr_lenient", "zero_result_rate",
+                    "mean_lexical_overlap"]:
+            line = f"{key:28s}"
             for c in cols:
-                line += f"{summary[c]['n']!s:>{width}s}"
+                line += f"{summary[c].get(key, '-')!s:>{width}s}"
             print(line)
-            print(f"{'random-guess recall@k':28s}" +
-                  "".join(f"{baseline!s:>{width}s}" for _ in cols))
-            print(f"\nquery-generation cost: ${gen_cost:.4f}")
+        print("-" * len(header))
+        line = f"{'n (queries)':28s}"
+        for c in cols:
+            line += f"{summary[c]['n']!s:>{width}s}"
+        print(line)
+        print(f"{'random-guess recall@k':28s}" +
+              "".join(f"{baseline!s:>{width}s}" for _ in cols))
+        print(f"\nquery-generation cost: ${gen_cost:.4f}")
 
-            report = {
-                "corpus": {
-                    "files": [str(f) for f in files],
-                    "chunks": len(chunks),
-                    "chars": total_chars,
-                },
-                "k": args.k,
-                "sample": len(sample),
-                "seed": args.seed,
-                "model": model,
-                "random_baseline_recall_at_k": baseline,
-                "summary": summary,
-                "results": results,
-                "generation_cost_usd": round(gen_cost, 6),
-            }
-            if args.json_out:
-                args.json_out.write_text(json.dumps(report, indent=2) + "\n")
-                print(f"wrote {args.json_out}")
-            return 0
-        finally:
-            await db.close()
+        report = {
+            "corpus": {
+                "files": [str(f) for f in files],
+                "chunks": len(chunks),
+                "chars": total_chars,
+            },
+            "k": args.k,
+            "sample": len(sample),
+            "seed": args.seed,
+            "model": model,
+            "random_baseline_recall_at_k": baseline,
+            "summary": summary,
+            "results": results,
+            "generation_cost_usd": round(gen_cost, 6),
+        }
+        if args.json_out:
+            args.json_out.write_text(json.dumps(report, indent=2) + "\n")
+            print(f"wrote {args.json_out}")
+        return 0
+    finally:
+        await db.close()
 
 
 if __name__ == "__main__":

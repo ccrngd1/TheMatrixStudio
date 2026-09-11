@@ -4,6 +4,18 @@
 `docs/PHASE5-RETRIEVAL-DESIGN.md` deferred to, and it produces a verdict that
 goes against the original preference.
 
+> **Superseded for current numbers by `docs/PHASE3-RECALL-MEASUREMENT.md`
+> (2026-09-11).** Every figure below was taken on **SQLite FTS5 + sqlite-vec**, all
+> three of which the AWS port replaced — the lexical arm is in-process BM25 now, the
+> vector store is S3 Vectors, and the similarity metric is cosine rather than L2. The
+> re-measurement reproduces the vector arm and the central conclusion, so this
+> document's *reasoning* stands; quote its numbers only as the pre-port baseline.
+>
+> Two things here are now known to be wrong rather than merely superseded, and both
+> are corrected in the newer doc: the score-floor discussion assumes a conversion that
+> made the floor **inert** in practice, and the "no absolute floor is calibrated" gap
+> has since been closed and validated against 120 real queries.
+
 Reproduce with:
 
 ```bash

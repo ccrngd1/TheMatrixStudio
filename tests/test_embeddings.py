@@ -235,11 +235,15 @@ async def vdb(db):
 
 # `requires_vec` used to skip these when the optional `sqlite-vec` extension was
 # absent. The vector store is a service now, so there is nothing to be absent and
-# nothing to skip — the marker is a no-op kept only so the decorators below read the
-# same as the rest of the suite's history. The paired
-# `if not vdb.vec_available: pytest.skip(...)` guards are removed outright: leaving a
-# skip on a permanently-true condition is how a test quietly stops running.
-requires_vec = pytest.mark.usefixtures()
+# nothing to skip, and the paired `if not vdb.vec_available: pytest.skip(...)` guards
+# are gone outright — leaving a skip on a permanently-true condition is how a test
+# quietly stops running.
+#
+# The marker itself is gone too. It was briefly kept as `pytest.mark.usefixtures()`
+# so the decorators below would read the same as the suite's history, but an empty
+# `usefixtures()` makes pytest emit "has no effect" for every use: 13 warnings for
+# zero behaviour, which is the kind of noise a real warning then hides inside. Git
+# history preserves what the decorators used to say.
 
 
 def stub_vector_search(db, rows):
@@ -277,7 +281,6 @@ def vec_row(chunk_id, distance, content="a retrieved passage", title="a.md"):
     }
 
 
-@requires_vec
 async def test_vectors_are_stored_and_counted(vdb):
     """What this file can still assert about storage: the write lands and is counted.
 
@@ -319,7 +322,6 @@ async def test_vectors_are_stored_and_counted(vdb):
 # runs again and looks like coverage.
 
 
-@requires_vec
 async def test_dimension_mismatch_is_refused(vdb):
     """Mixing widths would yield distances that are arithmetic nonsense.
 
@@ -354,7 +356,6 @@ async def test_dimension_mismatch_is_refused(vdb):
     )
 
 
-@requires_vec
 async def test_query_vector_of_wrong_dimension_returns_nothing(vdb):
     await vdb.add_document(run_id="r1", title="a.md", chunks=["x"], persona_name="A")
     pending = await vdb.chunks_missing_vectors("r1")
@@ -365,7 +366,6 @@ async def test_query_vector_of_wrong_dimension_returns_nothing(vdb):
     assert await vdb.vector_search("r1", [1.0, 0.0, 0.0], "A", k=5) == []
 
 
-@requires_vec
 async def test_embedding_model_recorded_and_reembedding_is_idempotent(vdb):
     await vdb.add_document(run_id="r1", title="a.md", chunks=["x"], persona_name="A")
     cid = (await vdb.chunks_missing_vectors("r1"))[0]["chunk_id"]
@@ -398,7 +398,6 @@ async def test_embedding_model_recorded_and_reembedding_is_idempotent(vdb):
 # fault that can actually occur.
 
 
-@requires_vec
 async def test_embed_pending_chunks_reports_provider_failure(vdb):
     await vdb.add_document(run_id="r1", title="a.md", chunks=["x"], persona_name="A")
     with patch("litellm.aembedding", side_effect=_fake_embedding(fail_on=("",))):
@@ -406,7 +405,6 @@ async def test_embed_pending_chunks_reports_provider_failure(vdb):
     assert stats["embedded"] == 0 and "error" in stats
 
 
-@requires_vec
 async def test_vector_mode_falls_back_to_lexical_when_embedding_fails(vdb):
     """A provider outage must degrade the turn, not blank the retrieval."""
     await vdb.add_document(
@@ -478,7 +476,6 @@ async def test_vector_mode_falls_back_to_lexical_when_the_query_fails(
     assert any("falling back to lexical" in r.message for r in caplog.records)
 
 
-@requires_vec
 async def test_vector_mode_with_unembedded_chunks_falls_back_to_lexical(vdb, caplog):
     """The other unreachable case: documents attached but never embedded.
 
@@ -503,7 +500,6 @@ async def test_vector_mode_with_unembedded_chunks_falls_back_to_lexical(vdb, cap
     assert any("falling back to lexical" in r.message for r in caplog.records)
 
 
-@requires_vec
 async def test_fts_mode_is_unaffected_by_the_vector_fallback(vdb):
     """The fallback must not change fts mode, which never had the defect.
 
@@ -521,7 +517,6 @@ async def test_fts_mode_is_unaffected_by_the_vector_fallback(vdb):
     assert len(passages) == 1
 
 
-@requires_vec
 async def test_hybrid_mode_returns_fused_results(vdb):
     """Both arms present, so the result must be fused rather than either one alone.
 
@@ -562,7 +557,6 @@ async def test_embedding_result_dim_and_ok_count_with_all_failures():
     assert result.dim == 0 and result.ok_count == 0
 
 
-@requires_vec
 async def test_empty_embedding_model_resolves_to_the_default(vdb):
     """Regression: "" means "use the default", not "pass an empty model name".
 
@@ -715,7 +709,6 @@ def test_floor_is_not_a_relevance_filter():
     assert len(kept) == 2, "the floor cannot and must not separate these"
 
 
-@requires_vec
 async def test_floor_skipped_for_non_unit_vectors(vdb, caplog):
     """Applying the cosine conversion to unnormalised vectors would be meaningless."""
     await vdb.add_document(
@@ -738,7 +731,6 @@ async def test_floor_skipped_for_non_unit_vectors(vdb, caplog):
     assert any("non-unit" in r.message for r in caplog.records)
 
 
-@requires_vec
 async def test_floor_rejection_is_reported_to_the_caller(vdb):
     """Also the guard on the other side of the lexical fallback.
 
