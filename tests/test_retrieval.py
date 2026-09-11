@@ -10,6 +10,8 @@ The properties locked here are the ones the design rests on:
 - the index is rebuildable from ``doc_chunks``, the source of truth.
 """
 
+import inspect
+
 import pytest
 
 from matrix_studio.retrieval import (
@@ -561,6 +563,30 @@ def test_retrieval_config_experimental_knobs_default_off():
     assert cfg.score_ratio == 0.0
 
 
+def test_retrieval_mode_default_is_vector():
+    """Pins the default, because changing it silently is exactly what happened once.
+
+    The default moved "fts" -> "vector" on the evidence in
+    `docs/PHASE3-RECALL-MEASUREMENT.md`, and the whole 872-test suite passed either
+    way — so a user-visible retrieval behaviour was, at that moment, unguarded. This
+    test is the guard: the value is asserted here and the reasoning lives in
+    `RetrievalConfig.mode`'s docstring, so anyone flipping it back has to read the
+    numbers first.
+
+    The number that chose it is diluted recall@1 — the engine's real query shape, and
+    the slot that dominates the prompt: lexical 0.125, vector 0.650, hybrid 0.450.
+    """
+    from matrix_studio.api.app import RetrievalConfigModel
+
+    assert RetrievalConfig().mode == "vector"
+    # Three defaults describe this setting; disagreement between them reads to a user
+    # as "I set it and nothing happened".
+    assert RetrievalConfigModel().mode == "vector"
+    assert (
+        inspect.signature(retrieve_for_turn).parameters["mode"].default == "vector"
+    )
+
+
 async def test_retrieve_for_turn_defaults_do_not_apply_the_knobs(run_db):
     """Default retrieval must behave as the measured-best baseline."""
     stored = await attach(
@@ -572,6 +598,12 @@ async def test_retrieve_for_turn_defaults_do_not_apply_the_knobs(run_db):
     passages, query, _rej = await retrieve_for_turn(
         run_db, "r1", "A", "retrieval design egress inspection",
         conversation=[], k=5, max_chars=50_000,
+        # Explicit, because this test is about the lexical KNOBS (term_limit and
+        # score_ratio) and asserts the shape of the FTS query string below. Leaving it
+        # implicit made it pass through the vector arm's fallback to lexical once the
+        # default changed — the same assertions, reached by a different route, which is
+        # how a test keeps its name after losing its subject.
+        mode="fts",
     )
     # All terms retained (no discriminative narrowing) and no tail trimming.
     assert query.count(" OR ") >= 3

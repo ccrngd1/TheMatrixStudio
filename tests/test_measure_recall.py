@@ -189,3 +189,55 @@ def test_collect_files_accepts_explicit_files(mod, tmp_path):
 def test_collect_files_skips_missing_targets(mod, tmp_path, capsys):
     assert mod.collect_files([str(tmp_path / "nope.md")]) == []
     assert "skipping" in capsys.readouterr().err
+
+
+# --------------------------------------------------------------------------
+# chunk_key — the query cache's identity
+# --------------------------------------------------------------------------
+
+
+def test_chunk_key_is_stable_for_identical_content(mod):
+    """The whole point: the same passage keys the same across separate ingests.
+
+    The cache used to key on the chunk's storage id, which was stable only because
+    SQLite handed out the same AUTOINCREMENT ids to the same corpus every time. On
+    DynamoDB the document id is a fresh uuid per ingest and the chunk id hashes it,
+    so an id-keyed cache matches nothing on the second run — and `--queries-in`
+    reported that as "re-run with the same seed", which sends the reader looking for
+    a mistake they did not make.
+    """
+    assert mod.chunk_key("a passage") == mod.chunk_key("a passage")
+
+
+def test_chunk_key_differs_for_different_content(mod):
+    assert mod.chunk_key("passage one") != mod.chunk_key("passage two")
+
+
+def test_chunk_key_is_whitespace_sensitive(mod):
+    """Not cosmetic: a shifted chunk boundary changes the text, and the question
+    generated for the old text is no longer ground truth for the new one. A key that
+    forgave whitespace would silently reuse a stale question."""
+    assert mod.chunk_key("a passage") != mod.chunk_key("a  passage")
+
+
+def test_chunk_key_is_short_enough_to_read_but_wide_enough_to_not_collide(mod):
+    key = mod.chunk_key("x")
+    assert len(key) == 16 and all(c in "0123456789abcdef" for c in key)
+
+
+def test_chunk_key_handles_non_ascii(mod):
+    """Documents carry em-dashes and smart quotes; `.encode()` must not raise."""
+    assert mod.chunk_key("a passage — with “quotes”")
+
+
+def test_id_keyed_cache_is_rejected_rather_than_silently_unmatched(mod):
+    """The guard that keeps the old failure from recurring quietly.
+
+    A cache file without `key: content-sha256` is from the SQLite era. Matching it
+    would produce zero hits, so the script must say WHY rather than blame the seed.
+    """
+    import inspect
+
+    src = inspect.getsource(mod.main)
+    assert 'cached.get("key") != "content-sha256"' in src
+    assert "id-keyed cache" in src

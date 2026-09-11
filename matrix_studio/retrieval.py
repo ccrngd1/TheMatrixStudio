@@ -412,7 +412,8 @@ async def retrieve_for_turn(
     term_limit: int = 0,
     max_df_ratio: float = 0.5,
     score_ratio: float = 0.0,
-    mode: str = "fts",
+    # Matches `RetrievalConfig.mode`, which carries the measurement behind the value.
+    mode: str = "vector",
     embedding_model: str = "",
     rrf_k: int = 60,
     min_similarity: float = 0.0,
