@@ -46,6 +46,16 @@ logger = logging.getLogger(__name__)
 SEQ_WIDTH = 12
 TURN_WIDTH = 6
 
+#: Every table this layer reads, without the deployment prefix.
+#:
+#: Named once because two things need it: the per-tenant session policy (which has to
+#: grant exactly these) and the test that checks the storage layer, the CDK stack and
+#: the fixture all name the same set.
+_TABLES = (
+    "runs", "events", "snapshots", "summaries", "threads", "thread-messages",
+    "documents",
+)
+
 
 class StorageError(RuntimeError):
     """A storage operation failed in a way the caller has to handle.
@@ -205,6 +215,10 @@ class DynamoStorage:
         # Set only by `for_owner`. Absent on the unbound store, which is
         # what makes an unbound call raise instead of guessing.
         self._owner_sub: Optional[str] = None
+        # A tenant-scoped boto3 Session, set by `for_owner` when a tenant role is
+        # configured. None means "use the ambient credentials", which is the local
+        # single-user case.
+        self._session = None
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -219,12 +233,23 @@ class DynamoStorage:
         use rather than here — so the startup log below reports what it will TRY to
         use, which is the fact an operator needs when the first request fails.
         """
+        self._ddb = self._make("resource", "dynamodb")
+        self._client = self._make("client", "dynamodb")
+        self._s3 = self._make("client", "s3")
+        await self._announce()
+
+    def _make(self, kind: str, service: str):
+        """Build a client or resource, from the tenant-scoped session when bound.
+
+        Every AWS object in this class goes through here, so there is exactly one place
+        that decides which credentials are used — and therefore one place to get the
+        tenancy boundary wrong.
+        """
         import boto3
 
-        self._ddb = boto3.resource("dynamodb", region_name=self.region)
-        self._client = boto3.client("dynamodb", region_name=self.region)
-        self._s3 = boto3.client("s3", region_name=self.region)
-        await self._announce()
+        source = self._session or boto3
+        factory = source.resource if kind == "resource" else source.client
+        return factory(service, region_name=self.region)
 
     async def _announce(self) -> None:
         """Say plainly which store this is, and WARN when it holds nothing.
@@ -275,9 +300,21 @@ class DynamoStorage:
         if count:
             logger.info("Storage: %s (~%d run item(s))", target, count)
         else:
+            # "Reports empty", not "is empty". DynamoDB's `ItemCount` is refreshed
+            # roughly every six hours, so a table populated minutes ago still reports
+            # zero — observed on the first real deployment, where this warned EMPTY with
+            # two runs present.
+            #
+            # The wording matters more than it looks. A warning that turns out to be
+            # wrong is worse than none: an operator who sees "EMPTY" contradicted by a
+            # working UI learns to ignore the line, and then it cannot do its job on the
+            # day the prefix really is wrong. Saying the count is approximate keeps the
+            # signal and drops the false certainty.
             logger.warning(
-                "Storage: %s — EMPTY (no previous conversations will be listed). If "
-                "you expected existing runs, check TABLE_PREFIX and the region.",
+                "Storage: %s — reports NO run items. If you expected existing runs, "
+                "check TABLE_PREFIX and the region. Note the count is DynamoDB's "
+                "approximate ItemCount and lags by up to ~6 hours, so a recently "
+                "populated table can report zero.",
                 target,
             )
 
@@ -319,14 +356,67 @@ class DynamoStorage:
         for the duration of a request. `for_owner` is the code-level shape of the same
         idea, and it is where those credentials attach.
 
+        **Binding does two things, and they are easy to conflate.** It scopes the QUERY
+        (the partition key it reads) *and* it attaches the CREDENTIALS the call is signed
+        with. Those are independent, and missing the second is how this broke twice on
+        real AWS:
+
+        * `db.method(..., owner_sub=user)` scopes the query and leaves the credentials
+          ambient — so on a deployment where the function's own role holds no storage
+          rights, every such call is an AccessDenied whose message blames permissions
+          rather than the mixed idiom. Half of `api/app.py` used that form, inherited
+          from Phase 0.2 when there were no scoped credentials to attach.
+        * The run-partitioned tables (`documents`, `threads`, `summaries`) take **no
+          owner at all**, because they are keyed `RUN#{run_id}` so a shared knowledge
+          base can be read by principals who do not own it. It is tempting to conclude
+          they need no binding either. They do: they need no owner for the KEY and they
+          still need CREDENTIALS.
+
+        So there is one idiom — bind at the boundary — and `owner_sub=` survives only as
+        an override for tests asserting a cross-tenant read is refused.
+
         The view shares this store's clients — it is a shallow copy, not a new
         connection — so creating one per request costs nothing. The thing not to do is
         hold one past its request, since it carries an identity.
         """
         import copy as _copy
 
+        from matrix_studio.storage.credentials import scoped_session, tenant_role_arn
+
         bound = _copy.copy(self)
         bound._owner_sub = owner_sub
+
+        # §3's isolation attaches HERE, and this is the whole of it in the application:
+        # when a tenant role is configured, the bound view's clients come from
+        # credentials whose session policy pins `dynamodb:LeadingKeys` to
+        # `USER#{sub}` and S3 object ARNs to `…/{sub}/*`. A query that omits the tenant
+        # filter is then refused by the service, not filtered by us.
+        #
+        # This was missing at first, and the gap is worth recording: the role, the
+        # policy builder and the CDK wiring all existed and were verified against the
+        # real account, and NOTHING CONNECTED THEM to the storage layer — so the
+        # deployed API called DynamoDB with the function's own credentials and got
+        # AccessDenied on every read. The unit suite could not have caught it, because
+        # `moto` does not evaluate IAM. Only deploying did.
+        role = tenant_role_arn()
+        if role:
+            bound._session = scoped_session(
+                owner_sub,
+                role_arn=role,
+                table_arns=[
+                    f"arn:aws:dynamodb:{self.region}:*:table/{self.table_prefix}-{t}"
+                    for t in _TABLES
+                ],
+                bucket_arn=f"arn:aws:s3:::{self.bucket}",
+                region=self.region,
+            )
+            # Force the clients to be rebuilt from the scoped session rather than
+            # inherited from the unbound store by the shallow copy.
+            bound._ddb = None
+            bound._client = None
+            bound._s3 = None
+            bound._s3vectors = None
+            bound._tables = {}
         return bound
 
     def _owner(self, owner_sub: Optional[str]) -> str:
@@ -337,12 +427,33 @@ class DynamoStorage:
         is this" being unanswerable is not "the local user's" — that would attribute
         one person's conversation to a shared bucket, silently.
         """
-        resolved = owner_sub or getattr(self, "_owner_sub", None)
+        bound = getattr(self, "_owner_sub", None)
+        resolved = owner_sub or bound
         if not resolved:
             raise StorageError(
                 "no owner for this call. Either bind the store with "
                 "`db.for_owner(sub)` at the request boundary, or pass "
                 "`owner_sub=` explicitly."
+            )
+        # An explicit owner that disagrees with the SCOPED CREDENTIALS cannot work, and
+        # the way it fails is unhelpful: the query would be built for one tenant and
+        # signed for another, so DynamoDB answers AccessDenied and the message says
+        # nothing about the mismatch.
+        #
+        # Only checked when a scoped session exists. Without one — the local
+        # single-user server, and the test suite — the override is exactly how a
+        # negative case asserts that another tenant's data is unreachable, so it must
+        # keep working.
+        if (
+            owner_sub
+            and bound
+            and owner_sub != bound
+            and getattr(self, "_session", None) is not None
+        ):
+            raise StorageError(
+                f"this store is bound to {bound!r} and holds credentials scoped to "
+                f"it, but the call asked for {owner_sub!r}. Bind a separate view with "
+                "`db.for_owner(...)` instead of overriding the owner on a bound store."
             )
         return resolved
 
@@ -370,10 +481,29 @@ class DynamoStorage:
         """
         return True
 
+    def _ensure_clients(self) -> None:
+        """Build the clients if they are not there yet.
+
+        A bound view discards the clients it inherited from the unbound store (they
+        carry the wrong credentials), so it builds its own on first use from the scoped
+        session. Every accessor goes through here.
+
+        It has to be EVERY accessor, which is how this was wrong: the rebuild lived
+        inside `_table()`, so a bound view whose first operation was an S3 write —
+        attaching a document, saving a snapshot — hit `self._s3` still None and failed
+        with `'NoneType' object has no attribute 'put_object'`. Nothing in the unit
+        suite reached it, because without a tenant role there is no rebuild to miss.
+        """
+        if self._ddb is None:
+            self._ddb = self._make("resource", "dynamodb")
+        if self._client is None:
+            self._client = self._make("client", "dynamodb")
+        if self._s3 is None:
+            self._s3 = self._make("client", "s3")
+
     def _table(self, name: str):
         if name not in self._tables:
-            if self._ddb is None:
-                raise StorageError("connect() has not been called")
+            self._ensure_clients()
             self._tables[name] = self._ddb.Table(f"{self.table_prefix}-{name}")
         return self._tables[name]
 
@@ -421,6 +551,7 @@ class DynamoStorage:
         return f"snapshots/{owner_sub}/{run_id}/{turn:0{TURN_WIDTH}d}.json"
 
     async def _put_body(self, key: str, body: str) -> None:
+        self._ensure_clients()
         if not self.bucket:
             raise StorageError(
                 "DATA_BUCKET is not set, so there is nowhere to write the snapshot "
@@ -437,6 +568,7 @@ class DynamoStorage:
 
     async def _put_text(self, key: str, text: str) -> None:
         """Write a document's normalised text. Same guard as a snapshot body."""
+        self._ensure_clients()
         if not self.bucket:
             raise StorageError(
                 "DATA_BUCKET is not set, so there is nowhere to write the document "
@@ -462,6 +594,7 @@ class DynamoStorage:
         the event log, which is the source of truth. It is logged loudly because it
         should never happen.
         """
+        self._ensure_clients()
         try:
             obj = await self._call(self._s3.get_object, Bucket=self.bucket, Key=key)
         except Exception as exc:  # noqa: BLE001 - botocore raises many shapes
@@ -1696,6 +1829,7 @@ class DynamoStorage:
         )
         key = doc.get("s3_key")
         if key and self.bucket:
+            self._ensure_clients()
             try:
                 await self._call(
                     self._s3.delete_object, Bucket=self.bucket, Key=str(key)
@@ -2267,9 +2401,7 @@ class DynamoStorage:
 
     def _vectors_client(self):
         if self._s3vectors is None:
-            import boto3
-
-            self._s3vectors = boto3.client("s3vectors", region_name=self.region)
+            self._s3vectors = self._make("client", "s3vectors")
         return self._s3vectors
 
     # ------------------------------------------------------------------ #

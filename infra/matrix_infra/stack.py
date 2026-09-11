@@ -104,6 +104,14 @@ class MatrixStudioStack(Stack):
         """
         return dynamodb.Table(
             self,
+            # Left as it was, deliberately. Tidying this to strip hyphens too —
+            # "Knowledge-BasesTable" -> "KnowledgeBasesTable" — looks like an
+            # improvement and is a deployment failure: a changed logical id makes
+            # CloudFormation treat the resource as NEW, so it tries to create a table
+            # whose `TableName` the orphaned old one still holds, and
+            # `AWS::EarlyValidation::ResourceExistenceCheck` refuses the whole change
+            # set. CDK already sanitises the hyphen for the physical id, so there was
+            # nothing wrong to fix.
             f"{name.title().replace('_', '')}Table",
             table_name=f"{self.config.prefix}-{name}",
             partition_key=dynamodb.Attribute(
@@ -144,7 +152,18 @@ class MatrixStudioStack(Stack):
             "snapshots": self._table("snapshots", "pk", "sk"),
             "summaries": self._table("summaries", "pk", "sk"),
             "threads": self._table("threads", "pk", "sk"),
-            "thread_messages": self._table("thread_messages", "pk", "sk"),
+            # HYPHENATED, like every other multi-word table here. The dict key stays
+            # underscored because it becomes the `TABLE_THREAD_MESSAGES` environment
+            # variable, and a hyphen is not valid in one.
+            #
+            # It was `thread_messages` and that shipped: the real table was
+            # `matrix-studio-thread_messages` while the storage layer asked for
+            # `matrix-studio-thread-messages`, so every thread-message operation would
+            # have failed with ResourceNotFoundException in production. It passed
+            # locally because the moto fixture created the hyphen form — the fixture
+            # and the stack had diverged, which is the exact failure
+            # `test_table_names_match_the_storage_layer` now guards.
+            "thread_messages": self._table("thread-messages", "pk", "sk"),
             # Not under a user partition on purpose: a shared KB is read by
             # principals who do not own it (§8b), so a `USER#{sub}` prefix would
             # make sharing impossible to express. Authorisation here is the

@@ -578,3 +578,43 @@ def test_hashed_assets_are_cached_immutably(client, tmp_path):
             r = c.get("/assets/index-BBBBBBBB.js")
             assert r.status_code == 200
             assert "immutable" in r.headers.get("cache-control", "")
+
+
+def test_an_upload_stores_the_original_text_not_a_reassembly(client, run_ref):
+    """`text_is_original` must be true on the one path a user actually uses.
+
+    Without passing `text=`, the stored body is `join_chunks(chunks)` — not an exact
+    inverse of chunking. Measured on two real documents it shifts 2–7% of chunk
+    boundaries, so an `ordinal` can point at different text from the vector built at
+    that ordinal, and hybrid retrieval fuses the arms BY chunk id: a passage cited under
+    an ordinal that does not contain it.
+
+    The route was omitting it, so every upload wrote `text_is_original: false` — exactly
+    the condition the §4a correction exists to avoid, on the only path that matters.
+    Found by reading a real API response after deploying.
+    """
+    resp = client.post(f"/api/runs/{run_ref}/documents",
+                       json={"persona_name": "Dana", "title": "a.md", "text": DANA_TEXT})
+    assert resp.status_code == 201, resp.text
+    docs = client.get(f"/api/runs/{run_ref}/documents").json()["documents"]
+    assert docs
+    assert docs[0].get("text_is_original") is True, docs[0]
+
+
+def test_the_documents_response_does_not_leak_storage_keys(client, run_ref):
+    """`pk`/`sk`/`s3_key` are how the backend addresses an item, not client data.
+
+    A client that started reading them would be coupled to the key design — and that is
+    the part most likely to change, since Phase 6 re-partitions documents by knowledge
+    base. `owner_sub` goes too: the caller knows who they are, and echoing a sub back
+    would be a disclosure if it were ever the wrong one.
+    """
+    client.post(f"/api/runs/{run_ref}/documents",
+                json={"persona_name": "Dana", "title": "a.md", "text": DANA_TEXT})
+    docs = client.get(f"/api/runs/{run_ref}/documents").json()["documents"]
+    assert docs
+    for leaked in ("pk", "sk", "s3_key", "owner_sub"):
+        assert leaked not in docs[0], f"{leaked} reached the client: {docs[0]}"
+    # And the fields a client legitimately needs are still there.
+    for kept in ("id", "title", "chunk_count", "char_count", "persona_name"):
+        assert kept in docs[0], f"{kept} is missing: {docs[0]}"
