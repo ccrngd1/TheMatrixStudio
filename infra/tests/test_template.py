@@ -515,11 +515,17 @@ def test_the_lambda_can_assume_only_the_tenant_role(template: Template):
             assert resources, "AssumeRole with no resource"
 
 
-def test_the_tenant_role_is_assumable_only_by_the_api_function(template: Template):
+def test_the_tenant_role_is_assumable_only_by_this_stack_s_functions(template: Template):
     """Anything else in the account being able to assume it defeats the point.
 
     The role is deliberately broad — effective permissions are the intersection of
     it and the per-request session policy — so who may assume it *is* the control.
+
+    Phase 5 widened this from the API alone to the API plus the three turn-loop
+    workers, which is a real change to the one control that makes the role's breadth
+    safe. So the assertion is an EXACT SET rather than a set of `in` checks: a fourth
+    principal appearing here must fail this test and be justified, not slip in
+    because it happened to satisfy "the API is present".
     """
     roles = {
         lid: r for lid, r in template.find_resources("AWS::IAM::Role").items()
@@ -530,14 +536,29 @@ def test_the_tenant_role_is_assumable_only_by_the_api_function(template: Templat
     principals = []
     for statement in trust["Statement"]:
         assert statement["Action"] == "sts:AssumeRole"
-        principals.append(statement["Principal"])
-    assert len(principals) == 1, f"more than one trusted principal: {principals}"
-    body = str(principals[0])
-    assert "AWS" in principals[0], principals[0]
-    assert "Service" not in principals[0], (
-        "a service principal here would let that service assume the tenant role"
+        assert "AWS" in statement["Principal"], statement["Principal"]
+        assert "Service" not in statement["Principal"], (
+            "a service principal here would let that service assume the tenant role"
+        )
+        principals.append(str(statement["Principal"]))
+
+    # Every trusted principal is one of this stack's own function roles, named by
+    # the logical id CDK derives — so a principal from outside the stack (an account
+    # root, another role's ARN) cannot satisfy any of these.
+    expected = {
+        "ApiFunctionServiceRole",
+        "PrepareFunctionServiceRole",
+        "TurnFunctionServiceRole",
+        "FinaliseFunctionServiceRole",
+    }
+    matched = {
+        name for name in expected
+        if any(name in principal for principal in principals)
+    }
+    assert matched == expected, f"trusted principals are {principals}"
+    assert len(principals) == len(expected), (
+        f"an unexpected principal trusts the tenant role: {principals}"
     )
-    assert "ApiFunctionServiceRole" in body, body
 
 
 def test_no_verification_principal_by_default(template: Template):
@@ -747,3 +768,280 @@ def test_the_tenant_policy_does_not_overflow(template: Template):
         f"an IAM policy is overflowing into a managed policy: {overflow}. "
         "Prefer one wildcard statement over a grant per resource."
     )
+
+
+# --------------------------------------------------------------------------- #
+# Phase 5 — the turn loop. Every property here is one whose absence is a stack
+# that deploys cleanly and cannot run a conversation.
+# --------------------------------------------------------------------------- #
+
+
+def _definition(template: Template) -> dict:
+    """The state machine's definition, as a dict."""
+    import json
+
+    machines = template.find_resources("AWS::StepFunctions::StateMachine")
+    assert len(machines) == 1, f"expected one state machine, got {list(machines)}"
+    body = next(iter(machines.values()))["Properties"]["DefinitionString"]
+    # CDK emits it as an Fn::Join over literals and token substitutions; the
+    # structure is what matters here, so the tokens are stubbed out.
+    if isinstance(body, dict):
+        parts = body["Fn::Join"][1]
+        # A token substitution sits INSIDE an already-quoted JSON string value, so it
+        # is replaced with a bare word. Substituting a quoted "TOKEN" instead produces
+        # doubled quotes and an unparseable document — which is a test bug that reads
+        # exactly like a malformed definition.
+        body = "".join(p if isinstance(p, str) else "TOKEN" for p in parts)
+    return json.loads(body)
+
+
+def test_the_workflow_is_standard_not_express(template: Template):
+    """Express caps at 5 minutes and is at-least-once.
+
+    Both are wrong here: a 40-turn run at 6-13 s/turn is minutes to an hour, and
+    at-least-once delivery would re-run states that APPEND to an event log. Express
+    is also cheaper, which is exactly why somebody would switch it later.
+    """
+    machines = template.find_resources("AWS::StepFunctions::StateMachine")
+    props = next(iter(machines.values()))["Properties"]
+    # CDK omits StateMachineType for STANDARD, so absent is correct and EXPRESS is
+    # the failure. Asserted this way round because a missing key must not pass as
+    # "not express" by accident.
+    assert props.get("StateMachineType") in (None, "STANDARD"), props
+
+
+def test_the_loop_goes_back_to_the_turn_state(template: Template):
+    """Without the back-edge this generates exactly one turn and stops.
+
+    That is the single most plausible way to build a state machine that passes a
+    smoke test — a one-turn conversation looks like a working run.
+    """
+    states = _definition(template)["States"]
+    choice = states["CheckContinue"]
+    assert choice["Type"] == "Choice"
+    assert choice["Default"] == "Turn", (
+        f"the Choice's default must loop back to Turn, got {choice.get('Default')}"
+    )
+    assert states["Turn"]["Next"] == "CheckContinue"
+
+
+def test_the_loop_terminates_on_done(template: Template):
+    states = _definition(template)["States"]
+    choices = states["CheckContinue"]["Choices"]
+    assert len(choices) == 1, choices
+    assert choices[0]["Variable"] == "$.done"
+    assert choices[0]["BooleanEquals"] is True
+    assert choices[0]["Next"] == "Finalise"
+
+
+def test_the_turn_state_retries_on_failure(template: Template):
+    """Bedrock throttling is §7's named operational risk at company scale.
+
+    Retrying the whole turn is only safe because a slice trims dangling events past
+    the checkpoint before generating, so this asserts the retry exists — the
+    idempotence it depends on is asserted in tests/test_orchestration.py.
+    """
+    retries = _definition(template)["States"]["Turn"]["Retry"]
+    assert retries, "the Turn state has no Retry policy"
+    covered = {e for r in retries for e in r["ErrorEquals"]}
+    assert "States.TaskFailed" in covered
+    assert "Lambda.TooManyRequestsException" in covered
+    for r in retries:
+        assert r["BackoffRate"] > 1.0, "a flat retry does not relieve a throttle"
+        assert r["MaxAttempts"] >= 3, r
+
+
+def test_an_exhausted_turn_marks_the_run_failed(template: Template):
+    """Otherwise the run sits at `running` for ever with no execution behind it.
+
+    Indistinguishable to a user from a run that is merely slow, and the exact state
+    the startup sweep used to paper over — which is now off under Lambda.
+    """
+    states = _definition(template)["States"]
+    catch = states["Turn"].get("Catch")
+    assert catch, "the Turn state has no Catch"
+    assert any(
+        c["Next"] == "MarkFailed" and "States.ALL" in c["ErrorEquals"] for c in catch
+    ), catch
+    assert states["MarkFailed"]["Type"] == "Task"
+
+
+def test_the_states_pass_the_handler_payload_not_the_lambda_envelope(template: Template):
+    """`payload_response_only` — or every path has to reach through `$.Payload`.
+
+    The three handlers deliberately share one event shape so the machine needs no
+    per-state translation. Wrapping breaks that, and the symptom is a Choice on
+    `$.done` silently never matching, i.e. an infinite loop.
+    """
+    states = _definition(template)["States"]
+    for name in ("Prepare", "Turn", "Finalise"):
+        state = states[name]
+        # The two forms are distinguishable by shape, which is what makes this
+        # assertable at all: the WRAPPED form renders
+        #   "Resource": "arn:aws:states:::lambda:invoke"   (a literal)
+        #   "Parameters": {"FunctionName": ..., "Payload": ...}
+        # while payload_response_only renders the function ARN itself (a CDK token,
+        # so it reads as TOKEN here) and no Parameters block.
+        #
+        # Asserting on `Resource` alone does not work — it is a token either way once
+        # stubbed — so `Parameters` is the discriminator.
+        # Partition-agnostic: CDK tokenises the partition, so the wrapped form renders
+        # "arn:TOKEN:states:::lambda:invoke" and a check for the literal `arn:aws:`
+        # prefix silently matches nothing. Found by flipping the flag and watching this
+        # test still pass.
+        assert ":states:::lambda:invoke" not in str(state.get("Resource")), (
+            f"{name} uses the wrapped optimised integration"
+        )
+        # And the envelope key is `Payload.$`, not `Payload` — the `.$` suffix is how
+        # Step Functions marks a JSONPath value, so an exact-key check misses it too.
+        params = state.get("Parameters") or {}
+        assert not any(k.startswith("Payload") for k in params), (
+            f"{name} wraps its input in a Payload envelope: {params}"
+        )
+        assert state.get("OutputPath") != "$.Payload", f"{name} unwraps via OutputPath"
+
+
+def test_the_state_machine_has_an_execution_timeout(template: Template):
+    """An execution that never ends keeps a run listed as `running` for ever.
+
+    The timeout is rendered into the DEFINITION, not onto the resource — asserting
+    the resource property passes vacuously on a machine with no timeout at all.
+    """
+    assert _definition(template).get("TimeoutSeconds"), "no execution timeout"
+
+
+def test_the_workers_hold_no_storage_rights_of_their_own(template: Template):
+    """§3 does not get an exception for background work.
+
+    A worker with ambient table access is exactly the hole `dynamodb:LeadingKeys`
+    exists to close: it would read every tenant's data with no per-request scoping.
+    The workers assume the tenant role instead, like the API.
+    """
+    policies = template.find_resources("AWS::IAM::Policy")
+    for logical_id, policy in policies.items():
+        if not any(
+            n in logical_id for n in ("TurnFunction", "PrepareFunction", "FinaliseFunction")
+        ):
+            continue
+        body = str(policy["Properties"]["PolicyDocument"])
+        for forbidden in ("dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem"):
+            assert forbidden not in body, (
+                f"{logical_id} grants {forbidden} directly instead of assuming the "
+                "tenant role"
+            )
+
+
+def test_each_worker_may_assume_the_tenant_role(template: Template):
+    """The other half: a worker that cannot assume it fails every storage call.
+
+    Together with the test above, these pin the only arrangement that works —
+    no direct rights, and permission to assume.
+    """
+    policies = template.find_resources("AWS::IAM::Policy")
+    for name in ("TurnFunction", "PrepareFunction", "FinaliseFunction"):
+        matching = [
+            p for lid, p in policies.items() if name in lid
+            and "sts:AssumeRole" in str(p["Properties"]["PolicyDocument"])
+        ]
+        assert matching, f"{name} cannot assume the tenant role"
+
+
+def test_only_the_api_may_start_an_execution(template: Template):
+    """A worker able to start executions could fork a run's loop.
+
+    Two executions on one run id would both append to the same event log and both
+    write snapshots, which is corruption rather than duplication.
+    """
+    policies = template.find_resources("AWS::IAM::Policy")
+    starters = {
+        lid for lid, p in policies.items()
+        if "states:StartExecution" in str(p["Properties"]["PolicyDocument"])
+    }
+    assert starters, "nothing may start the turn loop"
+    assert all("ApiFunction" in lid for lid in starters), (
+        f"something other than the API may start executions: {starters}"
+    )
+
+
+def test_the_api_knows_the_state_machine_arn(template: Template):
+    """Without it `POST /api/runs` has nothing to start and the run never executes."""
+    functions = template.find_resources("AWS::Lambda::Function")
+    api = next(
+        f for lid, f in functions.items() if lid.startswith("ApiFunction")
+    )
+    env = api["Properties"]["Environment"]["Variables"]
+    assert "TURN_LOOP_ARN" in env, sorted(env)
+
+
+def test_the_workers_share_the_api_s_image(template: Template):
+    """One image, three entry points, so the engine cannot drift between them.
+
+    A separate image would let a run execute against a different engine than the one
+    the API validated its request with.
+    """
+    functions = template.find_resources("AWS::Lambda::Function")
+    images = {}
+    for lid, f in functions.items():
+        code = f["Properties"].get("Code", {})
+        if "ImageUri" in code:
+            images[lid] = str(code["ImageUri"])
+    assert len(images) == 4, f"expected 4 image functions, got {sorted(images)}"
+    assert len(set(images.values())) == 1, (
+        f"the functions do not share one image: {images}"
+    )
+
+
+def test_each_worker_overrides_the_image_command(template: Template):
+    """Sharing the image means the handler comes from the CMD override.
+
+    Missing, every worker runs the API's Mangum handler and the state machine
+    invokes an ASGI adapter with a Step Functions event — which fails in a way that
+    reads like a payload problem.
+    """
+    functions = template.find_resources("AWS::Lambda::Function")
+    expected = {
+        "PrepareFunction": "matrix_studio.step_handlers.prepare",
+        "TurnFunction": "matrix_studio.step_handlers.turn",
+        "FinaliseFunction": "matrix_studio.step_handlers.finalise",
+    }
+    for prefix, handler in expected.items():
+        fn = next(f for lid, f in functions.items() if lid.startswith(prefix))
+        cmd = fn["Properties"].get("ImageConfig", {}).get("Command")
+        assert cmd == [handler], f"{prefix} has command {cmd}"
+
+
+def test_the_workers_are_not_capped_at_the_api_gateway_timeout(template: Template):
+    """The API's 30 s ceiling is API Gateway's; a worker has no such caller.
+
+    Inheriting it is the mistake that recreates Phase 4 — a turn takes 6-13 s and
+    the validation gate can regenerate, so 30 s is a coin flip.
+    """
+    functions = template.find_resources("AWS::Lambda::Function")
+    for prefix in ("PrepareFunction", "TurnFunction", "FinaliseFunction"):
+        fn = next(f for lid, f in functions.items() if lid.startswith(prefix))
+        assert fn["Properties"]["Timeout"] >= 300, (
+            f"{prefix} timeout is {fn['Properties']['Timeout']}s"
+        )
+
+
+def test_the_workers_do_not_run_the_startup_sweep(template: Template):
+    """It assumes it is the only process. Concurrent workers would each mark the
+    others' in-flight runs interrupted — a run killing its own siblings."""
+    functions = template.find_resources("AWS::Lambda::Function")
+    for prefix in ("PrepareFunction", "TurnFunction", "FinaliseFunction"):
+        fn = next(f for lid, f in functions.items() if lid.startswith(prefix))
+        env = fn["Properties"]["Environment"]["Variables"]
+        assert env.get("STARTUP_SWEEP") == "false", f"{prefix}: {env.get('STARTUP_SWEEP')}"
+
+
+def test_the_workers_set_no_auth_mode(template: Template):
+    """A worker has no request and no JWT; its tenant comes from the execution input.
+
+    `AUTH_MODE=jwt` here would have the identity layer look for claims that cannot
+    be present, which is a confusing failure rather than a safe one.
+    """
+    functions = template.find_resources("AWS::Lambda::Function")
+    for prefix in ("PrepareFunction", "TurnFunction", "FinaliseFunction"):
+        fn = next(f for lid, f in functions.items() if lid.startswith(prefix))
+        env = fn["Properties"]["Environment"]["Variables"]
+        assert "AUTH_MODE" not in env, f"{prefix} sets AUTH_MODE"
