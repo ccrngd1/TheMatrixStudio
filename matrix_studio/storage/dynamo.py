@@ -95,6 +95,10 @@ _RUN_FIELDS = (
     "id", "owner_sub", "topic", "cast_json", "status", "created_at",
     "name", "description", "slug", "config_json", "parent_run_id",
     "branch_turn", "completed_at",
+    # Phase 5: a stop is a durable flag on the run, not an in-memory set. Absent
+    # reads as None, which is falsy, so runs written before the field behave as
+    # "no stop requested" without a migration.
+    "stop_requested",
 )
 _EVENT_FIELDS = (
     "run_id", "turn", "seq", "event_type", "agent_name", "payload", "created_at",
@@ -768,6 +772,56 @@ class DynamoStorage:
                 "has a run id or an owner that does not match its data.",
                 status, run_id, owner_sub,
             )
+
+    async def set_stop_requested(
+        self,
+        run_id: str,
+        requested: bool = True,
+        *,
+        owner_sub: Optional[str] = None,
+    ) -> bool:
+        """Ask a run to stop after the turn in flight, durably. Returns whether it stuck.
+
+        Phase 5 moves the stop out of `RunManager._stop_requested`, an in-memory set,
+        and onto the run row. That is a **fix rather than a port**: with the turn loop
+        in a Step Functions execution and the API behind Lambda concurrency, the
+        process that receives the stop request is almost never the one generating the
+        turn, so an in-memory flag would be read by nobody. It was already fragile with
+        one API process; it is inert with many.
+
+        The semantics do not change. The engine polls this AFTER each turn is emitted
+        and checkpointed, so the turn in flight is finished and persisted and only the
+        NEXT one is prevented. Cancelling mid-call would discard tokens already paid
+        for and leave a partial turn to trim.
+
+        Clearing it (``requested=False``) is what a resume does. Without that a run
+        stopped once would stop again one turn into every later resume, which reads as
+        the resume silently not working — the same reasoning `RunManager._finish`
+        already carries for the in-memory version.
+
+        Conditional on the run existing, for the reason `update_run_status` spells out:
+        `UpdateItem` upserts, so an unconditional write to a missing run manufactures a
+        phantom one. Returns False in that case rather than raising, because a stop for
+        a run that has gone is a race a caller can report plainly.
+        """
+        owner_sub = self._owner(owner_sub)
+        try:
+            await self._call(
+                self._table("runs").update_item,
+                Key={"pk": _user_pk(owner_sub), "sk": _run_sk(run_id)},
+                UpdateExpression="SET stop_requested = :v",
+                ExpressionAttributeValues={":v": bool(requested)},
+                ConditionExpression="attribute_exists(sk)",
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001
+            if "ConditionalCheckFailed" not in str(exc):
+                raise
+            logger.warning(
+                "Ignored a stop request for run %s, which does not exist under owner "
+                "%s. Nothing was written.", run_id, owner_sub,
+            )
+            return False
 
     async def get_run(
         self, run_id: str, *, owner_sub: Optional[str] = None
