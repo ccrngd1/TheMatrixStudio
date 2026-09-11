@@ -15,6 +15,33 @@ import { deriveState, initialState } from '../lib/simState'
 
 export type PlaybackMode = 'live' | 'paused'
 
+// Every event that means the engine will send no more. `sim.stopped` and
+// `sim.capped` were MISSING, and each omission had two consequences: the viewer
+// went on showing a stopped run as live, and — once polling exists — it would poll
+// that run for ever. The list matches TERMINAL_EVENTS in api/manager.py; they must
+// agree, because one side deciding a run is finished while the other does not is
+// exactly a stream that never ends.
+const TERMINAL_EVENTS = new Set([
+  'sim.completed',
+  'sim.failed',
+  'sim.interrupted',
+  'sim.stopped',
+  'sim.capped',
+])
+
+// How often to poll for new events while a run is live.
+//
+// Polling is how the deployed system streams at all: under Step Functions each turn
+// runs in a worker Lambda, so there is no process holding a WebSocket to push from
+// (the in-memory broker lives in the API process). The socket is kept for local
+// single-process use, where it is genuinely sub-second.
+//
+// 3 s against a measured 6-13 s per turn means a turn is visible within roughly half
+// its own duration. Polling and the socket run TOGETHER rather than one falling back
+// to the other: `seenSeqs` already dedupes by seq, so double delivery is free, and
+// "detect the socket is not really working" is a harder problem than just asking.
+const POLL_MS = 3000
+
 interface Options {
   runId: string | null
   cast: Persona[]
@@ -46,6 +73,10 @@ export function useRunStream({ runId, cast, autoConnect = true, reloadKey = 0 }:
   const [nowMs, setNowMs] = useState<number>(Date.now())
 
   const seenSeqs = useRef<Set<number>>(new Set())
+  // Highest seq seen, so a poll asks only for what is new. Tracked as a ref
+  // rather than derived from `buffer` so the polling effect does not restart on
+  // every event, which would reset its timer and stall the poll indefinitely.
+  const maxSeq = useRef<number>(-1)
   const wsRef = useRef<WebSocket | null>(null)
 
   // Reset when the run changes OR a reload is requested (resume reconnect).
@@ -57,29 +88,31 @@ export function useRunStream({ runId, cast, autoConnect = true, reloadKey = 0 }:
     setLastEventAt(null)
     setPrimed(false)
     seenSeqs.current = new Set()
+    maxSeq.current = -1
   }, [runId, reloadKey])
 
   const pushEvents = useCallback((incoming: SimEvent[]) => {
-    let added = false
-    setBuffer((prev) => {
-      const next = [...prev]
-      for (const e of incoming) {
-        if (seenSeqs.current.has(e.seq)) continue
-        seenSeqs.current.add(e.seq)
-        next.push(e)
-        added = true
-        if (
-          e.event_type === 'sim.completed' ||
-          e.event_type === 'sim.failed' ||
-          e.event_type === 'sim.interrupted'
-        ) {
-          setEngineDone(true)
-        }
-      }
-      next.sort((a, b) => a.seq - b.seq)
-      return next
-    })
-    if (added) setLastEventAt(Date.now())
+    // Dedupe FIRST, outside the state updater.
+    //
+    // This used to set a local `added` flag inside the `setBuffer(prev => ...)`
+    // callback and read it on the next line. React runs a functional updater during
+    // the re-render, not at the call site, so `added` was always still `false` when
+    // it was checked — `lastEventAt` was therefore never set, and `stalled` (which
+    // requires it to be non-null) could never become true. The stall warning had
+    // been dead code since it was written; found while making it reachable without a
+    // WebSocket.
+    //
+    // The ref is what makes this correct: `seenSeqs` is mutable and synchronous, so
+    // the filter is accurate before any state has changed.
+    const fresh = incoming.filter((e) => !seenSeqs.current.has(e.seq))
+    if (!fresh.length) return
+    for (const e of fresh) {
+      seenSeqs.current.add(e.seq)
+      if (e.seq > maxSeq.current) maxSeq.current = e.seq
+      if (TERMINAL_EVENTS.has(e.event_type)) setEngineDone(true)
+    }
+    setBuffer((prev) => [...prev, ...fresh].sort((a, b) => a.seq - b.seq))
+    setLastEventAt(Date.now())
   }, [])
 
   // Open the WebSocket. The backend replays persisted events on connect, then
@@ -142,6 +175,38 @@ export function useRunStream({ runId, cast, autoConnect = true, reloadKey = 0 }:
     }
   }, [runId, reloadKey, pushEvents])
 
+  // Poll for new events while the run is live. This is the deployed system's only
+  // delivery path — see POLL_MS above for why it runs alongside the socket rather
+  // than as its fallback.
+  //
+  // Stops as soon as a terminal event lands, which is what makes the missing
+  // `sim.stopped`/`sim.capped` entries above a real bug and not a tidy-up: without
+  // them a stopped run is polled every three seconds for as long as the tab is open.
+  useEffect(() => {
+    if (!runId || !autoConnect || engineDone) return
+    let alive = true
+    let timer: ReturnType<typeof setTimeout>
+
+    const tick = async () => {
+      try {
+        const evts = await api.getEvents(runId, maxSeq.current)
+        if (!alive) return
+        if (evts.length) pushEvents(evts)
+      } catch {
+        // A failed poll is not worth surfacing: the next one is three seconds away,
+        // and a transient 5xx during a deploy would otherwise show the user an error
+        // for a run that is fine.
+      }
+      if (alive) timer = setTimeout(tick, POLL_MS)
+    }
+
+    timer = setTimeout(tick, POLL_MS)
+    return () => {
+      alive = false
+      clearTimeout(timer)
+    }
+  }, [runId, autoConnect, engineDone, reloadKey, pushEvents])
+
   // Auto-play: while live and not caught up, advance the cursor on a timer.
   // Gated on `primed` so we don't drip-feed the initial backlog before the
   // one-time jump-to-furthest has run.
@@ -184,9 +249,13 @@ export function useRunStream({ runId, cast, autoConnect = true, reloadKey = 0 }:
     return () => clearInterval(id)
   }, [engineDone])
   const STALL_MS = 120_000
+  // `connected` is deliberately NOT part of this any more. It meant "the WebSocket is
+  // open", and under Step Functions there is no socket to open — so requiring it made
+  // the stall warning unreachable on the deployed system, which is the only place a
+  // run can actually be orphaned. What matters is that the run is not finished and has
+  // gone quiet, and that is true whichever way events were arriving.
   const stalled =
     !engineDone &&
-    connected &&
     lastEventAt != null &&
     nowMs - lastEventAt > STALL_MS
 
