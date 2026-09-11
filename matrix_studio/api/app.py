@@ -48,8 +48,8 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from matrix_studio import analysis, blobs, orchestration, service
-from matrix_studio.api.identity import current_user, current_user_ws
+from matrix_studio import analysis, bindings, blobs, orchestration, service
+from matrix_studio.api.identity import current_groups, current_user, current_user_ws
 from matrix_studio.api.manager import RunManager, TERMINAL_EVENTS, event_row_to_wire
 from matrix_studio.documents import (
     ExtractionError,
@@ -112,6 +112,16 @@ class PersonaModel(BaseModel):
     # turned into text by POST /api/documents/extract first, so a knowledge-base
     # file and pasted text share one ingest path.
     document_texts: List["InlineDocumentModel"] = Field(default_factory=list)
+    # Phase 6: knowledge bases this persona alone may search. §8b — the effective scope
+    # for a speaker is `run.knowledge_bases ∪ persona.knowledge_bases`, so this is the
+    # "hers alone" half and the run-level list is the cast-wide half.
+    #
+    # A binding is not a permission: it says this persona DOES search that collection in
+    # this conversation, and whether they MAY is a grant, re-checked at query time. A
+    # binding to a KB the caller cannot read is a 422 at creation and yields nothing at
+    # query time — both, because the first is good feedback and only the second is a
+    # boundary.
+    knowledge_bases: List[str] = Field(default_factory=list)
 
 
 class CognitionConfigModel(BaseModel):
@@ -179,6 +189,15 @@ class RunConfigModel(BaseModel):
     # Phase 6: optional structured personas. Omitted -> disabled, and any
     # `structured` block on a cast member is ignored (pre-Phase-6 prompts).
     personas: Optional[PersonaConfigModel] = None
+    # Phase 6: knowledge bases every persona in the run may search — the cast-wide
+    # binding, which generalises the old `persona_name IS NULL` case exactly.
+    #
+    # §8b notes this is now CHEAP: a cast-wide document is stored once and bound, rather
+    # than copied per persona. That removes the reason cast-wide documents were shelved as
+    # WILL NOT IMPLEMENT — the per-run model made a shared document cost 8x storage and
+    # collapsed its BM25 score to zero, and binding fixes the first while vector
+    # retrieval makes the second impossible.
+    knowledge_bases: List[str] = Field(default_factory=list)
 
 
 class SummaryConfigModel(BaseModel):
@@ -668,11 +687,40 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
 
     @app.post("/api/runs", status_code=201)
     async def create_run(
-        body: CreateRunModel, user: str = Depends(current_user)
+        body: CreateRunModel,
+        user: str = Depends(current_user),
+        groups: List[str] = Depends(current_groups),
     ) -> Dict[str, Any]:
         request = body.model_dump(exclude_none=True)
         if not request.get("cast"):
             raise HTTPException(status_code=422, detail="At least one persona is required")
+
+        # Phase 6: refuse a binding to a knowledge base this caller cannot read, at
+        # either level, before the run exists.
+        #
+        # This is the FIRST of two checks and the weaker one. The boundary is the
+        # query-time re-check in `searchable_for_turn`, because a grant can be revoked
+        # after the run is created and a binding must then stop working. This one exists
+        # for feedback: a run created with a bad binding would otherwise retrieve nothing
+        # from it, silently, and look like an empty collection.
+        #
+        # Both levels are checked in one pass (`declared_kbs`), because checking the run
+        # level while forgetting the cast is exactly the shape of bug that lets a persona
+        # bind a collection nobody verified.
+        declared = bindings.declared_kbs(request)
+        if declared:
+            bad = await bindings.unreadable_bindings(
+                db.for_owner(user), declared, user, groups,
+            )
+            if bad:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "These knowledge bases do not exist or are not shared with you: "
+                        + ", ".join(sorted(bad))
+                    ),
+                )
+
         result = await manager.create_run(request, owner_sub=user)
         return result
 
