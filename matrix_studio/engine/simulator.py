@@ -539,6 +539,145 @@ Respond naturally as this character. Keep responses conversational (2-4 sentence
         }
 
 
+async def begin_run(
+    *,
+    run_id: str,
+    topic: str,
+    cast: List[Dict[str, Any]],
+    db: Optional[Database],
+    emit: Callable[..., Awaitable[None]],
+    next_seq: Callable[[], int],
+    generate_avatars_flag: bool,
+    personas_cfg: PersonaConfig,
+    retrieval: RetrievalConfig,
+) -> Dict[str, AgentState]:
+    """Everything a run does at turn 0, before any turn is generated.
+
+    Extracted from `run_simulation` so that Phase 5's `StartRun` state and the local
+    path are the SAME code. They were about to diverge: a slice calls
+    `resume_simulation`, which deliberately re-emits none of this, so a Step Functions
+    run would otherwise have had its own copy of `sim.started`, the structured-persona
+    events, avatar generation and document ingest — four things that must agree
+    byte-for-byte with the local path or replay and export stop matching.
+
+    Emits, in this order and at turn 0: `sim.started`, one `persona.structured` per
+    agent (only when the feature is on), one `avatar.ready` per avatar, and one
+    `document.embedded`. Returns the constructed agents.
+
+    Does NOT write the run row. `run_simulation` still does that for the local/CLI
+    path; under Phase 5 `POST /api/runs` writes it synchronously before the execution
+    starts, so a client that receives a 201 has something to poll.
+    """
+    # Initialize agents.
+    #
+    # Phase 6: a cast member may carry a `structured` block (background,
+    # preferences, viewpoints). It is parsed ALWAYS, not only when the feature is
+    # enabled, so that a malformed block — a typo'd `firmness`, say — fails loudly
+    # at run start instead of being silently ignored until someone turns the flag
+    # on and wonders why nothing changed. Whether it reaches a prompt is
+    # `personas_cfg.enabled`'s decision, made later in _generate_response.
+    agents: Dict[str, AgentState] = {}
+    for persona in cast:
+        agent = AgentState(
+            name=persona["name"],
+            persona=persona["persona"],
+            goals=persona.get("goals", []),
+            structured=parse_structured(persona.get("structured")),
+        )
+        agents[agent.name] = agent
+
+    # sim.started is emitted at turn 0, seq 0 (Phase 0 parity).
+    await emit(
+        turn=0,
+        seq=next_seq(),
+        event_type="sim.started",
+        payload={"topic": topic, "agent_count": len(agents)},
+    )
+
+    # Phase 6: record which convictions the run was seeded with, once, at turn 0.
+    # Emitted only when the feature is actually on, so an event's presence means
+    # the structure reached the prompts rather than merely sitting in the cast.
+    # `structured_payload` strips `validity` and `underlying_concern` — both are
+    # private to the operator by design, and the event log is exported and rendered.
+    if personas_cfg.enabled:
+        for agent in agents.values():
+            payload = structured_payload(agent.structured)
+            if payload is None:
+                continue
+            await emit(
+                turn=0,
+                seq=next_seq(),
+                event_type="persona.structured",
+                agent_name=agent.name,
+                payload={
+                    "agent_name": agent.name,
+                    "structured": payload,
+                    "withhold_concerns": personas_cfg.withhold_concerns,
+                    "dismissal_rule": personas_cfg.dismissal_rule,
+                },
+            )
+
+    # Generate avatars in parallel. Phase 0 generated them serially before the
+    # loop and blocked on all of them; here we still gather() them but emit an
+    # `avatar.ready` event as each finishes so a live UI can fill cards in
+    # progressively. Avatars remain optional eye-candy — a None result (disabled,
+    # no creds, content filter, error) yields a null portrait and never fails
+    # the run.
+    if generate_avatars_flag:
+        logger.info("Generating avatars...")
+
+        async def _make_avatar(agent: AgentState) -> None:
+            portrait = await generate_avatar(agent.name, agent.persona)
+            # Store the image and carry only its KEY. Inlining the base64 put a
+            # megabyte into the append-only log that every replay reads, and into
+            # every snapshot via AgentState — measured at 99% of the largest
+            # snapshot in a real database.
+            agent.portrait_key = store_avatar(portrait)
+            # avatar.ready lives outside the turn stream (turn 0); give it its
+            # own seq so ordering stays total and replay is deterministic.
+            await emit(
+                turn=0,
+                seq=next_seq(),
+                event_type="avatar.ready",
+                agent_name=agent.name,
+                payload={"agent_name": agent.name, "portrait_key": agent.portrait_key},
+            )
+
+        await asyncio.gather(*[_make_avatar(a) for a in agents.values()])
+
+    # Phase 5: ingest documents declared on cast members before the first turn,
+    # so a persona's background is available from turn 1. Ingestion is local file
+    # I/O only (no LLM, no network) and a failure never fails the run — the
+    # persona simply has no background material, which the prompt states honestly.
+    if db and retrieval.enabled:
+        await _ingest_cast_documents(run_id, cast, db, emit, next_seq)
+        # Phase 5f: embed the freshly ingested chunks when a vector mode is on.
+        # Done once here rather than lazily per turn so the per-turn hot path
+        # only pays for the query embedding.
+        if retrieval.mode in ("vector", "hybrid"):
+            stats = await embed_pending_chunks(
+                db, run_id, embedding_model=retrieval.embedding_model
+            )
+            await emit(
+                turn=0,
+                seq=next_seq(),
+                event_type="document.embedded",
+                payload=stats,
+            )
+            if stats.get("error"):
+                logger.warning(
+                    "Embedding unavailable (%s); retrieval will use lexical search.",
+                    stats["error"],
+                )
+            else:
+                logger.info(
+                    "Embedded %d chunks with %s ($%.6f)",
+                    stats["embedded"], stats["model"], stats["cost_usd"],
+                )
+
+    return agents
+
+
 async def run_simulation(
     request: Dict[str, Any],
     db: Optional[Database] = None,
@@ -647,24 +786,6 @@ async def run_simulation(
             except Exception as cb_err:  # noqa: BLE001 - live emit must never break a run
                 logger.warning("on_event callback failed for %s: %s", event_type, cb_err)
 
-    # Initialize agents.
-    #
-    # Phase 6: a cast member may carry a `structured` block (background,
-    # preferences, viewpoints). It is parsed ALWAYS, not only when the feature is
-    # enabled, so that a malformed block — a typo'd `firmness`, say — fails loudly
-    # at run start instead of being silently ignored until someone turns the flag
-    # on and wonders why nothing changed. Whether it reaches a prompt is
-    # `personas_cfg.enabled`'s decision, made later in _generate_response.
-    agents: Dict[str, AgentState] = {}
-    for persona in cast:
-        agent = AgentState(
-            name=persona["name"],
-            persona=persona["persona"],
-            goals=persona.get("goals", []),
-            structured=parse_structured(persona.get("structured")),
-        )
-        agents[agent.name] = agent
-
     # Create run in database (before events so the FK/order is sane)
     if db:
         await db.create_run(
@@ -678,94 +799,17 @@ async def run_simulation(
         )
         await db.update_run_status(run_id, "running")
 
-    # sim.started is emitted at turn 0, seq 0 (Phase 0 parity).
-    await _emit(
-        turn=0,
-        seq=_next_seq(),
-        event_type="sim.started",
-        payload={"topic": topic, "agent_count": len(agents)},
+    agents = await begin_run(
+        run_id=run_id,
+        topic=topic,
+        cast=cast,
+        db=db,
+        emit=_emit,
+        next_seq=_next_seq,
+        generate_avatars_flag=generate_avatars_flag,
+        personas_cfg=personas_cfg,
+        retrieval=retrieval,
     )
-
-    # Phase 6: record which convictions the run was seeded with, once, at turn 0.
-    # Emitted only when the feature is actually on, so an event's presence means
-    # the structure reached the prompts rather than merely sitting in the cast.
-    # `structured_payload` strips `validity` and `underlying_concern` — both are
-    # private to the operator by design, and the event log is exported and rendered.
-    if personas_cfg.enabled:
-        for agent in agents.values():
-            payload = structured_payload(agent.structured)
-            if payload is None:
-                continue
-            await _emit(
-                turn=0,
-                seq=_next_seq(),
-                event_type="persona.structured",
-                agent_name=agent.name,
-                payload={
-                    "agent_name": agent.name,
-                    "structured": payload,
-                    "withhold_concerns": personas_cfg.withhold_concerns,
-                    "dismissal_rule": personas_cfg.dismissal_rule,
-                },
-            )
-
-    # Generate avatars in parallel. Phase 0 generated them serially before the
-    # loop and blocked on all of them; here we still gather() them but emit an
-    # `avatar.ready` event as each finishes so a live UI can fill cards in
-    # progressively. Avatars remain optional eye-candy — a None result (disabled,
-    # no creds, content filter, error) yields a null portrait and never fails
-    # the run.
-    if generate_avatars_flag:
-        logger.info("Generating avatars...")
-
-        async def _make_avatar(agent: AgentState) -> None:
-            portrait = await generate_avatar(agent.name, agent.persona)
-            # Store the image and carry only its KEY. Inlining the base64 put a
-            # megabyte into the append-only log that every replay reads, and into
-            # every snapshot via AgentState — measured at 99% of the largest
-            # snapshot in a real database.
-            agent.portrait_key = store_avatar(portrait)
-            # avatar.ready lives outside the turn stream (turn 0); give it its
-            # own seq so ordering stays total and replay is deterministic.
-            await _emit(
-                turn=0,
-                seq=_next_seq(),
-                event_type="avatar.ready",
-                agent_name=agent.name,
-                payload={"agent_name": agent.name, "portrait_key": agent.portrait_key},
-            )
-
-        await asyncio.gather(*[_make_avatar(a) for a in agents.values()])
-
-    # Phase 5: ingest documents declared on cast members before the first turn,
-    # so a persona's background is available from turn 1. Ingestion is local file
-    # I/O only (no LLM, no network) and a failure never fails the run — the
-    # persona simply has no background material, which the prompt states honestly.
-    if db and retrieval.enabled:
-        await _ingest_cast_documents(run_id, cast, db, _emit, _next_seq)
-        # Phase 5f: embed the freshly ingested chunks when a vector mode is on.
-        # Done once here rather than lazily per turn so the per-turn hot path
-        # only pays for the query embedding.
-        if retrieval.mode in ("vector", "hybrid"):
-            stats = await embed_pending_chunks(
-                db, run_id, embedding_model=retrieval.embedding_model
-            )
-            await _emit(
-                turn=0,
-                seq=_next_seq(),
-                event_type="document.embedded",
-                payload=stats,
-            )
-            if stats.get("error"):
-                logger.warning(
-                    "Embedding unavailable (%s); retrieval will use lexical search.",
-                    stats["error"],
-                )
-            else:
-                logger.info(
-                    "Embedded %d chunks with %s ($%.6f)",
-                    stats["embedded"], stats["model"], stats["cost_usd"],
-                )
 
     # Fresh start: no prior turns, no seed conversation.
     return await _run_turns(

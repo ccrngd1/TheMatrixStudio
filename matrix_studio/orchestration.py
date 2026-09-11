@@ -133,6 +133,73 @@ async def load_state(db: Database, run: Dict[str, Any], turn: int):
     return await reconstruct_at_turn(db, run, turn)
 
 
+def _emitter(db: Database, run_id: str, start_seq: int = 0):
+    """An ``(emit, next_seq)`` pair that persists events, with no live callback.
+
+    The engine's own `_emit` closures also push to an `on_event` subscriber. There is
+    nobody to push to here: the WebSocket broker lives in the API process and a slice
+    runs in a different one. The UI polls `events?after_seq=` instead, which is what
+    `docs/PHASE5-ORCHESTRATION-DESIGN.md` §8 settles.
+    """
+    counter = {"seq": start_seq}
+
+    def next_seq() -> int:
+        s = counter["seq"]
+        counter["seq"] += 1
+        return s
+
+    async def emit(turn, seq, event_type, payload, agent_name=None) -> None:
+        await db.append_event(
+            run_id=run_id, turn=turn, seq=seq, event_type=event_type,
+            agent_name=agent_name, payload=payload,
+        )
+
+    return emit, next_seq
+
+
+async def prepare_run(db: Database, run_id: str) -> Dict[str, Any]:
+    """The turn-0 work: `sim.started`, avatars, document ingest, embeddings.
+
+    Idempotent by inspection rather than by hope: if the run already has a
+    `sim.started` event this returns without doing anything. A `Retry` on the state
+    that calls it would otherwise emit a second `sim.started`, re-ingest every
+    document and pay to re-embed the whole corpus — the last of which is the only
+    genuinely expensive mistake available in this phase.
+    """
+    from matrix_studio.engine.simulator import begin_run
+
+    run = await db.get_run(run_id)
+    if run is None:
+        raise ValueError(f"run {run_id!r} does not exist")
+
+    existing = await db.get_events(run_id, from_turn=0, to_turn=0)
+    if any(e["event_type"] == "sim.started" for e in existing):
+        logger.info("Run %s is already started; prepare is a no-op", run_id)
+        return _payload(run_id, str(run.get("status") or "running"), run, 0)
+
+    cfg = _config(run)
+    from matrix_studio.settings import get_settings
+    settings = get_settings()
+
+    await db.update_run_status(run_id, "running")
+    emit, next_seq = _emitter(db, run_id, start_seq=await db.max_seq(run_id) + 1)
+    await begin_run(
+        run_id=run_id,
+        topic=run.get("topic", ""),
+        cast=_cast(run),
+        db=db,
+        emit=emit,
+        next_seq=next_seq,
+        generate_avatars_flag=bool(
+            cfg.get("generate_avatars", settings.enable_avatars)
+        ),
+        personas_cfg=PersonaConfig.from_config(cfg),
+        retrieval=RetrievalConfig.from_config(cfg),
+    )
+    fresh = await db.get_run(run_id) or run
+    return _payload(run_id, "running", fresh, 0)
+
+
 async def execute_slice(
     db: Database,
     run_id: str,
@@ -314,6 +381,12 @@ async def finalise(
     if run is None:
         raise ValueError(f"run {run_id!r} does not exist")
     if run.get("status") in TERMINAL_STATUSES:
+        # The common case, and not a no-op: `_run_turns` writes the terminal status
+        # itself on the last slice, so by the time the machine's Finalise state runs
+        # the run is already `complete`. The summary still has to happen, and this is
+        # the only place left to do it — `RunManager._runner` used to, in a background
+        # task that Lambda no longer runs.
+        await _summarise_once(db, run_id, str(run.get("status")))
         return _payload(run_id, str(run.get("status")), run, 0)
 
     if run.get("stop_requested") and status == "complete":
@@ -341,5 +414,32 @@ async def finalise(
             )
         )
     await db.update_run_status(run_id, status, completion_time)
+    await _summarise_once(db, run_id, status)
     fresh = await db.get_run(run_id) or run
     return _payload(run_id, status, fresh, turn)
+
+
+async def _summarise_once(db: Database, run_id: str, status: str) -> None:
+    """Auto-generate the run's summary, at most once, and never fatally.
+
+    Guarded on a summary already existing because `maybe_autogenerate_summary` is not
+    idempotent — it stores a new row every call — and a `Retry` on the Finalise state
+    would otherwise pay for a second LLM summary of the same conversation and leave
+    two, with the reader given no way to tell which is current.
+
+    Only for a `complete` run. Summarising a stopped or capped one would describe a
+    conversation that was cut off as though it had finished.
+    """
+    if status != "complete":
+        return
+    try:
+        if await db.get_summaries(run_id):
+            logger.info("Run %s already has a summary; not generating another", run_id)
+            return
+    except Exception:  # noqa: BLE001
+        # If the check itself fails, skip rather than risk the duplicate.
+        logger.exception("Could not check for an existing summary on run %s", run_id)
+        return
+    from matrix_studio.service import maybe_autogenerate_summary
+
+    await maybe_autogenerate_summary(db, run_id)

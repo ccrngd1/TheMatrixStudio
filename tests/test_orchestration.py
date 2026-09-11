@@ -382,3 +382,160 @@ async def test_load_state_restores_persona_text_a_snapshot_omitted(db):
     assert agents["Ada"].goals == ["ship it"]
     # And the cast member missing from the snapshot is added back.
     assert "Bo" in agents
+
+
+# --------------------------------------------------------------------------- #
+# prepare_run — the turn-0 work, shared with the local path
+# --------------------------------------------------------------------------- #
+
+
+async def test_prepare_emits_sim_started(db):
+    await _make_run(db, "pr-start", max_messages=3)
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake_llm):
+        out = await orchestration.prepare_run(db, "pr-start")
+    assert out["status"] == "running"
+    started = [e for e in await db.get_events("pr-start")
+               if e["event_type"] == "sim.started"]
+    assert len(started) == 1
+    assert started[0]["turn"] == 0
+
+
+async def test_prepare_is_idempotent(db):
+    """A `Retry` on the state must not re-emit sim.started or re-pay for embeddings.
+
+    Re-embedding a corpus is the only genuinely expensive mistake available in this
+    phase, so the guard is on the run's own event log rather than on hope.
+    """
+    await _make_run(db, "pr-idem", max_messages=3)
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake_llm):
+        await orchestration.prepare_run(db, "pr-idem")
+        before = await db.get_events("pr-idem")
+        await orchestration.prepare_run(db, "pr-idem")
+    after = await db.get_events("pr-idem")
+    assert len(after) == len(before), "prepare ran twice and wrote more events"
+    started = [e for e in after if e["event_type"] == "sim.started"]
+    assert len(started) == 1
+
+
+async def test_prepare_then_slices_produce_one_ordered_event_log(db):
+    """The seq must stay monotonic across the prepare/turn boundary.
+
+    `get_events_after(seq)` relies on it — a client resuming from the highest seq it
+    has seen would skip events in a log where seq restarted per state.
+    """
+    await _make_run(db, "pr-seq", max_messages=2)
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake_llm):
+        await orchestration.prepare_run(db, "pr-seq")
+        await orchestration.execute_slice(db, "pr-seq", turn=0, turn_budget=1)
+        await orchestration.execute_slice(db, "pr-seq", turn=1, turn_budget=1)
+    seqs = [e["seq"] for e in await db.get_events("pr-seq")]
+    assert seqs == sorted(seqs), f"event seqs are out of order: {seqs}"
+    assert len(seqs) == len(set(seqs)), f"duplicate seqs across states: {seqs}"
+
+
+async def test_a_whole_run_completes_across_many_slices(db):
+    """The phase's headline acceptance criterion, in miniature.
+
+    Ten turns, one slice each — which is the shape a 40-turn run has and the thing a
+    single Lambda cannot do. Asserted on the transcript rather than the status, since
+    a status can be right while the conversation was lost.
+    """
+    await _make_run(db, "pr-full", max_messages=10)
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake_llm):
+        payload = await orchestration.prepare_run(db, "pr-full")
+        guard = 0
+        while not payload["done"] and guard < 40:
+            guard += 1
+            payload = await orchestration.execute_slice(
+                db, "pr-full", turn=payload["turn"], turn_budget=1
+            )
+        assert guard < 40, "the loop did not terminate"
+        await orchestration.finalise(db, "pr-full")
+
+    assert payload["status"] == "complete"
+    assert payload["turn"] == 10
+    snap = await db.get_snapshot("pr-full")
+    assert len(snap.conversation) == 10, (
+        f"expected 10 turns of transcript, got {len(snap.conversation)}"
+    )
+    assert snap.status == "complete"
+    # Exactly one terminal event, at the end.
+    terminals = [e for e in await db.get_events("pr-full")
+                 if e["event_type"].startswith("sim.") and e["event_type"] != "sim.started"]
+    assert [e["event_type"] for e in terminals] == ["sim.completed"]
+
+
+# --------------------------------------------------------------------------- #
+# The Lambda handlers
+# --------------------------------------------------------------------------- #
+
+
+async def test_handlers_refuse_an_event_with_no_owner(db):
+    """A default owner here would attribute a conversation to a shared partition."""
+    from matrix_studio import step_handlers
+
+    for name in ("_prepare", "_turn", "_finalise"):
+        fn = getattr(step_handlers, name)
+        with pytest.raises(ValueError, match="no owner_sub"):
+            await fn({"run_id": "x"})
+
+
+async def test_the_turn_handler_returns_only_machine_sized_keys(db, monkeypatch):
+    from matrix_studio import step_handlers
+    from tests.support import TEST_OWNER
+
+    await _make_run(db, "h-turn", max_messages=3)
+    monkeypatch.setattr(step_handlers, "_bound", lambda _owner: _identity(db))
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake_llm):
+        out = await step_handlers._turn(
+            {"run_id": "h-turn", "owner_sub": TEST_OWNER, "turn": 0}
+        )
+    assert set(out) == {
+        "run_id", "owner_sub", "turn", "max_messages", "total_cost_usd",
+        "status", "done",
+    }
+    assert out["turn"] == 1 and out["status"] == "running"
+
+
+async def _identity(db):
+    return db
+
+
+async def test_finalise_generates_the_summary_once(db):
+    """`RunManager._runner` used to do this in a background task Lambda never runs.
+
+    Guarded on an existing summary because `maybe_autogenerate_summary` stores a new
+    row every call, so a Retry on the Finalise state would pay for a second LLM
+    summary and leave two with no way to tell which is current.
+    """
+    await _make_run(db, "fin-sum", max_messages=1)
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake_llm):
+        await orchestration.execute_slice(db, "fin-sum", turn=0, turn_budget=1)
+    assert (await db.get_run("fin-sum"))["status"] == "complete"
+
+    calls = {"n": 0}
+
+    async def fake_summary(_db, _run_id):
+        calls["n"] += 1
+        await _db.save_summary(
+            run_id=_run_id, payload={"headline": "done"}, kind="generated",
+            tokens_in=1, tokens_out=1, cost_usd=0.0,
+        )
+
+    with patch("matrix_studio.service.maybe_autogenerate_summary", side_effect=fake_summary):
+        await orchestration.finalise(db, "fin-sum")
+        await orchestration.finalise(db, "fin-sum")
+    assert calls["n"] == 1, f"the summary was generated {calls['n']} times"
+    assert len(await db.get_summaries("fin-sum")) == 1
+
+
+async def test_finalise_does_not_summarise_a_stopped_run(db):
+    """A summary of a cut-off conversation would describe it as though it finished."""
+    await _make_run(db, "fin-stop", max_messages=6)
+    await db.set_stop_requested("fin-stop")
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake_llm):
+        out = await orchestration.execute_slice(db, "fin-stop", turn=0, turn_budget=1)
+    assert out["status"] == "stopped"
+    with patch("matrix_studio.service.maybe_autogenerate_summary") as gen:
+        await orchestration.finalise(db, "fin-stop")
+    gen.assert_not_called()
