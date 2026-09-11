@@ -101,7 +101,15 @@ async def _prepare(event: Dict[str, Any]) -> Dict[str, Any]:
     from matrix_studio import orchestration
 
     db = await _bound(_owner(event))
-    return await orchestration.prepare_run(db, str(event["run_id"]))
+    # `mode` selects fresh / branch / resume; `extra` carries the few identifiers the
+    # latter two need (parent_run_id, from_turn, mutation). Absent means fresh, so an
+    # execution started before this existed still runs.
+    return await orchestration.prepare(
+        db,
+        str(event["run_id"]),
+        mode=str(event.get("mode") or "fresh"),
+        **(event.get("extra") or {}),
+    )
 
 
 async def _turn(event: Dict[str, Any]) -> Dict[str, Any]:

@@ -91,6 +91,14 @@ class DuplicateNameError(StorageError):
 # Fixed here rather than at the call sites, because the contract is "this layer
 # returns what the SQLite layer returned". Patching five callers would leave the
 # sixth, written later, to rediscover it.
+# Events that tell a reader the engine will send nothing more. Kept here because the
+# storage layer has to recognise them to clear them, and duplicated lists of terminal
+# events are how one side of a system decides a run is finished while another does not
+# (the frontend had exactly that bug — `sim.stopped` and `sim.capped` were missing).
+TERMINAL_EVENT_TYPES = frozenset({
+    "sim.completed", "sim.failed", "sim.interrupted", "sim.stopped", "sim.capped",
+})
+
 _RUN_FIELDS = (
     "id", "owner_sub", "topic", "cast_json", "status", "created_at",
     "name", "description", "slug", "config_json", "parent_run_id",
@@ -99,6 +107,18 @@ _RUN_FIELDS = (
     # reads as None, which is falsy, so runs written before the field behave as
     # "no stop requested" without a migration.
     "stop_requested",
+    # Phase 5: the run's EFFECTIVE turn budget, when it differs from the one in
+    # `config_json`. Branch and resume both compute one — `branch_budget` extends the
+    # budget when the fork is already at or past it, and an `inject_message` mutation
+    # bumps it by one so the injection does not consume a generation slot. Neither was
+    # persisted anywhere, which was harmless while the loop ran in one process holding
+    # the number in a local variable, and is not once every turn is a fresh Lambda
+    # reading the run row.
+    #
+    # A dedicated attribute rather than rewriting `config_json`: that would be a
+    # read-modify-write on a JSON blob, and this is written from a state the machine
+    # can retry.
+    "budget",
 )
 _EVENT_FIELDS = (
     "run_id", "turn", "seq", "event_type", "agent_name", "payload", "created_at",
@@ -823,6 +843,34 @@ class DynamoStorage:
             )
             return False
 
+    async def set_run_budget(
+        self, run_id: str, max_messages: int, *, owner_sub: Optional[str] = None
+    ) -> bool:
+        """Record a run's effective turn budget. Returns whether it stuck.
+
+        See `budget` in `_RUN_FIELDS`. Conditional on the run existing for the reason
+        `update_run_status` spells out — `UpdateItem` upserts, so an unconditional
+        write to a missing run manufactures a phantom one.
+        """
+        owner_sub = self._owner(owner_sub)
+        try:
+            await self._call(
+                self._table("runs").update_item,
+                Key={"pk": _user_pk(owner_sub), "sk": _run_sk(run_id)},
+                UpdateExpression="SET budget = :b",
+                ExpressionAttributeValues={":b": int(max_messages)},
+                ConditionExpression="attribute_exists(sk)",
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001
+            if "ConditionalCheckFailed" not in str(exc):
+                raise
+            logger.warning(
+                "Ignored a budget update for run %s, which does not exist under owner "
+                "%s. Nothing was written.", run_id, owner_sub,
+            )
+            return False
+
     async def get_run(
         self, run_id: str, *, owner_sub: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
@@ -1239,6 +1287,46 @@ class DynamoStorage:
         items = result.get("Items") or []
         return int(items[0]["seq"]) if items else -1
 
+    async def clear_terminal_events(
+        self, run_id: str, *, owner_sub: Optional[str] = None
+    ) -> int:
+        """Delete every `sim.*` terminal event from a run's log. Returns the count.
+
+        A run that is being resumed or forked forward is *not* finished, and its log
+        must not say otherwise. `truncate_after_turn` cannot do this job: it removes
+        events **past** the checkpoint, and a terminal event is emitted **at** the last
+        turn, so it survives the trim by one.
+
+        **Measured on the deployed stack**, resuming a run whose log already ended:
+        the log came out holding two `sim.completed` events, one at the old final turn
+        and one at the new. State replay is unaffected (`reconstruct_at_turn` ignores
+        `sim.*`), which is why nothing raised — but the viewer marks a run finished on
+        the FIRST terminal event it sees and stops polling, so the resumed turns never
+        appear. Reachable without contrivance: stop a run, then resume it.
+        """
+        owner_sub = self._owner(owner_sub)
+        items = await self._query_all(
+            "events",
+            KeyConditionExpression="pk = :pk AND begins_with(sk, :prefix)",
+            ExpressionAttributeValues={
+                ":pk": _user_pk(owner_sub),
+                ":prefix": _run_prefix(run_id),
+            },
+        )
+        doomed = [
+            i for i in items
+            if str(i.get("event_type", "")) in TERMINAL_EVENT_TYPES
+        ]
+        await self._batch_delete("events", [
+            {"pk": i["pk"], "sk": i["sk"]} for i in doomed
+        ])
+        if doomed:
+            logger.info(
+                "Run %s: cleared %d terminal event(s) so the log does not claim the "
+                "run is finished", run_id, len(doomed),
+            )
+        return len(doomed)
+
     async def truncate_after_turn(
         self, run_id: str, turn: int, *, owner_sub: Optional[str] = None
     ) -> int:
@@ -1248,6 +1336,10 @@ class DynamoStorage:
         last checkpoint is a partial turn plus an interruption marker. Two queries
         and a batch delete, because DynamoDB has no `DELETE … WHERE`: the keys have
         to be read before they can be deleted.
+
+        Note what this does NOT do: a terminal event sits at the last completed turn,
+        not past it, so it survives. `clear_terminal_events` is the companion for that,
+        and resume calls both.
         """
         owner_sub = self._owner(owner_sub)
         events = await self._query_all(

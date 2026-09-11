@@ -390,11 +390,16 @@ async def execute_branch(
     # Copy the parent's event log up to and including the fork (preserving
     # turn/seq), so the branch replays byte-for-byte identically up to the fork.
     copied = await db.copy_events_upto(parent_run["id"], branch_run_id, from_turn)
+    # A fork at the parent's last turn copies its terminal event too, and the branch is
+    # about to generate more.
+    cleared = await db.clear_terminal_events(branch_run_id)
     logger.info(
-        "Branch %s: copied %d parent events up to turn %d",
+        "Branch %s: copied %d parent events up to turn %d (cleared %d inherited "
+        "terminal marker(s))",
         branch_run_id,
         copied,
         from_turn,
+        cleared,
     )
 
     # Seed a snapshot at the fork so the branch has a checkpoint at from_turn
@@ -565,11 +570,17 @@ async def resume_run_in_place(
     #    the interrupt marker) so the run continues cleanly and replay has no
     #    phantom mid-stream terminal event.
     removed = await db.truncate_after_turn(run_id, resume_turn)
+    # The terminal event sits AT the last completed turn, so the trim above leaves it.
+    # A resumed run is not finished, and a reader that stops at the first terminal
+    # event it sees would never show the resumed turns.
+    cleared = await db.clear_terminal_events(run_id)
     logger.info(
-        "Resume %s: trimmed %d dangling event(s) past checkpoint turn %d",
+        "Resume %s: trimmed %d dangling event(s) past checkpoint turn %d and cleared "
+        "%d terminal marker(s)",
         run_id,
         removed,
         resume_turn,
+        cleared,
     )
 
     # 3. Reconstruct state at the checkpoint (read-only replay of the log).
