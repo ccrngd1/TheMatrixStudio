@@ -2621,6 +2621,208 @@ class DynamoStorage:
         rows.sort(key=lambda r: r["score"])
         return rows[:k]
 
+    async def store_kb_vectors(
+        self,
+        kb_id: str,
+        vectors: List[tuple],
+        model: str,
+        chunks: Dict[int, Dict[str, Any]],
+    ) -> int:
+        """Store embeddings into a KB's own index. Returns how many were stored.
+
+        Creates the index if absent, through the one factory — an index is never created
+        at a call site, because its dimension and metric can never be changed.
+
+        **The model check is per KB here, which is what the global marker could not be.**
+        A KB indexed with one 1024-dimensional model and queried with another returns
+        confident nonsense: the service accepts both and every distance is meaningless.
+        Globally scoped, that check would also have made one tenant's model choice
+        constrain everyone — correct while a single index was shared, wrong the moment
+        collections are separate.
+
+        The vectors carry `owner_sub` for audit, NOT for filtering. Filtering on it would
+        break sharing: a grantee querying a shared KB would match none of its vectors,
+        because they carry the KB owner's sub rather than the reader's.
+        """
+        if not vectors:
+            return 0
+        bucket = os.environ.get("VECTOR_BUCKET", "")
+        if not bucket:
+            raise StorageError(
+                "VECTOR_BUCKET is not set, so there is nowhere to store embeddings."
+            )
+        kb = await self.get_knowledge_base(kb_id)
+        if kb is None:
+            raise StorageError(f"knowledge base {kb_id!r} does not exist")
+
+        recorded = kb.get("embedding_model")
+        if recorded and recorded != model:
+            raise StorageError(
+                f"Knowledge base {kb_id!r} was indexed with {recorded!r} but {model!r} "
+                f"produced these embeddings. Distances between vectors from different "
+                f"models are meaningless even at the same width, so this is refused "
+                f"rather than stored. Delete the KB's documents and re-add them to "
+                f"switch model."
+            )
+
+        from matrix_studio.storage.vectors import ensure_kb_index, kb_index_name
+
+        index = kb_index_name(kb_id, self.table_prefix)
+        client = self._vectors_client()
+        await ensure_kb_index(client, bucket, index)
+
+        payload = []
+        for chunk_id, vector in vectors:
+            meta = chunks.get(int(chunk_id))
+            if not meta:
+                raise StorageError(
+                    f"no metadata for chunk {chunk_id}; a vector with no document and "
+                    "ordinal cannot be rendered or cited and must not be stored"
+                )
+            payload.append({
+                "key": self._vector_key(str(meta["document_id"]), int(meta["ordinal"])),
+                "data": {"float32": [float(v) for v in vector]},
+                "metadata": {
+                    "kb_id": kb_id,
+                    "owner_sub": kb.get("owner_sub"),
+                    "document_id": str(meta["document_id"]),
+                    "ordinal": int(meta["ordinal"]),
+                    "text": str(meta.get("content") or ""),
+                },
+            })
+
+        for start in range(0, len(payload), 500):
+            await self._call(
+                client.put_vectors,
+                vectorBucketName=bucket,
+                indexName=index,
+                vectors=payload[start:start + 500],
+            )
+
+        if not recorded:
+            await self._call(
+                self._table("knowledge-bases").update_item,
+                Key={"pk": _kb_pk(kb_id), "sk": "META"},
+                UpdateExpression="SET embedding_model = :m",
+                ExpressionAttributeValues={":m": model},
+                ConditionExpression="attribute_exists(pk)",
+            )
+        return len(payload)
+
+    async def vector_search_kbs(
+        self,
+        vector: List[float],
+        kb_ids: Sequence[str],
+        *,
+        k: int = 3,
+        titles: Optional[Dict[str, str]] = None,
+    ) -> tuple[List[Dict[str, Any]], List[str]]:
+        """k-NN across several per-KB indexes, merged. Returns ``(rows, failed_kb_ids)``.
+
+        `kb_ids` must ALREADY be the authorised set — the output of `searchable_kbs`.
+        This method performs no grant check, deliberately: two places that both
+        half-authorise is how one of them ends up trusted by mistake. It is the
+        equivalent of `_slice_filter` being the only place scoping is expressed.
+
+        ## Querying each index for topK=k and merging is EXACT, not an approximation
+
+        Any vector in the global top-k must also be in its own index's top-k, so the
+        union of per-index top-k results contains the global top-k. Merging and trimming
+        therefore returns precisely what one index holding everything would have —
+        no recall is lost to the fan-out.
+
+        ## Merging is only sound because the metric is cosine
+
+        Cosine distance is pairwise between the query and each vector, so a distance from
+        `kb-legal` is directly comparable to one from `kb-migration` and the merge is a
+        sort. Under BM25 the statistics are per index, scores would not share a scale,
+        and this would be silently wrong — which is why §8b calls fan-out cheap *and*
+        correct only under vector retrieval.
+
+        ## No `owner_sub` filter, and that is the point of the phase
+
+        `_slice_filter` pins every query to the caller's own `owner_sub`, because with one
+        shared index that filter IS the isolation boundary. Here it would break sharing
+        outright: a shared KB's vectors carry the KB owner's sub, so filtering on the
+        *caller's* would return nothing from every KB they were granted. Authorisation has
+        already happened, in `searchable_kbs`, and §8b's per-index IAM is the backstop.
+
+        Persona scoping also disappears from the filter: a KB is the unit of binding, so
+        "this persona only" is expressed by binding that KB to that persona rather than by
+        a `persona_name` clause inside a shared collection.
+
+        ## A failed index yields partial results, and says so
+
+        One KB being unavailable must not lose the others. But partial results are not
+        free: the merged top-k is then drawn from a smaller pool, so a passage that would
+        have ranked first is absent and something worse takes its place — the
+        "confidently irrelevant passage" hazard `PHASE5-RETRIEVAL-MEASUREMENT.md`
+        records. The failures are therefore RETURNED, not merely logged, so the caller can
+        put them in the event log where a reader will see them.
+        """
+        if not vector or k <= 0 or not kb_ids:
+            return [], []
+        bucket = os.environ.get("VECTOR_BUCKET", "")
+        if not bucket:
+            logger.warning("VECTOR_BUCKET is not set; vector search is unavailable.")
+            return [], list(kb_ids)
+
+        from matrix_studio.storage.vectors import kb_index_name
+
+        client = self._vectors_client()
+        query = {"float32": [float(v) for v in vector]}
+
+        async def one(kb_id: str):
+            try:
+                return kb_id, await self._call(
+                    client.query_vectors,
+                    vectorBucketName=bucket,
+                    indexName=kb_index_name(kb_id, self.table_prefix),
+                    queryVector=query,
+                    topK=k,
+                    returnMetadata=True,
+                    returnDistance=True,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Vector search failed for KB %s: %s. Other bound KBs are still "
+                    "searched, so this turn's passages are drawn from a smaller pool "
+                    "than intended.", kb_id, exc,
+                )
+                return kb_id, None
+
+        results = await asyncio.gather(*(one(str(kb)) for kb in kb_ids))
+
+        titles = titles or {}
+        rows: List[Dict[str, Any]] = []
+        failed: List[str] = []
+        for kb_id, result in results:
+            if result is None:
+                failed.append(kb_id)
+                continue
+            for hit in result.get("vectors") or []:
+                meta = hit.get("metadata") or {}
+                doc_id = str(meta.get("document_id") or "")
+                ordinal = int(meta.get("ordinal") or 0)
+                rows.append({
+                    "chunk_id": self.chunk_id_for(doc_id, ordinal),
+                    "document_id": doc_id,
+                    "ordinal": ordinal,
+                    "content": str(meta.get("text") or ""),
+                    "title": titles.get(doc_id) or doc_id,
+                    "source_path": None,
+                    "media_type": None,
+                    "score": float(hit.get("distance") or 0.0),
+                    # Which collection the passage came from, so a citation can say so
+                    # and an operator can tell a shared corpus's contribution from a
+                    # private one.
+                    "kb_id": kb_id,
+                })
+        # Smaller distance is better, matching `vector_search` and what
+        # `apply_similarity_floor` expects.
+        rows.sort(key=lambda r: r["score"])
+        return rows[:k], failed
+
     async def count_chunk_vectors(self, run_id: str, *, owner_sub: Optional[str] = None) -> int:
         """How many of a run's chunks have a stored embedding."""
         owner_sub = self._owner(owner_sub)

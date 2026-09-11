@@ -328,9 +328,15 @@ def apply_similarity_floor(
     one, and pretending otherwise would trade real recall for nothing. See
     ``docs/PHASE5-RETRIEVAL-MEASUREMENT.md``.
 
-    Rows must carry ``score`` as a sqlite-vec L2 distance over UNIT vectors; the
+    Rows must carry ``score`` as a **cosine distance** over UNIT vectors; the
     conversion is invalid otherwise, so a caller that cannot guarantee unit-norm
     vectors should pass ``min_similarity=0``.
+
+    This docstring said "sqlite-vec L2 distance" until Phase 6, which was stale and
+    describing exactly the confusion that made this guard inert for months: the
+    conversion applied L2's formula to a cosine distance, so an orthogonal passage
+    scored 0.5 against a 0.15 floor and nothing was ever rejected. See
+    ``embeddings.distance_to_cosine``.
     """
     if not rows or min_similarity <= 0:
         return list(rows), 0
