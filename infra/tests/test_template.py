@@ -1045,3 +1045,127 @@ def test_the_workers_set_no_auth_mode(template: Template):
         fn = next(f for lid, f in functions.items() if lid.startswith(prefix))
         env = fn["Properties"]["Environment"]["Variables"]
         assert "AUTH_MODE" not in env, f"{prefix} sets AUTH_MODE"
+
+
+# --------------------------------------------------------------------------- #
+# The SPA reaches the API through CloudFront. Before this behaviour existed the
+# deployed SPA could not reach the API AT ALL: the bundle calls relative
+# `/api/...` paths, which is correct locally (uvicorn serves both from one
+# origin) and on CloudFront resolved to the SPA bucket, hit the 404->index.html
+# fallback, and returned 200 text/html. The app never even saw a 401.
+# --------------------------------------------------------------------------- #
+
+# AWS managed policy ids. Hardcoded because the template carries ids, not names, and
+# asserting on the id is the only way to know WHICH policy was attached.
+CACHING_DISABLED = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad"
+CACHING_OPTIMIZED = "658327ea-f89d-4fab-a63d-7e88639e58f6"
+ALL_VIEWER_EXCEPT_HOST = "b689b0a8-53d0-40ab-baf2-68738e2966ac"
+
+
+def _behaviour(template: Template, path: str) -> dict:
+    dist = next(
+        iter(template.find_resources("AWS::CloudFront::Distribution").values())
+    )["Properties"]["DistributionConfig"]
+    for behaviour in dist.get("CacheBehaviors", []):
+        if behaviour.get("PathPattern") == path:
+            return behaviour
+    raise AssertionError(
+        f"no {path} behaviour; found "
+        f"{[b.get('PathPattern') for b in dist.get('CacheBehaviors', [])]}"
+    )
+
+
+def test_the_spa_origin_serves_the_api_under_api(template: Template):
+    """Without this the SPA's relative `/api/...` calls return the HTML shell."""
+    behaviour = _behaviour(template, "/api/*")
+    dist = next(
+        iter(template.find_resources("AWS::CloudFront::Distribution").values())
+    )["Properties"]["DistributionConfig"]
+    target = behaviour["TargetOriginId"]
+    origins = {o["Id"]: o for o in dist["Origins"]}
+    assert target in origins, f"{target} is not an origin"
+    assert "execute-api" in str(origins[target].get("DomainName")), (
+        f"/api/* points at {origins[target].get('DomainName')} rather than the API"
+    )
+
+
+def test_the_api_behaviour_never_caches(template: Template):
+    """**This is a tenancy boundary, not a performance setting.**
+
+    A cached API response lets CloudFront serve one user's `/api/runs` to another. No
+    amount of `dynamodb:LeadingKeys` prevents it, because the request never reaches
+    DynamoDB — the scoping that protects every other read is bypassed entirely.
+
+    Asserted against the CACHING_DISABLED id specifically, and against
+    CACHING_OPTIMIZED explicitly, because "optimized" is the plausible-sounding change
+    somebody makes to speed up an API and it also drops Authorization from the cache key.
+    """
+    behaviour = _behaviour(template, "/api/*")
+    assert behaviour["CachePolicyId"] == CACHING_DISABLED, behaviour["CachePolicyId"]
+    assert behaviour["CachePolicyId"] != CACHING_OPTIMIZED
+
+
+def test_the_api_behaviour_forwards_the_authorization_header(template: Template):
+    """CloudFront strips headers the origin-request policy does not name.
+
+    Without this every request reaches the JWT authorizer unauthenticated and the SPA
+    gets a permanent 401 — indistinguishable from a bad token, and the kind of thing that
+    sends you looking at Cognito.
+
+    `ALL_VIEWER_EXCEPT_HOST_HEADER` rather than `ALL_VIEWER`: API Gateway rejects a
+    forwarded viewer Host, because it routes on its own.
+    """
+    behaviour = _behaviour(template, "/api/*")
+    assert behaviour.get("OriginRequestPolicyId") == ALL_VIEWER_EXCEPT_HOST, (
+        behaviour.get("OriginRequestPolicyId")
+    )
+
+
+def test_the_api_behaviour_allows_writes(template: Template):
+    """GET-only would leave the app read-only in a way that reads as a permissions bug."""
+    methods = set(_behaviour(template, "/api/*")["AllowedMethods"])
+    assert {"GET", "POST", "DELETE", "OPTIONS"} <= methods, methods
+
+
+def test_the_assets_behaviour_still_caches(template: Template):
+    """Non-vacuity for the test above: caching is disabled for the API SPECIFICALLY, not
+    switched off across the distribution. The asset filenames carry a content hash, so a
+    year of immutable caching is safe and is the thing that makes the SPA fast."""
+    assert _behaviour(template, "/assets/*")["CachePolicyId"] == CACHING_OPTIMIZED
+
+
+def test_the_spa_origin_is_not_granted_cors(template: Template):
+    """The SPA is same-origin now, so listing the CloudFront domain in CORS would be
+    both unnecessary and a dependency CYCLE — the distribution references the API to
+    route `/api/*`, so the API cannot reference the distribution's domain.
+
+    CloudFormation refused the stack outright when both existed, which is a better
+    argument for same-origin than any amount of reasoning about preflights.
+    """
+    apis = template.find_resources("AWS::ApiGatewayV2::Api")
+    cors = next(iter(apis.values()))["Properties"].get("CorsConfiguration") or {}
+    assert "cloudfront" not in str(cors.get("AllowOrigins", "")).lower(), cors
+
+
+def test_the_runtime_config_deployment_does_not_prune(template: Template):
+    """**Pruning would delete the application.**
+
+    The SPA bundle is synced separately (infra/README.md), so a `BucketDeployment` that
+    pruned would remove every file it did not place — leaving `config.json` alone in the
+    bucket and a blank page behind CloudFront, on a deploy that reported success.
+    """
+    deployments = template.find_resources("Custom::CDKBucketDeployment")
+    assert deployments, "config.json is not deployed, so the SPA has no pool to log in to"
+    for logical_id, deployment in deployments.items():
+        assert deployment["Properties"].get("Prune") is False, (
+            f"{logical_id} prunes; it would delete the synced SPA bundle"
+        )
+
+
+def test_the_runtime_config_invalidates_the_edge_cache(template: Template):
+    """Otherwise a redeployed pool id is served stale for the default TTL, and every
+    login goes to the previous deployment's client."""
+    deployment = next(
+        iter(template.find_resources("Custom::CDKBucketDeployment").values())
+    )["Properties"]
+    assert "/config.json" in (deployment.get("DistributionPaths") or []), deployment
