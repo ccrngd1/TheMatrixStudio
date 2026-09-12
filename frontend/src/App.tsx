@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { History } from './views/History'
 import { NewRunForm } from './views/NewRunForm'
 import { LiveView } from './views/LiveView'
+import { AuthGate } from './views/AuthGate'
 
 type View =
   | { name: 'history' }
@@ -13,6 +14,17 @@ type View =
 
 // Minimal client-side view switching — no router dependency needed for Phase 1.
 export default function App() {
+  return (
+    <AuthGate>
+      <Views />
+    </AuthGate>
+  )
+}
+
+// The views, wrapped by the gate so an unauthenticated visitor never reaches them. Split
+// out rather than gated inside each case: three views today and a dozen panels, and the
+// next one added would have to remember, whereas a wrapper cannot be forgotten.
+function Views() {
   const [view, setView] = useState<View>({ name: 'history' })
 
   switch (view.name) {

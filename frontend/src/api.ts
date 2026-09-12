@@ -21,11 +21,45 @@ import type {
   TurnTrace,
 } from './types'
 
+// Set once at start-up, so `jsonFetch` can attach a token without every call site
+// knowing about auth. A function rather than a stored token: `validToken` refreshes when
+// the current one is near expiry, and a copy captured here would go stale after an hour.
+let tokenProvider: (() => Promise<string | null>) | null = null
+
+export function setTokenProvider(
+  provider: (() => Promise<string | null>) | null,
+): void {
+  tokenProvider = provider
+}
+
+// Called when the API rejects a token the SPA believed was good — a revoked session, or a
+// pool the token was not issued for. The app sends the user back to the Hosted UI rather
+// than showing a 401 for every panel.
+let onUnauthorized: (() => void) | null = null
+
+export function setUnauthorizedHandler(handler: (() => void) | null): void {
+  onUnauthorized = handler
+}
+
 async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, {
-    headers: { 'Content-Type': 'application/json' },
-    ...init,
-  })
+  // Attached HERE and nowhere else, so no request can be written that forgets it — the
+  // same reasoning that makes `_slice_filter` and `may_read_kb` single chokepoints
+  // server-side.
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...((init?.headers as Record<string, string>) ?? {}),
+  }
+  if (tokenProvider) {
+    const token = await tokenProvider()
+    if (token) headers.Authorization = `Bearer ${token}`
+  }
+  const res = await fetch(url, { ...init, headers })
+  if (res.status === 401 && onUnauthorized) {
+    // Before the handler existed a 401 surfaced as "401: Unauthorized" in whichever
+    // panel happened to fetch first, which reads as a broken app rather than an expired
+    // session.
+    onUnauthorized()
+  }
   if (!res.ok) {
     let detail = res.statusText
     try {
