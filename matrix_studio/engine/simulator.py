@@ -17,7 +17,11 @@ import time
 import uuid
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
-import litellm
+# Deferred: importing litellm costs 1.7 s of the API Lambda's 1.9 s import, which
+# pushed its init phase past Lambda's hard 10 s limit. The proxy also applies
+# `drop_params` and `suppress_debug_info`, which used to be set below and therefore
+# depended on import order. See matrix_studio/lazy_litellm.py.
+from matrix_studio.lazy_litellm import litellm
 
 # Type alias for the Phase 1 live-emit callback. It receives one structured
 # event dict (same shape as a persisted row) for each event the engine emits.
@@ -59,29 +63,11 @@ from matrix_studio.validation import validate_utterance
 
 logger = logging.getLogger(__name__)
 
-# Configure litellm logging
-litellm.suppress_debug_info = True
-
-# Drop provider-unsupported sampling params instead of erroring.
-#
-# Measured 2026-09-06: `bedrock/global.anthropic.claude-sonnet-5` accepts ONLY
-# temperature=1, so every call raised UnsupportedParamsError and the engine wrote
-# the error text into the transcript AS THE CHARACTER'S SPEECH:
-#
-#   "[Error generating response: litellm.UnsupportedParamsError: ... does not
-#    support temperature=0.7. Only temperature=1 is supported.]"
-#
-# The engine passes temperature from settings (0.7), 0.3 for speaker selection and
-# 0.0 for the validation gate and reflection, so a model with parameter
-# restrictions failed on every path at once. "Provider-agnostic" is a stated
-# project goal (PROJECT-SPEC §7); assuming every model accepts our sampling
-# params is not provider-agnostic.
-#
-# Dropping is the right trade here: a slightly different temperature is a far
-# smaller loss than a run of error strings, and the alternative — per-model
-# capability tables in this codebase — is exactly the provider coupling LiteLLM
-# exists to avoid.
-litellm.drop_params = True
+# `litellm.suppress_debug_info` and `litellm.drop_params` were set here. They now
+# live in `matrix_studio/lazy_litellm.py`, applied the moment the module resolves —
+# setting them here would have forced the very import this defers, and made them
+# conditional on some process having imported the simulator, which `naming.py`,
+# `analysis.py` and `pressure.py` do not.
 
 
 async def _select_next_speaker(

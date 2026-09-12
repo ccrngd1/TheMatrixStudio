@@ -48,7 +48,9 @@ import logging
 import re
 from typing import Any, Dict, List, Optional
 
-import litellm
+# Deferred: importing litellm costs 1.7 s and this module's callers include the API
+# Lambda, whose read routes never generate. See matrix_studio/lazy_litellm.py.
+from matrix_studio.lazy_litellm import litellm
 
 from matrix_studio.jsonio import extract_json_object
 

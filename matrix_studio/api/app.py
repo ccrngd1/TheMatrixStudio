@@ -25,6 +25,7 @@ from server-side settings/env (Phase 0 .env). Full BYO-key browser UX is Phase 3
 
 import json
 import logging
+import os
 import re
 import tempfile
 import time
@@ -2011,6 +2012,39 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         finally:
             if broker is not None and queue is not None:
                 broker.unsubscribe(queue)
+
+    # ------------------------- SPA runtime config -------------------------- #
+
+    @app.get("/config.json")
+    async def _runtime_config() -> JSONResponse:
+        """What the SPA reads at start-up to decide whether to show a login.
+
+        Registered here, BEFORE the static catch-all, and the ordering is the whole
+        point: ``/{full_path:path}`` matches ``/config.json`` and SPA-falls-back to
+        ``index.html`` with a 200, so without this route the SPA received HTML where
+        it expected JSON, failed closed, and the local single-user tool showed
+        "Configuration error" instead of the application.
+
+        On the deployed stack this route is never reached — CloudFront serves
+        ``/config.json`` from the SPA bucket, where `cdk deploy` writes the real pool
+        details, and only ``/api/*`` goes to this Lambda. It exists so that "no
+        config file" is not a state the SPA has to interpret, which is what lets a
+        missing config fail closed rather than being read as "no login needed".
+        """
+        single_user = get_settings().auth_mode == "single-user"
+        return JSONResponse(
+            {
+                # Deliberately from the environment and empty by default. If this
+                # route is ever what answers on a deployment that requires a login,
+                # the SPA reports "requires a login but names no user pool" — a
+                # visible failure rather than an open door.
+                "hostedUiUrl": os.environ.get("COGNITO_HOSTED_UI_URL", ""),
+                "clientId": os.environ.get("COGNITO_CLIENT_ID", ""),
+                "userPoolId": os.environ.get("COGNITO_USER_POOL_ID", ""),
+                "authRequired": not single_user,
+            },
+            headers={"Cache-Control": "no-store"},
+        )
 
     # --------------------------- Static frontend --------------------------- #
     _mount_static(app)

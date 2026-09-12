@@ -22,6 +22,14 @@ export default defineConfig({
         changeOrigin: true,
         ws: true,
       },
+      // The login gate reads `/config.json` to decide whether a login is required, and
+      // a config it cannot read fails CLOSED. Vite serves no such file, so without this
+      // the dev server would 404 and `vite dev` would show "Configuration error"
+      // instead of the app. The backend answers it from AUTH_MODE.
+      '/config.json': {
+        target: 'http://127.0.0.1:8000',
+        changeOrigin: true,
+      },
     },
   },
   test: {

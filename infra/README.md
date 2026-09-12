@@ -69,8 +69,16 @@ cd frontend && npm ci && npm run build
 aws s3 sync ../matrix_studio/static "s3://$(
   aws cloudformation describe-stacks --stack-name matrix-studio-stack \
     --query "Stacks[0].Outputs[?OutputKey=='SpaBucketName'].OutputValue" --output text
-)" --delete
+)" --delete --exclude config.json
 ```
+
+`--exclude config.json` is **required**, and not a tidiness point. `cdk deploy` writes
+`config.json` into this same bucket separately (it holds the pool and client ids, which
+only exist after the stack does), so `--delete` without the exclude removes it on every
+frontend deploy. The SPA now fails closed on a config it cannot read, so the symptom
+would be a "Configuration error" page rather than the app — and under the *previous*
+semantics, where a missing config meant "no login needed", it silently served the whole
+application to anyone.
 
 You do **not** need a CloudFront invalidation for the hashed assets — that is the
 point of the two cache behaviours — but `index.html` is served no-cache, so a new
