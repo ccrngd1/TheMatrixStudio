@@ -9,7 +9,7 @@ Written before the implementation, as `PHASE5-ORCHESTRATION-DESIGN.md` was. That
 ceremony — Phase 5's own doc turned out to be **wrong** about the stop check being "exact
 at `turn_budget=1`", and finding that in writing first is why the correction was cheap.
 
-Status: **design settled, awaiting go-ahead to implement.**
+Status: **implemented and verified against the live account, 2026-09-12.** §8 records three corrections found while building it, one of which contradicts §6's build order.
 
 ---
 

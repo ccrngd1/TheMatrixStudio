@@ -619,6 +619,49 @@ facts that only existed once there was one.
 *Done when:* one document, uploaded once, is searchable by two personas in two different
 conversations; a revoked grant stops working **at query time**, not just at binding time.
 
+### DONE 2026-09-12 — both criteria verified against the live account
+
+`scripts/verify_kb_grants.py`, **15/15**: a bound KB with no grant is not searchable, a
+grant makes the same binding work with no change to the run, one document is searchable by
+two personas in two conversations from a single stored copy, and a revoked grant stops
+resolving immediately while the binding is still in the run's config. Plus the owner
+needing no grant row, and group grants resolving for a member and not a non-member. The
+script exists because `moto` does not implement `QueryVectors`, so the one call that
+decides whether a grantee gets passages cannot be exercised in the suite.
+
+**Three corrections to the design, recorded in `PHASE6-KB-DESIGN.md` §8:**
+
+1. **The run slice stays** (§8.1). The build order said `_slice_filter`'s `run_id` clause
+   would be *replaced* by KB index selection. That is a ceiling violation, and the
+   reasoning was already in this document: one index per RUN caps the install at 10,000
+   conversations. §4.4's one-KB-per-run mapping is right as a one-off for 46 runs and wrong
+   as the standing ingest path — the design covered the migration and never covered what
+   happens when a *new* run attaches a file. Retrieval now reads both sources and merges
+   them, and the ceiling sits on knowledge bases where a company will not reach it.
+2. **A shared KB's titles travel with the vector** (§8.2). The document rows belong to the
+   KB's owner, and a grantee's credentials are pinned to their own partition — so the
+   title is unreachable by design, by the same mechanism that makes isolation work.
+3. **The turn loop has no token** (§8.3), so the creator's verified groups are captured on
+   the run row. The window becomes the run's lifetime rather than the token's, stated
+   rather than hidden; the grant is still re-read every turn, which is what §8b requires.
+
+**Recall across two KBs: identical, and proved more cheaply than planned.** §5 asked for a
+re-measurement. `scripts/verify_kb_fanout_equivalence.py` compares the top-k *result sets*
+per query between one filtered index and two fanned-out KBs — 200 queries at k=5 over a
+real 666-vector corpus split by document: **identical, same order, every time**. Every
+recall metric is therefore identical by definition rather than by re-sampling, and zero
+Bedrock calls were needed because the query vectors come from the corpus itself.
+
+**The migration ran**: 4 KBs, 1,385 vectors copied, both binding levels exercised,
+idempotent on a second `--apply`. Its dry run caught a defect no test had: the KB name is
+the idempotence key and the run id was truncated to 8 characters, so four `eval-178…` runs
+would have merged into one collection.
+
+**`scripts/verify_turn_loop.py` still passes 35/35** post-deploy. `verify_tenant_isolation.py`
+could **not** be run — the tenant role trusts only the four Lambda roles, so a human
+identity cannot assume it. That is a limitation of the script rather than a regression;
+see `BACKLOG.md`.
+
 ---
 
 ## Phase 7 — Operational polish
