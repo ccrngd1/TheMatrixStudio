@@ -34,6 +34,7 @@ from aws_cdk import aws_dynamodb as dynamodb
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_s3 as s3
+from aws_cdk import aws_s3_deployment as s3deploy
 from aws_cdk import aws_s3vectors as s3vectors
 from aws_cdk import aws_stepfunctions as sfn
 from aws_cdk import aws_stepfunctions_tasks as sfn_tasks
@@ -793,6 +794,47 @@ class MatrixStudioStack(Stack):
         self.api_lambda.add_environment("TENANT_ROLE_ARN", self.tenant_role.role_arn)
         self.api_lambda.add_environment("TABLE_PREFIX", self.config.prefix)
 
+        # The SPA's runtime configuration, written at deploy time.
+        #
+        # Not baked into the bundle with `VITE_*`: the pool id, client id and Hosted UI
+        # domain are only known after this stack exists, so compiling them in would make
+        # the JS artefact environment-specific — unpromotable between accounts and needing
+        # a rebuild for every new stack.
+        #
+        # `prune=False` because the SPA files are synced separately (see infra/README.md);
+        # pruning would delete the application on every deploy.
+        #
+        # None of these are secrets. A PKCE public client's id is in the URL of every
+        # login redirect and the pool id is in the issuer of every token. What WOULD be a
+        # secret is a client secret, which this client deliberately does not have.
+        s3deploy.BucketDeployment(
+            self,
+            "SpaRuntimeConfig",
+            destination_bucket=self.spa_bucket,
+            prune=False,
+            sources=[
+                s3deploy.Source.json_data(
+                    "config.json",
+                    {
+                        # `base_url()`, the same expression the HostedUiUrl output
+                        # uses. Composing the domain by hand here would be a second
+                        # place to get it wrong, and a wrong Hosted UI URL fails as a
+                        # redirect to nowhere rather than as an error.
+                        "hostedUiUrl": self.user_pool_domain.base_url(),
+                        "clientId": self.user_pool_client.user_pool_client_id,
+                        "userPoolId": self.user_pool.user_pool_id,
+                        # Explicitly true. The SPA fails closed without this file, but a
+                        # deployment should say so rather than rely on the fallback.
+                        "authRequired": True,
+                    },
+                )
+            ],
+            # Invalidate so a redeploy's config is picked up rather than served from the
+            # edge for the default TTL — the file is small and changes rarely.
+            distribution=self.distribution,
+            distribution_paths=["/config.json"],
+        )
+
         self.authorizer = apigw_authorizers.HttpJwtAuthorizer(
             "JwtAuthorizer",
             jwt_issuer=(
@@ -815,9 +857,18 @@ class MatrixStudioStack(Stack):
             # CloudFront domain rather than `*`: with credentials in an
             # `Authorization` header, a permissive origin list is what lets any
             # page on the internet call this API with a user's token.
+            # CORS covers ONLY the extra origins an operator names — a local dev server
+            # hitting the deployed API. The SPA is not among them and does not need to
+            # be: it reaches the API through CloudFront's `/api/*` behaviour, so every
+            # request is same-origin and CORS never applies.
+            #
+            # The CloudFront domain used to be listed here, and removing it also breaks a
+            # dependency CYCLE: the distribution now references the API (to route
+            # `/api/*`), so the API referencing the distribution's domain made the stack
+            # undeployable. CloudFormation caught it, which is the argument for
+            # same-origin over cross-origin rather than a consolation.
             cors_preflight=apigw.CorsPreflightOptions(
                 allow_origins=[
-                    f"https://{self.distribution.distribution_domain_name}",
                     *(self.config.extra_callback_urls or []),
                 ],
                 allow_methods=[
@@ -830,6 +881,50 @@ class MatrixStudioStack(Stack):
                 max_age=Duration.hours(1),
             ),
             default_authorizer=self.authorizer,
+        )
+
+        # Serve the API from the SPA's own origin, under `/api/*`.
+        #
+        # **Without this the deployed SPA cannot reach the API at all.** The bundle calls
+        # RELATIVE paths (`/api/runs`), which is correct locally — uvicorn serves the SPA
+        # and the API from one origin — and silently resolves to the SPA bucket on
+        # CloudFront. The request then hits the 404→index.html fallback and returns
+        # **200 text/html**, so the app never even sees a 401. Verified against the
+        # deployment before this existed.
+        #
+        # Same-origin also means the browser never learns the API Gateway domain, and CORS
+        # stops mattering for the SPA.
+        #
+        # Added here rather than in `_create_spa_hosting` because the distribution is
+        # built before the HTTP API exists, and the API's CORS config needs the
+        # distribution's domain — attaching the behaviour afterwards breaks that cycle.
+        self.distribution.add_behavior(
+            "/api/*",
+            origins.HttpOrigin(
+                f"{self.http_api.api_id}.execute-api.{self.region}.amazonaws.com",
+                protocol_policy=cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
+            ),
+            viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+            # **CACHING_DISABLED is not a performance choice, it is the tenancy
+            # boundary.** Caching an API response would let CloudFront serve one user's
+            # `/api/runs` to another — a cross-tenant disclosure that no amount of
+            # `dynamodb:LeadingKeys` can prevent, because the request never reaches
+            # DynamoDB. `test_the_api_behaviour_never_caches` locks this.
+            cache_policy=cloudfront.CachePolicy.CACHING_DISABLED,
+            # And the Authorization header must reach the origin. CloudFront strips
+            # headers not named by the origin-request policy, so without this every
+            # request arrives at the JWT authorizer unauthenticated and the SPA gets a
+            # permanent 401 — indistinguishable from a bad token.
+            #
+            # `ALL_VIEWER_EXCEPT_HOST_HEADER` rather than `ALL_VIEWER`: API Gateway
+            # rejects a forwarded viewer Host, since it routes on its own.
+            origin_request_policy=(
+                cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER
+            ),
+            # POST and DELETE are needed — creating a run, attaching a document, deleting
+            # one. GET-only would leave the app read-only in a way that looks like a
+            # permissions bug.
+            allowed_methods=cloudfront.AllowedMethods.ALLOW_ALL,
         )
 
         integration = apigw_integrations.HttpLambdaIntegration(
