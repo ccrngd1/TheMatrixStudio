@@ -1,8 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 import type { RunSummary } from '../types'
 import { isStalled } from '../lib/runStatus'
+
+// How long a load may take before the view says why it is still waiting.
+//
+// The deployed API is a container-image Lambda: warm requests answer in ~56 ms, but a
+// cold start costs ~5.7 s of init, and when init overruns Lambda's hard 10 s limit it is
+// aborted and RETRIED — one measured cold start took 24.8 s. It returned 200; the run
+// list was simply not on screen for 25 seconds, which reads as a broken app. Naming the
+// cause is the difference between waiting and reloading.
+const SLOW_AFTER_MS = 3000
 
 interface Props {
   onOpen: (runId: string) => void
@@ -13,22 +22,47 @@ export function History({ onOpen, onNew }: Props) {
   const [runs, setRuns] = useState<RunSummary[]>([])
   const [q, setQ] = useState('')
   const [loading, setLoading] = useState(true)
+  const [slow, setSlow] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   const load = (query?: string) => {
     setLoading(true)
+    setSlow(false)
+    const slowTimer = setTimeout(() => setSlow(true), SLOW_AFTER_MS)
     api
       .listRuns(query)
-      .then(setRuns)
-      .catch(() => setRuns([]))
-      .finally(() => setLoading(false))
+      .then((rows) => {
+        setRuns(rows)
+        setError(null)
+      })
+      .catch((err) => {
+        // A failure used to be swallowed into an empty list, which renders as "No runs
+        // yet" — indistinguishable from an account with no runs. On a cold start that
+        // times out, that tells the user their history is gone when it is not.
+        setRuns([])
+        setError(err instanceof Error ? err.message : String(err))
+      })
+      .finally(() => {
+        clearTimeout(slowTimer)
+        setLoading(false)
+        setSlow(false)
+      })
   }
 
+  // One fetch on mount, then debounced fetches as the query changes.
+  //
+  // This used to be two effects, and both fired on mount: an immediate `load()` and the
+  // debounced one 250 ms later with an identical query. Two identical requests is
+  // ordinarily just waste, but against a cold Lambda each one starts its OWN sandbox and
+  // pays its own ~5.7 s init — the deployed logs show three concurrent cold starts for
+  // one page load. The ref keeps the first load immediate while removing the duplicate.
+  const firstLoad = useRef(true)
   useEffect(() => {
-    load()
-  }, [])
-
-  // Debounced search by name/description/topic.
-  useEffect(() => {
+    if (firstLoad.current) {
+      firstLoad.current = false
+      load()
+      return
+    }
     const id = setTimeout(() => load(q || undefined), 250)
     return () => clearTimeout(id)
   }, [q])
@@ -53,7 +87,25 @@ export function History({ onOpen, onNew }: Props) {
       />
 
       {loading ? (
-        <p className="text-slate-500">Loading…</p>
+        <div className="text-slate-500">
+          <p>Loading…</p>
+          {slow && (
+            <p className="mt-2 text-xs text-slate-500">
+              Still waiting on the API. The first request after an idle period starts a
+              new Lambda sandbox and can take up to 30 seconds; it is not stuck.
+            </p>
+          )}
+        </div>
+      ) : error ? (
+        <div className="rounded-lg border border-red-900/60 bg-red-900/20 p-4">
+          <p className="text-sm text-red-300">Could not load your runs: {error}</p>
+          <button
+            onClick={() => load(q || undefined)}
+            className="mt-3 rounded border border-matrix-border px-3 py-1 text-xs text-slate-300 hover:text-slate-100"
+          >
+            Try again
+          </button>
+        </div>
       ) : runs.length === 0 ? (
         <p className="text-slate-500">No runs yet. Start one with “+ New run”.</p>
       ) : (

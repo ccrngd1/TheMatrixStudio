@@ -92,6 +92,38 @@ describe('the gate fails closed', () => {
     expect(screen.queryByText(PROTECTED)).toBeNull()
   })
 
+  it('hides the app when config.json is MISSING', async () => {
+    // A 404 used to mean "the local tool, which ships no config file" — and therefore no
+    // login. Two ways that inference was wrong:
+    //
+    //   - the local tool does not 404: uvicorn's SPA catch-all returns index.html with a
+    //     200, so `/config.json` came back as HTML and the gate broke the local tool;
+    //   - a 404 IS reachable on a deployment. The documented SPA sync was
+    //     `aws s3 sync … --delete`, which deletes the config.json `cdk deploy` writes
+    //     separately — turning a routine frontend deploy into a page with no login.
+    vi.stubGlobal('fetch', respond({}, 404))
+    render(<AuthGate>{child()}</AuthGate>)
+    await waitFor(() => expect(screen.getByText(/Configuration error/i)).toBeTruthy())
+    expect(screen.queryByText(PROTECTED)).toBeNull()
+  })
+
+  it('hides the app when config.json is served as HTML by a SPA fallback', async () => {
+    // Exactly what uvicorn's catch-all does: 200, text/html, `res.json()` throws.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw new SyntaxError('Unexpected token < in JSON at position 0')
+        },
+      }),
+    )
+    render(<AuthGate>{child()}</AuthGate>)
+    await waitFor(() => expect(screen.getByText(/Configuration error/i)).toBeTruthy())
+    expect(screen.queryByText(PROTECTED)).toBeNull()
+  })
+
   it('requires auth when the config OMITS authRequired', async () => {
     // Defaults must fail closed. `authRequired: body.authRequired === true` — the natural
     // way to write it — opens the app for any config missing the field, and every test
@@ -136,9 +168,10 @@ describe('the gate opens', () => {
   })
 
   it('renders the app with no login for the local single-user tool', async () => {
-    // A clean 404 is the ONE case treated as "no auth": the server answered, and the
-    // local tool ships no config file. Distinguishable from a failure for that reason.
-    vi.stubGlobal('fetch', respond({}, 404))
+    // The local tool is served an EXPLICIT config saying no login is needed, by the
+    // API's own `/config.json` route. It does not rely on the file being absent — see
+    // the 404 test below for why absence can no longer mean "open".
+    vi.stubGlobal('fetch', respond({ ...DEPLOYED, authRequired: false }))
     render(<AuthGate>{child()}</AuthGate>)
     await waitFor(() => expect(screen.getByText(PROTECTED)).toBeTruthy())
     // No sign-out button: there is no session to end.
