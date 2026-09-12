@@ -722,7 +722,12 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
                     ),
                 )
 
-        result = await manager.create_run(request, owner_sub=user)
+        # `groups` is carried onto the run row, not just used for the check above. A turn
+        # runs in a Step Functions state with no JWT, so this is the only moment the
+        # creator's verified group membership is available to record — and without it a
+        # KB granted to a group would list in the API and retrieve nothing during the run.
+        # PHASE6-KB-DESIGN.md §8.3 states the window that buys.
+        result = await manager.create_run(request, owner_sub=user, groups=groups)
         return result
 
     @app.get("/api/runs")

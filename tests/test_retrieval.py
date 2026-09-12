@@ -394,7 +394,7 @@ async def test_retrieve_for_turn_respects_k_and_budget(run_db):
         chunks=[f"retrieval design passage number {i} " + "filler " * 40 for i in range(20)],
         persona_name="A",
     )
-    passages, query, _rej = await retrieve_for_turn(
+    passages, query, _rej, _kb = await retrieve_for_turn(
         run_db, "r1", "A", "retrieval design",
         conversation=[{"speaker": "B", "content": "tell me about retrieval design"}],
         k=3, max_chars=600,
@@ -405,14 +405,14 @@ async def test_retrieve_for_turn_respects_k_and_budget(run_db):
 
 
 async def test_retrieve_for_turn_disabled_by_zero_k(run_db):
-    passages, query, _rej = await retrieve_for_turn(
+    passages, query, _rej, _kb = await retrieve_for_turn(
         run_db, "r1", "A", "topic", conversation=[], k=0, max_chars=1000
     )
     assert passages == [] and query == ""
 
 
 async def test_retrieve_for_turn_no_documents_is_empty_not_an_error(run_db):
-    passages, _query, _rej = await retrieve_for_turn(
+    passages, _query, _rej, _kb = await retrieve_for_turn(
         run_db, "r1", "A", "retrieval design", conversation=[], k=3, max_chars=900
     )
     assert passages == []
@@ -595,7 +595,7 @@ async def test_retrieve_for_turn_defaults_do_not_apply_the_knobs(run_db):
         persona_name="A",
     )
     assert stored >= 5, f"the fixture must span at least 5 chunks, got {stored}"
-    passages, query, _rej = await retrieve_for_turn(
+    passages, query, _rej, _kb = await retrieve_for_turn(
         run_db, "r1", "A", "retrieval design egress inspection",
         conversation=[], k=5, max_chars=50_000,
         # Explicit, because this test is about the lexical KNOBS (term_limit and

@@ -16,7 +16,7 @@ import asyncio
 import logging
 import uuid
 from functools import partial
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Sequence, Set
 
 from matrix_studio import branching, orchestration
 from matrix_studio.engine import run_simulation
@@ -81,7 +81,11 @@ class RunManager:
         return self._brokers.get(run_id)
 
     async def create_run(
-        self, request: Dict[str, Any], *, owner_sub: str
+        self,
+        request: Dict[str, Any],
+        *,
+        owner_sub: str,
+        groups: Optional[Sequence[str]] = None,
     ) -> Dict[str, Any]:
         """
         Resolve the run's name/description, then start the simulation as a
@@ -191,6 +195,7 @@ class RunManager:
                 description=description,
                 config=engine_request.get("config") or {},
                 owner_sub=owner_sub,
+                groups=groups,
             )
             # `pending`, not `running`: the first slice owns that flip, so a run left
             # at `pending` is visibly one whose execution never started rather than one
