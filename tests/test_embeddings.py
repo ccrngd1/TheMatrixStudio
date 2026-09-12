@@ -412,7 +412,7 @@ async def test_vector_mode_falls_back_to_lexical_when_embedding_fails(vdb):
         chunks=["egress inspection provides auditable evidence"], persona_name="A",
     )
     with patch("litellm.aembedding", side_effect=_fake_embedding(fail_on=("",))):
-        passages, query, _rej = await retrieve_for_turn(
+        passages, query, _rej, _kb = await retrieve_for_turn(
             vdb, "r1", "A", "egress inspection evidence", conversation=[],
             k=3, max_chars=900, mode="vector",
         )
@@ -437,7 +437,7 @@ async def test_hybrid_mode_still_retrieves_when_the_vector_arm_fails(vdb):
     )
     with patch("litellm.aembedding",
                side_effect=_fake_embedding((1.0, 0.0), pad=True)):
-        passages, _query, _rej = await retrieve_for_turn(
+        passages, _query, _rej, _kb = await retrieve_for_turn(
             vdb, "r1", "A", "egress inspection evidence", conversation=[],
             k=3, max_chars=900, mode="hybrid",
         )
@@ -466,7 +466,7 @@ async def test_vector_mode_falls_back_to_lexical_when_the_query_fails(
     with patch("litellm.aembedding",
                side_effect=_fake_embedding((1.0, 0.0), pad=True)), \
          caplog.at_level("WARNING"):
-        passages, query, _rej = await retrieve_for_turn(
+        passages, query, _rej, _kb = await retrieve_for_turn(
             vdb, "r1", "A", "egress inspection evidence", conversation=[],
             k=3, max_chars=900, mode="vector",
         )
@@ -492,7 +492,7 @@ async def test_vector_mode_with_unembedded_chunks_falls_back_to_lexical(vdb, cap
     # Deliberately no embed_pending_chunks call — that is the whole scenario.
     with patch("litellm.aembedding", side_effect=_fake_embedding((1.0, 0.0))), \
          caplog.at_level("WARNING"):
-        passages, _query, _rej = await retrieve_for_turn(
+        passages, _query, _rej, _kb = await retrieve_for_turn(
             vdb, "r1", "A", "egress inspection evidence", conversation=[],
             k=3, max_chars=900, mode="vector",
         )
@@ -510,7 +510,7 @@ async def test_fts_mode_is_unaffected_by_the_vector_fallback(vdb):
         run_id="r1", title="a.md",
         chunks=["egress inspection provides auditable evidence"], persona_name="A",
     )
-    passages, _query, _rej = await retrieve_for_turn(
+    passages, _query, _rej, _kb = await retrieve_for_turn(
         vdb, "r1", "A", "egress inspection evidence", conversation=[],
         k=3, max_chars=900, mode="fts",
     )
@@ -541,7 +541,7 @@ async def test_hybrid_mode_returns_fused_results(vdb):
     with patch("litellm.aembedding",
                side_effect=_fake_embedding((1.0, 0.0), pad=True)), \
          patch("litellm.completion_cost", return_value=0.0):
-        passages, query, _rej = await retrieve_for_turn(
+        passages, query, _rej, _kb = await retrieve_for_turn(
             vdb, "r1", "A", "egress inspection evidence", conversation=[],
             k=3, max_chars=900, mode="hybrid",
         )
@@ -722,7 +722,7 @@ async def test_floor_skipped_for_non_unit_vectors(vdb, caplog):
     with patch("litellm.aembedding", side_effect=_fake_embedding((3.0, 4.0))), \
          patch("litellm.completion_cost", return_value=0.0):
         with caplog.at_level("WARNING"):
-            passages, _q, rejected = await retrieve_for_turn(
+            passages, _q, rejected, _kb = await retrieve_for_turn(
                 vdb, "r1", "A", "egress inspection", conversation=[],
                 k=3, max_chars=900, mode="vector", min_similarity=0.9,
             )
@@ -754,7 +754,7 @@ async def test_floor_rejection_is_reported_to_the_caller(vdb):
     with patch("litellm.aembedding",
                side_effect=_fake_embedding((1.0, 0.0), pad=True)), \
          patch("litellm.completion_cost", return_value=0.0):
-        passages, _q, rejected = await retrieve_for_turn(
+        passages, _q, rejected, _kb = await retrieve_for_turn(
             vdb, "r1", "A", "alpha beta", conversation=[],
             k=3, max_chars=900, mode="vector", min_similarity=0.15,
         )

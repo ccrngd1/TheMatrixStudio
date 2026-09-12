@@ -1157,7 +1157,7 @@ async def _run_turns(
             retrieval_on = bool(retrieval and retrieval.enabled and db is not None)
             passages: List[Any] = []
             if retrieval_on:
-                passages, doc_query, floor_rejected = await retrieve_for_turn(
+                passages, doc_query, floor_rejected, kb_failures = await retrieve_for_turn(
                     db, run_id, speaker_name, topic, conversation,
                     k=retrieval.k, max_chars=retrieval.max_chars,
                     recent_turns=retrieval.recent_turns,
@@ -1191,6 +1191,12 @@ async def _run_turns(
                             ],
                             "total_chars": sum(len(p.content) for p in passages),
                             **({"floor_rejected": floor_rejected} if floor_rejected else {}),
+                            # Phase 6: a knowledge base whose index could not be queried.
+                            # In the event log rather than only the Lambda's logs, because
+                            # the consequence is visible in the transcript: the merged
+                            # top-k came from a smaller pool, so a passage that would have
+                            # ranked first is absent and something worse took its place.
+                            **({"kb_failures": kb_failures} if kb_failures else {}),
                         },
                     )
                 elif retrieval.disclose_unsupported:

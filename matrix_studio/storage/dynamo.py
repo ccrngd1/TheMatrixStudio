@@ -124,6 +124,19 @@ _RUN_FIELDS = (
     # read-modify-write on a JSON blob, and this is written from a state the machine
     # can retry.
     "budget",
+    # Phase 6: the Cognito groups the creator held, from the VERIFIED token, captured
+    # at creation.
+    #
+    # A turn runs in a Step Functions state with no JWT anywhere — the run row's
+    # `owner_sub` is the only identity there is — so §2.3's "groups come from the token"
+    # cannot hold in the turn loop. Without this, a KB granted to a group would be
+    # silently unsearchable during a run while appearing in the API's KB listing: a
+    # feature that half-works, which is the failure mode this phase exists to avoid.
+    #
+    # The honest cost, stated in PHASE6-KB-DESIGN.md §8.3: membership is fixed for the
+    # run's lifetime. The GRANT is still re-read every turn, which is what §8b requires;
+    # only membership is stale.
+    "groups_json",
 )
 _EVENT_FIELDS = (
     "run_id", "turn", "seq", "event_type", "agent_name", "payload", "created_at",
@@ -678,6 +691,7 @@ class DynamoStorage:
         parent_run_id: Optional[str] = None,
         branch_turn: Optional[int] = None,
         owner_sub: Optional[str] = None,
+        groups: Optional[Sequence[str]] = None,
     ) -> None:
         """Create a run, refusing a name this owner already used.
 
@@ -715,6 +729,11 @@ class DynamoStorage:
             "parent_run_id": parent_run_id,
             "branch_turn": branch_turn,
             "completed_at": None,
+            # The creator's verified Cognito groups, so the token-less turn loop can
+            # resolve a KB granted to a group. See `_RUN_FIELDS`. JSON rather than a
+            # DynamoDB list for the same reason `cast_json` is: one decode path, and
+            # empty is indistinguishable from absent either way.
+            "groups_json": json.dumps([str(g) for g in groups]) if groups else None,
         }
 
         writes: List[Dict[str, Any]] = [
@@ -2688,6 +2707,23 @@ class DynamoStorage:
                     "document_id": str(meta["document_id"]),
                     "ordinal": int(meta["ordinal"]),
                     "text": str(meta.get("content") or ""),
+                    # The title travels WITH the vector, and this is a requirement of
+                    # sharing rather than a convenience.
+                    #
+                    # A KB's document rows live under the KB OWNER's partition. A
+                    # grantee's credentials are pinned to their own partition with
+                    # `dynamodb:LeadingKeys`, so a reader of a shared KB physically
+                    # cannot read the row that holds the title — by the same mechanism
+                    # that makes the isolation model work. A citation renders as
+                    # "title #ordinal", so without this every shared passage would cite
+                    # as a twelve-character hex id, and the second-hand citation ledger
+                    # would match on ids no human can check.
+                    #
+                    # Filterable, which needs no index change: the budget is 40 KB of
+                    # metadata per vector of which 2 KB may be filterable, and a title
+                    # is tens of bytes. The non-filterable list stays `["text"]`, which
+                    # matters because it is immutable after index creation.
+                    "title": str(meta.get("title") or ""),
                 },
             })
 
@@ -2809,7 +2845,12 @@ class DynamoStorage:
                     "document_id": doc_id,
                     "ordinal": ordinal,
                     "content": str(meta.get("text") or ""),
-                    "title": titles.get(doc_id) or doc_id,
+                    # The vector's own title first. A grantee cannot read the KB owner's
+                    # document rows — `dynamodb:LeadingKeys` pins them to their own
+                    # partition — so for a SHARED KB the map cannot hold the title and
+                    # the metadata is the only place it can come from. The map stays as
+                    # the fallback for vectors written before the title was stored.
+                    "title": str(meta.get("title") or "") or titles.get(doc_id) or doc_id,
                     "source_path": None,
                     "media_type": None,
                     "score": float(hit.get("distance") or 0.0),
@@ -2906,6 +2947,10 @@ class DynamoStorage:
                         "document_id": str(doc["id"]),
                         "ordinal": chunk.ordinal,
                         "persona_name": doc.get("persona_name"),
+                        # Carried so a KB upload can put the title in the vector's own
+                        # metadata, which is the only place a grantee can read it from
+                        # (see `store_kb_vectors`). The run-slice path ignores it.
+                        "title": doc.get("title"),
                     }
                 )
                 if limit is not None and len(out) >= limit:

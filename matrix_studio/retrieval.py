@@ -406,6 +406,95 @@ def apply_budget(
     return passages
 
 
+async def _search_bound_kbs(
+    db: Any,
+    run_id: str,
+    persona_name: Optional[str],
+    query_vector: List[float],
+    fetch_k: int,
+    kb_ids: Optional[Sequence[str]],
+) -> tuple[List[Dict[str, Any]], List[str]]:
+    """k-NN across the knowledge bases this turn may search. ``(rows, failed_kb_ids)``.
+
+    Resolution happens here, per turn, and is deliberately not cached: §8b's requirement
+    is that a **revoked grant stops working at query time**, and a list cached on the run
+    is exactly the stale binding that requirement rules out.
+
+    ``kb_ids`` short-circuits the resolution for a caller that has already done it. It is
+    trusted as already-authorised, matching `vector_search_kbs`'s own contract — two
+    places that each half-authorise is how one of them ends up trusted by mistake.
+
+    Degrades to no KB rows on any failure, in line with the rest of this module: a
+    retrieval problem must not end a run. But a KB whose *index* failed is reported
+    rather than swallowed, because partial results draw the merged top-k from a smaller
+    pool and the transcript should be able to say so.
+    """
+    if not hasattr(db, "vector_search_kbs"):
+        # A store without the Phase 6 methods (an older fixture, a fake). The run slice
+        # still works, which is the property that makes this phase additive.
+        return [], []
+
+    resolved: List[str]
+    if kb_ids is not None:
+        resolved = [str(k) for k in kb_ids if k]
+    else:
+        try:
+            from matrix_studio.bindings import searchable_for_turn
+
+            run = await db.get_run(run_id)
+            if not run:
+                return [], []
+            resolved = await searchable_for_turn(
+                db,
+                run,
+                persona_name,
+                str(run.get("owner_sub") or ""),
+                _recorded_groups(run),
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Fails CLOSED: no KB rows. An error resolving permission must not become
+            # "search everything", and it must not end the turn either.
+            logger.warning(
+                "Could not resolve searchable knowledge bases for run %s persona %s "
+                "(%s); this turn searches its own documents only.",
+                run_id, persona_name, exc,
+            )
+            return [], []
+
+    if not resolved:
+        return [], []
+    try:
+        return await db.vector_search_kbs(query_vector, resolved, k=fetch_k)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Knowledge-base search failed for run %s: %s", run_id, exc)
+        return [], list(resolved)
+
+
+def _recorded_groups(run: Dict[str, Any]) -> List[str]:
+    """The creator's Cognito groups, captured on the run row at creation.
+
+    A turn runs in a Step Functions state with no JWT, so the token `identity.py` reads
+    groups from does not exist here. PHASE6-KB-DESIGN.md §8.3 records the trade: group
+    membership is fixed for the run's lifetime, while the GRANT is still re-read every
+    turn — which is what §8b actually requires.
+
+    Malformed or absent reads as no groups, which is the fail-closed direction: the caller
+    then resolves only directly-granted and owned KBs.
+    """
+    import json as _json
+
+    raw = run.get("groups_json")
+    if not raw:
+        return []
+    try:
+        groups = _json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    return [str(g) for g in groups if isinstance(g, str) and g.strip()] if isinstance(
+        groups, list
+    ) else []
+
+
 async def retrieve_for_turn(
     db: Any,
     run_id: str,
@@ -423,20 +512,41 @@ async def retrieve_for_turn(
     embedding_model: str = "",
     rrf_k: int = 60,
     min_similarity: float = 0.0,
-) -> tuple[List[RetrievedPassage], str, int]:
+    kb_ids: Optional[Sequence[str]] = None,
+) -> tuple[List[RetrievedPassage], str, int, List[str]]:
     """Retrieve a persona's supporting passages for one turn.
 
-    Returns ``(passages, query, floor_rejected)``. The query is returned so the
-    emitted ``document.retrieved`` event can record exactly what was asked, and
+    Returns ``(passages, query, floor_rejected, kb_failures)``. The query is returned so
+    the emitted ``document.retrieved`` event can record exactly what was asked, and
     ``floor_rejected`` counts matches dropped by the similarity floor — without it,
     "found nothing" and "found only weak matches" would be indistinguishable in
     the log. Retrieval that cannot be inspected cannot be debugged or measured.
+    ``kb_failures`` names knowledge bases whose index could not be queried, for the same
+    reason: the turn still gets passages, but drawn from a smaller pool than intended.
+
+    ## Two sources, merged (Phase 6)
+
+    | Source | Scoped by | Holds |
+    |---|---|---|
+    | The run slice | `_slice_filter`: owner + run + persona | this conversation's own attachments |
+    | Bound knowledge bases | bindings ∩ grants, per turn | deliberate, reusable, shareable collections |
+
+    The run slice is **not** replaced by KBs, which is a correction to
+    `PHASE6-KB-DESIGN.md` §6's build order — see §8.1 there. One index per *run* would
+    cap the install at 10,000 conversations, which §8b rejects; the KB fan-out moves that
+    ceiling onto knowledge bases, where it is unreachable in practice.
+
+    ``kb_ids`` is resolved HERE rather than by the caller unless passed explicitly. A KB
+    list must be re-resolved every turn — §8b's requirement is that a revoked grant stops
+    working at query time — and resolving it at the one place that queries makes that
+    impossible for a caller to forget. Passing it explicitly is for callers that have
+    already resolved it, and for tests.
 
     Never raises: any failure degrades to no passages, because a retrieval
     problem must not end a run.
     """
     if k <= 0 or max_chars <= 0:
-        return [], "", 0
+        return [], "", 0, []
 
     candidates = extract_terms(
         "\n".join(
@@ -446,7 +556,7 @@ async def retrieve_for_turn(
         limit=24,
     )
     if not candidates:
-        return [], "", 0
+        return [], "", 0, []
 
     # Narrow to the terms that actually discriminate within this persona's slice.
     # Skipped when term_limit is 0, which reproduces the pre-measurement behavior.
@@ -467,7 +577,7 @@ async def retrieve_for_turn(
 
     query = " OR ".join(f'"{t}"' for t in terms if '"' not in t)
     if not query:
-        return [], "", 0
+        return [], "", 0, []
 
     # Over-fetch a little: the score filter and budget may drop trailing rows, so
     # asking for exactly k risks returning fewer passages than the budget affords.
@@ -483,6 +593,10 @@ async def retrieve_for_turn(
     # read meaning, so stripping the sentence to keywords first would discard it.
     semantic: List[Dict[str, Any]] = []
     floor_rejected = 0
+    # Knowledge bases whose index could not be queried. Returned rather than only
+    # logged: partial results draw the merged top-k from a smaller pool, so a passage
+    # that would have ranked first is absent and something worse takes its place.
+    kb_failures: List[str] = []
     # Why the vector arm produced nothing, when it produced nothing. Set to a
     # human-readable cause so the fallback below can say what it is compensating
     # for; an empty string means the arm was usable (or was not asked for).
@@ -508,6 +622,39 @@ async def retrieve_for_turn(
                 run_id=run_id, vector=query_vector,
                 persona_name=persona_name, k=fetch_k,
             )
+
+            # Phase 6: the bound knowledge bases, fanned out over their own indexes and
+            # merged into the run slice.
+            #
+            # Merging is a plain sort, and only because the metric is cosine: a distance
+            # is computed between the query and one vector, so a number from a KB index
+            # is directly comparable to one from the shared index. Under BM25 the
+            # statistics are per index and this would be silently wrong — the same
+            # argument `vector_search_kbs` makes for merging two KBs.
+            kb_rows, kb_failures = await _search_bound_kbs(  # noqa: PLW2901
+                db, run_id, persona_name, query_vector, fetch_k, kb_ids,
+            )
+            if kb_rows:
+                # Sorted ascending because smaller cosine distance is better, matching
+                # `vector_search` and what `apply_similarity_floor` expects. Trimmed to
+                # `fetch_k` AFTER the merge: taking the best k of each source first would
+                # discard a KB passage that outranks a run passage.
+                #
+                # De-duplicated by chunk id, which is a hash of `document_id:ordinal` and
+                # therefore identical for the same passage wherever it is stored. One
+                # passage CAN be reachable from both sources — a document attached to the
+                # run and also held in a bound KB, which is exactly what the Phase 6
+                # migration produces — and without this the same text would be spent
+                # twice against `max_chars`, and cited twice in one turn as if it were
+                # two pieces of evidence. The lower distance wins, so a duplicate never
+                # costs ranking.
+                merged: Dict[Any, Dict[str, Any]] = {}
+                for row in sorted(
+                    semantic + kb_rows, key=lambda r: float(r.get("score") or 0.0)
+                ):
+                    merged.setdefault(row.get("chunk_id"), row)
+                semantic = list(merged.values())[:fetch_k]
+
             if not semantic:
                 # KNN applies no score threshold, so an empty result is not "your
                 # query matched nothing" — it means the arm could not run: no
@@ -578,7 +725,7 @@ async def retrieve_for_turn(
     # floor_rejected rides along so the emitted event can distinguish "retrieval
     # found nothing" from "retrieval found only things below the floor".
     passages = apply_budget(rows[:k], max_chars)
-    return passages, query, floor_rejected
+    return passages, query, floor_rejected, kb_failures
 
 
 UNSUPPORTED_BLOCK = (

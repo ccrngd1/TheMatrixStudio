@@ -285,3 +285,97 @@ time**, not just at binding time.
 | Copy vectors | Re-embed | Free, and makes recall identical by construction rather than a thing to measure |
 | One KB per run for cast-wide docs | One KB per run, full stop | Would silently drop persona scoping, which exists and is used |
 | Old shared index retained | Delete after migrating | Irreversible in a live account; belongs behind an explicit go-ahead |
+
+---
+
+## 8. Corrections found while implementing steps 5–8
+
+Three of them, and the first contradicts §6's build order. Recorded here rather than
+quietly implemented differently, because §6 was written before the code was read and a
+build order that turns out to be wrong is worth more as a correction than as a deletion.
+
+### 8.1 The run slice STAYS. `_slice_filter`'s `run_id` clause is not retired
+
+§6 step 5 says the `run_id` clause "is replaced by the KB index selection". Taken
+literally that is a **ceiling violation**, and the reasoning was already written down —
+in `copy_documents_to_run`'s docstring and in §8b of the architecture:
+
+> It does NOT transfer to index-per-RUN, which is the only mapping available before
+> Phase 6 introduces KBs — that would cap the whole install at 10,000 conversations,
+> and the stated target is "something a large company installs".
+
+S3 Vectors allows 10,000 indexes per bucket. §4.4's migration mapping — one KB per run —
+is fine as a **one-off for 46 runs**, but as the standing ingest path it makes every new
+conversation with an attachment consume an index, which is exactly the mapping §8b
+rejects. Nothing in §4.4 said otherwise; the gap is that the design covered the migration
+and never covered what happens when a *new* run attaches a file.
+
+So retrieval reads **two sources and merges them**:
+
+| Source | Index | Scoped by | What it holds |
+|---|---|---|---|
+| Run slice | the shared `chunks` index | `_slice_filter`: `owner_sub` + `run_id` + `persona_name` | This conversation's own attachments — ad-hoc, deleted with it |
+| Bound KBs | one index per KB | `searchable_for_turn`: bindings ∩ grants | Deliberate, reusable, shareable collections |
+
+Merging the two is sound for the same reason merging two KB indexes is (see
+`vector_search_kbs`): both are cosine distances against the same query in the same
+1024-dimensional space from the same model, so the numbers share a scale and the merge is
+a sort. The floor still applies **once, after** the merge (§3.2).
+
+This also means **no existing behaviour changes**. A run with no bindings retrieves
+exactly what it retrieves today, through the same filter — which is a far better position
+from which to add sharing than a switch that moves every document at once.
+
+The ceiling is not gone, it is moved to where §8b wanted it: 10,000 *knowledge bases*,
+which is a number a company does not reach, rather than 10,000 *conversations*, which one
+team reaches in a year.
+
+### 8.2 A shared KB's passage titles must travel with the vector
+
+`vector_search_kbs` takes a `titles` map, and its caller was going to build that map from
+`list_documents(run_id)`. For a **shared** KB that cannot work, and not for a fiddly
+reason:
+
+A KB's documents are rows under **the KB owner's** partition. A grantee's scoped
+credentials are pinned with `dynamodb:LeadingKeys` to their own partition, so a reader of
+a shared KB **physically cannot read the document row** that holds the title. The title is
+not merely inconvenient to fetch; it is unreachable by design, and by the same mechanism
+that makes the isolation model work.
+
+A citation renders as `"title #ordinal"`, so without the title every shared passage would
+cite as a twelve-character hex id — unreadable in a transcript, and it would make the
+second-hand citation ledger (`firsthand_citations`) match on ids no human can check.
+
+So `store_kb_vectors` writes `title` into the vector metadata, and `vector_search_kbs`
+prefers it over the map. It is stored **filterable** (the metadata budget is 40 KB per
+vector, of which 2 KB filterable; a title is tens of bytes), so no index configuration
+changes and the immutable non-filterable key list stays `["text"]`.
+
+### 8.3 The turn loop has no token, so group membership is captured on the run
+
+§2.3 settled group membership as "from the verified token, staleness bounded by token
+lifetime". That holds for the API. It does **not** hold in the turn loop: a turn runs in a
+Step Functions state, invoked by the state machine, with no JWT anywhere — the run row's
+`owner_sub` is all the identity there is.
+
+Three options, and the trade is visible:
+
+| | Freshness | Cost |
+|---|---|---|
+| `AdminListGroupsForUser` per slice | Fresh every turn | A Cognito call and a new failure mode inside an authorisation decision, plus IAM |
+| Capture the creator's groups on the run | Stale for the run's lifetime | One attribute |
+| Pass no groups in the turn loop | n/a | Group-granted KBs silently unsearchable — a feature that half-works |
+
+**Decision: capture them on the run row at creation**, from the verified token, and state
+the window honestly: a group-granted KB stays searchable by a run started while the user
+was a member, for as long as that run lives. The *grant* is still re-read every turn,
+which is what §8b actually requires; only membership is stale.
+
+The third option is rejected outright: retrieval that silently ignores a legitimate
+binding is the failure mode this phase exists to avoid.
+
+Why not the first, given it is genuinely fresher: it puts an external API call inside the
+authorisation path of every turn, and §2.3 already rejected that reasoning for the
+per-query case. The per-slice case is cheaper but the new failure mode is the same one.
+Recorded in `BACKLOG.md` with a revisit trigger — the first deployment that actually uses
+group grants and needs immediate revocation.
