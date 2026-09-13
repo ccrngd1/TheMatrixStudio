@@ -86,7 +86,21 @@ def kb_name_for(run_id: str, persona: Optional[str]) -> str:
 
 
 async def scan_documents(db: Database) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    """Every document item, plus every item that is not one. `(documents, others)`."""
+    """Run documents to migrate, plus every item that is not one. `(documents, others)`.
+
+    Three kinds of item live in this table now, and only the first is this script's
+    business:
+
+        RUN#{run_id} / DOC#…   a run's document — what this migrates
+        KB#{kb_id}  / DOC#…    a document already IN a knowledge base — skipped
+        EMBEDDING   / META     the old global embedding-model marker — skipped
+
+    The KB case appeared when knowledge bases gained their own documents, and it had to
+    be added here for a reason worth recording: the unrecognised-item check is a
+    `SystemExit`, so a `KB#` item would have **aborted the migration entirely** rather
+    than being quietly mishandled. That is the check working — it refused to guess about
+    an item shape nobody had told it about — and it is why the check is loud.
+    """
     client = db._table("documents")
     documents: List[Dict[str, Any]] = []
     others: List[Dict[str, Any]] = []
@@ -95,10 +109,11 @@ async def scan_documents(db: Database) -> Tuple[List[Dict[str, Any]], List[Dict[
         page = await db._call(client.scan, **kwargs)
         for item in page.get("Items", []):
             pk = str(item.get("pk") or "")
+            is_doc = str(item.get("sk") or "").startswith("DOC#")
             # `DOC#` in the sort key as well as `RUN#` in the partition key: a run
             # partition also holds nothing else today, but "documents are the items that
             # look like documents" is the assumption worth being explicit about.
-            if pk.startswith("RUN#") and str(item.get("sk") or "").startswith("DOC#"):
+            if pk.startswith("RUN#") and is_doc:
                 documents.append(item)
             else:
                 others.append(item)
@@ -106,6 +121,16 @@ async def scan_documents(db: Database) -> Tuple[List[Dict[str, Any]], List[Dict[
         if not token:
             return documents, others
         kwargs["ExclusiveStartKey"] = token
+
+
+def is_known_non_document(item: Dict[str, Any]) -> bool:
+    """Whether a non-run-document item is one this script knows to skip."""
+    pk, sk = str(item.get("pk") or ""), str(item.get("sk") or "")
+    if (pk, sk) in KNOWN_NON_DOCUMENTS:
+        return True
+    # A document that already belongs to a knowledge base. Nothing to migrate: it is
+    # already where this script would put it.
+    return pk.startswith("KB#") and sk.startswith("DOC#")
 
 
 async def vectors_for_run(db: Database, run_id: str, owner_sub: str) -> List[Dict[str, Any]]:
@@ -160,10 +185,7 @@ def group_key(meta: Dict[str, Any]) -> Optional[str]:
 async def migrate(db: Database, *, apply: bool, bind: bool) -> int:
     documents, others = await scan_documents(db)
 
-    unknown = [
-        o for o in others
-        if (str(o.get("pk") or ""), str(o.get("sk") or "")) not in KNOWN_NON_DOCUMENTS
-    ]
+    unknown = [o for o in others if not is_known_non_document(o)]
     if unknown:
         # Loud, not skipped. See the module docstring.
         for item in unknown[:10]:

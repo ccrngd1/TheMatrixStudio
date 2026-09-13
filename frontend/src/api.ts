@@ -8,6 +8,9 @@ import type {
   BranchResponse,
   BranchTreeResponse,
   CognitionSettings,
+  KbGrant,
+  KnowledgeBase,
+  KnowledgeBaseDetail,
   RunDetail,
   RunSummary,
   SimEvent,
@@ -324,6 +327,63 @@ export const api = {
       `/api/runs/${encodeURIComponent(ref)}/resume`,
       { method: 'POST' },
     ),
+
+  // ------------------------------ Knowledge bases ----------------------------- //
+  //
+  // Two authorisation questions server-side, and the client does NOT re-implement
+  // either: `shared` on each row is what the UI keys off, and every mutation simply
+  // gets a 404 if the caller does not own the collection. A client-side ownership
+  // check would be a second opinion that can disagree with the one that matters.
+
+  listKnowledgeBases: () =>
+    jsonFetch<{ knowledge_bases: KnowledgeBase[]; count: number }>(
+      '/api/knowledge-bases',
+    ),
+
+  getKnowledgeBase: (kbId: string) =>
+    jsonFetch<KnowledgeBaseDetail>(
+      `/api/knowledge-bases/${encodeURIComponent(kbId)}`,
+    ),
+
+  createKnowledgeBase: (name: string, description?: string) =>
+    jsonFetch<KnowledgeBase>('/api/knowledge-bases', {
+      method: 'POST',
+      body: JSON.stringify({ name, description: description || null }),
+    }),
+
+  addKbDocument: (kbId: string, title: string, text: string) =>
+    jsonFetch<{
+      document_id: string
+      kb_id: string
+      embedded: number
+      cost_usd: number
+      model: string | null
+    }>(`/api/knowledge-bases/${encodeURIComponent(kbId)}/documents`, {
+      method: 'POST',
+      body: JSON.stringify({ title, text }),
+    }),
+
+  deleteKbDocument: (kbId: string, documentId: string) =>
+    jsonFetch<{ deleted: string }>(
+      `/api/knowledge-bases/${encodeURIComponent(kbId)}/documents/${encodeURIComponent(documentId)}`,
+      { method: 'DELETE' },
+    ),
+
+  grantKb: (kbId: string, principal: { user?: string; group?: string }) =>
+    jsonFetch<KbGrant>(
+      `/api/knowledge-bases/${encodeURIComponent(kbId)}/grants`,
+      { method: 'POST', body: JSON.stringify(principal) },
+    ),
+
+  revokeKb: (kbId: string, principal: { user?: string; group?: string }) => {
+    const query = principal.user
+      ? `user=${encodeURIComponent(principal.user)}`
+      : `group=${encodeURIComponent(principal.group ?? '')}`
+    return jsonFetch<{ revoked: string }>(
+      `/api/knowledge-bases/${encodeURIComponent(kbId)}/grants?${query}`,
+      { method: 'DELETE' },
+    )
+  },
 
   // Regenerate avatar for a specific agent
   regenerateAvatar: (ref: string, name: string) =>

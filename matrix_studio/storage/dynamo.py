@@ -150,6 +150,11 @@ _DOCUMENT_FIELDS = (
     "id", "document_id", "run_id", "persona_name", "title", "source_path",
     "media_type", "char_count", "chunk_count", "s3_key", "owner_sub",
     "text_is_original", "created_at",
+    # Phase 6: set on a document that belongs to a knowledge base instead of a run.
+    # The two are mutually exclusive — a document belongs to exactly one collection
+    # (§8b) — and which one it is decides its partition key, so this is never a
+    # second membership alongside `run_id`.
+    "kb_id",
 )
 _THREAD_FIELDS = (
     "id", "thread_id", "run_id", "target", "persona_name", "mode", "created_at",
@@ -2147,13 +2152,49 @@ class DynamoStorage:
         but cannot be opened.
         """
         owner_sub = self._owner(owner_sub)
-        from matrix_studio.documents import join_chunks
-
-        from matrix_studio.documents import chunk_text
-
         doc_id = document_id or uuid.uuid4().hex[:12]
-        key = self._document_key(owner_sub, run_id, doc_id)
-        body = text if text is not None else join_chunks(list(chunks))
+        return await self._write_document(
+            pk=_run_pk(run_id),
+            key=self._document_key(owner_sub, run_id, doc_id),
+            doc_id=doc_id,
+            owner_sub=owner_sub,
+            title=title,
+            chunks=chunks,
+            text=text,
+            source_path=source_path,
+            media_type=media_type,
+            char_count=char_count,
+            extra={"run_id": run_id, "persona_name": persona_name},
+        )
+
+    async def _write_document(
+        self,
+        *,
+        pk: str,
+        key: str,
+        doc_id: str,
+        owner_sub: str,
+        title: str,
+        chunks: Optional[List[str]],
+        text: Optional[str],
+        source_path: Optional[str],
+        media_type: Optional[str],
+        char_count: int,
+        extra: Dict[str, Any],
+    ) -> str:
+        """Write one document's text and metadata. Shared by the run and KB paths.
+
+        Extracted when knowledge bases gained their own documents, rather than copied.
+        The two paths differ only in the partition key, the S3 prefix and two fields —
+        everything below is a correctness property that had to hold in exactly one
+        place, `chunk_count` above all.
+        """
+        from matrix_studio.documents import chunk_text, join_chunks
+
+        body = text if text is not None else join_chunks(list(chunks or []))
+        # Text first, metadata second: an object with no metadata row is invisible and
+        # harmless, while a row pointing at a missing object is a document that lists
+        # but cannot be opened.
         await self._put_text(key, body)
 
         # `chunk_count` records the chunking OF THE STORED TEXT, not the length of the
@@ -2171,14 +2212,11 @@ class DynamoStorage:
         # relying on every caller being consistent.
         stored_chunks = len(chunk_text(body))
 
-        now = int(time.time())
         item = {
-            "pk": _run_pk(run_id),
+            "pk": pk,
             "sk": _document_sk(doc_id),
             "document_id": doc_id,
             "id": doc_id,
-            "run_id": run_id,
-            "persona_name": persona_name,
             "title": title,
             "source_path": source_path,
             "media_type": media_type,
@@ -2190,7 +2228,8 @@ class DynamoStorage:
             "text_is_original": text is not None,
             "s3_key": key,
             "owner_sub": owner_sub,
-            "created_at": now,
+            "created_at": int(time.time()),
+            **extra,
         }
         await self._call(self._table("documents").put_item, Item=_to_ddb(item))
         return doc_id
@@ -2219,6 +2258,210 @@ class DynamoStorage:
             ]
         docs.sort(key=lambda d: (-(d.get("created_at") or 0), d["id"]))
         return docs
+
+    # ------------------------------------------------------------------ #
+    # Knowledge-base documents
+    # ------------------------------------------------------------------ #
+    #
+    # Partitioned by `KB#{kb_id}` in the same `documents` table, which the session
+    # policy already anticipates: §3's `dynamodb:LeadingKeys` condition is applied to
+    # the user-partitioned tables and deliberately NOT to this one, "because a shared
+    # knowledge base is read by principals who do not own it, so LeadingKeys cannot
+    # express their scope" (`credentials.py`). So no policy changes, and authorisation
+    # is the `may_read_kb` check at every entry point.
+    #
+    # The S3 body is a different matter and is worth being clear about: object ARNs
+    # ARE scoped to `…/{sub}/*`, so a grantee's credentials cannot GET the text of a
+    # document in someone else's KB. That is not a gap to fix — it is why the passage
+    # text and title travel in the vector's metadata (§8.2). A grantee retrieves
+    # passages; they do not download the source file.
+
+    def _kb_document_key(self, owner_sub: str, kb_id: str, doc_id: str) -> str:
+        # `kb/` rather than a bare id in the run's position, so the two namespaces
+        # cannot collide if a kb id ever equals a run id.
+        return f"docs/{owner_sub}/kb/{kb_id}/{doc_id}.txt"
+
+    async def add_kb_document(
+        self,
+        kb_id: str,
+        title: str,
+        chunks: Optional[List[str]] = None,
+        source_path: Optional[str] = None,
+        media_type: Optional[str] = None,
+        char_count: int = 0,
+        document_id: Optional[str] = None,
+        text: Optional[str] = None,
+        *,
+        owner_sub: Optional[str] = None,
+    ) -> str:
+        """Add a document to a knowledge base. Returns its id.
+
+        The KB must exist, and it is the KB's OWNER the document is attributed to —
+        not the caller. A grantee may read a shared KB; letting them add to it would
+        make "shared with me" mean "mine to edit", which no grant in §8b says.
+        Callers enforce that; this refuses an absent KB so a typo cannot create an
+        orphan document nothing will ever retrieve.
+        """
+        kb = await self.get_knowledge_base(kb_id)
+        if kb is None:
+            raise StorageError(f"knowledge base {kb_id!r} does not exist")
+        owner = str(kb.get("owner_sub") or self._owner(owner_sub))
+        doc_id = document_id or uuid.uuid4().hex[:12]
+        return await self._write_document(
+            pk=_kb_pk(kb_id),
+            key=self._kb_document_key(owner, kb_id, doc_id),
+            doc_id=doc_id,
+            owner_sub=owner,
+            title=title,
+            chunks=chunks,
+            text=text,
+            source_path=source_path,
+            media_type=media_type,
+            char_count=char_count,
+            extra={"kb_id": kb_id},
+        )
+
+    async def list_kb_documents(self, kb_id: str) -> List[Dict[str, Any]]:
+        """A KB's documents, newest first. No authorisation check — see `get_run`."""
+        items = await self._query_all(
+            "documents",
+            KeyConditionExpression="pk = :pk AND begins_with(sk, :prefix)",
+            ExpressionAttributeValues={":pk": _kb_pk(kb_id), ":prefix": "DOC#"},
+        )
+        docs = [_row(i, _DOCUMENT_FIELDS) for i in items]
+        docs.sort(key=lambda d: (-(d.get("created_at") or 0), d["id"]))
+        return docs
+
+    async def delete_kb_document(self, kb_id: str, document_id: str) -> bool:
+        """Remove a document from a KB: metadata, S3 object, and its vectors.
+
+        The vectors matter here in a way they do not for a run. A run's vectors are
+        filtered by `run_id` at query time, so a stale one is unreachable; a KB's index
+        holds nothing but that KB, so a vector left behind is **still returned** to
+        everyone the KB is shared with, quoting a document the owner deleted.
+        """
+        docs = await self.list_kb_documents(kb_id)
+        doc = next((d for d in docs if str(d["id"]) == document_id), None)
+        if not doc:
+            return False
+
+        await self._call(
+            self._table("documents").delete_item,
+            Key={"pk": _kb_pk(kb_id), "sk": _document_sk(document_id)},
+        )
+
+        # Vectors before the object, and both after the metadata: the metadata is what
+        # makes the document listable, and the vectors are what make it quotable.
+        await self._delete_kb_vectors(kb_id, document_id, int(doc.get("chunk_count") or 0))
+
+        key = doc.get("s3_key")
+        if key and self.bucket:
+            self._ensure_clients()
+            try:
+                await self._call(self._s3.delete_object, Bucket=self.bucket, Key=str(key))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not delete %s: %s", key, exc)
+        return True
+
+    async def _delete_kb_vectors(self, kb_id: str, document_id: str, chunk_count: int) -> None:
+        """Delete one document's vectors from its KB index.
+
+        Keys are derived (`document_id:ordinal`), so this needs no listing — which is
+        why `chunk_count` on the document row is load-bearing rather than decorative
+        (§4a). A few extra keys are deleted when the count over-reads; DeleteVectors on
+        an absent key is not an error, and the alternative — paging the whole index —
+        costs a request per 500 vectors to find what arithmetic already knows.
+        """
+        bucket = os.environ.get("VECTOR_BUCKET", "")
+        if not bucket or chunk_count <= 0:
+            return
+        from matrix_studio.storage.vectors import kb_index_name
+
+        keys = [self._vector_key(document_id, i) for i in range(chunk_count)]
+        try:
+            for start in range(0, len(keys), 500):
+                await self._call(
+                    self._vectors_client().delete_vectors,
+                    vectorBucketName=bucket,
+                    indexName=kb_index_name(kb_id, self.table_prefix),
+                    keys=keys[start:start + 500],
+                )
+        except Exception as exc:  # noqa: BLE001
+            # Loud, because the consequence is a deleted document that is still being
+            # quoted to everyone the KB is shared with.
+            logger.error(
+                "Could not delete vectors for document %s in KB %s: %s. The document "
+                "is no longer listed but its passages may still be retrievable.",
+                document_id, kb_id, exc,
+            )
+
+    async def kb_chunks_missing_vectors(
+        self, kb_id: str, limit: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """A KB's chunks with no stored embedding, so ingest is resumable.
+
+        The KB counterpart of `chunks_missing_vectors`, and the same reasoning applies:
+        chunks are re-derived from the stored text rather than read from a table,
+        which is safe only because the stored text is the original.
+        """
+        from matrix_studio.documents import chunk_text
+
+        stored = await self._kb_vector_keys(kb_id)
+        out: List[Dict[str, Any]] = []
+        for doc in await self.list_kb_documents(kb_id):
+            if doc.get("text_is_original") is False:
+                logger.warning(
+                    "Document %s was stored as a chunk reassembly, so re-chunking may "
+                    "not reproduce the ordinals its passages were cited under.",
+                    doc["id"],
+                )
+            text = await self._get_text(str(doc.get("s3_key") or "")) or ""
+            if not text:
+                continue
+            for chunk in chunk_text(text):
+                key = self._vector_key(str(doc["id"]), chunk.ordinal)
+                if key in stored:
+                    continue
+                out.append({
+                    "chunk_id": self.chunk_id_for(str(doc["id"]), chunk.ordinal),
+                    "content": chunk.content,
+                    "document_id": str(doc["id"]),
+                    "ordinal": chunk.ordinal,
+                    "title": doc.get("title"),
+                })
+                if limit is not None and len(out) >= limit:
+                    return out
+        return out
+
+    async def _kb_vector_keys(self, kb_id: str) -> set:
+        """The vector keys already stored in a KB's index. Empty if it has none."""
+        bucket = os.environ.get("VECTOR_BUCKET", "")
+        if not bucket:
+            return set()
+        from matrix_studio.storage.vectors import kb_index_name
+
+        index = kb_index_name(kb_id, self.table_prefix)
+        client = self._vectors_client()
+        keys: set = set()
+        token = None
+        while True:
+            kwargs: Dict[str, Any] = {
+                "vectorBucketName": bucket, "indexName": index, "maxResults": 500,
+            }
+            if token:
+                kwargs["nextToken"] = token
+            try:
+                result = await self._call(client.list_vectors, **kwargs)
+            except Exception:  # noqa: BLE001
+                # No index yet is the normal case for a KB's first upload, and it means
+                # "nothing stored" rather than an error.
+                return keys
+            for entry in result.get("vectors") or []:
+                if entry.get("key"):
+                    keys.add(entry["key"])
+            token = result.get("nextToken")
+            if not token:
+                return keys
 
     async def _find_document(self, document_id: str) -> Optional[Dict[str, Any]]:
         """Locate a document by its own id via the GSI (key design §5)."""

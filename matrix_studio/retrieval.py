@@ -899,3 +899,74 @@ async def embed_pending_chunks(
     out["cost_usd"] = round(result.cost_usd, 8)
     out["model"] = result.model
     return out
+
+
+async def embed_pending_kb_chunks(
+    db: Any,
+    kb_id: str,
+    embedding_model: str = "",
+    batch: Optional[int] = None,
+    dimensions: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Embed any of a knowledge base's chunks that do not yet have a vector.
+
+    The KB counterpart of `embed_pending_chunks`, and it differs in one way that
+    matters: it **does not swallow a model mismatch**.
+
+    On the run path a refusal degrades to lexical retrieval, which is right — a run must
+    proceed. Here the caller is a user who has just uploaded a document to a collection,
+    and the two failures they can actually hit are both worth seeing:
+
+      - the KB was indexed with a different embedding model, so these vectors would be
+        incomparable to the ones already there (`store_kb_vectors` refuses; distances
+        between models are meaningless even at the same width);
+      - `VECTOR_BUCKET` is unset, so there is nowhere to store anything.
+
+    Reporting "embedded 0" for either would leave a document listed in the collection
+    and permanently unretrievable, with nothing said. So the error is returned in the
+    result for the route to turn into a 4xx/5xx, rather than logged and dropped.
+    """
+    from matrix_studio.embeddings import (
+        DEFAULT_EMBEDDING_MODEL,
+        EmbeddingError,
+        embed_texts,
+    )
+
+    model = embedding_model or DEFAULT_EMBEDDING_MODEL
+    out: Dict[str, Any] = {
+        "embedded": 0, "skipped": 0, "tokens": 0, "cost_usd": 0.0, "model": model,
+    }
+
+    pending = await db.kb_chunks_missing_vectors(kb_id, limit=batch)
+    if not pending:
+        return out
+
+    try:
+        result = await embed_texts(
+            [c["content"] for c in pending], model=model, dimensions=dimensions
+        )
+    except EmbeddingError as exc:
+        out["error"] = str(exc)
+        return out
+
+    pairs = [
+        (int(chunk["chunk_id"]), vector)
+        for chunk, vector in zip(pending, result.vectors)
+        if vector
+    ]
+    chunk_meta = {int(chunk["chunk_id"]): chunk for chunk in pending}
+
+    from matrix_studio.storage import StorageError
+
+    try:
+        stored = await db.store_kb_vectors(kb_id, pairs, result.model, chunk_meta)
+    except (ValueError, StorageError) as exc:
+        out["error"] = str(exc)
+        return out
+
+    out["embedded"] = stored
+    out["skipped"] = len(pending) - stored
+    out["tokens"] = result.tokens
+    out["cost_usd"] = round(result.cost_usd, 8)
+    out["model"] = result.model
+    return out

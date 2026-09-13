@@ -340,3 +340,28 @@ async def test_persona_kbs_on_prefix_sharing_runs_also_differ(db):
 
     kbs = await db.list_knowledge_bases(owner_sub=TEST_OWNER)
     assert len({kb["name"] for kb in kbs}) == 2, [kb["name"] for kb in kbs]
+
+
+async def test_documents_already_in_a_kb_are_skipped_not_refused(db):
+    """A `KB#` document appeared when knowledge bases gained their own documents.
+
+    Worth recording how it surfaced: the unrecognised-item check is a `SystemExit`, so
+    such an item ABORTED the whole migration rather than being quietly mishandled. That
+    is the check doing its job — refusing to guess about an item shape nobody had told
+    it about — and the reason it is loud rather than a log line.
+    """
+    bound = db.for_owner(TEST_OWNER)
+    kb = await bound.create_knowledge_base("hand-made", owner_sub=TEST_OWNER)
+    await bound.add_kb_document(kb["id"], title="already-here.md", text="kb material")
+
+    run_doc = await _document(db, "run-mixed", "run.md", ["run material"])
+    await _store_vector(db, "run-mixed", run_doc, 0, "run material")
+
+    documents, others = await migrate_script.scan_documents(db)
+    assert [str(d.get("id")) for d in documents] == [run_doc], "a KB document was migrated"
+    assert all(migrate_script.is_known_non_document(o) for o in others)
+
+    # And the migration completes rather than exiting.
+    await migrate_script.migrate(db, apply=True, bind=False)
+    names = {k["name"] for k in await db.list_knowledge_bases(owner_sub=TEST_OWNER)}
+    assert names == {"hand-made", "migrated-run-mixed"}

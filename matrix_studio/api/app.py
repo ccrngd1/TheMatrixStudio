@@ -71,6 +71,7 @@ from matrix_studio.retrieval import (
     apply_budget,
     build_fts_query,
     embed_pending_chunks,
+    embed_pending_kb_chunks,
     extract_terms,
 )
 from matrix_studio.settings import get_settings
@@ -319,6 +320,39 @@ class AttachDocumentModel(BaseModel):
     text: Optional[str] = None
     # Server-readable path (CLI-adjacent workflows and local files).
     path: Optional[str] = None
+
+
+class CreateKnowledgeBaseModel(BaseModel):
+    """Body for POST /api/knowledge-bases.
+
+    No `owner_sub`: the owner is the authenticated caller, and accepting one would let
+    a request create a collection attributed to somebody else. Same reasoning as
+    `manager.create_run`'s keyword-only owner.
+    """
+
+    name: str
+    description: Optional[str] = None
+
+
+class KbDocumentModel(BaseModel):
+    """Body for POST /api/knowledge-bases/{kb_id}/documents.
+
+    `text` only — a file becomes text at /api/documents/extract first, which is the
+    existing split and exists so the operator can read what was extracted before it
+    becomes retrievable. There is deliberately no `path`: the run-scoped equivalent
+    reads a server-side file, which made sense for the local single-user tool and is a
+    file-read primitive nobody should hand a multi-tenant deployment.
+    """
+
+    title: str
+    text: str
+
+
+class GrantModel(BaseModel):
+    """Body for POST /api/knowledge-bases/{kb_id}/grants. Exactly one principal."""
+
+    user: Optional[str] = None
+    group: Optional[str] = None
 
 
 def _parse_cast(run: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -811,6 +845,230 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
     # `document_texts`, and it flows through run creation, retrieval and the setup
     # export with no new path. Same reason /documents/extract takes no run id: it
     # also serves adding a file to a run that already exists.
+
+    # ------------------------------ Knowledge bases ----------------------------- #
+    #
+    # Two distinct authorisation questions, and keeping them apart is the whole design:
+    #
+    #   READ  — `may_read_kb`: the owner, or a principal with a grant. Used for
+    #           listing, detail, and the documents in a collection.
+    #   WRITE — ownership ALONE. A grant says "may read", and §8b defines no other
+    #           kind. Letting a grantee add or delete documents would make "shared
+    #           with me" mean "mine to edit", and the owner would have no way to know.
+    #
+    # Every route below states which one it applies. A 404 rather than a 403 for a KB
+    # the caller cannot read, matching the run routes: distinguishing "exists but not
+    # yours" from "does not exist" leaks the existence of other people's collections.
+
+    async def _readable_kb(kb_id: str, user: str, groups: List[str]) -> Dict[str, Any]:
+        """A KB the caller may READ, or a 404. The chokepoint for read routes."""
+        if not await db.for_owner(user).may_read_kb(kb_id, user, groups):
+            raise HTTPException(status_code=404, detail="Knowledge base not found")
+        kb = await db.for_owner(user).get_knowledge_base(kb_id)
+        if kb is None:
+            raise HTTPException(status_code=404, detail="Knowledge base not found")
+        return kb
+
+    async def _owned_kb(kb_id: str, user: str) -> Dict[str, Any]:
+        """A KB the caller OWNS, or a 404. The chokepoint for write routes.
+
+        Ownership is read from the KB row rather than inferred from a grant, so a
+        grantee gets the same 404 as a stranger — they may read the collection, and
+        the fact that they cannot write to it is not information about who can.
+        """
+        kb = await db.for_owner(user).get_knowledge_base(kb_id)
+        if kb is None or str(kb.get("owner_sub") or "") != user:
+            raise HTTPException(status_code=404, detail="Knowledge base not found")
+        return kb
+
+    @app.get("/api/knowledge-bases")
+    async def list_knowledge_bases(
+        user: str = Depends(current_user),
+        groups: List[str] = Depends(current_groups),
+    ) -> Dict[str, Any]:
+        """The caller's own collections, plus every one shared with them.
+
+        `shared` is reported per row rather than left for the client to work out from
+        `owner_sub`: whether a collection is yours decides whether the UI offers a
+        delete button, and a client that computes that itself will eventually compute
+        it differently from `_owned_kb`.
+        """
+        bound = db.for_owner(user)
+        rows = await bound.list_knowledge_bases(owner_sub=user)
+        out = []
+        for kb in rows:
+            owned = str(kb.get("owner_sub") or "") == user
+            out.append({
+                **kb,
+                "shared": not owned,
+                "document_count": len(await bound.list_kb_documents(str(kb["id"]))),
+            })
+        out.sort(key=lambda k: (k["shared"], -(k.get("created_at") or 0)))
+        return {"knowledge_bases": out, "count": len(out)}
+
+    @app.post("/api/knowledge-bases", status_code=201)
+    async def create_knowledge_base(
+        body: CreateKnowledgeBaseModel,
+        user: str = Depends(current_user),
+    ) -> Dict[str, Any]:
+        name = (body.name or "").strip()
+        if not name:
+            raise HTTPException(status_code=422, detail="A name is required")
+        kb = await db.for_owner(user).create_knowledge_base(
+            name, owner_sub=user, description=body.description
+        )
+        return {**kb, "shared": False, "document_count": 0}
+
+    @app.get("/api/knowledge-bases/{kb_id}")
+    async def get_knowledge_base(
+        kb_id: str,
+        user: str = Depends(current_user),
+        groups: List[str] = Depends(current_groups),
+    ) -> Dict[str, Any]:
+        """READ access. Grants are included only for the owner.
+
+        Who else a collection is shared with is the owner's business: a grantee
+        knowing the full recipient list would disclose other users' subs, which are
+        the identifiers grants are made against.
+        """
+        kb = await _readable_kb(kb_id, user, groups)
+        bound = db.for_owner(user)
+        owned = str(kb.get("owner_sub") or "") == user
+        return {
+            **kb,
+            "shared": not owned,
+            "documents": await bound.list_kb_documents(kb_id),
+            "grants": await bound.list_kb_grants(kb_id) if owned else None,
+        }
+
+    @app.post("/api/knowledge-bases/{kb_id}/documents", status_code=201)
+    async def add_kb_document(
+        kb_id: str,
+        body: KbDocumentModel,
+        user: str = Depends(current_user),
+    ) -> Dict[str, Any]:
+        """WRITE access — ownership only. Stores the document and embeds it.
+
+        Embedding happens inline rather than in the background, and the errors it can
+        return are surfaced as failures rather than logged. A document that is stored
+        but not embedded is listed in the collection and permanently unretrievable,
+        which looks like retrieval being bad rather than an upload having half-failed.
+        """
+        await _owned_kb(kb_id, user)
+        text = (body.text or "").strip()
+        if not text:
+            raise HTTPException(status_code=422, detail="Document text is required")
+        if len(text) > settings.max_document_chars:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Document is {len(text)} characters; the limit is "
+                    f"{settings.max_document_chars}."
+                ),
+            )
+
+        bound = db.for_owner(user)
+        doc_id = await bound.add_kb_document(
+            kb_id, title=(body.title or "").strip() or "untitled",
+            text=text, char_count=len(text),
+        )
+        # The width is stated rather than left to the provider's default. A KB index is
+        # created at EMBEDDING_DIMENSION and its dimension is immutable, so asking for
+        # anything else produces vectors the service refuses — and a default that
+        # happens to match today is a silent dependency on the provider not changing it.
+        from matrix_studio.storage.vectors import EMBEDDING_DIMENSION
+
+        embedding = await embed_pending_kb_chunks(
+            bound, kb_id, dimensions=EMBEDDING_DIMENSION,
+        )
+        if embedding.get("error"):
+            # The document IS stored. Deleting it here would be worse: the text may be
+            # the only copy the operator has, and a model mismatch is fixed by changing
+            # configuration rather than by re-uploading. So it is reported, loudly, with
+            # the document's id so it can be removed deliberately.
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    f"The document was stored as {doc_id} but could not be embedded, so "
+                    f"it is not yet retrievable: {embedding['error']}"
+                ),
+            )
+        return {
+            "document_id": doc_id,
+            "kb_id": kb_id,
+            "embedded": embedding.get("embedded", 0),
+            "cost_usd": embedding.get("cost_usd", 0.0),
+            "model": embedding.get("model"),
+        }
+
+    @app.delete("/api/knowledge-bases/{kb_id}/documents/{document_id}")
+    async def delete_kb_document(
+        kb_id: str,
+        document_id: str,
+        user: str = Depends(current_user),
+    ) -> Dict[str, Any]:
+        """WRITE access — ownership only. Removes metadata, vectors and the object.
+
+        The vectors are the part that matters: a KB's index holds nothing but that KB,
+        so a vector left behind is still returned to everyone the collection is shared
+        with, quoting a document the owner deleted.
+        """
+        await _owned_kb(kb_id, user)
+        if not await db.for_owner(user).delete_kb_document(kb_id, document_id):
+            raise HTTPException(status_code=404, detail="Document not found")
+        return {"deleted": document_id}
+
+    @app.get("/api/knowledge-bases/{kb_id}/grants")
+    async def list_kb_grants(
+        kb_id: str,
+        user: str = Depends(current_user),
+    ) -> Dict[str, Any]:
+        """Owner only — see the reasoning on the detail route."""
+        await _owned_kb(kb_id, user)
+        return {"grants": await db.for_owner(user).list_kb_grants(kb_id)}
+
+    @app.post("/api/knowledge-bases/{kb_id}/grants", status_code=201)
+    async def grant_kb(
+        kb_id: str,
+        body: GrantModel,
+        user: str = Depends(current_user),
+    ) -> Dict[str, Any]:
+        """WRITE access — only an owner may share their own collection.
+
+        A grantee re-granting would let read access spread without the owner's
+        knowledge, and there is no revocation path that could then find it all.
+        """
+        await _owned_kb(kb_id, user)
+        principal_user = (body.user or "").strip() or None
+        principal_group = (body.group or "").strip() or None
+        if bool(principal_user) == bool(principal_group):
+            raise HTTPException(
+                status_code=422,
+                detail="Supply exactly one of `user` or `group`.",
+            )
+        grant = await db.for_owner(user).grant_kb(
+            kb_id, user=principal_user, group=principal_group, granted_by=user
+        )
+        return grant
+
+    @app.delete("/api/knowledge-bases/{kb_id}/grants")
+    async def revoke_kb(
+        kb_id: str,
+        principal_user: Optional[str] = Query(default=None, alias="user"),
+        principal_group: Optional[str] = Query(default=None, alias="group"),
+        user: str = Depends(current_user),
+    ) -> Dict[str, Any]:
+        """WRITE access — ownership only. Takes effect at the next query, not later."""
+        await _owned_kb(kb_id, user)
+        if bool(principal_user) == bool(principal_group):
+            raise HTTPException(
+                status_code=422,
+                detail="Supply exactly one of `user` or `group`.",
+            )
+        await db.for_owner(user).revoke_kb(
+            kb_id, user=principal_user, group=principal_group
+        )
+        return {"revoked": principal_user or principal_group}
 
     @app.get("/api/documents/formats")
     async def document_formats() -> Dict[str, Any]:

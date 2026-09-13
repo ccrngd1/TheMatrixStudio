@@ -16,9 +16,12 @@ const SLOW_AFTER_MS = 3000
 interface Props {
   onOpen: (runId: string) => void
   onNew: () => void
+  /** Optional so existing tests that render History alone keep working; the button is
+   *  simply absent without it rather than rendering a control that does nothing. */
+  onKnowledgeBases?: () => void
 }
 
-export function History({ onOpen, onNew }: Props) {
+export function History({ onOpen, onNew, onKnowledgeBases }: Props) {
   const [runs, setRuns] = useState<RunSummary[]>([])
   const [q, setQ] = useState('')
   const [loading, setLoading] = useState(true)
@@ -71,12 +74,22 @@ export function History({ onOpen, onNew }: Props) {
     <div className="mx-auto max-w-4xl p-6">
       <div className="mb-4 flex items-center justify-between">
         <h1 className="text-2xl font-bold text-slate-100">TheMatrix Simulation Studio</h1>
-        <button
-          onClick={onNew}
-          className="rounded-lg bg-matrix-accent px-4 py-2 font-semibold text-matrix-bg hover:bg-sky-400"
-        >
-          + New run
-        </button>
+        <div className="flex items-center gap-2">
+          {onKnowledgeBases && (
+            <button
+              onClick={onKnowledgeBases}
+              className="rounded-lg border border-matrix-border px-3 py-2 text-sm text-slate-300 hover:text-slate-100"
+            >
+              Knowledge bases
+            </button>
+          )}
+          <button
+            onClick={onNew}
+            className="rounded-lg bg-matrix-accent px-4 py-2 font-semibold text-matrix-bg hover:bg-sky-400"
+          >
+            + New run
+          </button>
+        </div>
       </div>
 
       <input

@@ -338,3 +338,41 @@ export interface TurnTrace {
   memory_refs?: string[]
   memories?: { id: string; content: string; importance: number | null; tags: string[] }[]
 }
+
+/** A knowledge base, as the list and detail routes return it. */
+export interface KnowledgeBase {
+  id: string
+  name: string
+  description: string | null
+  owner_sub: string
+  embedding_model: string | null
+  created_at: number | null
+  /** True when someone else owns it and it was shared with you. Reported by the
+   *  server rather than derived from `owner_sub`, so the UI's notion of "mine"
+   *  cannot drift from the one the write routes enforce. */
+  shared: boolean
+  document_count?: number
+}
+
+export interface KbDocument {
+  id: string
+  title: string
+  char_count: number | null
+  chunk_count: number | null
+  created_at: number | null
+}
+
+export interface KbGrant {
+  kb_id: string
+  principal: string
+  kind: string
+  granted_by: string | null
+  created_at: number | null
+}
+
+export interface KnowledgeBaseDetail extends KnowledgeBase {
+  documents: KbDocument[]
+  /** Null for a grantee: who else a collection is shared with is the owner's
+   *  business, and grants name other users' subs. */
+  grants: KbGrant[] | null
+}
