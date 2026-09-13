@@ -20,6 +20,7 @@ from typing import Any, Callable, Dict, List, Optional
 # Deferred: importing litellm costs 1.7 s and this module's callers include the API
 # Lambda, whose read routes never generate. See matrix_studio/lazy_litellm.py.
 from matrix_studio.lazy_litellm import litellm
+from matrix_studio.models import model_for
 
 from matrix_studio.settings import get_settings
 

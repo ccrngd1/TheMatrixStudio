@@ -80,7 +80,9 @@ async def _acompletion(
     claude-3-5-sonnet model is never introduced here.
     """
     settings = get_settings()
-    resolved_model = model or settings.litellm_model
+    from matrix_studio.models import model_for
+
+    resolved_model = model_for(model, "summary") or settings.litellm_model
     response = await litellm.acompletion(
         model=resolved_model,
         messages=messages,

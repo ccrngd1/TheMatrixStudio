@@ -51,6 +51,7 @@ from typing import Any, Dict, List, Optional
 # Deferred: importing litellm costs 1.7 s and this module's callers include the API
 # Lambda, whose read routes never generate. See matrix_studio/lazy_litellm.py.
 from matrix_studio.lazy_litellm import litellm
+from matrix_studio.models import model_for
 
 from matrix_studio.jsonio import extract_json_object
 
@@ -260,7 +261,10 @@ than a legitimate deliberate echo). Respond with ONLY a JSON object:
 
     try:
         kwargs: Dict[str, Any] = dict(
-            model=model or settings.litellm_model,
+            # `validation`, which keeps a temperature-honouring model of its own: a gate
+            # that answers differently on the same turn is not a gate, and temperature=0.0
+            # below is silently dropped by models that only accept 1.
+            model=model_for(model, "validation") or settings.litellm_model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
             max_tokens=50,
