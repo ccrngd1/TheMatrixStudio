@@ -142,8 +142,9 @@ class RetrievalConfig(BaseModel):
     # Retrieval mode. "fts" is lexical BM25 only, "vector" is embeddings only,
     # "hybrid" fuses both by Reciprocal Rank Fusion.
     #
-    # **The default is now "vector".** It was "fts" because vector/hybrid needed the
-    # optional `sqlite-vec` extra AND an embedding provider that a local user might
+    # **The default is now "vector".** It was "fts" because vector/hybrid needed a
+    # local vector extension (the since-deleted `sqlite-vec` extra) AND an embedding
+    # provider that a local user might
     # not have — a real reason then, and simply untrue on the AWS target: the vector
     # store is a managed service that is always present, and Bedrock is already a hard
     # dependency because generation uses it. Nothing is opt-in about a capability every

@@ -122,14 +122,7 @@ def test_absolute_data_dir_is_honoured_as_given(monkeypatch, tmp_path):
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "container-data"))
     settings = Settings()
     assert settings.resolved_data_dir == tmp_path / "container-data"
-    assert settings.db_file == tmp_path / "container-data" / "matrix_studio.db"
 
-
-def test_db_file_sits_under_the_resolved_data_dir():
-    """db_file is the single source of the database path for every entry point."""
-    settings = Settings(_env_file=None, data_dir="./data")
-    assert settings.db_file == settings.resolved_data_dir / "matrix_studio.db"
-    assert settings.db_file.is_absolute()
 
 
 def test_settings_multiple_providers(monkeypatch):

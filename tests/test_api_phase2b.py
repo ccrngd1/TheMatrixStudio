@@ -347,7 +347,6 @@ def test_promote_aside_injects_reply_and_branches(client):
     """A completed run's aside reply, when promoted, appears as an injected turn
     in the branch and the branch generates forward from there."""
     import matrix_studio.service as svc
-    import matrix_studio.storage.database as dbmod
 
     # 1. Make the parent run.
     run_id = _make_run(client)

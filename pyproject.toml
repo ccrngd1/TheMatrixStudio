@@ -29,7 +29,6 @@ dependencies = [
     "boto3>=1.34.0",
     "fastapi>=0.110.0",
     "uvicorn[standard]>=0.29.0",
-    "aiosqlite>=0.20.0",
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
     "python-dotenv>=1.0.0",
@@ -55,21 +54,18 @@ dev = [
     "moto[dynamodb,s3]>=5.0",
 ]
 # Phase 5 document retrieval reads PDF and Word attachments. Kept OPTIONAL so the
-# base install stays light (the five-minute quickstart is a pinned constraint);
-# .txt and .md attachments need nothing extra. Search itself uses SQLite FTS5,
-# which is built into SQLite — no dependency at all.
+# base install stays light; .txt and .md attachments need nothing extra. Retrieval
+# itself needs no package — embeddings live in S3 Vectors, reached through boto3, and
+# the lexical arm is term matching over the stored text in process.
 documents = [
     "pypdf>=4.0.0",
     "python-docx>=1.1.0",
 ]
-# Phase 5f vector retrieval. sqlite-vec is a small loadable SQLite extension
-# with prebuilt wheels — no torch, no vector service, and the index lives in the
-# same database file. Optional because vector modes also need an embedding
-# provider (an API call per chunk at ingest and one per turn), and the default
-# lexical mode needs neither.
-vectors = [
-    "sqlite-vec>=0.1.6",
-]
+# The `vectors` extra held `sqlite-vec` and is GONE. Embeddings moved to S3 Vectors,
+# which is an AWS API reached through boto3 — already a core dependency — so there is
+# no package to install for vector retrieval any more. `aiosqlite` went with it: the
+# SQLite storage layer was retained only to read a pre-migration `.db` file, and those
+# 38 runs were dropped as test data on 2026-09-13.
 
 [project.scripts]
 matrix-studio = "matrix_studio.__main__:main"
