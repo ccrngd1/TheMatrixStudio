@@ -173,7 +173,22 @@ def provision(prefix=TEST_TABLE_PREFIX, data_bucket=TEST_DATA_BUCKET,
     import boto3
 
     ddb = boto3.resource("dynamodb", region_name="us-east-1")
-    id_index = {"threads": "thread_id", "documents": "document_id"}
+    # (index name, partition-key attribute, projection) per table.
+    #
+    # The KB indexes are what make `list_knowledge_bases` a Query rather than a Scan, and
+    # this fixture missing them is not a cosmetic divergence: the session policy grants
+    # no `dynamodb:Scan`, so a Scan works here and returns **500 for every real user**.
+    # That is exactly the failure this function's docstring warns about, and it happened.
+    #
+    # Projection ALL, not KEYS_ONLY: `list_knowledge_bases` reads whole KB rows straight
+    # out of the query result, and `_granted_kb_ids` reads `kb_id` off each grant. A
+    # KEYS_ONLY index would return keys and the code would silently see no fields.
+    indexes = {
+        "threads": [("by-thread-id", "thread_id", "KEYS_ONLY")],
+        "documents": [("by-document-id", "document_id", "KEYS_ONLY")],
+        "knowledge-bases": [("by-owner", "owner_sub", "ALL")],
+        "kb-grants": [("by-principal", "principal", "ALL")],
+    }
     for table in ("runs", "events", "snapshots", "summaries", "threads",
                   "thread-messages", "documents", "knowledge-bases", "kb-grants",
                   "connections"):
@@ -182,13 +197,16 @@ def provision(prefix=TEST_TABLE_PREFIX, data_bucket=TEST_DATA_BUCKET,
             {"AttributeName": "sk", "AttributeType": "S"},
         ]
         extra = {}
-        if table in id_index:
-            attrs.append({"AttributeName": id_index[table], "AttributeType": "S"})
-            extra["GlobalSecondaryIndexes"] = [{
-                "IndexName": f"by-{id_index[table].replace('_', '-')}",
-                "KeySchema": [{"AttributeName": id_index[table], "KeyType": "HASH"}],
-                "Projection": {"ProjectionType": "KEYS_ONLY"},
-            }]
+        if table in indexes:
+            specs = []
+            for index_name, key_attr, projection in indexes[table]:
+                attrs.append({"AttributeName": key_attr, "AttributeType": "S"})
+                specs.append({
+                    "IndexName": index_name,
+                    "KeySchema": [{"AttributeName": key_attr, "KeyType": "HASH"}],
+                    "Projection": {"ProjectionType": projection},
+                })
+            extra["GlobalSecondaryIndexes"] = specs
         ddb.create_table(
             TableName=f"{prefix}-{table}",
             KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"},

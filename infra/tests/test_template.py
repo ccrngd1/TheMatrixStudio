@@ -393,6 +393,43 @@ def test_the_runs_table_has_both_gsis(template: Template):
     assert names == {"by-owner-created", "by-owner-status"}, names
 
 
+def test_the_knowledge_base_tables_have_the_indexes_that_avoid_a_scan(template: Template):
+    """Without these, every knowledge-base route returns 500 for every real user.
+
+    `list_knowledge_bases` must be a Query, because the tenant session policy grants
+    `dynamodb:*Item` and `dynamodb:Query` and deliberately never `Scan` — a tenant able
+    to Scan these two tables could read every other tenant's collections and every grant
+    in the system. So the missing index does not degrade to a slow listing; it degrades
+    to `AccessDeniedException`, and only under the tenant role. Admin credentials and
+    `moto` (which does not evaluate IAM) both hide it.
+
+    Projection ALL rather than KEYS_ONLY: whole KB rows and each grant's `kb_id` are read
+    straight out of the query result, and a keys-only index would return keys the code
+    then reads no fields from.
+    """
+    tables = template.find_resources("AWS::DynamoDB::Table")
+    expected = {
+        "matrix-studio-knowledge-bases": ("by-owner", "owner_sub"),
+        "matrix-studio-kb-grants": ("by-principal", "principal"),
+    }
+    for table_name, (index_name, key_attr) in expected.items():
+        table = next(
+            t for lid, t in tables.items()
+            if t["Properties"].get("TableName") == table_name
+        )
+        gsis = {
+            g["IndexName"]: g
+            for g in table["Properties"].get("GlobalSecondaryIndexes", [])
+        }
+        assert index_name in gsis, f"{table_name} is missing {index_name}: {list(gsis)}"
+        gsi = gsis[index_name]
+        assert gsi["KeySchema"][0] == {"AttributeName": key_attr, "KeyType": "HASH"}
+        assert gsi["Projection"]["ProjectionType"] == "ALL", (
+            f"{index_name} projects {gsi['Projection']['ProjectionType']}; the code reads "
+            "whole items out of this index"
+        )
+
+
 # --------------------------------------------------------------------------- #
 # The Lambda
 # --------------------------------------------------------------------------- #
@@ -487,12 +524,33 @@ def test_the_api_lambda_holds_no_storage_rights_of_its_own(template: Template):
 
     Scoped to the Lambda's own role. The tenant role holds these rights on purpose;
     a test that checked every policy in the template could not tell the two apart.
+
+    ## The one carve-out, and why it does not weaken the invariant
+
+    `s3vectors:GetIndex` and `s3vectors:CreateIndex` ARE granted here (Phase 6). The
+    reasoning above is about reading tenant DATA — a route that forgot `for_owner(...)`
+    must fail rather than read everything — and index management touches no data at all:
+    it creates and describes an empty container whose dimension and metric are fixed by
+    one factory. A route that forgot to scope and then tried to read vectors still fails,
+    because the actions that read and write them are absent from this role.
+
+    The alternative was granting the TENANT role `CreateIndex`, which is worse: the
+    ceiling is 10,000 indexes per vector bucket, so a tenant could exhaust the install's
+    whole capacity for knowledge bases.
+
+    So the carve-out is ENUMERATED rather than the prefix relaxed. Adding any vector data
+    action to this role fails this test, which is the property that was actually wanted.
     """
     actions = _actions(_policies_for(template, "ApiFunctionServiceRole"))
     assert actions, "the API function has no policy at all"
-    forbidden = {a for a in actions
-                 if a.startswith(("dynamodb:", "s3vectors:", "s3:GetObject",
-                                  "s3:PutObject"))}
+
+    # Index management only. Everything that reads or writes a vector stays out.
+    allowed_vector_actions = {"s3vectors:GetIndex", "s3vectors:CreateIndex"}
+    forbidden = {
+        a for a in actions
+        if a.startswith(("dynamodb:", "s3:GetObject", "s3:PutObject"))
+        or (a.startswith("s3vectors:") and a not in allowed_vector_actions)
+    }
     assert not forbidden, (
         f"the API function must not hold storage rights directly: {sorted(forbidden)}"
     )
@@ -1169,3 +1227,45 @@ def test_the_runtime_config_invalidates_the_edge_cache(template: Template):
         iter(template.find_resources("Custom::CDKBucketDeployment").values())
     )["Properties"]
     assert "/config.json" in (deployment.get("DistributionPaths") or []), deployment
+
+
+def test_the_tenant_role_cannot_create_or_delete_a_vector_index(template: Template):
+    """Index MANAGEMENT is withheld from the tenant role, on purpose.
+
+    The ceiling is 10,000 indexes per vector bucket, so a tenant able to create them
+    could exhaust the install's whole capacity for knowledge bases. `GetIndex` is granted
+    because `ensure_kb_index` checks before creating and that check runs on the tenant
+    path; creation belongs to the API function's own role.
+    """
+    policies = template.find_resources("AWS::IAM::Policy")
+    tenant_actions: set = set()
+    for policy in policies.values():
+        doc = policy["Properties"]["PolicyDocument"]
+        # The tenant role's policy is the one carrying the vector DATA actions.
+        for statement in doc["Statement"]:
+            actions = statement.get("Action")
+            actions = [actions] if isinstance(actions, str) else (actions or [])
+            if "s3vectors:QueryVectors" in actions:
+                tenant_actions |= set(actions)
+
+    assert tenant_actions, "found no statement granting s3vectors:QueryVectors"
+    assert "s3vectors:GetIndex" in tenant_actions
+    for forbidden in ("s3vectors:CreateIndex", "s3vectors:DeleteIndex", "s3vectors:*"):
+        assert forbidden not in tenant_actions, (
+            f"the tenant role may {forbidden}; a tenant can then exhaust the 10,000-index "
+            "ceiling, or delete another collection's index"
+        )
+
+
+def test_the_api_function_may_create_a_vector_index(template: Template):
+    """The other half. Without it, creating a knowledge base 500s — which is exactly how
+    this was found, by calling the deployed route."""
+    policies = template.find_resources("AWS::IAM::Policy")
+    granted = False
+    for policy in policies.values():
+        for statement in policy["Properties"]["PolicyDocument"]["Statement"]:
+            actions = statement.get("Action")
+            actions = [actions] if isinstance(actions, str) else (actions or [])
+            if "s3vectors:CreateIndex" in actions:
+                granted = True
+    assert granted, "nothing in the stack may create a KB's vector index"
