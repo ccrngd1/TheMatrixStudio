@@ -67,6 +67,17 @@ REGIONS = {
 # — but reported, because 7 days is shorter than most review cycles.
 MIN_USEFUL_RETENTION_DAYS = 30
 
+# Delivery roles this project created and can therefore fix.
+#
+# The distinction decides whether over-privilege is a FAILURE or a NOTE, and it is the
+# difference between a scoreboard people read and one they learn to ignore. `bedrock-logging`
+# (us-east-1) carries `AdministratorAccess` and is owned by the account, not by this stack —
+# failing on it forever would put a permanent red light next to something this project
+# cannot change, which trains everybody to skip the whole report. So: a note for roles we
+# do not own, a hard failure for roles we do, because copying admin onto ours would be our
+# mistake and is exactly what this check should catch.
+OWNED_DELIVERY_ROLES = {"bedrock-logging-usw2"}
+
 
 def check(label: str, ok: bool, detail: str = "") -> None:
     mark = "✓" if ok else "✗"
@@ -196,13 +207,32 @@ def main() -> int:
                     "pass — an unreadable role is unknown, not clean."
                 )
             else:
-                check(
-                    f"{region}: the log-delivery role holds only what delivery needs",
-                    not broad,
-                    f"{role_arn.rsplit('/', 1)[-1]} has {', '.join(broad)} attached. "
-                    "Bedrock needs two log actions; this is standing privilege on a role "
-                    "a service assumes." if broad else "",
-                )
+                role_name = role_arn.rsplit("/", 1)[-1]
+                if not broad:
+                    check(
+                        f"{region}: the log-delivery role holds only what delivery needs",
+                        True,
+                    )
+                elif role_name in OWNED_DELIVERY_ROLES:
+                    check(
+                        f"{region}: the log-delivery role holds only what delivery needs",
+                        False,
+                        f"{role_name} has {', '.join(broad)} attached, and this project "
+                        "owns that role — so this is ours to fix.",
+                    )
+                else:
+                    NOTES.append(
+                        f"{region}: {role_name} has {', '.join(broad)} attached. Bedrock "
+                        "needs two log actions. NOT a failure here — the role is owned by "
+                        "the account, not this stack, and its trust policy already blocks "
+                        "the confused-deputy case (service principal only, with "
+                        "SourceAccount and SourceArn conditions). The residual risk is "
+                        "privilege ESCALATION: anyone with a Bedrock create-API plus "
+                        "iam:PassRole on it can have Bedrock act as admin for their job. "
+                        "That grants nothing extra while every principal in the account is "
+                        "already admin, which is why it is recorded and not fixed. See "
+                        "BACKLOG.md."
+                    )
 
         if cw.get("logGroupName"):
             days = retention_days(region, cw["logGroupName"])
