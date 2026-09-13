@@ -5,6 +5,7 @@ import { Hint } from '../components/Hint'
 import { buildStructured } from '../lib/convictions'
 import { parseSetup, parseSetupObject, ImportError } from '../lib/importSetup'
 import { blankPersona, type DraftDoc, type DraftPersona } from './newRunTypes'
+import { KbPicker } from '../components/KbPicker'
 
 interface Props {
   onStarted: (runId: string) => void
@@ -39,6 +40,9 @@ const EXAMPLE = {
 export function NewRunForm({ onStarted, onCancel, fromRunId }: Props) {
   const [topic, setTopic] = useState('')
   const [cast, setCast] = useState<DraftPersona[]>([blankPersona()])
+  // Phase 6: collections every persona in the run may search — the cast-wide case,
+  // which generalises Phase 5's `persona_name IS NULL` exactly.
+  const [runKbs, setRunKbs] = useState<string[]>([])
   const [maxMessages, setMaxMessages] = useState(10)
   const [avatars, setAvatars] = useState(false)
   const [name, setName] = useState('')
@@ -115,6 +119,7 @@ export function NewRunForm({ onStarted, onCancel, fromRunId }: Props) {
       // which is worse than either.
       setCast(
         res.cast.map((c) => ({
+          ...blankPersona(),
           name: c.name,
           persona: c.persona,
           goals: (c.goals || []).join('\n'),
@@ -156,6 +161,9 @@ export function NewRunForm({ onStarted, onCancel, fromRunId }: Props) {
     if (setup.maxMessages) setMaxMessages(setup.maxMessages)
     if (setup.model) setModel(setup.model)
     if (setup.generateAvatars !== undefined) setAvatars(setup.generateAvatars)
+    // Same "absent is not empty" rule as avatars: a setup file written before knowledge
+    // bases existed must not clear a selection the operator has already made.
+    if (setup.knowledgeBases !== undefined) setRunKbs(setup.knowledgeBases)
     if (setup.cognition) {
       setCognitionEnabled(setup.cognition.enabled)
       setCogMemory(setup.cognition.memory ?? true)
@@ -268,6 +276,8 @@ export function NewRunForm({ onStarted, onCancel, fromRunId }: Props) {
 
   const anyConvictions = cast.some((c) => buildStructured(c) !== undefined)
   const anyDocuments = cast.some((c) => c.documents.some((d) => d.text.trim()))
+  const anyKnowledgeBases =
+    runKbs.length > 0 || cast.some((c) => c.knowledgeBases.length > 0)
 
   const submit = async () => {
     setError(null)
@@ -292,6 +302,10 @@ export function NewRunForm({ onStarted, onCancel, fromRunId }: Props) {
                 })),
               }
             : {}),
+          // Omitted when empty rather than sent as `[]`, matching every other optional
+          // field here: an empty array would make the server validate a binding list
+          // nobody chose.
+          ...(c.knowledgeBases.length ? { knowledge_bases: c.knowledgeBases } : {}),
         }
       })
     if (!topic.trim() || validCast.length === 0) {
@@ -320,7 +334,11 @@ export function NewRunForm({ onStarted, onCancel, fromRunId }: Props) {
           // existed. Enabling a feature nobody configured would cost tokens for
           // an empty prompt block.
           personas: anyConvictions ? { enabled: true } : undefined,
-          retrieval: anyDocuments ? { enabled: true } : undefined,
+          // Retrieval has to be ON for a binding to do anything: `retrieve_for_turn` is
+          // never called with it disabled, so a run that bound three collections and
+          // pasted no documents would search none of them and say nothing about why.
+          retrieval: anyDocuments || anyKnowledgeBases ? { enabled: true } : undefined,
+          ...(runKbs.length ? { knowledge_bases: runKbs } : {}),
         },
         model: model || undefined,
         name: name.trim() || undefined,
@@ -929,9 +947,51 @@ export function NewRunForm({ onStarted, onCancel, fromRunId }: Props) {
                     />
                   </div>
                 ))}
+
+                <div className="mt-3 flex items-center gap-2">
+                  <span className="text-xs font-semibold text-slate-400">
+                    Knowledge bases — this persona only
+                  </span>
+                  <Hint label="persona knowledge bases">
+                    A collection indexed ONCE and searchable from any conversation that
+                    binds it — unlike the pasted documents above, which belong to this run
+                    alone. Bind one here and only this persona may search it.
+                    <br />
+                    <br />
+                    A collection shared with you is bindable; that is what sharing is for.
+                    If its owner revokes the grant before the run starts, creation is
+                    refused and says which collection — and if they revoke mid-run, the
+                    next turn simply stops searching it.
+                  </Hint>
+                </div>
+                <div className="mt-1">
+                  <KbPicker
+                    level="persona"
+                    personaName={p.name || `persona ${i + 1}`}
+                    selected={p.knowledgeBases}
+                    onChange={(ids) => updatePersona(i, { knowledgeBases: ids })}
+                  />
+                </div>
               </details>
             </div>
           ))}
+        </div>
+      </div>
+
+      <div className="mt-6 rounded-lg border border-matrix-border bg-matrix-panel p-4">
+        <div className="flex items-center gap-2">
+          <h2 className="text-sm font-semibold text-slate-300">
+            Knowledge bases — the whole cast
+          </h2>
+          <Hint label="run knowledge bases">
+            Bound at run level, so every persona may search these. The effective scope for
+            a speaker is the run's collections plus its own, intersected with what you are
+            actually allowed to read — and that intersection is re-checked on every turn,
+            not just when the run is created.
+          </Hint>
+        </div>
+        <div className="mt-2">
+          <KbPicker level="run" selected={runKbs} onChange={setRunKbs} />
         </div>
       </div>
 

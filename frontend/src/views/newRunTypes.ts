@@ -31,10 +31,23 @@ export interface DraftPersona {
    * server-readable paths, so inline text is the only workable browser flow.
    */
   documents: DraftDoc[]
+  /**
+   * Phase 6 knowledge bases bound to THIS persona alone. Distinct from
+   * `documents`, and the difference is the point of Phase 6: a document pasted
+   * here is indexed for this run only, while a bound collection is indexed once
+   * and searchable from any conversation that binds it.
+   *
+   * The effective scope for a speaker is `run.knowledge_bases ∪
+   * persona.knowledge_bases`, intersected with what the caller may actually read
+   * — and that intersection is re-checked every turn, so a revoked grant stops
+   * working mid-run.
+   */
+  knowledgeBases: string[]
 }
 
 export function blankPersona(): DraftPersona {
   return {
-    name: '', persona: '', goals: '', positions: '', concerns: '', dismisses: '', documents: [],
+    name: '', persona: '', goals: '', positions: '', concerns: '', dismisses: '',
+    documents: [], knowledgeBases: [],
   }
 }

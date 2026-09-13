@@ -15,6 +15,11 @@ import { api } from '../api'
 
 vi.mock('../api', () => ({
   api: {
+    // The new-run form renders the knowledge-base picker, which calls this on
+    // mount. Absent, it threw synchronously inside an effect and took the whole
+    // form down — so the picker now degrades, and this keeps the mock honest
+    // about the surface the component actually uses.
+    listKnowledgeBases: vi.fn().mockResolvedValue({ knowledge_bases: [], count: 0 }),
     getDocumentFormats: vi.fn().mockResolvedValue({
       formats: [
         { suffix: '.txt', media_type: 'txt', available: true, needs: null },
