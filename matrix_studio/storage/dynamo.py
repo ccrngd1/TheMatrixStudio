@@ -906,6 +906,87 @@ class DynamoStorage:
             )
             return False
 
+    # ------------------------------------------------------------------ #
+    # Per-user monthly spend (§7)
+    # ------------------------------------------------------------------ #
+    #
+    # A maintained counter, and the alternative was measured before choosing it.
+    # `get_run_stats` derives a RUN's cost from its event log — ~80 events — precisely so
+    # a counter cannot drift from the source of truth. A MONTH's total cannot work that
+    # way: it would mean reading every event of every run in the month (50 runs × 80
+    # events) on a path that runs before every run starts and between every turn.
+    #
+    # So this is one item per user per month, incremented with `ADD`. Three things follow,
+    # and the third is the one to remember:
+    #
+    #   - `ADD` is atomic, so two of a user's runs generating concurrently both count.
+    #     A read-modify-write would lose one of them, which is the whole point.
+    #   - The month key is UTC. A local-time boundary would double-count or skip
+    #     depending on the direction of the offset.
+    #   - **It can over-count by at most one slice.** A slice whose spend was recorded
+    #     and whose result was then lost is retried by Step Functions and recorded again.
+    #     Over-counting refuses sooner, which is the safe direction for a spend cap;
+    #     under-counting would let it be exceeded. Stated rather than hidden, because the
+    #     number is not reconstructable from the log and somebody will eventually compare
+    #     the two and find them different.
+
+    @staticmethod
+    def _spend_sk(month: Optional[str] = None) -> str:
+        """`SPEND#YYYY-MM`, in UTC. Current month when not given."""
+        from datetime import datetime, timezone
+
+        month = month or datetime.now(timezone.utc).strftime("%Y-%m")
+        return f"SPEND#{month}"
+
+    async def add_user_spend(
+        self, amount: float, *, month: Optional[str] = None, owner_sub: Optional[str] = None
+    ) -> float:
+        """Add to this user's monthly total. Returns the new total.
+
+        Lives in the `runs` table, under the user's own partition, so
+        `dynamodb:LeadingKeys` covers it with no policy change — §3's boundary reaches it
+        for free, which is the reason for the key rather than a separate table.
+
+        A zero or negative amount is a no-op rather than an error: a slice that generated
+        nothing (a stop landing between turns, a retry after a completed slice) has no
+        spend to record, and refusing it would make the caller special-case the ordinary
+        case.
+        """
+        from decimal import Decimal
+
+        owner_sub = self._owner(owner_sub)
+        if amount <= 0:
+            return await self.user_spend(month=month, owner_sub=owner_sub)
+        result = await self._call(
+            self._table("runs").update_item,
+            Key={"pk": _user_pk(owner_sub), "sk": self._spend_sk(month)},
+            UpdateExpression="ADD cost_usd :c SET updated_at = :t",
+            ExpressionAttributeValues={
+                # `Decimal`, because the DynamoDB serialiser refuses a bare `float`
+                # outright — the same conversion `_to_ddb` does for a whole item, done
+                # by hand here because an UpdateExpression's values do not go through it.
+                ":c": Decimal(str(float(amount))), ":t": int(time.time()),
+            },
+            ReturnValues="UPDATED_NEW",
+        )
+        return float(result.get("Attributes", {}).get("cost_usd") or 0.0)
+
+    async def user_spend(
+        self, *, month: Optional[str] = None, owner_sub: Optional[str] = None
+    ) -> float:
+        """This user's recorded spend for the month. 0.0 when nothing is recorded.
+
+        Absent reads as zero rather than raising: a user's first run of the month has no
+        item yet, and that is the common case rather than an error.
+        """
+        owner_sub = self._owner(owner_sub)
+        got = await self._call(
+            self._table("runs").get_item,
+            Key={"pk": _user_pk(owner_sub), "sk": self._spend_sk(month)},
+        )
+        item = got.get("Item") or {}
+        return float(item.get("cost_usd") or 0.0)
+
     async def set_run_budget(
         self, run_id: str, max_messages: int, *, owner_sub: Optional[str] = None
     ) -> bool:

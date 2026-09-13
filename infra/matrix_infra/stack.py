@@ -853,6 +853,10 @@ class MatrixStudioStack(Stack):
         )
         self.api_lambda.add_environment("TENANT_ROLE_ARN", self.tenant_role.role_arn)
         self.api_lambda.add_environment("TABLE_PREFIX", self.config.prefix)
+        # §7's per-user cap, on the API too: it is the cheap refusal point, before a run
+        # exists. Same helper as the workers use, so the two cannot disagree.
+        for key, value in self._spend_cap_env().items():
+            self.api_lambda.add_environment(key, value)
 
         # The SPA's runtime configuration, written at deploy time.
         #
@@ -1002,6 +1006,18 @@ class MatrixStudioStack(Stack):
 
     # ------------------------------------------------------------------ #
 
+    def _spend_cap_env(self) -> Dict[str, str]:
+        """The §7 spend-cap environment, for every function that could spend money.
+
+        One method rather than two literals, because the failure mode is asymmetric: if
+        the API has a cap and a worker does not, runs are refused at creation and then
+        generate without limit once started — which looks like the cap working.
+        """
+        env = {"MAX_USER_MONTHLY_COST_USD": str(self.config.user_monthly_cap_usd or 0.0)}
+        if self.config.user_spend_caps_json:
+            env["USER_SPEND_CAPS_JSON"] = self.config.user_spend_caps_json
+        return env
+
     def _worker(
         self, construct_id: str, name: str, handler: str, timeout: Duration
     ) -> lambda_.DockerImageFunction:
@@ -1044,6 +1060,12 @@ class MatrixStudioStack(Stack):
                 "VECTOR_INDEX": self.chunks_index.index_name,
                 "TABLE_PREFIX": self.config.prefix,
                 "TENANT_ROLE_ARN": self.tenant_role.role_arn,
+                # §7's per-user cap. On the WORKERS as well as the API, and that is the
+                # point rather than duplication: the API refuses to start a run over
+                # budget, and the turn loop refuses to continue one — a long or resumed
+                # run would otherwise outlive its cap entirely. A worker without these
+                # would silently be the uncapped path.
+                **self._spend_cap_env(),
                 **{
                     f"TABLE_{n.upper()}": t.table_name
                     for n, t in self.tables.items()

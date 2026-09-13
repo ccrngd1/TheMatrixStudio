@@ -66,6 +66,19 @@ class StackConfig:
     #: Visible in `cdk diff` when set, and asserted absent by a template test.
     verify_principal_arn: Optional[str] = None
 
+    #: Per-user monthly spend cap in USD, §7's rollout prerequisite. 0 = OFF.
+    #:
+    #: Off by default, and that default is the honest one rather than the cautious one:
+    #: a cap the operator did not choose is a number the application invented, and the
+    #: first a user would know of it is a run refused for a budget nobody set. A per-RUN
+    #: cap already bounds one conversation; this bounds a person.
+    user_monthly_cap_usd: float = 0.0
+
+    #: Optional per-Cognito-group caps as JSON, e.g. `{"trial": 5, "staff": 100}`.
+    #: A user in several groups gets the highest. Empty means the flat cap applies to
+    #: everyone.
+    user_spend_caps_json: Optional[str] = None
+
     @staticmethod
     def from_context(node: Any) -> "StackConfig":
         """Build from `cdk.json` context and `-c key=value` overrides."""
@@ -93,6 +106,8 @@ class StackConfig:
             prefix=get("prefix", "matrix-studio"),
             region=get("region"),
             retain_data=flag("retain_data", True),
+            user_monthly_cap_usd=float(get("user_monthly_cap_usd", 0.0) or 0.0),
+            user_spend_caps_json=get("user_spend_caps_json"),
             extra_callback_urls=list(extra),
             admin_email=get("admin_email"),
             verify_principal_arn=get("verify_principal_arn"),
