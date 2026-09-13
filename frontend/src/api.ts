@@ -118,6 +118,10 @@ export interface CreateRunBody {
     // the only workable browser flow — and it must be sent at creation, because the
     // engine ingests cast documents before turn 1.
     document_texts?: { title: string; text: string }[]
+    // Phase 6: collections THIS persona alone may search. Distinct from
+    // `document_texts`, which is indexed for this run only — a bound collection is
+    // indexed once and searchable from any conversation that binds it.
+    knowledge_bases?: string[]
   }[]
   config: {
     max_messages?: number
@@ -128,6 +132,11 @@ export interface CreateRunBody {
     // prompt block.
     personas?: { enabled: boolean; withhold_concerns?: boolean; dismissal_rule?: string }
     retrieval?: { enabled: boolean; mode?: string; k?: number; max_chars?: number }
+    // Phase 6: collections EVERY persona may search — the cast-wide case. Declared
+    // rather than left to a conditional spread: `...(cond ? {x} : {})` bypasses excess
+    // property checking, so these were being sent with no type at all and a rename on
+    // either side would have gone unnoticed until a run retrieved nothing.
+    knowledge_bases?: string[]
   }
   model?: string
   name?: string

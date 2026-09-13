@@ -27,7 +27,7 @@
  * point of loading them into the form is to add those before running.
  */
 
-import type { DraftDoc, DraftPersona } from '../views/newRunTypes'
+import { blankPersona, type DraftDoc, type DraftPersona } from '../views/newRunTypes'
 
 export interface ImportedSetup {
   topic: string
@@ -46,6 +46,14 @@ export interface ImportedSetup {
     goals_dynamic?: boolean
     relationships?: boolean
   }
+  /**
+   * Phase 6 cast-wide knowledge bases the setup binds.
+   *
+   * Absent stays undefined rather than `[]`, for the same reason as `generateAvatars`:
+   * "the file said nothing" and "the file said none" are different, and only the second
+   * should clear what the form already has.
+   */
+  knowledgeBases?: string[]
   /** Problems that did not stop the load. Shown to the operator verbatim. */
   warnings: string[]
 }
@@ -163,13 +171,18 @@ export function parseSetupObject(data: unknown): ImportedSetup {
     const prefs = (structured.preferences ?? {}) as Record<string, unknown>
     const { positions, concerns } = positionsFromStructured(structured.viewpoints)
 
+    // Spread `blankPersona()` rather than listing every field: this literal has now
+    // been the thing that broke twice when DraftPersona gained a field, and the
+    // importer has no opinion about defaults it does not set.
     cast.push({
+      ...blankPersona(),
       name,
       persona,
       goals: asStringList(m.goals).join('\n'),
       positions,
       concerns,
       dismisses: asStringList(prefs.dismisses).join('\n'),
+      knowledgeBases: asStringList(m.knowledge_bases),
       documents: documentsFrom(m, warnings, name),
     })
   })
@@ -205,6 +218,10 @@ export function parseSetupObject(data: unknown): ImportedSetup {
           goals_dynamic: Boolean(cog.goals_dynamic),
           relationships: Boolean(cog.relationships),
         },
+    knowledgeBases:
+      config.knowledge_bases === undefined
+        ? undefined
+        : asStringList(config.knowledge_bases),
     warnings,
   }
 }

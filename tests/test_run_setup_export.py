@@ -12,7 +12,9 @@ copying would corrupt it — duplicated document text, an inherited `imported` c
 a cast-wide document quietly reassigned to a persona.
 """
 
+import asyncio
 import json
+import os
 import time
 from unittest.mock import MagicMock, patch
 
@@ -266,7 +268,11 @@ def test_branch_only_config_is_not_replayed_into_a_fresh_run(client):
     raw_config = client.get(f"/api/runs/{branch_id}").json()["config"]
     setup = client.get(f"/api/runs/{branch_id}/setup").json()["setup"]
 
-    allowed = {"max_messages", "generate_avatars", "cognition", "retrieval", "personas"}
+    # Kept in step with `setup_config`'s allowlist in app.py deliberately. It is the
+    # create-run contract, so a key added there belongs here — and a key added ONLY here
+    # would make this test stop guarding anything.
+    allowed = {"max_messages", "generate_avatars", "cognition", "retrieval", "personas",
+               "knowledge_bases"}
     assert set(setup["config"]) <= allowed
     # Guard against the test passing because the branch config was empty anyway.
     assert set(raw_config) - allowed, "fixture should have branch-only config keys"
@@ -299,3 +305,73 @@ def test_join_chunks_never_loses_text_on_unfamiliar_chunks():
     assert join_chunks(["alpha", "beta"]) == "alpha\n\nbeta"
     assert join_chunks([]) == ""
     assert join_chunks(["only"]) == "only"
+
+
+def test_setup_carries_bindings_at_BOTH_levels(client, monkeypatch):
+    """Phase 6 knowledge-base bindings survive "start over from this conversation".
+
+    The asymmetry this guards is the one that existed: the cast is copied key by key, so
+    a PERSONA binding survived automatically, while the run-level list was dropped by
+    `setup_config`'s allowlist. A new run would then search less than the one it was
+    copied from, silently — which reads as a retrieval bug rather than a lost binding.
+    """
+    from matrix_studio.api import identity
+
+    sub = identity.LOCAL_USER_SUB
+    from matrix_studio.storage import Database
+
+    # Two real collections, so the create-run validation passes rather than 422ing.
+    async def make_kbs():
+        db = Database(
+            table_prefix=os.environ["TABLE_PREFIX"],
+            bucket=os.environ["DATA_BUCKET"],
+            region="us-east-1",
+        )
+        await db.connect()
+        try:
+            bound = db.for_owner(sub)
+            cast_wide = await bound.create_knowledge_base("cast-wide", owner_sub=sub)
+            hers = await bound.create_knowledge_base("priyas-own", owner_sub=sub)
+            return cast_wide["id"], hers["id"]
+        finally:
+            await db.close()
+
+    cast_wide_id, hers_id = asyncio.run(make_kbs())
+
+    body = json.loads(json.dumps(REQUEST))
+    body["name"] = "bound-run"
+    body["config"]["knowledge_bases"] = [cast_wide_id]
+    body["cast"][0]["knowledge_bases"] = [hers_id]
+
+    run_id = _start(client, body)
+    setup = client.get(f"/api/runs/{run_id}/setup").json()["setup"]
+
+    assert setup["config"]["knowledge_bases"] == [cast_wide_id], (
+        "the cast-wide binding was dropped; the new run would search less than the old one"
+    )
+    priya = next(c for c in setup["cast"] if c["name"] == "Priya")
+    assert priya["knowledge_bases"] == [hers_id]
+    # And the persona's stays hers rather than being promoted to the whole cast.
+    dan = next(c for c in setup["cast"] if c["name"] == "Dan")
+    assert dan.get("knowledge_bases") in (None, [])
+
+    # Still directly re-runnable, which is this endpoint's whole contract.
+    with patch("matrix_studio.engine.simulator.litellm.acompletion",
+               side_effect=_fake_llm()):
+        setup["name"] = "bound-run-again"
+        again = client.post("/api/runs", json=setup)
+    assert again.status_code == 201, again.text
+
+
+def test_a_binding_whose_grant_is_gone_is_refused_on_re_run(client):
+    """A setup carrying a binding the caller can no longer read must 422, not silently
+    drop it. The run would otherwise claim a collection it cannot search."""
+    body = json.loads(json.dumps(REQUEST))
+    body["name"] = "dangling-binding"
+    body["config"]["knowledge_bases"] = ["kb-that-never-existed"]
+
+    with patch("matrix_studio.engine.simulator.litellm.acompletion",
+               side_effect=_fake_llm()):
+        response = client.post("/api/runs", json=body)
+    assert response.status_code == 422
+    assert "kb-that-never-existed" in response.json()["detail"]

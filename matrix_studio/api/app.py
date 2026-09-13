@@ -1301,7 +1301,17 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         # a fresh root run.
         setup_config = {
             k: config[k] for k in
-            ("max_messages", "generate_avatars", "cognition", "retrieval", "personas")
+            # `knowledge_bases` is part of the create-run contract, so it belongs here.
+            # Without it a run's CAST-WIDE bindings were dropped while its per-persona
+            # ones survived — the cast is copied key-by-key — so "start over from this
+            # conversation" quietly narrowed what the new run could search. An asymmetry
+            # like that reads as a retrieval bug rather than a lost binding.
+            #
+            # A binding whose grant has since been revoked is re-validated at creation
+            # and refused with a 422 naming it, which is the right outcome: carrying it
+            # forward silently would produce a run that searches less than it claims.
+            ("max_messages", "generate_avatars", "cognition", "retrieval", "personas",
+             "knowledge_bases")
             if k in config and config[k] is not None
         }
 
