@@ -602,7 +602,11 @@ async def retrieve_for_turn(
     # for; an empty string means the arm was usable (or was not asked for).
     vector_unusable = ""
     if mode in ("vector", "hybrid") and not getattr(db, "vec_available", False):
-        vector_unusable = "the sqlite-vec extension is not loaded"
+        # Reached only by a store that reports no vector capability. `DynamoStorage`
+        # returns a constant True, so this is a fake or a future backend rather than a
+        # missing install — the message named `sqlite-vec` until that extra was deleted,
+        # which would have sent an operator looking for a package that no longer exists.
+        vector_unusable = "the storage layer reports no vector capability"
     elif mode in ("vector", "hybrid"):
         from matrix_studio.embeddings import DEFAULT_EMBEDDING_MODEL, embed_query
 

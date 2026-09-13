@@ -290,11 +290,6 @@ class Settings(BaseSettings):
         root = project_root()
         return (root / path).resolve() if root else path.resolve()
 
-    @property
-    def db_file(self) -> Path:
-        """Absolute path to the SQLite database."""
-        return self.resolved_data_dir / "matrix_studio.db"
-
     # Server settings (for Phase 1)
     matrix_port: int = Field(default=8000, ge=1, le=65535)
     matrix_host: str = Field(default="127.0.0.1")

@@ -143,7 +143,6 @@ async def test_cost_cap_hit(tmp_path, monkeypatch):
     assert payload["total_cost_usd"] >= 0.25
 
     # Check final snapshot has status "capped"
-    from matrix_studio.storage.database import Database as DB
     snapshot = await db.get_snapshot(result["run_id"], result["total_turns"])
     assert snapshot is not None
     assert snapshot.status == "capped"
