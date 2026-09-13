@@ -40,9 +40,23 @@ class Settings(BaseSettings):
     )
 
     # LiteLLM model configuration
+    # The conversation model. **Sonnet 5**, changed from Haiku 4.5 on 2026-09-13.
+    #
+    # Haiku was the default because it is cheap, and that was the right call while nothing
+    # depended on the output being comparable. It is the wrong one now: every Phase 6
+    # measurement in `docs/` — the dismissal-rate work, the validation arms, the
+    # `distinct_positions` instability — was run on Sonnet 5, so a run on Haiku produces
+    # behaviour that cannot be read against any recorded number.
+    #
+    # This is the model for the roles where quality is the product. It is deliberately NOT
+    # the model for every call: Sonnet 5 accepts only `temperature=1`, so the validation
+    # gate (0.0) and speaker selection (0.3) keep a temperature-honouring model of their
+    # own. See `matrix_studio/models.py`, which is where that decision lives.
     litellm_model: str = Field(
-        default="bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0",
-        description="LiteLLM model string (e.g., openai/gpt-4o, anthropic/..., bedrock/...)"
+        default="bedrock/global.anthropic.claude-sonnet-5",
+        description="Conversation model — the LiteLLM string for the roles where quality "
+        "is the product (persona voice, summary, the persona wizard). Per-role overrides "
+        "live in a run's `config.models`; see matrix_studio/models.py. LITELLM_MODEL.",
     )
     litellm_temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     litellm_max_tokens: int = Field(default=2048, ge=1)

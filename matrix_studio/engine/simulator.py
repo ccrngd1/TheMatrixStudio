@@ -22,6 +22,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 # `drop_params` and `suppress_debug_info`, which used to be set below and therefore
 # depended on import order. See matrix_studio/lazy_litellm.py.
 from matrix_studio.lazy_litellm import litellm
+from matrix_studio.models import ModelSet, model_for
 
 # Type alias for the Phase 1 live-emit callback. It receives one structured
 # event dict (same shape as a persisted row) for each event the engine emits.
@@ -163,7 +164,9 @@ Respond with ONLY the name of the persona who should speak next. Choose naturall
 
     try:
         kwargs: Dict[str, Any] = dict(
-            model=model or settings.litellm_model,
+            # `speaker_selection`, not the conversation model: temperature 0.3 is
+            # deliberate and Sonnet 5 would silently drop it. See models.py.
+            model=model_for(model, "speaker_selection") or settings.litellm_model,
             messages=messages,
             temperature=0.3,  # Lower temperature for more consistent selection
             max_tokens=120 if cognition_on else 50,
@@ -392,7 +395,8 @@ Respond naturally as this character. Keep responses conversational (2-4 sentence
 
     try:
         kwargs: Dict[str, Any] = dict(
-            model=model or settings.litellm_model,
+            # `voice` — the persona speaking, which is the product.
+            model=model_for(model, "voice") or settings.litellm_model,
             messages=messages,
             temperature=settings.litellm_temperature,
             max_tokens=settings.litellm_max_tokens,
@@ -798,6 +802,11 @@ async def run_simulation(
     )
 
     # Fresh start: no prior turns, no seed conversation.
+    # Resolved once and LOGGED once: two roles set a low temperature deliberately and
+    # some models discard it, so role/model/temperature is only inspectable if something
+    # writes it down. See matrix_studio/models.py.
+    _model_set = ModelSet.from_config(config)
+    _model_set.log_plan()
     return await _run_turns(
         run_id=run_id,
         topic=topic,
@@ -810,7 +819,12 @@ async def run_simulation(
         db=db,
         emit=_emit,
         next_seq=_next_seq,
-        model=config.get("model") or None,
+        # A ModelSet, not `config["model"]` alone. This is the path the CLI and the local
+        # server take, and passing the bare string here would make `config.models`
+        # silently do nothing on it while working through the orchestrator — the same
+        # config behaving differently depending on how the run was started, which is the
+        # worst kind of difference because nothing reports it.
+        model=_model_set,
         cognition=cognition,
         retrieval=retrieval,
         personas=personas_cfg,
@@ -997,7 +1011,7 @@ async def _reflect(
     )
     try:
         response = await litellm.acompletion(
-            model=model or settings.litellm_model,
+            model=model_for(model, "reflection") or settings.litellm_model,
             messages=[{"role": "user", "content": prompt}],
             temperature=settings.litellm_temperature,
             max_tokens=120,

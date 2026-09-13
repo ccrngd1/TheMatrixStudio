@@ -37,6 +37,7 @@ from typing import Any, Dict, List, Optional
 # Deferred: importing litellm costs 1.7 s and this module's callers include the API
 # Lambda, whose read routes never generate. See matrix_studio/lazy_litellm.py.
 from matrix_studio.lazy_litellm import litellm
+from matrix_studio.models import model_for
 
 from matrix_studio.state import PendingThread
 from matrix_studio.validation import check_agency
@@ -158,7 +159,7 @@ Narrator interjection:"""
     for attempt in range(PRESSURE_RETRY_BUDGET + 1):
         try:
             response = await litellm.acompletion(
-                model=model or settings.litellm_model,
+                model=model_for(model, "pressure") or settings.litellm_model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=settings.litellm_temperature,
                 max_tokens=300,

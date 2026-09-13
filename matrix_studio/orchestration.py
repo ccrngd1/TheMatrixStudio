@@ -42,6 +42,7 @@ import os
 import time
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
+from matrix_studio.models import ModelSet
 from matrix_studio.state import (
     AgentState,
     CognitionConfig,
@@ -497,7 +498,11 @@ async def prepare_branch(
             next_seq=next_seq,
             pending_threads=threads,
             settings=get_settings(),
-            model=cfg.get("model") or None,
+            # A ModelSet rather than the bare string: the engine resolves per ROLE
+            # through `model_for`, so speaker selection and the validation gate keep a
+            # temperature-honouring model even when the conversation model drops
+            # temperature. A plain string still works — see matrix_studio/models.py.
+            model=ModelSet.from_config(cfg),
         )
 
     # Persist the effective budget, because the next turn is a different Lambda and
@@ -696,7 +701,7 @@ async def execute_slice(
         max_messages=max_messages,
         db=db,
         on_event=on_event,
-        model=cfg.get("model") or None,
+        model=ModelSet.from_config(cfg),
         cognition=CognitionConfig.from_config(cfg),
         pending_threads=threads,
         retrieval=RetrievalConfig.from_config(cfg),

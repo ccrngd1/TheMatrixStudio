@@ -71,15 +71,50 @@ async def test_engine_uses_per_run_config_model(db):
     assert all(m == "bedrock/custom-run-model" for m in fake.models), fake.models
 
 
-async def test_engine_falls_back_to_settings_model_when_unset(db):
+async def test_with_nothing_configured_each_ROLE_gets_its_own_default(db):
+    """The old assertion here was that EVERY call used one model, and that is no longer
+    the design — deliberately.
+
+    Sonnet 5 accepts only `temperature=1`, and `drop_params` makes such a call succeed by
+    discarding the temperature. Speaker selection sets 0.3 ("for more consistent
+    selection") and the validation gate sets 0.0, so running those on the conversation
+    model would silently raise both to 1.0: a gate that answers differently on the same
+    turn. `ROLE_DEFAULTS` pins them to a temperature-honouring model instead.
+    """
+    from matrix_studio.models import LOW_VARIANCE_MODEL
+    from matrix_studio.settings import get_settings
+
     fake = _always(["Ada", "Ben"])
     with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=fake):
         req = dict(REQUEST)
         req["config"] = {"max_messages": 2, "generate_avatars": False}
         await run_simulation(req, db=db)
-    from matrix_studio.settings import get_settings
+
     default = get_settings().litellm_model
-    assert all(m == default for m in fake.models), fake.models
+    assert fake.models, "no LLM calls captured"
+    # Both models appear: the conversation model for the voice, the low-variance one for
+    # selection. Asserting the SET rather than the order, because the order is the turn
+    # loop's business and would make this a test of sequencing.
+    assert set(fake.models) == {default, LOW_VARIANCE_MODEL}, fake.models
+    assert default != LOW_VARIANCE_MODEL, (
+        "this test proves nothing if the two defaults are the same model"
+    )
+
+
+async def test_a_per_ROLE_override_reaches_the_engine(db):
+    """`config.models` has to work on the direct path too, not only through the
+    orchestrator — otherwise the same config behaves differently depending on how the run
+    was started, and nothing reports it."""
+    fake = _always(["Ada", "Ben"])
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=fake):
+        req = dict(REQUEST)
+        req["config"] = {
+            "max_messages": 2,
+            "generate_avatars": False,
+            "models": {"speaker_selection": "bedrock/pick-with-this"},
+        }
+        await run_simulation(req, db=db)
+    assert "bedrock/pick-with-this" in fake.models, fake.models
 
 
 async def _mk_parent(db, run_id, cfg):

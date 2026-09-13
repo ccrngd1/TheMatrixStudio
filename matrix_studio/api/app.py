@@ -200,6 +200,17 @@ class RunConfigModel(BaseModel):
     # collapsed its BM25 score to zero, and binding fixes the first while vector
     # retrieval makes the second impossible.
     knowledge_bases: List[str] = Field(default_factory=list)
+    # Per-role model overrides, e.g. `{"voice": "bedrock/global.anthropic.claude-opus-5",
+    # "summary": "…haiku…"}`. A run makes six kinds of model call and they want different
+    # things — see `matrix_studio/models.py` for the table and, more importantly, for why
+    # the validation gate and speaker selection do NOT follow the conversation model by
+    # default (Sonnet 5 accepts only temperature=1, so a gate set to 0.0 silently runs at
+    # 1.0 and stops being deterministic).
+    #
+    # A plain dict rather than a model with a field per role: the role list belongs in one
+    # place, and `ModelSet.from_config` warns about an unrecognised name rather than
+    # dropping it silently or refusing the whole request.
+    models: Optional[Dict[str, str]] = None
 
 
 class SummaryConfigModel(BaseModel):
@@ -669,12 +680,24 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         """Models selectable in the new-run form + in-thread pickers. Returns each
         model as ``{id, label}`` (friendly label for the UI dropdown). Keys stay
         server-side; this only exposes the allowlist of model strings."""
+        from matrix_studio.models import ROLE_DEFAULTS, ROLES, ModelSet
+
         return {
             "default": settings.litellm_model,
             "models": [
                 {"id": m, "label": _model_label(m)}
                 for m in settings.available_model_list
             ],
+            # What each ROLE will actually use with nothing overridden.
+            #
+            # Exposed because the per-role defaults are the surprising part of the design:
+            # somebody who sets `model` reasonably assumes it applies everywhere, and for
+            # the validation gate and speaker selection it deliberately does not. A UI or
+            # an operator that cannot see this will report it as a bug.
+            "roles": ModelSet().as_dict(),
+            # The roles a run may override, and which of them ignore `model` by default.
+            "overridable_roles": list(ROLES),
+            "roles_pinned_by_default": sorted(ROLE_DEFAULTS),
         }
 
     @app.get("/api/name/suggest")

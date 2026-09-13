@@ -18,7 +18,7 @@ def test_settings_defaults():
     assert real code defaults rather than local configuration.
     """
     settings = Settings(_env_file=None)
-    assert settings.litellm_model == "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0"
+    assert settings.litellm_model == "bedrock/global.anthropic.claude-sonnet-5"
     assert settings.litellm_temperature == 0.7
     assert settings.max_messages == 20
     assert settings.aws_region == "us-east-1"
