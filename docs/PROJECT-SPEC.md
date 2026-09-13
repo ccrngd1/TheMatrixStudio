@@ -94,7 +94,7 @@ _Origin: external validation. A Portuguese emergent-narrative prompt ("Mestre Da
 6. **Dramatic/emotional impact**
 7. **Novelty**
 
-_Enforcement status: **design principle, not yet a code gate.** The generation loop should add an explicit pre-emit validation pass keyed on this order (coherence → causality → continuity → agency → consistency). Verify against the actual loop code (`_generate_response()` / validation path) before claiming it exists. MasterControl follow-up, tracked with the deferred items (latent-event/pending-thread state; adaptive-pressure mutation; structured output contract)._
+_Enforcement status: **a code gate since Phase 4a** (`matrix_studio/validation.py`, wired into `_generate_response()`). A pre-emit pass checks each turn against this order and regenerates violations rather than rewriting model output in place; a turn that still fails after `VALIDATION_RETRY_BUDGET` regenerations is emitted with a `validation.flagged` event instead of being silently dropped. Phase 5i added `citation_integrity` to the hierarchy. `VALIDATION_ENABLED=false` reproduces pre-4a behaviour byte-for-byte, which is regression-locked by test._
 
 ### Determinism note (pre-empt the trap)
 LLM calls are non-deterministic, so re-running from a checkpoint will NOT reproduce the original
@@ -221,16 +221,34 @@ Where AutoGen IS worth engaging:
 Verdict: AutoGen is an orchestration framework; this is a cognitive-architecture + interaction-
 surface project. Keep the hand-rolled loop, mine AutoGen's checkpointing design for ideas, leave the
 door open for tool-use/scale later.
-2. **State/storage backend:** SQLite (embeddable, ships easily) vs Postgres vs event-log files.
-   Leaning SQLite for a distributable single-node tool.
-3. **Web stack:** front-end framework + real-time transport (websockets/SSE). TBD — open for research.
+2. **State/storage backend:** ✅ DECIDED — and the answer changed. SQLite shipped through
+   v0.5.0 and has been **removed**: storage is now **DynamoDB** (event log, snapshots, runs,
+   documents, knowledge bases, grants) + **S3** (snapshot and document bodies) + **S3
+   Vectors** (embeddings). The event-sourced design is unchanged — the log is still the
+   source of truth and snapshots are still full-per-turn — only the engine underneath it
+   moved. `matrix_studio/storage/database.py` retains the SQLite implementation for one
+   purpose: reading a pre-migration `.db` file from `scripts/`. Nothing in the application
+   imports it. See `docs/AWS-SERVERLESS-ARCHITECTURE.md` §4 and
+   `docs/PHASE2-STORAGE-KEY-DESIGN.md`.
+3. **Web stack:** ✅ DECIDED — React + Vite + TypeScript + Tailwind, served as static
+   assets from CloudFront (or by uvicorn in a container). Real-time transport is
+   **polling**, not websockets: measured at ~1.4 KB per poll against a 30-turn run, which
+   is cheaper than holding a connection open per viewer through API Gateway. A WebSocket
+   path exists in the code for the single-process case and is deferred with those numbers
+   recorded in `docs/BACKLOG.md`.
 4. **Image-gen provider for avatars:** ✅ DECIDED (CC 2026-07-08) — **must be an Amazon Bedrock
    image model** (e.g. Titan Image Generator v2 / Nova Canvas — PreCog to confirm best fit + BYO-key
    fit). Keep optional so a run works without image-gen (fallback to initials/color).
-5. **Packaging/distribution model** (§7) — ✅ DECIDED (CC 2026-07-08) — **ship as a Python project
-   that runs easily locally (pip/pyproject, `python -m` entrypoint), AND package into a Docker
-   container** so teams can run it as-is. PreCog to research the cleanest way to do both from one
-   codebase (pyproject + Dockerfile, single-node).
+5. **Packaging/distribution model** (§7) — ✅ DECIDED 2026-07-08, then **SUPERSEDED** by
+   the AWS port. The original decision was "runs easily locally (pip/pyproject) AND a
+   Docker container". The second half stands; **the first no longer does.**
+
+   Storage is DynamoDB/S3/S3 Vectors, so `matrix-studio serve` needs those resources to
+   exist. Verified 2026-09-13: with no tables, startup fails outright —
+   `ResourceNotFoundException` on a `Scan`, then `Application startup failed. Exiting.`
+   There is no laptop-only mode and no local fallback, and that was a deliberate product
+   decision rather than a migration side effect. Deployment is `cdk deploy` from `infra/`;
+   see `infra/README.md`.
 6. **License** — ✅ DECIDED (CC 2026-07-08) — **open source; use whatever is currently considered
    the best/most-standard OSS license.** PreCog to determine current consensus (MIT vs Apache-2.0,
    patent-grant considerations for a customer-facing tool).

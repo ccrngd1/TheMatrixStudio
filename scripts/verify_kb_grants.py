@@ -23,8 +23,14 @@ Usage:
     AWS_PROFILE=... TABLE_PREFIX=... DATA_BUCKET=... VECTOR_BUCKET=... \
         python scripts/verify_kb_grants.py
 
-Creates its own KBs, users and runs with a `verify-kb-` prefix and leaves them: deleting
-in a live account is what §4.5 declines to do without a go-ahead. Re-runnable.
+Creates its own KB, users and runs with a `verify-kb-` prefix and leaves them: deleting in
+a live account is what §4.5 declines to do without a go-ahead.
+
+Re-runnable, and now genuinely so — it reuses ONE knowledge base rather than minting a new
+one per execution. The KB name used to include a timestamp, so four collections and four
+vector indexes accumulated before anybody noticed, against a ceiling of 10,000 indexes per
+bucket. The runs still carry timestamps, because `create_run` refuses a duplicate name and
+a second execution would otherwise fail.
 """
 
 from __future__ import annotations
@@ -115,10 +121,18 @@ async def main() -> int:
 
     db = Database(table_prefix=prefix, bucket=os.environ["DATA_BUCKET"], region=args.region)
     await db.connect()
+    # A FIXED name for the knowledge base, and timestamps only for the runs.
+    #
+    # The KB name used to carry the timestamp too, so every execution left a new
+    # collection behind — four of them accumulated before anyone looked, each with its own
+    # vector index against a 10,000-per-bucket ceiling. `seed_kb` already reuses a KB of
+    # the same name, so a stable name makes re-running genuinely idempotent instead of
+    # merely harmless. The runs keep their timestamps because `create_run` refuses a
+    # duplicate name outright, which would make a second run of this script fail.
     stamp = int(time.time())
     try:
         print("Seeding one shared knowledge base with one real vector …")
-        kb_id = await seed_kb(db, f"verify-kb-shared-{stamp}", "the shared passage", unit())
+        kb_id = await seed_kb(db, "verify-kb-shared", "the shared passage", unit())
         print(f"  KB {kb_id}, owner {OWNER}\n")
 
         # ------------------------------------------------------------------ #

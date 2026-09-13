@@ -30,59 +30,85 @@ TheMatrix Simulation Studio is a standalone tool for running multi-agent convers
 - **Non-Photorealistic Avatars** — Anime-style character portraits generated via Stability SD3.5 on AWS Bedrock (optional, with graceful fallback to initials)
 - **Cost Visibility** — Live token/$ meter, optional hard spend cap per run, and creation-time cost estimate
 - **Provider-Agnostic** — Bring your own API key for OpenAI, Anthropic, AWS Bedrock, OpenRouter, or local Ollama models via LiteLLM
-- **Event-Sourced Storage** — SQLite database captures full simulation history for replay, branching, and audit
+- **Event-Sourced Storage** — An append-only event log in DynamoDB, with snapshot and document bodies in S3, captures full simulation history for replay, branching, and audit
 - **Named Runs** — Every run gets a memorable two-word codename (e.g., `trusted-robot`) for easy browsing
-- **Docker + CLI** — One container serves both API and UI on a single port; or use the CLI to run simulations headlessly
+- **Serverless** — Deploys to AWS as one CDK stack: Cognito, API Gateway, Lambda, Step Functions, DynamoDB, S3, S3 Vectors and CloudFront. The turn loop is a state machine, so a run survives a 15-minute Lambda timeout
 
 ## Quick Start
 
-### 5-Minute Quickstart (pip)
+**This is an AWS application. There is no laptop-only mode.**
 
-**Requirements:** Python 3.11+
+Storage is DynamoDB + S3 + S3 Vectors, so the server needs those resources to exist before
+it will start. Verified 2026-09-13: with no tables, startup fails outright —
+`ResourceNotFoundException` on a `Scan`, then `Application startup failed. Exiting.` It does
+not degrade to a local database, because there is no longer one to degrade to.
 
-```bash
-# 1. Clone and install
-git clone https://github.com/yourusername/matrix-sim-studio.git
-cd matrix-sim-studio
-pip install .
+That is a deliberate product decision, not a migration side effect. SQLite shipped through
+v0.5.0 and was removed; `docs/PROJECT-SPEC.md` §8.2 records the change and why.
 
-# 2. Configure your API key (choose one provider)
-cp .env.example .env
-# Edit .env and set your key:
-#   - AWS Bedrock: AWS_BEARER_TOKEN_BEDROCK or AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY
-#   - OpenAI: OPENAI_API_KEY
-#   - Anthropic: ANTHROPIC_API_KEY
-#   - Ollama: no key needed (local)
+### Deploy it (≈15 minutes, mostly waiting)
 
-# 3. Start the control room
-matrix-studio serve
-# Open http://127.0.0.1:8000 in your browser
-
-# 4. Load an example and hit Run
-# Try examples/debate.json (AI in creative work) or examples/design-review.json (with cognition)
-```
-
-### 5-Minute Quickstart (Docker)
+**Requirements:** Python 3.11+, Node 18+, Docker, and AWS credentials for an account you
+may create resources in.
 
 ```bash
-# 1. Clone the repository
-git clone https://github.com/yourusername/matrix-sim-studio.git
-cd matrix-sim-studio
+git clone https://github.com/ccrngd1/TheMatrixStudio.git
+cd TheMatrixStudio
 
-# 2. Configure your API key
-cp .env.example .env
-# Edit .env (see above for providers)
+# 1. Build the frontend into the Python package, which the container image serves.
+cd frontend && npm ci && npm run build && cd ..
 
-# 3. Build and run
-docker build -t matrix-studio .
-docker run --rm -p 8000:8000 --env-file .env -v $(pwd)/data:/app/data matrix-studio
+# 2. Deploy the stack. `admin_email` creates the first Cognito user and emails a
+#    temporary password; without it the pool has no users.
+cd infra
+python -m venv .venv && .venv/bin/pip install -r requirements.txt
+npx cdk bootstrap                       # once per account/region
+npx cdk deploy -c admin_email=you@example.com
 
-# 4. Open http://localhost:8000 and load an example
+# 3. Upload the SPA. The --exclude is REQUIRED: `cdk deploy` writes config.json into
+#    this same bucket, and --delete would remove it.
+aws s3 sync ../matrix_studio/static "s3://$(
+  aws cloudformation describe-stacks --stack-name matrix-studio-stack \
+    --query "Stacks[0].Outputs[?OutputKey=='SpaBucketName'].OutputValue" --output text
+)" --delete --exclude config.json
 ```
 
-**Verified** on Amazon Linux 2023 with Docker 25.0.14: the image builds and the
-container serves the API and UI on port 8000. No credentials are baked into the image —
-pass them at runtime with `--env-file .env` as above.
+Then open the `SpaUrl` output, sign in with the emailed credentials, and start a run.
+`infra/README.md` documents every context flag.
+
+### Verify the deployment
+
+```bash
+out() { aws cloudformation describe-stacks --stack-name matrix-studio-stack \
+  --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" --output text; }
+export TABLE_PREFIX=matrix-studio
+export DATA_BUCKET=$(out DataBucketName)
+export VECTOR_BUCKET=$(out VectorBucketName)
+
+python scripts/verify_deployment.py           # free checks
+python scripts/verify_deployment.py --paid    # + the turn loop (~$0.10 of Bedrock)
+```
+
+It refuses to run at all with those unset, rather than testing nothing: a verification
+run against the wrong account is worse than no run.
+
+One command, one scoreboard. A check that cannot run reports as a failure rather than a
+skip — a verification suite that quietly does nothing is worse than one nobody runs.
+
+### Running the server yourself
+
+`matrix-studio serve` works against a deployed stack's resources, which is how the
+container image runs in Lambda:
+
+```bash
+export TABLE_PREFIX=matrix-studio AUTH_MODE=single-user
+export DATA_BUCKET=... VECTOR_BUCKET=... VECTOR_INDEX=matrix-studio-chunks
+matrix-studio serve      # http://127.0.0.1:8000
+```
+
+`AUTH_MODE=single-user` skips Cognito and attributes everything to one local identity. It
+is for development against your own tables; the deployed stack runs `AUTH_MODE=jwt` and
+every route is 401 without a token.
 
 ## Configuration
 
@@ -209,29 +235,28 @@ searched and the best passages are injected up to `max_chars`. Measured on a rea
 
 | mode | needs | measured recall@5 on engine-shaped queries |
 |---|---|---|
-| `fts` *(default)* | nothing — FTS5 is built into SQLite | 0.40–0.51 |
-| `vector` | `[vectors]` extra + an embedding provider | **0.82** |
+| `vector` *(default)* | an embedding provider (Bedrock Titan by default) | **0.82** |
+| `fts` | nothing — term matching over the stored text, in process | 0.40–0.51 |
 | `hybrid` | same as `vector` | 0.70 (but best of all three on well-formed queries) |
 
 ```bash
-pip install '.[vectors]'          # sqlite-vec; no torch, no vector service
 matrix-studio docs <run> embed    # one-off, resumable, ~$0.0014 per 230k chars
 ```
 ```json
 "retrieval": { "enabled": true, "mode": "vector", "k": 3, "max_chars": 1200 }
 ```
 
-`fts` is the default because it needs no embedding provider and no extra install,
-but **`vector` is roughly twice as good** on the queries this engine actually
-generates, and costs about **$0.0000001 per turn** — a four-thousandth of the
-turn's generation cost. Use it if you can. `hybrid` fuses both by Reciprocal Rank
-Fusion; it wins on well-worded queries and loses to pure `vector` on conversational
-ones, because equal-weight fusion lets a weak lexical ranking drag down a strong
-semantic one. Full numbers and caveats in `docs/PHASE5-RETRIEVAL-MEASUREMENT.md`.
+**`vector` is the default**, because it is roughly twice as good on the queries this
+engine actually generates and costs about **$0.0000001 per turn** — a four-thousandth of
+the turn's generation cost. `fts` was the default through v0.5.0, when it needed no
+embedding provider; the AWS port made one always available, so the measurement decided it.
+`hybrid` fuses both by Reciprocal Rank Fusion; it wins on well-worded queries and loses to
+pure `vector` on conversational ones, because equal-weight fusion lets a weak lexical
+ranking drag down a strong semantic one. Full numbers in
+`docs/PHASE5-RETRIEVAL-MEASUREMENT.md`.
 
-Vector retrieval degrades rather than fails: if `sqlite-vec` is missing or the
-embedding provider errors, the turn falls back to lexical search and the run
-continues.
+Vector retrieval degrades rather than fails: if the embedding provider errors, or a run's
+chunks were never embedded, the turn falls back to lexical search and continues.
 
 **Off-topic guard** (`min_similarity`, default `0.15`, vector/hybrid only). Vector
 matches below this cosine are rejected, so a query with nothing to do with the
@@ -328,9 +353,11 @@ passage rather than nothing. There is no absolute score floor yet.
 `document_refs` and `document.retrieved` exist so what a persona drew on can be
 audited rather than trusted.
 
-See `docs/PHASE5-RETRIEVAL-DESIGN.md` for why the index lives in SQLite rather
-than FAISS or a vector service (atomicity with the event log, one file to back up,
-and at 10³-10⁴ chunks exhaustive search costs 0.57 ms against a 4-7 s turn), and
+Embeddings live in **S3 Vectors**, one index per knowledge base plus one shared index
+for run-scoped documents. `docs/PHASE5-RETRIEVAL-DESIGN.md` records the original
+SQLite-local reasoning and `docs/AWS-SERVERLESS-ARCHITECTURE.md` §8 records what replaced
+it and why — including why the fan-out across per-KB indexes is exact rather than
+approximate. See also
 `docs/PHASE5-RETRIEVAL-MEASUREMENT.md` for the recall numbers behind the mode
 recommendation.
 
@@ -495,7 +522,7 @@ AVATAR_REGION=us-west-2        # SD3.5 Large is served from us-west-2
 ```bash
 MATRIX_HOST=127.0.0.1
 MATRIX_PORT=8000
-DATA_DIR=./data                # SQLite database location
+DATA_DIR=/tmp/data             # scratch space for extraction; not a database
 MAX_UPLOAD_BYTES=10485760      # largest knowledge-base file accepted (10 MB)
 MAX_DOCUMENT_CHARS=400000      # largest extracted text from one file
 ```
@@ -596,7 +623,7 @@ See `examples/` for ready-to-run templates.
 matrix-sim-studio/
 ├── matrix_studio/          # Main package
 │   ├── engine/            # Simulation engine (litellm orchestration + cognition)
-│   ├── storage/           # SQLite event-sourced storage
+│   ├── storage/           # DynamoDB + S3 + S3 Vectors event-sourced storage
 │   ├── api/               # FastAPI app + WebSocket stream + run manager
 │   ├── static/            # Built frontend assets (from Vite build)
 │   ├── settings.py        # Configuration management
@@ -646,7 +673,7 @@ All simulation state changes are captured as events in an append-only log. After
 - **Replay:** Reconstruct any moment by loading the snapshot at that turn
 - **Auditability:** Full history for debugging, analysis, and compliance
 
-Storage is SQLite (`./data/matrix_studio.db`). Snapshots are full per-turn (not deltas) — runs are short (≤ few dozen turns), so storage cost is negligible and reconstruction is O(1).
+Storage is DynamoDB for the event log, snapshots, runs, documents, knowledge bases and grants, with snapshot and document bodies in S3 and embeddings in S3 Vectors. Snapshots are full per-turn (not deltas) — runs are short (≤ few dozen turns), so storage cost is negligible and reconstruction is O(1). `docs/PHASE2-STORAGE-KEY-DESIGN.md` covers the key design, including why `events` and `snapshots` are partitioned by USER rather than by run: it is the only shape `dynamodb:LeadingKeys` can reach, so tenant isolation rests on a credential rather than on application code remembering a filter.
 
 ### Provider Agnosticism
 
@@ -697,10 +724,16 @@ npm run dev
 - ✅ **Phase 2c:** Agent cognition — memory stream, reflection, relationships, dynamic goals, why-trace
 - ✅ **Phase 3:** Release polish — cost guards, BYO-key readiness, examples, docs, hygiene (v0.3.0)
 - ✅ **Phase 4:** Deeper cognition & steering — priority-hierarchy validation gate, pending-thread ledger, structured output view, adaptive pressure (experimental) (v0.4.0)
-- ✅ **Phase 5:** Per-persona document retrieval — FTS5 + optional `sqlite-vec` embeddings, per-call context budget, retrieval inspection endpoint, unsupported-claim disclosure, citation provenance (v0.5.0)
+- ✅ **Phase 5:** Per-persona document retrieval — lexical + optional embeddings, per-call context budget, retrieval inspection endpoint, unsupported-claim disclosure, citation provenance (v0.5.0; the SQLite FTS5 and `sqlite-vec` implementations were replaced by the AWS port)
 - ✅ **Phase 6:** Structured personas — convictions with firmness + exit conditions, `dismisses` with a re-tuned engagement rule, withheld underlying concerns; measured live as Arm D at n = 3 — honesty properties sound, behavioural case not established (v0.5.0)
+- ✅ **AWS port:** Deployed and verified against a real account — Cognito login, per-user
+  tenant isolation enforced by scoped credentials (10/10 against live IAM), the turn loop
+  as a Step Functions state machine (35/35), S3 Vectors retrieval, knowledge bases with
+  grants and query-time revocation (15/15), and per-user monthly spend caps. Phase 4 of
+  that plan was **cancelled** on measurement — see `docs/AWS-IMPLEMENTATION-PLAN.md`, which
+  is instructive about why
 - **Next:** Explain `distinct_positions` instability in the rendered arms — the one signal of a real cost to rendering convictions from data
-- **Future:** Embedding-based *memory* retrieval (document retrieval shipped in Phase 5), multi-modal inputs, hosted deployment
+- **Future:** Embedding-based *memory* retrieval (document retrieval shipped in Phase 5), multi-modal inputs
 
 **Open work is indexed in [`docs/BACKLOG.md`](docs/BACKLOG.md)** — including what was
 deliberately rejected after measurement, so it is not retried on intuition.
@@ -710,6 +743,11 @@ deliberately rejected after measurement, so it is not retried on intuition.
 - `docs/BACKLOG.md` — Open, deferred and rejected work, each with a revisit trigger
 - `docs/PHASE6-STRUCTURED-PERSONAS.md` — Phase 6 design: why concerns are withheld, and the re-tuned dismissal rule
 - `docs/PHASE5-PREMISE-VALIDATION.md` — The three-arm experiment that justified Phase 6 (including its negative result)
+- `docs/AWS-SERVERLESS-ARCHITECTURE.md` — The deployed design: tenancy, storage keys, the turn loop, retrieval, sharing
+- `docs/AWS-IMPLEMENTATION-PLAN.md` — Phase-by-phase port, including the phase that was cancelled and why
+- `docs/PHASE2-STORAGE-KEY-DESIGN.md` — Why `events` and `snapshots` are partitioned by user
+- `docs/PHASE6-KB-DESIGN.md` — Knowledge bases, grants, and the one documented exception to the tenancy model
+- `infra/README.md` — Deploying the stack, every context flag, and the verification steps
 - `docs/PROJECT-SPEC.md` — Full ideation/architecture spec
 - `docs/PHASE3-REQUIREMENTS.md` — Phase 3 (release polish) acceptance criteria
 - `docs/PHASE2C-REQUIREMENTS.md` — Phase 2c (cognition) spec
