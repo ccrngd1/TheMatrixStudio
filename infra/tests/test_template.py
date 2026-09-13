@@ -1269,3 +1269,43 @@ def test_the_api_function_may_create_a_vector_index(template: Template):
             if "s3vectors:CreateIndex" in actions:
                 granted = True
     assert granted, "nothing in the stack may create a KB's vector index"
+
+
+def test_every_function_that_can_spend_money_carries_the_cap(template: Template):
+    """§7's per-user cap reaches the API AND the workers.
+
+    The failure mode is asymmetric, which is why this is asserted rather than assumed: a
+    cap on the API alone refuses runs at creation and then lets a started run generate
+    without limit — which looks exactly like the cap working. The worker would be the
+    uncapped path, and only a bill would say so.
+    """
+    functions = template.find_resources("AWS::Lambda::Function")
+    named = {
+        f["Properties"]["FunctionName"]: f
+        for f in functions.values()
+        if isinstance(f["Properties"].get("FunctionName"), str)
+    }
+    # The API plus the three workers. A custom-resource Lambda has no FunctionName, so
+    # this picks out exactly the ones that run application code.
+    expected = {
+        "matrix-studio-api", "matrix-studio-turn",
+        "matrix-studio-prepare", "matrix-studio-finalise",
+    }
+    assert expected <= set(named), f"missing functions: {expected - set(named)}"
+    for name in sorted(expected):
+        env = named[name]["Properties"]["Environment"]["Variables"]
+        assert "MAX_USER_MONTHLY_COST_USD" in env, (
+            f"{name} has no monthly cap, so it is the uncapped path"
+        )
+
+
+def test_the_cap_is_off_unless_asked_for(template: Template):
+    """A cap the operator did not choose is a number the application invented, and the
+    first a user would know of it is a run refused for a budget nobody set."""
+    functions = template.find_resources("AWS::Lambda::Function")
+    for f in functions.values():
+        env = f["Properties"].get("Environment", {}).get("Variables", {})
+        if "MAX_USER_MONTHLY_COST_USD" in env:
+            assert float(env["MAX_USER_MONTHLY_COST_USD"]) == 0.0
+        # And no per-group table by default either.
+        assert "USER_SPEND_CAPS_JSON" not in env

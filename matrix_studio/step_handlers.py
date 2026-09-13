@@ -126,6 +126,10 @@ async def _turn(event: Dict[str, Any]) -> Dict[str, Any]:
         str(event["run_id"]),
         turn=event.get("turn"),
         turn_budget=budget,
+        # The run's cumulative cost as the machine last saw it. The slice charges the
+        # DELTA against the owner's monthly total (§7), so passing 0 here would charge
+        # the run's whole cost on every turn — a 30-turn run would bill ~465× its cost.
+        spent_before=float(event.get("total_cost_usd") or 0.0),
     )
     # The machine's next input is narrowed here rather than in the state machine's
     # ResultSelector, so the one place that decides what crosses a state boundary is

@@ -5,11 +5,14 @@ Configuration settings for TheMatrix Simulation Studio.
 Settings precedence: environment variables > .env file > config.json defaults
 """
 
+import logging
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
 
 
 def project_root() -> Optional[Path]:
@@ -125,6 +128,73 @@ class Settings(BaseSettings):
         ge=0.0,
         description="Cost warning threshold in USD (shown in UI cost meter)",
     )
+    # Per-USER monthly cap, distinct from the per-run one above and for a different
+    # reason. §7 of the architecture calls this a rollout prerequisite — "a company will
+    # require this before rollout" — because a per-run cap bounds one conversation and
+    # nothing bounds a user starting fifty of them.
+    #
+    # 0 = OFF, matching `max_run_cost_usd`, so a single-user install is unaffected.
+    max_user_monthly_cost_usd: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Per-user monthly cost cap in USD (0 = OFF). Checked before a run "
+        "starts — refusing to start is cheaper and clearer than stopping one mid-way "
+        "(§7) — and again between turns, so a long or resumed run cannot outlive it. "
+        "MAX_USER_MONTHLY_COST_USD.",
+    )
+    user_spend_caps_json: str = Field(
+        default="",
+        description="Optional per-Cognito-group caps as JSON, e.g. "
+        '\'{"trial": 5, "staff": 100}\'. A user in several groups gets the HIGHEST cap '
+        "of them. Falls back to MAX_USER_MONTHLY_COST_USD for a user in none. "
+        "USER_SPEND_CAPS_JSON.",
+    )
+
+    def monthly_cap_for(self, groups: Optional[Sequence[str]] = None) -> float:
+        """The monthly cap that applies to a user in ``groups``. 0 means no cap.
+
+        **The highest cap among a user's groups wins, and that direction is deliberate.**
+        Being added to a more generous tier must not leave someone held to a lower one
+        they also belong to — a user in `trial` and `staff` is staff. The alternative
+        (lowest wins) makes group membership subtractive, so granting access would
+        sometimes remove it, which nobody expects and which is very hard to debug from
+        the outside.
+
+        A malformed `USER_SPEND_CAPS_JSON` falls back to the flat default rather than
+        raising. It is read on a request path, and a typo in an environment variable
+        should not take the deployment down — but it is logged loudly, because a cap
+        silently not applying is the failure that costs money.
+        """
+        import json as _json
+
+        default = float(self.max_user_monthly_cost_usd or 0.0)
+        raw = (self.user_spend_caps_json or "").strip()
+        if not raw or not groups:
+            return default
+        try:
+            table = _json.loads(raw)
+            if not isinstance(table, dict):
+                raise ValueError("not a JSON object")
+        except (ValueError, TypeError) as exc:
+            logger.warning(
+                "USER_SPEND_CAPS_JSON could not be parsed (%s); falling back to the "
+                "flat MAX_USER_MONTHLY_COST_USD of %s. Per-group caps are NOT being "
+                "applied.", exc, default,
+            )
+            return default
+
+        caps = [
+            float(table[g]) for g in (str(x) for x in groups)
+            if g in table and isinstance(table[g], (int, float))
+        ]
+        if not caps:
+            return default
+        # A group whose cap is 0 means "no cap" for that group, matching the flag's
+        # meaning everywhere else — so it wins outright rather than reading as zero
+        # budget, which would lock out the very group somebody exempted.
+        if any(c <= 0 for c in caps):
+            return 0.0
+        return max(caps)
 
     # Uploaded knowledge-base files. Both caps are enforced SERVER-side, because a
     # browser check is advice and this endpoint accepts arbitrary bytes.

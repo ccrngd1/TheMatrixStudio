@@ -756,6 +756,32 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
                     ),
                 )
 
+        # §7: refuse to START a run for a user over their monthly cap.
+        #
+        # "Refuse to start, which is cheaper and clearer than stopping one mid-way" —
+        # the architecture's words. The turn loop checks too, so a long or resumed run
+        # cannot outlive its cap, but that path throws away a turn that was already paid
+        # for. This one costs nothing.
+        #
+        # 402 rather than 403: this is not an authorisation failure — the caller may do
+        # this, and will be able to again next month — and 429 would invite a client to
+        # retry in a second. 402 is the only status that means "your budget, not your
+        # permissions", and the body carries the numbers so the message can be specific.
+        over = await orchestration.over_monthly_cap(db.for_owner(user), user, groups)
+        if over:
+            spent = over.get("spent")
+            raise HTTPException(
+                status_code=402,
+                detail=(
+                    "Could not read your monthly spend, so this run was refused rather "
+                    "than started unmetered. Try again shortly."
+                    if spent is None else
+                    f"You have spent ${spent:.2f} of your ${over['cap']:.2f} monthly "
+                    "budget, so this run was not started. It resets at the start of "
+                    "next month."
+                ),
+            )
+
         # `groups` is carried onto the run row, not just used for the check above. A turn
         # runs in a Step Functions state with no JWT, so this is the only moment the
         # creator's verified group membership is available to record — and without it a

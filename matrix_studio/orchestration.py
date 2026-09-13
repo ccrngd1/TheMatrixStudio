@@ -40,7 +40,7 @@ import json
 import logging
 import os
 import time
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from matrix_studio.state import (
     AgentState,
@@ -107,6 +107,97 @@ def budget_of(run: Dict[str, Any]) -> int:
     from matrix_studio.settings import get_settings
 
     return get_settings().max_messages
+
+
+def groups_of(run: Dict[str, Any]) -> List[str]:
+    """The creator's Cognito groups, recorded on the run row at creation.
+
+    A turn runs in a Step Functions state with no JWT, so this is the only place the
+    turn loop can learn them. Shared with retrieval's `_recorded_groups` in intent;
+    duplicated in code because that one is reached from a module the orchestrator does
+    not import, and a shared helper would be a worse dependency than eight lines.
+    """
+    raw = run.get("groups_json")
+    if not raw:
+        return []
+    try:
+        groups = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(groups, list):
+        return []
+    return [str(g) for g in groups if isinstance(g, str) and g.strip()]
+
+
+async def over_monthly_cap(
+    db: Database, owner_sub: str, groups: Optional[Sequence[str]] = None
+) -> Optional[Dict[str, Any]]:
+    """Whether this user is over their monthly spend cap. `None` when they are not.
+
+    **The single place the decision is made**, called from run creation and from the turn
+    loop, in the same spirit as `_slice_filter` and `may_read_kb`. Two call sites that
+    each compute "is this user over budget" will eventually compute it differently, and
+    the one that drifts is the one nobody watches.
+
+    Returns a dict of `{spent, cap, groups}` when over, so the caller can say by how much
+    rather than only that it happened. A user told "over budget" with no number cannot
+    tell a cap of $5 from a bug.
+
+    ## It fails CLOSED, and that needs justifying rather than asserting
+
+    A failed read returns "over cap", refusing the run. The usual objection is that a
+    flaky table then becomes an outage — but the read is a `GetItem` on the user's own
+    partition with the same credentials every other read uses, so a failure here means
+    the run's own reads are failing too. Failing closed adds no new outage mode; failing
+    open would let a cap silently stop applying, which is the failure that costs money
+    and which nobody notices until the bill.
+    """
+    from matrix_studio.settings import get_settings
+
+    cap = get_settings().monthly_cap_for(groups)
+    if cap <= 0:
+        # Feature off, or this user's group is exempt. No read at all — a disabled cap
+        # must cost nothing, which is what makes it safe to leave off by default.
+        return None
+    try:
+        spent = await db.user_spend(owner_sub=owner_sub)
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "Could not read the monthly spend for %s (%s); refusing rather than "
+            "allowing an unmetered run. See over_monthly_cap on why this fails closed.",
+            owner_sub, exc,
+        )
+        return {"spent": None, "cap": cap, "groups": list(groups or []), "error": str(exc)}
+    if spent < cap:
+        return None
+    return {"spent": spent, "cap": cap, "groups": list(groups or [])}
+
+
+async def record_spend(
+    db: Database, owner_sub: str, before: float, after: float
+) -> None:
+    """Add a slice's spend to the user's monthly total.
+
+    The DELTA between the run's cumulative cost at the start of the slice and at its end,
+    which is what the state machine payload carries either side of a turn. Deriving it
+    that way rather than summing the slice's own calls keeps one number authoritative:
+    the run's total is recomputed from its event log, so the delta cannot drift from it
+    even if a call's cost was reported late.
+
+    Never raises. A run must not fail because its accounting did — the cap's job is to
+    refuse the NEXT thing, and a missed increment delays that rather than breaking this.
+    """
+    delta = float(after or 0.0) - float(before or 0.0)
+    if delta <= 0:
+        return
+    try:
+        await db.add_user_spend(delta, owner_sub=owner_sub)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Could not record $%.6f of spend for %s (%s). The monthly total now "
+            "UNDER-reports, so the cap will refuse later than it should.",
+            delta, owner_sub, exc,
+        )
 
 
 async def load_state(db: Database, run: Dict[str, Any], turn: int):
@@ -521,6 +612,7 @@ async def execute_slice(
     turn: Optional[int] = None,
     turn_budget: int = DEFAULT_TURN_BUDGET,
     on_event: Optional[Callable[..., Any]] = None,
+    spent_before: float = 0.0,
 ) -> Dict[str, Any]:
     """Generate up to ``turn_budget`` turns of ``run_id``, starting after ``turn``.
 
@@ -641,11 +733,96 @@ async def execute_slice(
         )
         return await stop_now(db, run_id, turn=turn_now)
 
+    # §7: record this slice's spend against the user's month, then check the cap.
+    #
+    # AFTER the turn is persisted and BEFORE the machine loops, which is the same shape
+    # as the stop check above and for the same reason: the turn that has already been
+    # paid for and written must not be thrown away, and the next one must not start.
+    #
+    # `spent_before` is the cumulative total the machine handed this slice, so the delta
+    # is exactly what this slice cost. A run whose owner is missing is not charged rather
+    # than being charged to nobody — that only happens for a directly-driven engine call
+    # (the CLI, a test), which has no user to bill.
+    owner = str(fresh.get("owner_sub") or "")
+    total_cost = float(result.get("total_cost_usd") or 0.0)
+    if owner:
+        await record_spend(db, owner, spent_before, total_cost)
+        if status == "running":
+            over = await over_monthly_cap(db, owner, groups_of(fresh))
+            if over:
+                logger.info(
+                    "Run %s: owner %s is at their monthly cap ($%s of $%s); ending as "
+                    "capped rather than generating another turn",
+                    run_id, owner, over.get("spent"), over.get("cap"),
+                )
+                return await cap_now(db, run_id, turn=turn_now, reason=over)
+
     return _payload(
         run_id, status, fresh, turn_now,
-        total_cost_usd=float(result.get("total_cost_usd") or 0.0),
+        total_cost_usd=total_cost,
         max_messages=max_messages,
     )
+
+
+async def cap_now(
+    db: Database, run_id: str, *, turn: int, reason: Dict[str, Any]
+) -> Dict[str, Any]:
+    """End a run as `capped` at ``turn`` because its owner hit their MONTHLY cap.
+
+    Deliberately the same terminal status the per-run cap already uses. A third status
+    would need handling in the frontend's terminal list, the resume rules, the summary
+    skip and every export — and the two are the same fact from a reader's point of view:
+    the run stopped because of money rather than because it finished.
+
+    What distinguishes them is the EVENT PAYLOAD, which carries `scope: "user-monthly"`
+    plus the spend and the cap. Without that an operator sees `capped` and goes looking
+    for a per-run limit that was never reached, which is a genuinely confusing hour.
+
+    Structured like `stop_now` for the reason its docstring gives: `finalise` writes a
+    status and a snapshot but no event, and a run whose log has no terminal marker
+    replays as one that is still going.
+    """
+    snap = await db.get_snapshot(run_id, turn=turn)
+    total_cost = (
+        sum(a.total_cost_usd for a in snap.agents.values()) if snap else 0.0
+    )
+    emit, next_seq = _emitter(db, run_id, start_seq=await db.max_seq(run_id) + 1)
+    await emit(
+        turn=turn,
+        seq=next_seq(),
+        event_type="sim.capped",
+        payload={
+            "total_turns": turn,
+            "message_count": len(snap.conversation) if snap else 0,
+            "total_cost_usd": total_cost,
+            # Which cap, and what it was measured against. `cap_usd` matches the key the
+            # per-run cap emits so a reader does not need two shapes.
+            "scope": "user-monthly",
+            "cap_usd": reason.get("cap"),
+            "user_spend_usd": reason.get("spent"),
+            **({"error": reason["error"]} if reason.get("error") else {}),
+        },
+    )
+    completion_time = int(time.time())
+    if snap is not None:
+        await db.save_snapshot(
+            SimSnapshot(
+                run_id=run_id,
+                turn=turn,
+                topic=snap.topic,
+                agents=snap.agents,
+                conversation=snap.conversation,
+                pending_threads=snap.pending_threads,
+                firsthand_citations=snap.firsthand_citations,
+                status="capped",
+                created_at=completion_time,
+                completed_at=completion_time,
+                total_turns=turn,
+            )
+        )
+    await db.update_run_status(run_id, "capped", completion_time)
+    fresh = await db.get_run(run_id) or {}
+    return _payload(run_id, "capped", fresh, turn, total_cost_usd=total_cost)
 
 
 async def stop_now(db: Database, run_id: str, *, turn: int) -> Dict[str, Any]:
