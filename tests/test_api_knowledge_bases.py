@@ -449,3 +449,270 @@ class TestGrants:
             json={"user": OTHER, "granted_by": "sub-someone-else"},
         ).json()
         assert grant["granted_by"] == TEST_OWNER
+
+
+# --------------------------------------------------------------------------- #
+# The two defects found by calling the deployed route
+# --------------------------------------------------------------------------- #
+
+
+class TestNoScanAndGroupListing:
+    """Both of these shipped and both were caught only on the live stack.
+
+    `moto` does not evaluate IAM and `verify_kb_grants.py` drove the storage layer with
+    ADMIN credentials, so nothing before the deploy touched the path a user's request
+    actually takes: through the tenant role, whose session policy grants
+    `dynamodb:*Item` and `dynamodb:Query` and deliberately never `Scan`.
+    """
+
+    def test_listing_never_scans(self, client, monkeypatch):
+        """A Scan here is a 500 for every real user, and a correctness issue besides.
+
+        The session policy withholds `Scan` on purpose: a tenant able to Scan the
+        knowledge-bases or kb-grants tables could read every other tenant's collections
+        and every grant in the system. So the fix was to change the query, not the
+        policy — and this is the assertion that keeps it changed. It reproduces the IAM
+        refusal locally, which is the only way the suite can see it at all.
+        """
+        from matrix_studio.storage.dynamo import DynamoStorage
+
+        async def refused(self, table, **kwargs):
+            raise AssertionError(
+                f"Scan on {table!r}: the tenant session policy grants no dynamodb:Scan, "
+                "so this is a 500 for every authenticated user."
+            )
+
+        monkeypatch.setattr(DynamoStorage, "_scan_all", refused)
+
+        kb = _create(client, "queried-not-scanned")
+        client.post(
+            f"/api/knowledge-bases/{kb['id']}/grants", json={"user": OTHER}
+        ).raise_for_status()
+
+        assert client.get("/api/knowledge-bases").status_code == 200
+        _as(client, OTHER)
+        listed = client.get("/api/knowledge-bases")
+        assert listed.status_code == 200
+        assert [k["id"] for k in listed.json()["knowledge_bases"]] == [kb["id"]]
+
+    def test_a_group_granted_kb_appears_in_the_LISTING(self, client):
+        """The gap the Scan hid.
+
+        `_granted_kb_ids` filtered `principal = {sub}`, so a KB shared with a group never
+        appeared in any member's listing — while `may_read_kb` would happily open it by
+        id. A collection shared with a team that nobody on the team could find. The
+        existing group test checked the DETAIL route, which is why it passed.
+        """
+        kb = _create(client, "team-listing")
+        client.post(
+            f"/api/knowledge-bases/{kb['id']}/grants", json={"group": "platform"}
+        ).raise_for_status()
+
+        _as(client, OTHER, groups=["platform"])
+        listed = client.get("/api/knowledge-bases").json()
+        assert [k["id"] for k in listed["knowledge_bases"]] == [kb["id"]]
+        assert listed["knowledge_bases"][0]["shared"] is True
+
+    def test_a_non_member_still_sees_nothing(self, client):
+        kb = _create(client, "team-listing-2")
+        client.post(
+            f"/api/knowledge-bases/{kb['id']}/grants", json={"group": "platform"}
+        ).raise_for_status()
+
+        _as(client, OTHER, groups=["a-different-team"])
+        assert client.get("/api/knowledge-bases").json()["knowledge_bases"] == []
+
+    def test_a_kb_granted_both_ways_is_listed_once(self, client):
+        """Two grants, one collection. Without de-duplication it would appear twice and
+        the count would disagree with the rows."""
+        kb = _create(client, "both-ways")
+        for body in ({"user": OTHER}, {"group": "platform"}):
+            client.post(
+                f"/api/knowledge-bases/{kb['id']}/grants", json=body
+            ).raise_for_status()
+
+        _as(client, OTHER, groups=["platform"])
+        listed = client.get("/api/knowledge-bases").json()
+        assert [k["id"] for k in listed["knowledge_bases"]] == [kb["id"]]
+        assert listed["count"] == 1
+
+
+class TestTheVectorIndex:
+    """Creating the index is privileged, and it happens at KB creation.
+
+    Found by calling the deployed route: adding a document returned 500 because neither
+    role could create the KB's index. Every `s3vectors` grant in the stack went to the
+    TENANT role, and index creation had only ever run in scripts with Admin credentials.
+
+    The fix was not to grant the tenant role `CreateIndex`. The ceiling is 10,000 indexes
+    per vector bucket, so a tenant able to create them could exhaust the install's whole
+    capacity for collections — so creation moved to the API function's own role, and the
+    tenant role gained only `GetIndex` (which `ensure_kb_index` needs for its check).
+    """
+
+    def _indexes(self, db):
+        import os
+
+        return {
+            i["indexName"]
+            for i in db._vectors_client().list_indexes(
+                vectorBucketName=os.environ["VECTOR_BUCKET"]
+            )["indexes"]
+        }
+
+    def test_creating_a_kb_creates_its_index(self, client):
+        """Eagerly, not on first upload: a collection whose index appears only when a
+        document is added has a window where it exists and cannot be written to, and the
+        failure surfaces as a 502 on the upload rather than at creation."""
+        from matrix_studio.storage import Database
+        from matrix_studio.storage.vectors import kb_index_name
+        from tests.support import TEST_DATA_BUCKET, TEST_TABLE_PREFIX
+
+        db = Database(
+            table_prefix=TEST_TABLE_PREFIX, bucket=TEST_DATA_BUCKET, region="us-east-1"
+        )
+        kb = _create(client, "with-an-index")
+        assert kb_index_name(kb["id"], TEST_TABLE_PREFIX) in self._indexes(db)
+
+    def test_the_TENANT_role_cannot_create_an_index(self, client, monkeypatch):
+        """The property the stack change encodes, reproduced locally.
+
+        `moto` does not evaluate IAM, so an index creation attempted with tenant-scoped
+        credentials succeeds in the suite and fails in the deployment. This fake supplies
+        the missing asymmetry: a store BOUND to an owner (`for_owner(...)`, which assumes
+        the tenant role) is refused `create_index`, exactly as the deployed policy does,
+        while the unscoped store keeps the real client.
+
+        Without this the healing test below passed with the fix removed — `store_kb_vectors`
+        calls `ensure_kb_index` itself and moto let it through, so the route-level ensure
+        was invisible. That mutant survived until this fake existed.
+        """
+        from botocore.exceptions import ClientError
+
+        from matrix_studio.storage.dynamo import DynamoStorage
+        from matrix_studio.storage.vectors import kb_index_name
+        from tests.support import TEST_DATA_BUCKET, TEST_TABLE_PREFIX
+
+        real = DynamoStorage._vectors_client
+
+        def refuse_create_when_bound(self):
+            client = real(self)
+            if not getattr(self, "_owner_sub", None):
+                return client
+
+            class TenantScoped:
+                def __getattr__(inner, name):
+                    if name == "create_index":
+                        def denied(**kwargs):
+                            raise ClientError(
+                                {"Error": {"Code": "AccessDeniedException", "Message":
+                                           "not authorized to perform: "
+                                           "s3vectors:CreateIndex"}},
+                                "CreateIndex",
+                            )
+                        return denied
+                    return getattr(client, name)
+
+            return TenantScoped()
+
+        monkeypatch.setattr(DynamoStorage, "_vectors_client", refuse_create_when_bound)
+
+        db = DynamoStorage(
+            table_prefix=TEST_TABLE_PREFIX, bucket=TEST_DATA_BUCKET, region="us-east-1"
+        )
+        # Creation still succeeds, because the route uses the function's OWN credentials.
+        kb = _create(client, "tenant-cannot-create")
+        assert kb_index_name(kb["id"], TEST_TABLE_PREFIX) in self._indexes(db)
+
+        # And the upload works, because the index already exists by then.
+        response = client.post(
+            f"/api/knowledge-bases/{kb['id']}/documents",
+            json={"title": "policy.md", "text": "egress inspection " * 40},
+        )
+        assert response.status_code == 201, response.text
+
+    def test_a_kb_whose_index_is_missing_is_healed_on_upload(self, client, monkeypatch):
+        """A KB created before the index was made eagerly, or one whose creation
+        half-failed, must not be permanently unwritable — under the deployed policy the
+        tenant role cannot create the index, so nothing else could rescue it.
+
+        The same tenant fake as above, or this passes with the fix removed.
+        """
+        from botocore.exceptions import ClientError
+        from unittest.mock import patch as mock_patch
+
+        from matrix_studio.storage.dynamo import DynamoStorage
+        from matrix_studio.storage.vectors import kb_index_name
+        from tests.support import TEST_DATA_BUCKET, TEST_TABLE_PREFIX
+
+        real = DynamoStorage._vectors_client
+
+        def refuse_create_when_bound(self):
+            client = real(self)
+            if not getattr(self, "_owner_sub", None):
+                return client
+
+            class TenantScoped:
+                def __getattr__(inner, name):
+                    if name == "create_index":
+                        def denied(**kwargs):
+                            raise ClientError(
+                                {"Error": {"Code": "AccessDeniedException",
+                                           "Message": "s3vectors:CreateIndex"}},
+                                "CreateIndex",
+                            )
+                        return denied
+                    return getattr(client, name)
+
+            return TenantScoped()
+
+        db = DynamoStorage(
+            table_prefix=TEST_TABLE_PREFIX, bucket=TEST_DATA_BUCKET, region="us-east-1"
+        )
+
+        # A KB created with the index step disabled, reproducing the older state. A scoped
+        # `patch` rather than `monkeypatch.undo()`: undo reverts EVERY monkeypatch in
+        # scope, including the `client` fixture's identity patches, so the caller stopped
+        # being the owner and the upload 404'd for the wrong reason.
+        async def skip(*args, **kwargs):
+            return False
+
+        with mock_patch("matrix_studio.storage.vectors.ensure_kb_index", skip):
+            kb = _create(client, "unindexed")
+        assert kb_index_name(kb["id"], TEST_TABLE_PREFIX) not in self._indexes(db)
+
+        monkeypatch.setattr(DynamoStorage, "_vectors_client", refuse_create_when_bound)
+        response = client.post(
+            f"/api/knowledge-bases/{kb['id']}/documents",
+            json={"title": "policy.md", "text": "egress inspection " * 40},
+        )
+        assert response.status_code == 201, response.text
+        assert kb_index_name(kb["id"], TEST_TABLE_PREFIX) in self._indexes(db)
+
+
+class TestTheDocumentCount:
+    def test_the_detail_route_counts_rather_than_reading_a_stale_field(self, client):
+        """`document_count` was a stored attribute nothing incremented, so it read 0 for
+        ever — and the deployed detail route returned that 0 beside a list of one
+        document. A derived value no write path maintains can only be wrong."""
+        kb = _create(client, "counted-detail")
+        client.post(
+            f"/api/knowledge-bases/{kb['id']}/documents",
+            json={"title": "a.md", "text": "egress inspection " * 40},
+        ).raise_for_status()
+
+        detail = client.get(f"/api/knowledge-bases/{kb['id']}").json()
+        assert len(detail["documents"]) == 1
+        assert detail["document_count"] == 1, "the count disagrees with the list"
+
+    def test_the_list_and_detail_counts_agree(self, client):
+        kb = _create(client, "agreeing")
+        for title in ("a.md", "b.md"):
+            client.post(
+                f"/api/knowledge-bases/{kb['id']}/documents",
+                json={"title": title, "text": f"egress {title} " * 40},
+            ).raise_for_status()
+
+        listed = client.get("/api/knowledge-bases").json()["knowledge_bases"][0]
+        detail = client.get(f"/api/knowledge-bases/{kb['id']}").json()
+        assert listed["document_count"] == detail["document_count"] == 2

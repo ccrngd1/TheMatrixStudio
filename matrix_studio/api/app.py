@@ -860,6 +860,25 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
     # the caller cannot read, matching the run routes: distinguishing "exists but not
     # yours" from "does not exist" leaks the existence of other people's collections.
 
+    async def _ensure_kb_index(kb_id: str) -> None:
+        """Create a KB's vector index if absent, using THIS function's credentials.
+
+        Unscoped `db` on purpose — `db.for_owner(...)` assumes the tenant role, which is
+        granted `s3vectors:GetIndex` and deliberately not `CreateIndex`.
+        """
+        import os
+
+        from matrix_studio.storage.vectors import ensure_kb_index, kb_index_name
+
+        bucket = os.environ.get("VECTOR_BUCKET", "")
+        if not bucket:
+            # Nothing to create against. The upload path reports this as a failure rather
+            # than storing a document that can never be embedded.
+            return
+        await ensure_kb_index(
+            db._vectors_client(), bucket, kb_index_name(kb_id, db.table_prefix)
+        )
+
     async def _readable_kb(kb_id: str, user: str, groups: List[str]) -> Dict[str, Any]:
         """A KB the caller may READ, or a 404. The chokepoint for read routes."""
         if not await db.for_owner(user).may_read_kb(kb_id, user, groups):
@@ -894,7 +913,10 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         it differently from `_owned_kb`.
         """
         bound = db.for_owner(user)
-        rows = await bound.list_knowledge_bases(owner_sub=user)
+        # `groups` is passed, not just used for the detail route's read check: a KB
+        # granted to a group must appear in its members' listings, or a collection shared
+        # with a team is one nobody on the team can find.
+        rows = await bound.list_knowledge_bases(owner_sub=user, groups=groups)
         out = []
         for kb in rows:
             owned = str(kb.get("owner_sub") or "") == user
@@ -917,6 +939,16 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         kb = await db.for_owner(user).create_knowledge_base(
             name, owner_sub=user, description=body.description
         )
+        # The vector index is created HERE, with the function's own credentials rather
+        # than the tenant's, and that is a boundary rather than a convenience: the
+        # ceiling is 10,000 indexes per vector bucket, so a tenant able to create them
+        # could exhaust the install's capacity for collections. `s3vectors:CreateIndex`
+        # is granted to this Lambda's role and withheld from the tenant role.
+        #
+        # Eagerly, not on first upload: a collection whose index appears only when a
+        # document is added has a window in which it exists and cannot be written to,
+        # and the failure would surface as a 502 on the upload rather than at creation.
+        await _ensure_kb_index(str(kb["id"]))
         return {**kb, "shared": False, "document_count": 0}
 
     @app.get("/api/knowledge-bases/{kb_id}")
@@ -934,10 +966,15 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         kb = await _readable_kb(kb_id, user, groups)
         bound = db.for_owner(user)
         owned = str(kb.get("owner_sub") or "") == user
+        documents = await bound.list_kb_documents(kb_id)
         return {
             **kb,
             "shared": not owned,
-            "documents": await bound.list_kb_documents(kb_id),
+            "documents": documents,
+            # Counted, never read from the row. A stored count that no write path
+            # increments can only be wrong, and this route returned a stale 0 beside a
+            # list of one document until it was computed here too.
+            "document_count": len(documents),
             "grants": await bound.list_kb_grants(kb_id) if owned else None,
         }
 
@@ -968,6 +1005,10 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             )
 
         bound = db.for_owner(user)
+        # Also here, and with the same privileged credentials: a KB created before the
+        # index was made eagerly — or one whose creation half-failed — would otherwise be
+        # permanently unwritable, because the tenant role cannot create the index itself.
+        await _ensure_kb_index(kb_id)
         doc_id = await bound.add_kb_document(
             kb_id, title=(body.title or "").strip() or "untitled",
             text=text, char_count=len(text),

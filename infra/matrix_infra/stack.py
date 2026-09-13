@@ -247,6 +247,36 @@ class MatrixStudioStack(Stack):
                 projection_type=dynamodb.ProjectionType.KEYS_ONLY,
             )
 
+        # Phase 6: the two indexes that let the KB listing be a QUERY rather than a SCAN.
+        #
+        # Not a performance change — a correctness one, and it was found only by calling
+        # the deployed route. `list_knowledge_bases` scanned both tables and filtered in
+        # Python, which works with Admin credentials and fails under the tenant role:
+        #
+        #     AccessDeniedException: not authorized to perform: dynamodb:Scan on
+        #     table/matrix-studio-knowledge-bases because no session policy allows it
+        #
+        # The session policy grants `dynamodb:*Item` and `dynamodb:Query`, deliberately
+        # never Scan — a tenant able to Scan these tables could read every other tenant's
+        # collections and grants. Granting Scan to fix the 500 would have widened exactly
+        # the boundary §3 exists to hold, so the queries changed instead.
+        #
+        # `by-principal` also closes a logic gap the Scan hid: it filtered
+        # `principal = {sub}`, so a KB shared with a GROUP never appeared in anyone's
+        # listing even though they could open it by id.
+        self.tables["knowledge_bases"].add_global_secondary_index(
+            index_name="by-owner",
+            partition_key=dynamodb.Attribute(
+                name="owner_sub", type=dynamodb.AttributeType.STRING
+            ),
+        )
+        self.tables["kb_grants"].add_global_secondary_index(
+            index_name="by-principal",
+            partition_key=dynamodb.Attribute(
+                name="principal", type=dynamodb.AttributeType.STRING
+            ),
+        )
+
         # One bucket, four per-user prefixes (§5.1). One rather than four because
         # the isolation boundary is the `{sub}/` prefix in the scoped role's
         # policy, not the bucket name — four buckets would multiply the policy
@@ -773,9 +803,39 @@ class MatrixStudioStack(Stack):
         self.data_bucket.grant_read_write(self.tenant_role)
         self.tenant_role.add_to_policy(
             iam.PolicyStatement(
+                # Vector DATA operations, plus `GetIndex` and deliberately NOT
+                # `CreateIndex` or `DeleteIndex`.
+                #
+                # `GetIndex` is needed because `ensure_kb_index` checks before it
+                # creates, and that check runs on the tenant path when a document is
+                # embedded into a knowledge base. It reads an index's dimension and
+                # metric — configuration, not anyone's data — for an index whose name
+                # derives from a KB id the caller had to know already.
+                #
+                # Creation stays OUT, and that is the boundary rather than an oversight.
+                # The ceiling is 10,000 indexes per vector bucket, so a tenant able to
+                # create them could exhaust the whole install's capacity for knowledge
+                # bases. Index creation is therefore an administrative act performed by
+                # the API Lambda's own role at the moment a collection is created (see
+                # `_create_api` below), not something a tenant session can do in a loop.
                 actions=["s3vectors:GetVectors", "s3vectors:PutVectors",
                          "s3vectors:QueryVectors", "s3vectors:DeleteVectors",
-                         "s3vectors:ListVectors"],
+                         "s3vectors:ListVectors", "s3vectors:GetIndex"],
+                resources=[
+                    self.vector_bucket.attr_vector_bucket_arn,
+                    f"{self.vector_bucket.attr_vector_bucket_arn}/index/*",
+                ],
+            )
+        )
+        # Index MANAGEMENT, on the API function's own role rather than the tenant's.
+        #
+        # Found by calling the deployed route: creating a knowledge base and adding a
+        # document to it returned 500, because neither role could create the KB's index —
+        # every s3vectors grant in this stack went to the tenant role, and index creation
+        # had only ever happened in scripts run with Admin credentials.
+        self.api_lambda.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["s3vectors:GetIndex", "s3vectors:CreateIndex"],
                 resources=[
                     self.vector_bucket.attr_vector_bucket_arn,
                     f"{self.vector_bucket.attr_vector_bucket_arn}/index/*",

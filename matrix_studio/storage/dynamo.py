@@ -142,7 +142,11 @@ _EVENT_FIELDS = (
     "run_id", "turn", "seq", "event_type", "agent_name", "payload", "created_at",
 )
 _KB_FIELDS = (
-    "id", "name", "description", "owner_sub", "embedding_model", "document_count",
+    "id", "name", "description", "owner_sub", "embedding_model",
+    # `document_count` was here and is deliberately gone. Nothing incremented it, so it
+    # read 0 for ever; the detail route returned that stale 0 beside a list of one
+    # document. A derived value that no write path maintains can only be wrong, so it is
+    # counted where it is served instead.
     "created_at",
 )
 _GRANT_FIELDS = ("kb_id", "principal", "kind", "granted_by", "created_at")
@@ -1724,24 +1728,46 @@ class DynamoStorage:
         return _row(item, _KB_FIELDS) if item else None
 
     async def list_knowledge_bases(
-        self, *, owner_sub: Optional[str] = None
+        self,
+        *,
+        owner_sub: Optional[str] = None,
+        groups: Optional[Sequence[str]] = None,
     ) -> List[Dict[str, Any]]:
-        """The KBs this owner created, plus every KB granted to them.
+        """The KBs this owner created, plus every KB granted to them or their groups.
 
         Two reads rather than one, because they are genuinely different questions and
         neither subsumes the other: ownership is an attribute of the KB, and a grant is
         a row in another table. A single query cannot express "mine or shared with me"
         when the two live in different partitions — which is the cost §8b names for
         making sharing possible at all.
+
+        **Both are QUERIES against a GSI, never a Scan**, and that is a correctness
+        requirement rather than an optimisation. The session policy grants
+        ``dynamodb:*Item`` and ``dynamodb:Query`` and deliberately never ``Scan``,
+        because a tenant able to Scan these two tables could read every other tenant's
+        collections and every grant in the system. The earlier Scan version worked with
+        Admin credentials and returned 500 for every real user:
+
+            AccessDeniedException: not authorized to perform: dynamodb:Scan on
+            table/matrix-studio-knowledge-bases because no session policy allows it
+
+        Found by calling the deployed route. `moto` does not evaluate IAM, and
+        `verify_kb_grants.py` drove the storage layer with Admin credentials, so nothing
+        before that touched the path a user's request takes.
         """
         owner_sub = self._owner(owner_sub)
-        mine = await self._scan_all(
+        mine = await self._query_all(
             "knowledge-bases",
-            FilterExpression="sk = :meta AND owner_sub = :o",
-            ExpressionAttributeValues={":meta": "META", ":o": owner_sub},
+            IndexName="by-owner",
+            KeyConditionExpression="owner_sub = :o",
+            # `sk = META` in a filter rather than the key condition: the GSI's partition
+            # key is `owner_sub` alone, so the KB row and any future per-KB item would
+            # both come back.
+            FilterExpression="sk = :meta",
+            ExpressionAttributeValues={":o": owner_sub, ":meta": "META"},
         )
         out = {str(i["id"]): _row(i, _KB_FIELDS) for i in mine}
-        for kb_id in await self._granted_kb_ids(owner_sub):
+        for kb_id in await self._granted_kb_ids(owner_sub, groups):
             if kb_id in out:
                 continue
             kb = await self.get_knowledge_base(kb_id)
@@ -1749,23 +1775,37 @@ class DynamoStorage:
                 out[kb_id] = kb
         return sorted(out.values(), key=lambda k: (k.get("created_at") or 0))
 
-    async def _granted_kb_ids(self, owner_sub: str) -> List[str]:
-        """KB ids granted directly to this user.
+    async def _granted_kb_ids(
+        self, owner_sub: str, groups: Optional[Sequence[str]] = None
+    ) -> List[str]:
+        """KB ids granted to this user, or to any group they are in.
 
-        A scan on the grants table, which is the shape the key design forces: grants are
-        partitioned by KB so that checking "may this user read KB X" is a point read, and
-        that is the operation on the per-turn hot path. Listing "every KB granted to a
-        user" is the inverse and runs on a settings page, not per turn. A GSI on the
-        principal would make it a query, and is the right change if listing ever becomes
-        hot — recorded rather than built, because a GSI costs a write on every grant to
-        speed up a page nobody loads in a loop.
+        Grants are partitioned by KB so that "may this user read KB X" is a point read,
+        which is the operation on the per-turn hot path. This is the inverse question and
+        needs the `by-principal` index.
+
+        **Groups are included, and the Scan version silently excluded them.** It filtered
+        `principal = {sub}`, so a KB shared with a group never appeared in any member's
+        listing even though `may_read_kb` would happily open it by id — a collection
+        shared with a team that nobody on the team could find. The API test for group
+        grants checked the DETAIL route and not the listing, which is why it passed.
         """
-        items = await self._scan_all(
-            "kb-grants",
-            FilterExpression="principal = :p",
-            ExpressionAttributeValues={":p": owner_sub},
-        )
-        return [str(i["kb_id"]) for i in items if i.get("kb_id")]
+        principals = [owner_sub, *[str(g) for g in (groups or ()) if str(g).strip()]]
+        found: List[str] = []
+        seen: set = set()
+        for principal in principals:
+            items = await self._query_all(
+                "kb-grants",
+                IndexName="by-principal",
+                KeyConditionExpression="principal = :p",
+                ExpressionAttributeValues={":p": principal},
+            )
+            for item in items:
+                kb_id = str(item.get("kb_id") or "")
+                if kb_id and kb_id not in seen:
+                    seen.add(kb_id)
+                    found.append(kb_id)
+        return found
 
     async def grant_kb(
         self,
