@@ -95,6 +95,31 @@ run against the wrong account is worse than no run.
 One command, one scoreboard. A check that cannot run reports as a failure rather than a
 skip — a verification suite that quietly does nothing is worse than one nobody runs.
 
+### Starting a conversation from a file
+
+A conversation is a JSON definition — topic, cast, config — and `POST /api/runs` needs a
+Cognito JWT, which needs somebody's password. For the edit-run-read loop there is a script
+that takes the same path minus the HTTP: the body is validated by the route's own model,
+then handed to the same `create_run`, which starts the state machine.
+
+```bash
+export AWS_REGION=us-east-1 TABLE_PREFIX=matrix-studio
+export DATA_BUCKET=$(out DataBucketName) VECTOR_BUCKET=$(out VectorBucketName)
+export TURN_LOOP_ARN=arn:aws:states:us-east-1:ACCOUNT:stateMachine:matrix-studio-turn-loop
+
+python scripts/start_conversation.py data/sampleImport.json --owner SUB --dry-run
+python scripts/start_conversation.py data/sampleImport.json --owner SUB --max-messages 4
+python scripts/start_conversation.py data/sampleImport.json --owner SUB
+```
+
+`--dry-run` prints the resolved role→model plan and creates nothing; `--max-messages 4`
+proves the path for a few cents before a full run. The run appears in the UI as that
+user's own, and turns execute in the deployed Lambdas — the script can be killed at any
+point and the conversation carries on (`--watch RUN_ID` re-attaches).
+
+`data/sampleImport.json` is a worked example: 8 personas, 24 turns, cognition on. It cost
+**$0.39** on the defaults above.
+
 ### Running the server yourself
 
 `matrix-studio serve` works against a deployed stack's resources, which is how the
@@ -117,8 +142,8 @@ All settings can be configured via environment variables or `.env` file. Setting
 ### Model & Provider
 
 ```bash
-# Model selection (any LiteLLM-supported model string)
-LITELLM_MODEL=bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0
+# The conversation model — any LiteLLM model string. This is the default shown below.
+LITELLM_MODEL=bedrock/global.anthropic.claude-sonnet-5
 LITELLM_TEMPERATURE=0.7
 LITELLM_MAX_TOKENS=2048
 
@@ -126,13 +151,27 @@ LITELLM_MAX_TOKENS=2048
 AVAILABLE_MODELS=bedrock/global.anthropic.claude-sonnet-4-6,bedrock/amazon.nova-pro-v1:0
 ```
 
+**`LITELLM_MODEL` is not the only model a run uses.** Three roles default to a cheap,
+temperature-honouring model instead — `speaker_selection`, `validation` and `naming` —
+because Sonnet 5 accepts only `temperature=1` and `drop_params` discards the rest, so a
+validation gate set to 0.0 would silently run at 1.0. A run can override any role:
+
+```json
+{"config": {"models": {"voice": "bedrock/global.anthropic.claude-opus-5",
+                       "summary": "bedrock/global.anthropic.claude-opus-5"}}}
+```
+
+Setting a run's `model` applies it to **every** role, overriding those defaults —
+`matrix_studio/models.py` has the role table and the reasoning, `GET /api/models` reports
+what a deployment will actually use, and each run logs its resolved plan once.
+
 ### Provider Credentials
 
 **Keys stay server-side.** The browser never handles raw credentials; `/api/models` exposes model strings only.
 
 #### AWS Bedrock
 ```bash
-LITELLM_MODEL=bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0
+LITELLM_MODEL=bedrock/global.anthropic.claude-sonnet-5
 AWS_BEARER_TOKEN_BEDROCK=your_bearer_token   # Recommended
 # ...or classic IAM keys:
 AWS_ACCESS_KEY_ID=your_access_key
