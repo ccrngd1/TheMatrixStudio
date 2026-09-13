@@ -88,6 +88,44 @@ def logging_config(region: str) -> Optional[Dict[str, Any]]:
         raise
 
 
+def delivery_role_privilege(role_arn: str) -> Optional[List[str]]:
+    """Managed policies attached to the log-delivery role that are far too broad.
+
+    Bedrock needs exactly two actions to deliver invocation logs —
+    `logs:CreateLogStream` and `logs:PutLogEvents`, on one log stream. Anything else
+    attached to the role it assumes is standing privilege that nothing uses.
+
+    This exists because the account's us-east-1 delivery role has **AdministratorAccess**
+    attached alongside the correctly-scoped two-action policy (found 2026-09-13). A
+    service role that a service assumes, holding full admin, is a bigger finding than the
+    logging gap this script was written to check — and it is exactly the kind of thing a
+    review looks for, so it is asserted here rather than remembered.
+
+    Returns the offending policy names, or None when it cannot be read: the role may live
+    in another account or be inaccessible, and a permissions error here must not be
+    reported as a clean bill of health.
+    """
+    import boto3
+    from botocore.exceptions import ClientError
+
+    name = role_arn.rsplit("/", 1)[-1]
+    try:
+        attached = boto3.client("iam").list_attached_role_policies(RoleName=name)
+    except ClientError:
+        return None
+    broad = []
+    for policy in attached.get("AttachedPolicies", []):
+        policy_name = policy.get("PolicyName", "")
+        # Names rather than a policy simulation: these are the AWS-managed grants whose
+        # presence on a log-delivery role is indefensible regardless of what they expand
+        # to, and matching on them says so plainly in the output.
+        if policy_name in ("AdministratorAccess", "PowerUserAccess") or (
+            policy_name.endswith("FullAccess")
+        ):
+            broad.append(policy_name)
+    return broad
+
+
 def retention_days(region: str, log_group: str) -> Optional[int]:
     import boto3
 
@@ -147,6 +185,23 @@ def main() -> int:
             bool(destination),
             str(destination),
         )
+
+        role_arn = cw.get("roleArn") or s3.get("roleArn")
+        if role_arn:
+            broad = delivery_role_privilege(role_arn)
+            if broad is None:
+                NOTES.append(
+                    f"{region}: could not read {role_arn} to check its privilege. Not a "
+                    "pass — an unreadable role is unknown, not clean."
+                )
+            else:
+                check(
+                    f"{region}: the log-delivery role holds only what delivery needs",
+                    not broad,
+                    f"{role_arn.rsplit('/', 1)[-1]} has {', '.join(broad)} attached. "
+                    "Bedrock needs two log actions; this is standing privilege on a role "
+                    "a service assumes." if broad else "",
+                )
 
         if cw.get("logGroupName"):
             days = retention_days(region, cw["logGroupName"])
