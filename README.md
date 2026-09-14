@@ -86,7 +86,7 @@ export DATA_BUCKET=$(out DataBucketName)
 export VECTOR_BUCKET=$(out VectorBucketName)
 
 python scripts/verify_deployment.py           # free checks
-python scripts/verify_deployment.py --paid    # + the turn loop (~$0.10 of Bedrock)
+python scripts/verify_deployment.py --paid    # + generation and retrieval (~$0.13)
 ```
 
 It refuses to run at all with those unset, rather than testing nothing: a verification
@@ -94,6 +94,19 @@ run against the wrong account is worse than no run.
 
 One command, one scoreboard. A check that cannot run reports as a failure rather than a
 skip — a verification suite that quietly does nothing is worse than one nobody runs.
+
+Two of the checks need a word of explanation:
+
+- **`kb-retrieval`** signs in as a throwaway Cognito user it creates (over SRP, so no
+  client configuration is widened), then drives the real routes through CloudFront:
+  create a collection, upload a document, start a bound run, and assert a persona quoted
+  the source. It deletes the user, the collection, its vector index, the document and the
+  run afterwards. This is the only check that exercises the API Lambda's own role, which
+  is where three KB defects hid behind 1,113 green local tests.
+- **`tenant-isolation`** reports NEEDS-SETUP by default, and that is correct rather than
+  broken: it needs the tenant role to trust a human principal temporarily, so it prints
+  the two `cdk deploy` commands that open and close that trust. **Close it again** — the
+  scoreboard going back to NEEDS-SETUP afterwards is the evidence you did.
 
 ### Starting a conversation from a file
 

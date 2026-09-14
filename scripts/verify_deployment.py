@@ -101,6 +101,11 @@ CHECKS: List[Check] = [
         "turn-loop", "verify_turn_loop.py", ["--turns", "6"], True,
         "§5: completion, stop, cost cap, branch and resume against the real state machine",
     ),
+    Check(
+        "kb-retrieval", "verify_kb_retrieval.py", [], True,
+        "§8b end to end through the HTTP API with a real token: a collection is created, "
+        "a document becomes retrievable, and a persona quotes it",
+    ),
 ]
 
 
