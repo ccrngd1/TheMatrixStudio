@@ -53,6 +53,40 @@ describe('Dossier', () => {
     expect(screen.queryByText('why?')).not.toBeInTheDocument()
   })
 
+  it('does NOT claim the run had cognition off when cognition was enabled but lost', async () => {
+    // The message this replaces asserted "created without cognition" from an empty
+    // memory stream. On run 2d2ac45b that was false for four of six personas:
+    // cognition was on and a strict JSON parse was discarding its output.
+    ;(api.getDossier as ReturnType<typeof vi.fn>).mockResolvedValue({
+      run_id: 'r1', agent: 'Ada', persona: 'A cautious ethicist', goals: ['Raise risks'],
+      memory_stream: [], beliefs: [], relationships: {},
+      cognition_enabled: true, cognition_lost_turns: 3,
+      tokens_in: 10, tokens_out: 5, cost_usd: 0.001, portrait_b64: null,
+    })
+    render(<Dossier agent={agent} feed={feed} runId="r1" onClose={() => {}} />)
+
+    await waitFor(() =>
+      expect(screen.getByText(/could not be read/i)).toBeInTheDocument(),
+    )
+    expect(screen.getByText(/3 of this persona/i)).toBeInTheDocument()
+    expect(screen.queryByText(/created without cognition/i)).not.toBeInTheDocument()
+  })
+
+  it('says a quiet persona formed nothing, rather than blaming the run', async () => {
+    ;(api.getDossier as ReturnType<typeof vi.fn>).mockResolvedValue({
+      run_id: 'r1', agent: 'Ada', persona: 'A cautious ethicist', goals: ['Raise risks'],
+      memory_stream: [], beliefs: [], relationships: {},
+      cognition_enabled: true, cognition_lost_turns: 0,
+      tokens_in: 10, tokens_out: 5, cost_usd: 0.001, portrait_b64: null,
+    })
+    render(<Dossier agent={agent} feed={feed} runId="r1" onClose={() => {}} />)
+
+    await waitFor(() =>
+      expect(screen.getByText(/did not form any memories/i)).toBeInTheDocument(),
+    )
+    expect(screen.queryByText(/created without cognition/i)).not.toBeInTheDocument()
+  })
+
   it('renders the memory stream and a why-trace affordance when cognition was captured', async () => {
     ;(api.getDossier as ReturnType<typeof vi.fn>).mockResolvedValue({
       run_id: 'r1', agent: 'Ada', persona: 'A cautious ethicist', goals: ['Raise risks'],
