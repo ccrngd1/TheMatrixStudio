@@ -402,6 +402,63 @@ async def test_and_without_the_floor_it_would_not(db, fake):
     assert [p.document_id for p in passages] == ["d-shared"] * 3
 
 
+async def test_one_slot_goes_to_the_SPEAKERS_collection_not_the_cast_wide_one(db, fake):
+    """With a single slot, whose material survives?
+
+    The floor alone cannot answer this: both collections reserve a candidate, and the
+    tie-break is distance — which the cast-wide collection wins by construction, because the
+    query is built from conversation text about the shared material. `prefer` makes the
+    speaker's own collection take precedence, and it is resolved from the bindings rather
+    than passed in: whatever the speaker can search beyond `bound_kbs(run, None)` is theirs.
+    """
+    shared = await _kb(
+        db, fake, "cast-wide",
+        [("d-shared", 0, "the proposal itself", (1.0, 0.0, 0.0), "proposal.md")],
+    )
+    mine = await _kb(
+        db, fake, "ada-only",
+        [("d-mine", 0, "Ada's own research", (0.0, 1.0, 0.0), "ada.md")],
+    )
+    await _run(
+        db,
+        config={"knowledge_bases": [shared["id"]]},
+        cast=[{"name": "Ada", "knowledge_bases": [mine["id"]]}],
+    )
+
+    # A query much closer to the shared collection's axis.
+    passages, _q, _f, failures = await _retrieve(db, axis=(1.0, 0.25, 0.0), k=1)
+
+    assert failures == []
+    assert [p.document_id for p in passages] == ["d-mine"], [
+        (p.document_id, p.score) for p in passages
+    ]
+
+
+async def test_the_cast_wide_collection_still_wins_that_slot_for_a_persona_without_one(db, fake):
+    """The preference is per speaker, so a persona with no private collection is unaffected
+    and still reads the shared material."""
+    shared = await _kb(
+        db, fake, "cast-wide",
+        [("d-shared", 0, "the proposal itself", (1.0, 0.0, 0.0), "proposal.md")],
+    )
+    mine = await _kb(
+        db, fake, "ada-only",
+        [("d-mine", 0, "Ada's own research", (0.0, 1.0, 0.0), "ada.md")],
+    )
+    await _run(
+        db,
+        config={"knowledge_bases": [shared["id"]]},
+        cast=[
+            {"name": "Ada", "knowledge_bases": [mine["id"]]},
+            {"name": "Bo"},
+        ],
+    )
+
+    passages, _q, _f, _fail = await _retrieve(db, persona="Bo", axis=(1.0, 0.25, 0.0), k=1)
+
+    assert [p.document_id for p in passages] == ["d-shared"]
+
+
 async def test_a_failed_kb_index_is_reported_and_the_turn_still_answers(db, fake):
     """Partial results are not free: the merged top-k comes from a smaller pool, so a
     passage that would have ranked first is absent. Hence RETURNED, not just logged."""

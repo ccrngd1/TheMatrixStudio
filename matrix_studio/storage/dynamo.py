@@ -3117,6 +3117,7 @@ class DynamoStorage:
         k: int = 3,
         titles: Optional[Dict[str, str]] = None,
         per_kb_floor: int = 1,
+        prefer: Optional[Sequence[str]] = None,
     ) -> tuple[List[Dict[str, Any]], List[str]]:
         """k-NN across several per-KB indexes, merged. Returns ``(rows, failed_kb_ids)``.
 
@@ -3243,7 +3244,9 @@ class DynamoStorage:
         from matrix_studio.storage.vectors import merge_with_source_floor
 
         return (
-            merge_with_source_floor(rows, k, key="kb_id", floor=per_kb_floor),
+            merge_with_source_floor(
+                rows, k, key="kb_id", floor=per_kb_floor, prefer=prefer,
+            ),
             failed,
         )
 

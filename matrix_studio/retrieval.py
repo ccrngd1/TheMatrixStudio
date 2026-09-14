@@ -415,8 +415,14 @@ async def _search_bound_kbs(
     query_vector: List[float],
     fetch_k: int,
     kb_ids: Optional[Sequence[str]],
-) -> tuple[List[Dict[str, Any]], List[str]]:
-    """k-NN across the knowledge bases this turn may search. ``(rows, failed_kb_ids)``.
+) -> tuple[List[Dict[str, Any]], List[str], List[str]]:
+    """k-NN across the knowledge bases this turn may search.
+
+    Returns ``(rows, failed_kb_ids, personal_kb_ids)``. The third element is the
+    collections bound to THIS SPEAKER rather than to the whole cast, which the caller uses
+    to keep a persona's own material from being outranked out of the prompt by a cast-wide
+    collection that mirrors the topic. It is resolved here because this is where the run row
+    is already read — computing it again in the caller would cost a second read per turn.
 
     Resolution happens here, per turn, and is deliberately not cached: §8b's requirement
     is that a **revoked grant stops working at query time**, and a list cached on the run
@@ -434,18 +440,24 @@ async def _search_bound_kbs(
     if not hasattr(db, "vector_search_kbs"):
         # A store without the Phase 6 methods (an older fixture, a fake). The run slice
         # still works, which is the property that makes this phase additive.
-        return [], []
+        return [], [], []
 
     resolved: List[str]
+    # Empty for a caller that pre-resolved `kb_ids`: it has told us WHICH collections to
+    # search but not which of them belong to the speaker, and inventing an answer would
+    # silently prefer the wrong material. No preference is the honest degradation.
+    personal: List[str] = []
     if kb_ids is not None:
         resolved = [str(k) for k in kb_ids if k]
     else:
         try:
             from matrix_studio.bindings import searchable_for_turn
 
+            from matrix_studio.bindings import bound_kbs
+
             run = await db.get_run(run_id)
             if not run:
-                return [], []
+                return [], [], []
             resolved = await searchable_for_turn(
                 db,
                 run,
@@ -453,6 +465,11 @@ async def _search_bound_kbs(
                 str(run.get("owner_sub") or ""),
                 _recorded_groups(run),
             )
+            # `bound_kbs(run, None)` is the run-level set by definition, so whatever the
+            # speaker can search beyond it is theirs. Derived rather than read from the
+            # cast a second time, so the two can never disagree.
+            cast_wide = set(bound_kbs(run, None))
+            personal = [kb for kb in resolved if kb not in cast_wide]
         except Exception as exc:  # noqa: BLE001
             # Fails CLOSED: no KB rows. An error resolving permission must not become
             # "search everything", and it must not end the turn either.
@@ -461,15 +478,18 @@ async def _search_bound_kbs(
                 "(%s); this turn searches its own documents only.",
                 run_id, persona_name, exc,
             )
-            return [], []
+            return [], [], []
 
     if not resolved:
-        return [], []
+        return [], [], []
     try:
-        return await db.vector_search_kbs(query_vector, resolved, k=fetch_k)
+        rows, failed = await db.vector_search_kbs(
+            query_vector, resolved, k=fetch_k, prefer=personal,
+        )
+        return rows, failed, personal
     except Exception as exc:  # noqa: BLE001
         logger.warning("Knowledge-base search failed for run %s: %s", run_id, exc)
-        return [], list(resolved)
+        return [], list(resolved), personal
 
 
 def _recorded_groups(run: Dict[str, Any]) -> List[str]:
@@ -595,6 +615,9 @@ async def retrieve_for_turn(
     # read meaning, so stripping the sentence to keywords first would discard it.
     semantic: List[Dict[str, Any]] = []
     floor_rejected = 0
+    # Initialised before the vector branch: the final selection reads it, and lexical modes
+    # never enter that branch. An unbound name here would be a NameError on the fts path.
+    personal_kbs: List[str] = []
     # Knowledge bases whose index could not be queried. Returned rather than only
     # logged: partial results draw the merged top-k from a smaller pool, so a passage
     # that would have ranked first is absent and something worse takes its place.
@@ -637,7 +660,7 @@ async def retrieve_for_turn(
             # is directly comparable to one from the shared index. Under BM25 the
             # statistics are per index and this would be silently wrong — the same
             # argument `vector_search_kbs` makes for merging two KBs.
-            kb_rows, kb_failures = await _search_bound_kbs(  # noqa: PLW2901
+            kb_rows, kb_failures, personal_kbs = await _search_bound_kbs(  # noqa: PLW2901
                 db, run_id, persona_name, query_vector, fetch_k, kb_ids,
             )
             if kb_rows:
@@ -667,6 +690,7 @@ async def retrieve_for_turn(
                 # mirror image of the bug the floor exists for.
                 semantic = merge_with_source_floor(
                     list(merged.values()), fetch_k, key="kb_id", floor=1,
+                    prefer=personal_kbs,
                 )
 
             if not semantic:
@@ -748,7 +772,8 @@ async def retrieve_for_turn(
     #
     # A no-op for lexical modes, where no row carries a `kb_id` and there is one source.
     passages = apply_budget(
-        merge_with_source_floor(rows, k, key="kb_id", floor=1), max_chars,
+        merge_with_source_floor(rows, k, key="kb_id", floor=1, prefer=personal_kbs),
+        max_chars,
     )
     return passages, query, floor_rejected, kb_failures
 

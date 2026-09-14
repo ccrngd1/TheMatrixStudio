@@ -28,7 +28,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +161,7 @@ def merge_with_source_floor(
     *,
     key: str = "kb_id",
     floor: int = 1,
+    prefer: Optional[Sequence[Any]] = None,
 ) -> List[dict]:
     """Best ``k`` rows overall, but reserving ``floor`` slots per source first.
 
@@ -200,6 +201,23 @@ def merge_with_source_floor(
     which three is decided by rank among the reserved rows, so the outcome stays
     deterministic and the best passage overall is never dropped. Reserving is capped at
     ``k`` in total, so this never returns more rows than asked for.
+
+    ## ``prefer``: whose material wins when the slots run out
+
+    Without it, reservation is egalitarian and ties break on distance — so the collection
+    whose wording matches the query keeps winning, which is the same pressure the floor
+    exists to resist, merely one level up. ``prefer`` names the sources that take
+    precedence: their best rows are reserved before any other source's.
+
+    Passed by `retrieve_for_turn` as **the speaker's own collections**, so a persona's
+    private material is not outranked out of the prompt by a cast-wide collection that
+    mirrors the topic. It matters only when reserved candidates exceed ``k`` — at ``k=1``
+    with one shared and one private collection, or with several shared collections — and
+    is a no-op otherwise.
+
+    It cannot promote a passage past a threshold: `retrieve_for_turn` applies
+    ``min_similarity`` and ``score_ratio`` BEFORE this selection, so a preferred source
+    with nothing relevant contributes nothing rather than filling its slot with noise.
     """
     if k <= 0 or not rows:
         return []
@@ -221,8 +239,13 @@ def merge_with_source_floor(
         if per_source.get(source, 0) < floor:
             per_source[source] = per_source.get(source, 0) + 1
             reserved.append(row)
-    # Reserved rows are already in distance order, so trimming to `k` keeps the best
-    # sources rather than whichever happened to be iterated first.
+    # Reserved rows are in distance order. Trimming to `k` therefore keeps the best
+    # sources rather than whichever happened to be iterated first — unless `prefer` says
+    # otherwise, in which case preferred sources are kept first and distance decides
+    # within each group. A stable sort, so the ordering above survives inside a group.
+    if prefer:
+        preferred = set(prefer)
+        reserved.sort(key=lambda r: r.get(key) not in preferred)
     reserved = reserved[:k]
     chosen = {id(row) for row in reserved}
     # Fill what is left by global rank, which is the ordinary behaviour for every slot
