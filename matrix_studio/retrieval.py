@@ -26,6 +26,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
 
+from matrix_studio.storage.vectors import merge_with_source_floor
+
 logger = logging.getLogger(__name__)
 
 # FTS5 bareword operators, plus conversational filler that adds no retrieval
@@ -657,7 +659,15 @@ async def retrieve_for_turn(
                     semantic + kb_rows, key=lambda r: float(r.get("score") or 0.0)
                 ):
                     merged.setdefault(row.get("chunk_id"), row)
-                semantic = list(merged.values())[:fetch_k]
+                # The per-source floor is applied AGAIN here, and not redundantly: this
+                # trim is a second global top-k, so without it the outer merge would
+                # discard the very rows `vector_search_kbs` reserved. Keyed on `kb_id`,
+                # which a run-scoped row does not carry — so `None` is itself a source and
+                # the run's own attached documents get a reserved slot too, which is the
+                # mirror image of the bug the floor exists for.
+                semantic = merge_with_source_floor(
+                    list(merged.values()), fetch_k, key="kb_id", floor=1,
+                )
 
             if not semantic:
                 # KNN applies no score threshold, so an empty result is not "your
@@ -728,7 +738,18 @@ async def retrieve_for_turn(
     rows = filter_by_score(rows, score_ratio)
     # floor_rejected rides along so the emitted event can distinguish "retrieval
     # found nothing" from "retrieval found only things below the floor".
-    passages = apply_budget(rows[:k], max_chars)
+    #
+    # THE trim that decides what reaches the prompt, and therefore where the
+    # per-collection floor has to be. The merge above trims to `fetch_k` (= 2k), so a
+    # floor applied only there is undone here by a second global top-k — which is how
+    # run 2d2ac45b gave a cast-wide collection all 24 turns while six private ones,
+    # correctly bound and queried, contributed nothing. Both trims need it: the first
+    # keeps a starved collection's candidate alive, this one keeps it in the answer.
+    #
+    # A no-op for lexical modes, where no row carries a `kb_id` and there is one source.
+    passages = apply_budget(
+        merge_with_source_floor(rows, k, key="kb_id", floor=1), max_chars,
+    )
     return passages, query, floor_rejected, kb_failures
 
 
