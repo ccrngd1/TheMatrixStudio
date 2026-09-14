@@ -318,18 +318,39 @@ async def _generate_response(
             '"rationale": "<one first-person sentence: why you say this now>"',
             '"goal_served": "<which of your goals this advances, verbatim, or \'none\'>"',
         ]
+        # The same field set as a JSON schema, which is what actually CONSTRAINS the
+        # reply — see the `response_format` comment at the call below for the numbers.
+        # Built here, in the same branches that build the prompt text, so a field added
+        # to one and not the other is visible in a single screen rather than two.
+        properties: Dict[str, Any] = {
+            "utterance": {"type": "string"},
+            "rationale": {"type": "string"},
+            "goal_served": {"type": "string"},
+        }
         extra_instr = ""
         if memory_on:
             fields.append(
                 '"memories": [{"content": "<a short thing you just learned or decided this turn>", '
                 '"importance": <0.0-1.0>, "tags": ["<tag>"]}]'
             )
+            properties["memories"] = {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "content": {"type": "string"},
+                        "importance": {"type": "number"},
+                        "tags": {"type": "array", "items": {"type": "string"}},
+                    },
+                },
+            }
             extra_instr += (
                 " The memories array holds 0-2 items you genuinely formed this turn "
                 "(what you learned/decided); use [] if nothing notable."
             )
         if goals_dynamic:
             fields.append('"goal_update": ["<your full updated goal list>"]')
+            properties["goal_update"] = {"type": "array", "items": {"type": "string"}}
             extra_instr += (
                 " Set goal_update to your FULL new goal list ONLY if this turn "
                 "genuinely changed your goals; otherwise omit it or use null."
@@ -338,6 +359,9 @@ async def _generate_response(
             fields.append(
                 '"relationship_updates": {"<other participant name>": "<your one-line stance toward them>"}'
             )
+            properties["relationship_updates"] = {
+                "type": "object", "additionalProperties": {"type": "string"},
+            }
             extra_instr += (
                 " relationship_updates maps other participants to your updated stance "
                 "toward them; use {} if nothing changed."
@@ -349,6 +373,23 @@ async def _generate_response(
                 '"resolved": ["<id of a listed unresolved thread your utterance genuinely pays off>"], '
                 '"abandoned": ["<id of a listed thread that is now genuinely moot>"]}'
             )
+            properties["thread_updates"] = {
+                "type": "object",
+                "properties": {
+                    "open": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "description": {"type": "string"},
+                                "thread_type": {"type": "string"},
+                            },
+                        },
+                    },
+                    "resolved": {"type": "array", "items": {"type": "string"}},
+                    "abandoned": {"type": "array", "items": {"type": "string"}},
+                },
+            }
             extra_instr += (
                 " thread_updates records unfinished business: open holds 0-2 threads you truly "
                 "planted this turn (use [] if none); resolved/abandoned hold ids ONLY from the "
@@ -423,7 +464,43 @@ Respond naturally as this character. Keep responses conversational (2-4 sentence
             max_tokens=settings.litellm_max_tokens,
         )
         if cognition_on:
-            kwargs["response_format"] = {"type": "json_object"}
+            # A SCHEMA, not `{"type": "json_object"}`.
+            #
+            # `json_object` is advisory on this Bedrock path. Measured 2026-09-14 against
+            # `global.anthropic.claude-sonnet-5` with this engine's own prompt, 5 samples
+            # per arm on the persona that fails hardest (Dr. Morgan, whose retrieved
+            # passages tip the model into prose):
+            #
+            #   system-prompt instruction only          0/5 JSON
+            #   + the user-message reminder below       5/5
+            #   + this json_schema                      5/5
+            #   forced tool use (tools + tool_choice)   5/5
+            #   assistant prefill with "{"              rejected by the API, 5/5 errors
+            #
+            # litellm converts a json_schema into a forced tool for Bedrock, which is a
+            # structural constraint rather than an instruction — and it leaves the JSON in
+            # `message.content`, so nothing downstream changes. Straight `tools` would move
+            # the payload to `tool_calls[0].function.arguments` and break 132 test seams
+            # that patch `acompletion` and return content.
+            #
+            # `required` is only `utterance`: the cognition fields are genuinely optional
+            # (a turn may form no memories), and requiring them would invite invention.
+            # Not `strict`, and `additionalProperties` is left open, so a model adding a
+            # field is tolerated rather than an error.
+            #
+            # If a provider cannot honour it, `drop_params` removes it and the reminder in
+            # the user message is what remains — which measured 5/5 on its own.
+            kwargs["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "persona_turn",
+                    "schema": {
+                        "type": "object",
+                        "properties": properties,
+                        "required": ["utterance"],
+                    },
+                },
+            }
         response = await litellm.acompletion(**kwargs)
 
         raw = response.choices[0].message.content.strip()
