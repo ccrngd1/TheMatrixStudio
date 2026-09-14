@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
+import { useEffect, useState } from 'react'
 import { colorForName, initials } from '../lib/avatar'
+import { loadAvatar } from '../api'
 
 interface Props {
   name: string
@@ -18,10 +20,29 @@ export function AvatarBadge({
 }: Props) {
   const dim = { width: size, height: size }
   const ringCls = ring ? 'ring-2 ring-matrix-live' : 'ring-1 ring-matrix-border'
-  // A URL wins over inline base64: the URL is the current path, and base64 only ever
-  // appears on runs recorded before the change. Supporting both is what keeps those
-  // runs' avatars rendering instead of silently turning into placeholders.
-  const src = portraitUrl || (portrait ? `data:image/png;base64,${portrait}` : null)
+  // The URL is FETCHED rather than handed to the `<img>`, because an `<img src>` cannot
+  // send an `Authorization` header and the avatar route requires one — see `loadAvatar`.
+  // Cached there by URL, so a cast of eight faces is eight requests per session however
+  // many times this component renders.
+  const [fetched, setFetched] = useState<string | null>(null)
+  useEffect(() => {
+    if (!portraitUrl) {
+      setFetched(null)
+      return
+    }
+    let live = true
+    loadAvatar(portraitUrl).then((url) => {
+      if (live) setFetched(url)
+    })
+    return () => {
+      live = false
+    }
+  }, [portraitUrl])
+
+  // The fetched blob wins; inline base64 only ever appears on runs recorded before avatars
+  // moved to blob storage, and supporting it is what keeps those rendering rather than
+  // silently turning into placeholders.
+  const src = fetched || (portrait ? `data:image/png;base64,${portrait}` : null)
   if (src) {
     return (
       <img

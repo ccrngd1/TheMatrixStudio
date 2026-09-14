@@ -230,23 +230,51 @@ def test_index_html_is_never_cached_and_assets_are(template: Template):
 
 
 def test_deep_links_fall_back_to_the_spa(template: Template):
-    """S3 has no object at `/runs/trusted-robot`.
+    """S3 has no object at `/runs/trusted-robot`, so a refresh on a client-side route
+    needs the shell — otherwise the app works until somebody bookmarks a page.
 
-    Without the 403/404 → `/index.html` mapping, a refresh on any client-side
-    route returns an S3 error document instead of the application — so the app
-    works until somebody bookmarks a page.
+    Done with a CloudFront Function on the SPA behaviour, NOT with
+    `CustomErrorResponses`. See the test below for what the error-response version cost.
     """
     dist = next(iter(template.find_resources("AWS::CloudFront::Distribution").values()))
-    responses = {
-        r["ErrorCode"]: r
-        for r in dist["Properties"]["DistributionConfig"]["CustomErrorResponses"]
-    }
-    for code in (403, 404):
-        assert code in responses, f"no fallback for {code}"
-        assert responses[code]["ResponseCode"] == 200
-        assert responses[code]["ResponsePagePath"] == "/index.html"
-        # A cached error response would pin the fallback in place across a deploy.
-        assert responses[code]["ErrorCachingMinTTL"] == 0
+    config = dist["Properties"]["DistributionConfig"]
+    associations = config["DefaultCacheBehavior"]["FunctionAssociations"]
+    assert associations, "no SPA rewrite on the default behaviour"
+    assert associations[0]["EventType"] == "viewer-request"
+
+    functions = template.find_resources("AWS::CloudFront::Function")
+    assert functions, "the rewrite function is missing"
+    code = next(iter(functions.values()))["Properties"]["FunctionCode"]
+    assert "/index.html" in code
+    # A path with an extension is an asset; a missing asset must 404 rather than
+    # silently returning the shell, which would break bundle-version detection.
+    assert "A-Za-z0-9" in code, "the extension test is what keeps assets honest"
+
+
+def test_the_spa_fallback_cannot_rewrite_an_API_RESPONSE(template: Template):
+    """`CustomErrorResponses` are DISTRIBUTION-WIDE, and that is why they are gone.
+
+    Mapping 403/404 to `/index.html` with a 200 also applied to the `/api/*` behaviour:
+    measured against the deployment on 2026-09-14, `/api/runs/{someone-elses-run}`
+    returned the SPA shell with **HTTP 200 text/html**. Every `HTTPException(404)` and
+    every authorisation denial reached the client as a successful page load, so no client
+    could tell "not found" from success — and `jsonFetch` failed on HTML instead.
+
+    A CloudFront Function is per-behaviour, so the API cannot be affected by construction.
+    """
+    dist = next(iter(template.find_resources("AWS::CloudFront::Distribution").values()))
+    config = dist["Properties"]["DistributionConfig"]
+    assert not config.get("CustomErrorResponses"), (
+        "a distribution-wide error response rewrites API responses too"
+    )
+    api = [
+        b for b in config.get("CacheBehaviors", [])
+        if b["PathPattern"] == "/api/*"
+    ]
+    assert api, "no /api/* behaviour"
+    assert not api[0].get("FunctionAssociations"), (
+        "the SPA rewrite must not be attached to the API behaviour"
+    )
 
 
 def test_the_spa_bucket_is_private(template: Template):

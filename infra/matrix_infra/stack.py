@@ -428,6 +428,39 @@ class MatrixStudioStack(Stack):
             ),
         )
 
+        # SPA deep links, WITHOUT letting the fallback reach the API.
+        #
+        # This was `error_responses` mapping 403 and 404 to `/index.html` with a 200.
+        # Custom error responses are DISTRIBUTION-WIDE, so they also rewrote the
+        # `/api/*` behaviour: every genuine `HTTPException(404)` and every 403 reached
+        # the browser as **200 text/html**. Measured against the deployment on
+        # 2026-09-14 — `/api/runs/{someone-elses-run}` returned the SPA shell with a 200,
+        # so a client could not tell "not found" from success, and an authorisation
+        # denial rendered as a successful page load.
+        #
+        # A CloudFront Function is attached to the SPA behaviour ONLY, which is the
+        # narrowest place the rewrite can live: functions are per-behaviour, so the API
+        # behaviour cannot be affected by construction rather than by care.
+        spa_rewrite = cloudfront.Function(
+            self,
+            "SpaRewrite",
+            function_name=f"{self.config.prefix}-spa-rewrite",
+            comment="Serve index.html for client-side routes; leave files alone.",
+            code=cloudfront.FunctionCode.from_inline(
+                """
+function handler(event) {
+  var uri = event.request.uri;
+  // A path with an extension is an asset: if it is missing, the right answer is 404,
+  // not the shell. Anything else is a client-side route.
+  if (uri !== '/' && !/\\.[A-Za-z0-9]+$/.test(uri)) {
+    event.request.uri = '/index.html';
+  }
+  return event.request;
+}
+""".strip()
+            ),
+        )
+
         self.distribution = cloudfront.Distribution(
             self,
             "SpaDistribution",
@@ -441,6 +474,12 @@ class MatrixStudioStack(Stack):
                 cache_policy=cloudfront.CachePolicy.CACHING_DISABLED,
                 response_headers_policy=no_store,
                 allowed_methods=cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
+                function_associations=[
+                    cloudfront.FunctionAssociation(
+                        function=spa_rewrite,
+                        event_type=cloudfront.FunctionEventType.VIEWER_REQUEST,
+                    )
+                ],
             ),
             additional_behaviors={
                 "/assets/*": cloudfront.BehaviorOptions(
@@ -455,20 +494,6 @@ class MatrixStudioStack(Stack):
                     ),
                 ),
             },
-            error_responses=[
-                cloudfront.ErrorResponse(
-                    http_status=403,
-                    response_http_status=200,
-                    response_page_path="/index.html",
-                    ttl=Duration.seconds(0),
-                ),
-                cloudfront.ErrorResponse(
-                    http_status=404,
-                    response_http_status=200,
-                    response_page_path="/index.html",
-                    ttl=Duration.seconds(0),
-                ),
-            ],
         )
 
     # ------------------------------------------------------------------ #
