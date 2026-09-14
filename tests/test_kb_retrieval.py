@@ -184,6 +184,52 @@ async def test_the_merge_trims_to_k_across_indexes_not_per_index(db, fake):
     assert len(rows) == 2, f"expected 2 passages total, got {len(rows)}"
 
 
+async def test_a_collection_that_never_wins_on_rank_still_contributes(db, fake):
+    """The run-`2d2ac45b` shape, end to end through the fan-out.
+
+    A cast-wide collection whose wording mirrors the conversation took all 24 turns'
+    passages there, and six private collections contributed nothing at all. Here the
+    "shared" collection holds three near passages and the private one holds a far
+    passage, so global rank alone would fill every slot from the shared one.
+    """
+    shared = await _kb_with_chunks(db, fake, "shared", [
+        ("doc-s", 0, "shared near 0", _axis(0)),
+        ("doc-s", 1, "shared near 1", _axis(1)),
+        ("doc-s", 2, "shared near 2", _axis(2)),
+    ])
+    private = await _kb_with_chunks(db, fake, "private", [
+        ("doc-p", 0, "private far", _axis(7)),
+    ])
+    query = unit_vector(1.0, 0.9, 0.8)
+
+    rows, _ = await db.vector_search_kbs(query, [shared["id"], private["id"]], k=3)
+    assert len(rows) == 3
+    assert private["id"] in {r["kb_id"] for r in rows}, [
+        (r["kb_id"], r["content"]) for r in rows
+    ]
+    # The best passage overall is still first: a floor may not cost the top result.
+    assert rows[0]["kb_id"] == shared["id"]
+    assert [r["score"] for r in rows] == sorted(r["score"] for r in rows)
+
+
+async def test_per_kb_floor_zero_reproduces_the_starvation(db, fake):
+    """The premise of the test above. Without it, that test could pass for the wrong
+    reason — and `per_kb_floor=0` is also the mode
+    `scripts/verify_kb_fanout_equivalence.py` uses to keep proving the merge exact."""
+    shared = await _kb_with_chunks(db, fake, "shared", [
+        ("doc-s", 0, "shared near 0", _axis(0)),
+        ("doc-s", 1, "shared near 1", _axis(1)),
+        ("doc-s", 2, "shared near 2", _axis(2)),
+    ])
+    private = await _kb_with_chunks(db, fake, "private", [
+        ("doc-p", 0, "private far", _axis(7)),
+    ])
+    rows, _ = await db.vector_search_kbs(
+        unit_vector(1.0, 0.9, 0.8), [shared["id"], private["id"]], k=3, per_kb_floor=0,
+    )
+    assert {r["kb_id"] for r in rows} == {shared["id"]}
+
+
 async def test_a_failing_kb_yields_partial_results_and_is_reported(db, fake, monkeypatch):
     """One KB being unavailable must not lose the others — but silence would be worse.
 

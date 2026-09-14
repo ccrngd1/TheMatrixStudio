@@ -3116,6 +3116,7 @@ class DynamoStorage:
         *,
         k: int = 3,
         titles: Optional[Dict[str, str]] = None,
+        per_kb_floor: int = 1,
     ) -> tuple[List[Dict[str, Any]], List[str]]:
         """k-NN across several per-KB indexes, merged. Returns ``(rows, failed_kb_ids)``.
 
@@ -3130,6 +3131,18 @@ class DynamoStorage:
         union of per-index top-k results contains the global top-k. Merging and trimming
         therefore returns precisely what one index holding everything would have —
         no recall is lost to the fan-out.
+
+        ## `per_kb_floor` departs from that exactness ON PURPOSE
+
+        Default 1: every collection that returned a hit gets its best row reserved before
+        the remaining slots fill by global rank. Without it, a collection whose wording
+        mirrors the conversation takes every slot on every turn and the others contribute
+        nothing at all — measured on run `2d2ac45b`, where a cast-wide collection won 24
+        of 24 turns and six private ones never appeared. `merge_with_source_floor` carries
+        the full account and the trade-off.
+
+        Pass `per_kb_floor=0` for the exact global top-k, which is what
+        `scripts/verify_kb_fanout_equivalence.py` verifies.
 
         ## Merging is only sound because the metric is cosine
 
@@ -3224,9 +3237,15 @@ class DynamoStorage:
                     "kb_id": kb_id,
                 })
         # Smaller distance is better, matching `vector_search` and what
-        # `apply_similarity_floor` expects.
-        rows.sort(key=lambda r: r["score"])
-        return rows[:k], failed
+        # `apply_similarity_floor` expects. The floor reserves one slot per collection
+        # before global rank claims the rest; with `per_kb_floor=0` this is exactly
+        # `sorted(rows)[:k]`.
+        from matrix_studio.storage.vectors import merge_with_source_floor
+
+        return (
+            merge_with_source_floor(rows, k, key="kb_id", floor=per_kb_floor),
+            failed,
+        )
 
     async def count_chunk_vectors(self, run_id: str, *, owner_sub: Optional[str] = None) -> int:
         """How many of a run's chunks have a stored embedding."""

@@ -293,6 +293,115 @@ async def test_the_trim_happens_after_the_merge_not_per_source(db, fake):
     assert [(p.document_id, p.ordinal) for p in passages] == [("d-kb", 0), ("d-kb", 1)]
 
 
+async def test_a_collection_that_loses_on_rank_every_turn_still_reaches_the_prompt(db, fake):
+    """The run-`2d2ac45b` failure, through the real selection path.
+
+    A cast-wide collection whose wording mirrors the conversation swept the top-k on all 24
+    turns, so six correctly-bound private collections contributed nothing to any prompt. The
+    floor reserves one slot per collection.
+
+    This test is here rather than only at the helper: `fetch_k` is `2k`, so the merge inside
+    the vector branch trims to twice what the turn uses and a floor applied only there is
+    undone by the final `[:k]`. A mutant that removed the floor from that final trim survived
+    the helper-level tests.
+    """
+    shared = await _kb(
+        db, fake, "shared",
+        [
+            ("d-shared", 0, "shared nearest", (1.0, 0.0, 0.0), "shared.md"),
+            ("d-shared", 1, "shared near", (0.99, 0.14, 0.0), "shared.md"),
+            ("d-shared", 2, "shared close", (0.98, 0.20, 0.0), "shared.md"),
+        ],
+    )
+    private = await _kb(
+        db, fake, "private",
+        [("d-private", 0, "private and far", (0.0, 0.0, 1.0), "private.md")],
+    )
+    await _run(db, config={"knowledge_bases": [shared["id"], private["id"]]})
+
+    passages, _q, _f, failures = await _retrieve(db, axis=(1.0, 0.0, 0.0), k=3)
+
+    assert failures == []
+    assert len(passages) == 3
+    docs = [p.document_id for p in passages]
+    assert "d-private" in docs, docs
+    # The best passage overall is still first — a floor may not cost the top result.
+    assert passages[0].document_id == "d-shared"
+
+
+async def test_the_floor_is_needed_at_BOTH_trims_not_just_the_last(db, fake):
+    """`fetch_k` is `2k`, so there are two global top-k cuts and the first one can throw a
+    starved collection away before the second is reached.
+
+    Written because a mutant that removed the floor from the merge stage survived every
+    other test here: with only KB rows present, the fan-out already trims to `fetch_k` and
+    the merge repeats the same cut, so nothing was lost. It takes RUN-scoped passages
+    ranking between the two collections to make that first cut bite — which is the ordinary
+    case for a run that has both attached documents and bound collections.
+    """
+    shared = await _kb(
+        db, fake, "shared",
+        [
+            ("d-shared", 0, "shared nearest", (1.0, 0.0, 0.0, 0.0), "shared.md"),
+            ("d-shared", 1, "shared near", (0.99, 0.14, 0.0, 0.0), "shared.md"),
+            ("d-shared", 2, "shared close", (0.98, 0.20, 0.0, 0.0), "shared.md"),
+        ],
+    )
+    private = await _kb(
+        db, fake, "private",
+        [("d-private", 0, "private and far", (0.0, 0.0, 1.0, 0.0), "private.md")],
+    )
+    await _run(db, config={"knowledge_bases": [shared["id"], private["id"]]})
+    # Four run-scoped passages, each better than the private collection's only passage and
+    # worse than the shared collection's. These are what fill the first cut.
+    for i, axis in enumerate([
+        (0.90, 0.436, 0.0, 0.0), (0.85, 0.527, 0.0, 0.0),
+        (0.80, 0.600, 0.0, 0.0), (0.75, 0.661, 0.0, 0.0),
+    ]):
+        await _run_slice_chunk(db, fake, "run-1", "d-own", i, f"own {i}", axis)
+
+    passages, _q, _f, failures = await _retrieve(db, axis=(1.0, 0.0, 0.0, 0.0), k=2)
+
+    assert failures == []
+    docs = [p.document_id for p in passages]
+    assert "d-private" in docs, docs
+    assert passages[0].document_id == "d-shared"
+
+
+async def test_and_without_the_floor_it_would_not(db, fake):
+    """The premise of the test above, asserted through the same path.
+
+    `min_similarity=0` is used in `_retrieve`, so nothing else could be excluding the far
+    passage: with the floor removed it is dropped purely by rank.
+    """
+    from matrix_studio.storage import vectors as vmod
+
+    shared = await _kb(
+        db, fake, "shared",
+        [
+            ("d-shared", 0, "shared nearest", (1.0, 0.0, 0.0), "shared.md"),
+            ("d-shared", 1, "shared near", (0.99, 0.14, 0.0), "shared.md"),
+            ("d-shared", 2, "shared close", (0.98, 0.20, 0.0), "shared.md"),
+        ],
+    )
+    private = await _kb(
+        db, fake, "private",
+        [("d-private", 0, "private and far", (0.0, 0.0, 1.0), "private.md")],
+    )
+    await _run(db, config={"knowledge_bases": [shared["id"], private["id"]]})
+
+    with patch.object(
+        vmod, "merge_with_source_floor",
+        lambda rows, k, **kw: sorted(rows, key=lambda r: float(r.get("score") or 0.0))[:k],
+    ), patch(
+        "matrix_studio.retrieval.merge_with_source_floor",
+        lambda rows, k, **kw: sorted(rows, key=lambda r: float(r.get("score") or 0.0))[:k],
+    ):
+        passages, _q, _f, _fail = await _retrieve(db, axis=(1.0, 0.0, 0.0), k=3)
+
+    assert [p.document_id for p in passages] == ["d-shared"] * 3
+
+
 async def test_a_failed_kb_index_is_reported_and_the_turn_still_answers(db, fake):
     """Partial results are not free: the merged top-k comes from a smaller pool, so a
     passage that would have ranked first is absent. Hence RETURNED, not just logged."""

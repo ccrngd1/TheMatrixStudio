@@ -191,8 +191,13 @@ async def main() -> int:
             single = await bound.vector_search(
                 run_id=args.run_id, vector=vector, persona_name=None, k=args.k
             )
+            # `per_kb_floor=0` keeps this an exactness test. The default floor of 1
+            # reserves a slot per collection and therefore CAN differ from a single index
+            # by design — that is retrieval policy (see `merge_with_source_floor`), and
+            # mixing it in here would turn a proof about the merge into a test of the
+            # policy, losing the property this script exists to establish.
             fanned, failed = await bound.vector_search_kbs(
-                vector, [left, right], k=args.k
+                vector, [left, right], k=args.k, per_kb_floor=0
             )
             if failed:
                 raise SystemExit(f"KB index unavailable: {failed}. Cannot compare.")

@@ -28,7 +28,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -153,3 +153,85 @@ def index_parameters() -> dict:
         "distanceMetric": DISTANCE_METRIC,
         "nonFilterableMetadataKeys": list(NON_FILTERABLE_METADATA_KEYS),
     }
+
+
+def merge_with_source_floor(
+    rows: List[dict],
+    k: int,
+    *,
+    key: str = "kb_id",
+    floor: int = 1,
+) -> List[dict]:
+    """Best ``k`` rows overall, but reserving ``floor`` slots per source first.
+
+    ## The failure this exists to prevent
+
+    Run `2d2ac45b` bound six personas to six private collections plus one cast-wide
+    collection holding the proposal under discussion. **All 24 turns retrieved from the
+    shared collection and none from any persona's own**, with correct bindings and every
+    index queried. A plain global top-k did it: at ``k=3`` the shared collection took
+    every slot on every turn.
+
+    The ranking was not wrong. Measured against those live indexes, a query about a
+    persona's own material returns 3/3 from that persona's collection. But a turn's query
+    is a term bag drawn from recent conversation text, and in a conversation *about* the
+    proposal that query is proposal-shaped on **every** turn — so a collection whose
+    wording mirrors the topic wins by construction rather than by relevance, permanently.
+
+    The symptom was personas saying "I don't have a citation in front of me," which was
+    true and read as careful behaviour rather than as retrieval failure. A binding that
+    can never win a slot is indistinguishable from no binding at all.
+
+    ## What this deliberately gives up
+
+    Global top-k is **exact** — the union of per-index top-k contains the global top-k, so
+    merging and trimming returns precisely what one index holding everything would have.
+    A floor breaks that on purpose: it can promote a row that global rank would have cut,
+    in exchange for every bound collection being able to contribute. That trade is only
+    defensible because the alternative is a collection contributing *nothing, ever*.
+
+    Set ``floor=0`` for the exact behaviour — `scripts/verify_kb_fanout_equivalence.py`
+    does, because the exactness of the merge is still a property worth verifying
+    separately from the policy layered on top.
+
+    ## Degrading when there are more sources than slots
+
+    With ``k=3`` and six sources, three sources get their best row and three get nothing;
+    which three is decided by rank among the reserved rows, so the outcome stays
+    deterministic and the best passage overall is never dropped. Reserving is capped at
+    ``k`` in total, so this never returns more rows than asked for.
+    """
+    if k <= 0 or not rows:
+        return []
+    ordered = sorted(rows, key=lambda r: float(r.get("score") or 0.0))
+    if floor <= 0:
+        return ordered[:k]
+
+    reserved: List[dict] = []
+    per_source: Dict[Any, int] = {}
+    for row in ordered:
+        source = row.get(key)
+        # A row with no source is not a collection. Run-scoped passages carry no
+        # `kb_id`, and reserving a slot for them would change behaviour this bug says
+        # nothing about — `test_the_trim_happens_after_the_merge_not_per_source` asserts
+        # that a KB passage outranking a run passage wins, and it should keep winning.
+        # They still compete for every unreserved slot.
+        if source is None:
+            continue
+        if per_source.get(source, 0) < floor:
+            per_source[source] = per_source.get(source, 0) + 1
+            reserved.append(row)
+    # Reserved rows are already in distance order, so trimming to `k` keeps the best
+    # sources rather than whichever happened to be iterated first.
+    reserved = reserved[:k]
+    chosen = {id(row) for row in reserved}
+    # Fill what is left by global rank, which is the ordinary behaviour for every slot
+    # the floor did not claim.
+    for row in ordered:
+        if len(reserved) >= k:
+            break
+        if id(row) not in chosen:
+            reserved.append(row)
+            chosen.add(id(row))
+    reserved.sort(key=lambda r: float(r.get("score") or 0.0))
+    return reserved
