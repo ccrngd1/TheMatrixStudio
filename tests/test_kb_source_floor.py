@@ -67,6 +67,62 @@ class TestItDoesNotRearrangeWhatWasAlreadyRight:
         assert [r["score"] for r in got] == [0.1, 0.2, 0.3]
 
 
+class TestPreferringTheSpeakersOwnCollections:
+    """`prefer` decides whose material survives when reserved candidates exceed k.
+
+    Without it the tie-break is distance, so the collection whose wording matches the
+    query keeps winning — the same pressure the floor exists to resist, one level up.
+    """
+
+    def test_at_k_equals_one_the_personal_collection_wins(self):
+        """The case the plain floor cannot help: one slot, two reserved candidates."""
+        rows = [row("shared", 0.20), row("mine", 0.55)]
+        got = merge_with_source_floor(rows, 1, floor=1, prefer=["mine"])
+        assert [r["kb_id"] for r in got] == ["mine"], got
+
+    def test_without_prefer_the_shared_collection_takes_that_slot(self):
+        """The premise. If this passed too, the test above would prove nothing."""
+        rows = [row("shared", 0.20), row("mine", 0.55)]
+        got = merge_with_source_floor(rows, 1, floor=1)
+        assert [r["kb_id"] for r in got] == ["shared"]
+
+    def test_several_shared_collections_cannot_crowd_out_the_personal_one(self):
+        """Three cast-wide collections and one private, three slots."""
+        rows = [
+            row("shared-a", 0.10), row("shared-b", 0.11), row("shared-c", 0.12),
+            row("mine", 0.80),
+        ]
+        got = merge_with_source_floor(rows, 3, floor=1, prefer=["mine"])
+        assert "mine" in {r["kb_id"] for r in got}, got
+        assert len(got) == 3
+
+    def test_it_does_not_reorder_the_returned_passages(self):
+        """Preference decides WHICH rows survive, not the order they are read in. The
+        prompt block and `apply_similarity_floor` both assume ascending distance."""
+        rows = [row("shared", 0.20), row("mine", 0.55)]
+        got = merge_with_source_floor(rows, 2, floor=1, prefer=["mine"])
+        assert [r["score"] for r in got] == [0.20, 0.55]
+
+    def test_it_changes_nothing_when_every_reserved_row_fits(self):
+        rows = [row("shared", 0.20), row("mine", 0.55)]
+        with_pref = merge_with_source_floor(rows, 2, floor=1, prefer=["mine"])
+        without = merge_with_source_floor(rows, 2, floor=1)
+        assert [r["kb_id"] for r in with_pref] == [r["kb_id"] for r in without]
+
+    def test_preferring_a_collection_with_no_rows_is_harmless(self):
+        """A persona whose own collection returned nothing — or whose only passage was
+        already dropped by the similarity floor — must not lose a slot to a phantom."""
+        rows = [row("shared", 0.20), row("shared", 0.21)]
+        got = merge_with_source_floor(rows, 2, floor=1, prefer=["mine"])
+        assert [r["kb_id"] for r in got] == ["shared", "shared"]
+
+    def test_an_empty_prefer_list_is_the_same_as_none(self):
+        rows = [row("shared", 0.20), row("mine", 0.55)]
+        assert merge_with_source_floor(rows, 1, floor=1, prefer=[]) == (
+            merge_with_source_floor(rows, 1, floor=1)
+        )
+
+
 class TestDegradation:
     def test_more_collections_than_slots_never_exceeds_k(self):
         """Six bound collections, three slots: the answer must still be three rows."""
