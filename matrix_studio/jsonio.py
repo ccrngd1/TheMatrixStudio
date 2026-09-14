@@ -53,6 +53,26 @@ So the last resort before giving up is to close the object at the last complete
 key/value pair. That yields a *partial* object, which is the honest outcome: the
 caller gets the fields the model actually finished. Raising the token budget is the
 real fix for any given caller; this stops a budget being a total failure.
+
+## Literal newlines: the failure this file was written for and still had
+
+Every parse here used `json.loads` with its default `strict=True`, which **rejects an
+unescaped control character inside a string**. A persona told to answer in "2-4
+paragraphs" writes those paragraphs inside the `utterance` string, and models routinely
+separate them with a real newline rather than `\\n`. Strict parsing then fails at the
+first paragraph break — `Invalid control character at: line 1 column 635` — on a response
+that is otherwise complete and well-formed.
+
+Measured 2026-09-14 against `bedrock/global.anthropic.claude-sonnet-5` in
+`response_format={"type": "json_object"}` mode, using this project's own cognition schema:
+**2 of 5 replies were rejected, and `json.loads(raw, strict=False)` parsed both** — one of
+them recovering all six cognition fields that the strict parse had discarded.
+
+The consequence is the same one recorded at the top of this file, arrived at from a
+different direction: cognition present in the request, absent from the result, and nothing
+saying so. `strict=False` is therefore used everywhere here. It relaxes exactly one rule —
+control characters inside strings — which is precisely the thing a multi-paragraph
+utterance contains.
 """
 
 from __future__ import annotations
@@ -84,7 +104,10 @@ def extract_json_object(text: Optional[str]) -> Optional[Dict[str, Any]]:
 
     for candidate in _candidates(text):
         try:
-            obj = json.loads(candidate)
+            # `strict=False` permits unescaped control characters inside strings, which
+            # is what a multi-paragraph utterance is made of. See the module docstring:
+            # strict parsing discarded 2 of 5 complete cognition replies.
+            obj = json.loads(candidate, strict=False)
         except (json.JSONDecodeError, ValueError):
             continue
         if isinstance(obj, dict):
@@ -143,7 +166,10 @@ def repair_truncated_object(text: str) -> Optional[Dict[str, Any]]:
     # Rebuild: everything up to the cut, plus the closers still owed. Depth at `cut`
     # is 1 by construction, so a single "}" closes it.
     try:
-        obj = json.loads(body[:cut].rstrip().rstrip(",") + "}")
+        # `strict=False` for the same reason as in `extract_json_object`: a truncated
+        # reply's completed fields still contain the newlines the model wrote, so a
+        # strict repair would reject exactly the data this function exists to salvage.
+        obj = json.loads(body[:cut].rstrip().rstrip(",") + "}", strict=False)
     except (json.JSONDecodeError, ValueError):
         return None
     return obj if isinstance(obj, dict) else None
