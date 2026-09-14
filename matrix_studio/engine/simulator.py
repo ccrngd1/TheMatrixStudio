@@ -388,6 +388,27 @@ Respond naturally as this character. Keep responses conversational (2-4 sentence
             f"the conversation is empty or that there is nothing to respond to."
         )
 
+    if cognition_on:
+        # Repeat the JSON contract as the LAST thing the model reads.
+        #
+        # `response_format={"type": "json_object"}` is advisory on this Bedrock path, not a
+        # constraint. Measured 2026-09-14 against `global.anthropic.claude-sonnet-5` using
+        # the engine's own prompt, inside the deployed image, against real Bedrock:
+        #
+        #   no retrieved passages in the prompt   12/12 replies were JSON
+        #   with retrieved passages                4/8  replies were JSON
+        #   with retrieved passages + this line    8/8  replies were JSON
+        #
+        # So it is the RETRIEVED SOURCE MATERIAL that tips it: a few thousand characters of
+        # quoted documents, followed by "Respond as <name>:", and the model answers in prose
+        # like the transcript it has just read. The schema instruction is already last in the
+        # system message and that is not enough — it is thousands of characters upstream by
+        # then. On run `3abd39b3` this cost cognition on 20 of 24 turns.
+        user_content += (
+            "\n\nReturn ONLY the JSON object described in your instructions. Your spoken "
+            'words go in the "utterance" field — no prose outside the object.'
+        )
+
     messages = [
         {"role": "system", "content": system_message},
         {"role": "user", "content": user_content},
