@@ -52,6 +52,11 @@ dev = [
     # `asyncio.to_thread`, which is how the async storage layer talks to a sync
     # SDK without blocking the event loop.
     "moto[dynamodb,s3]>=5.0",
+    # SRP sign-in for `scripts/verify_kb_retrieval.py`, which needs a real Cognito token
+    # to exercise the deployed routes. SRP specifically: the admin password flow is not
+    # enabled on the pool's client, and enabling it would widen the deployment's auth
+    # surface permanently in order to run a verification.
+    "pycognito>=2024.5.1",
 ]
 # Phase 5 document retrieval reads PDF and Word attachments. Kept OPTIONAL so the
 # base install stays light; .txt and .md attachments need nothing extra. Retrieval
