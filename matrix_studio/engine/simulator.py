@@ -425,6 +425,16 @@ Respond naturally as this character. Keep responses conversational (2-4 sentence
                 # Genuinely unparseable: keep the raw text as the utterance (unchanged
                 # pre-existing behaviour) so a bad response never stalls a run.
                 content = raw
+                # And SAY SO. On run 2d2ac45b cognition was configured on, produced
+                # rationale on 4 of 24 turns, and nothing in the event log distinguished
+                # "the model returned no rationale" from "we threw the rationale away" —
+                # so a whole run looked like cognition was switched off. One boolean on
+                # the payload makes the two cases tell themselves apart.
+                logger.warning(
+                    "Cognition response for %s did not parse (%d chars); its rationale, "
+                    "memories and updates are lost for this turn.",
+                    speaker_name, len(raw),
+                )
             else:
                 content = str(parsed.get("utterance", "")).strip() or raw
                 rat = parsed.get("rationale")
@@ -509,6 +519,11 @@ Respond naturally as this character. Keep responses conversational (2-4 sentence
         if cognition_on:
             result["rationale"] = rationale
             result["goal_served"] = goal_served
+            # Whether the structured reply parsed at all. `rationale=None` is ambiguous
+            # on its own — the model may not have sent one, or we may have discarded the
+            # whole object — and that ambiguity is what let a run look like cognition was
+            # switched off when it was on and being thrown away.
+            result["cognition_parsed"] = parsed is not None
         if memory_on:
             result["memories"] = formed_memories
         if goals_dynamic:
@@ -1366,6 +1381,11 @@ async def _run_turns(
                 response_payload["rationale"] = response_data["rationale"]
             if response_data.get("goal_served") is not None:
                 response_payload["goal_served"] = response_data["goal_served"]
+            # Recorded only when it is FALSE, so a healthy run's payloads stay as they
+            # were and the flag reads as an exception report rather than as noise. A
+            # reader counting these gets the parse-failure rate for the run.
+            if response_data.get("cognition_parsed") is False:
+                response_payload["cognition_parsed"] = False
             # Phase 2c memory: the retrieved memory ids are the causal refs that
             # were in-context for this turn (present only when memory is on).
             if memory_on:
