@@ -320,6 +320,13 @@ export interface AgentDossier {
   // the operator by design, so they are absent from this type on purpose rather
   // than by omission. No UI renders this yet (see docs/BACKLOG.md).
   structured?: StructuredPersona | null
+  // Whether cognition was CONFIGURED on the run, which is not the same question as
+  // whether it produced anything. Optional so a dossier from an older backend parses;
+  // `undefined` means "the backend cannot tell us", and the UI must not read that as
+  // false — it said "this run was created without cognition" about a run created with it.
+  cognition_enabled?: boolean
+  // Turns where the structured reply was discarded (see jsonio's strict-parse fix).
+  cognition_lost_turns?: number
   tokens_in: number
   tokens_out: number
   cost_usd: number

@@ -57,6 +57,15 @@ export function Dossier({ agent, feed, runId, onClose }: Props) {
       dossier.beliefs.length > 0 ||
       Object.keys(dossier.relationships).length > 0)
 
+  // Whether it was ASKED FOR is a different question, and conflating the two made this
+  // panel state a falsehood: it told an operator a run "was created without cognition"
+  // when cognition was on and its output was being discarded by a strict JSON parse.
+  // `undefined` from an older backend keeps the old wording, which was right for the
+  // only case that backend could produce.
+  const cognitionConfigured = dossier?.cognition_enabled ?? false
+  const cognitionKnown = dossier?.cognition_enabled !== undefined
+  const lostTurns = dossier?.cognition_lost_turns ?? 0
+
   // Phase 5. Defaulted because an older backend omits these fields entirely,
   // and retrieval is opt-in, so absent is the normal case rather than an error.
   const docs = dossier?.documents ?? []
@@ -354,9 +363,13 @@ export function Dossier({ agent, feed, runId, onClose }: Props) {
         ) : (
           <Section title="Cognition">
             <p className="text-xs text-slate-500">
-              {loaded
-                ? 'This run was created without cognition, so there is no memory stream, reflections, relationships, or per-turn “why” trace to show. Enable Cognition when creating a run to capture it.'
-                : 'Loading…'}
+              {!loaded
+                ? 'Loading…'
+                : cognitionKnown && cognitionConfigured
+                  ? lostTurns > 0
+                    ? `Cognition was enabled for this run, but ${lostTurns} of this persona's turns returned a structured reply that could not be read, so their memories, reflections and “why” trace were lost. The transcript is unaffected.`
+                    : 'Cognition was enabled for this run, but this persona did not form any memories, reflections or relationship updates — which is the expected result for a persona who spoke only once or twice.'
+                  : 'This run was created without cognition, so there is no memory stream, reflections, relationships, or per-turn “why” trace to show. Enable Cognition when creating a run to capture it.'}
             </p>
           </Section>
         )}

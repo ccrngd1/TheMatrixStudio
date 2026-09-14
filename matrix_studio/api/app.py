@@ -1494,8 +1494,26 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             for d in await db.for_owner(user).list_documents(run["id"], persona_name=name)
         ]
         drew_on: List[Dict[str, Any]] = []
+        # Turns where cognition ran and its structured reply was DISCARDED. Reported
+        # because an empty memory stream has two very different causes, and a UI that
+        # cannot tell them apart said "this run was created without cognition" about a
+        # run created WITH it — see the `strict=False` fix in `jsonio.py`. 2026-09-14:
+        # four of six personas in run 2d2ac45b showed that message.
+        cognition_lost_turns = 0
         for row in await db.for_owner(user).get_events(run["id"]):
-            if row["event_type"] != "document.retrieved" or row["agent_name"] != name:
+            if row["agent_name"] != name:
+                continue
+            if row["event_type"] == "agent.response":
+                payload = row["payload"]
+                if isinstance(payload, str):
+                    try:
+                        payload = json.loads(payload)
+                    except json.JSONDecodeError:
+                        payload = {}
+                if isinstance(payload, dict) and payload.get("cognition_parsed") is False:
+                    cognition_lost_turns += 1
+                continue
+            if row["event_type"] != "document.retrieved":
                 continue
             payload = row["payload"]
             if isinstance(payload, str):
@@ -1519,6 +1537,12 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             "pending_threads": agent_threads,
             "documents": attached,
             "document_retrievals": drew_on,
+            # Whether cognition was CONFIGURED, which is a different question from
+            # whether it produced anything. The dossier previously exposed only the
+            # output, so a persona who formed no memories was indistinguishable from a
+            # run with the feature switched off.
+            "cognition_enabled": bool(_cog.get("enabled")),
+            "cognition_lost_turns": cognition_lost_turns,
             # Phase 6: the convictions this persona was seeded with, minus the
             # operator's private fields (`validity`, `underlying_concern`). None
             # for a run that used no structured personas. Deliberately NOT the
