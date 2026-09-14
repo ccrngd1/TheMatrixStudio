@@ -134,9 +134,19 @@ async def test_cognition_on_captures_structured_fields(db):
                          "cognition": {"enabled": True}}
         await run_simulation(req, db=db, run_id="cog-on")
 
-    # JSON-mode was requested on every call when cognition is on.
+    # A structured reply was requested on every call when cognition is on — but not the
+    # same KIND on both, which is deliberate and worth pinning here:
+    #
+    #   the persona's turn  json_schema   the reply carries the cognition fields, and
+    #                                     `json_object` is only advisory on Bedrock (0/5
+    #                                     compliance on one measured persona)
+    #   speaker selection   json_object   two short fields, no schema written for it yet
     assert calls
-    assert all(kw.get("response_format") == {"type": "json_object"} for kw in calls)
+    formats = [kw.get("response_format") for kw in calls]
+    assert all(f and f.get("type") in ("json_object", "json_schema") for f in formats), formats
+    schemas = [f for f in formats if f["type"] == "json_schema"]
+    assert schemas, "the persona's turn must request a schema, not a bare json_object"
+    assert schemas[0]["json_schema"]["schema"]["required"] == ["utterance"]
 
     sel = await _events(db, "cog-on", "speaker.selected")
     assert sel and all(ev["payload"].get("reason") for ev in sel)
