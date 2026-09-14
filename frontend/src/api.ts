@@ -167,6 +167,50 @@ export function avatarUrl(runId: string, name: string, key: string | null): stri
     `/avatar?v=${encodeURIComponent(key)}`
 }
 
+/**
+ * Fetch an avatar and return an object URL an `<img>` can actually load.
+ *
+ * **An `<img src>` cannot send an `Authorization` header.** The avatar route is authorised
+ * like every other run route, so the browser's image request arrived with no token and API
+ * Gateway answered 401 — every avatar rendered as a broken image, and nothing appeared in
+ * the Lambda log because the request never reached it. Verified against the deployment on
+ * 2026-09-14: the same URL returns 401 with no header and 200 with one.
+ *
+ * So the image is fetched like any other API call, through the one place the token is
+ * attached, and handed to the `<img>` as a `blob:` URL.
+ *
+ * Keyed by URL rather than by content key, deliberately: the URL already carries the key as
+ * `?v=`, so no component has to learn a run id to display a face. A regenerated avatar is a
+ * different key and therefore a different URL, so the cache cannot go stale.
+ *
+ * Object URLs are NOT revoked. The cache is bounded by the distinct avatars in a run's cast,
+ * and revoking on unmount would blank the same face still displayed elsewhere.
+ */
+const avatarBlobs = new Map<string, Promise<string | null>>()
+
+export function loadAvatar(url: string): Promise<string | null> {
+  const cached = avatarBlobs.get(url)
+  if (cached) return cached
+  const pending = (async () => {
+    const headers: Record<string, string> = {}
+    if (tokenProvider) {
+      const token = await tokenProvider()
+      if (token) headers.Authorization = `Bearer ${token}`
+    }
+    const res = await fetch(url, { headers })
+    if (!res.ok) {
+      // A missing avatar is not worth surfacing: the badge falls back to initials, which
+      // is what it already does for every run that generated none. Dropped from the cache
+      // so a later render can retry rather than remembering the failure for the session.
+      avatarBlobs.delete(url)
+      return null
+    }
+    return URL.createObjectURL(await res.blob())
+  })()
+  avatarBlobs.set(url, pending)
+  return pending
+}
+
 export const api = {
   listRuns: (q?: string) =>
     jsonFetch<{ runs: RunSummary[] }>(
