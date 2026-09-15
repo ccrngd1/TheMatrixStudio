@@ -103,29 +103,49 @@ export function ParticipationPanel({ feed, order, onJump }: Props) {
                 }}
               />
             </div>
-            {turns.length === 0 ? (
-              <p className="mt-1 text-[11px] text-amber-400/80">never spoke</p>
-            ) : (
-              // One cell per turn THIS persona took, on a shared axis: every row has the
-              // same cell geometry, so gaps line up down the panel and a persona who went
-              // quiet for fifteen turns is visible as a gap rather than only as a number.
-              <div className="mt-1 flex flex-wrap gap-[2px]">
-                {turns.map((m) => (
+            {/* A cell for EVERY turn in the run, not just this persona's — the position
+                along the row is the position in the conversation. A packed strip of three
+                markers says "three turns" and hides the thing actually worth seeing: that
+                they were turns 1, 2 and 4, or that nobody heard from this persona between
+                turn 5 and turn 30. Filled = they spoke and it is clickable; the rest are
+                inert spacers, so the columns line up down the whole panel. */}
+            <div className="mt-1 flex gap-[1px]">
+              {feed.map((m) =>
+                m.speaker === name ? (
                   <button
                     key={m.seq}
                     type="button"
                     onClick={() => onJump(m.seq)}
                     title={`Turn ${m.turn} — ${name}: ${m.content.slice(0, 80)}`}
                     aria-label={`Jump to turn ${m.turn}, ${name}`}
-                    className="h-3 w-3 rounded-sm opacity-70 transition hover:opacity-100 hover:ring-1 hover:ring-matrix-accent"
+                    className="h-3 min-w-[3px] flex-1 rounded-sm opacity-80 transition hover:opacity-100 hover:ring-1 hover:ring-matrix-accent"
                     style={{ backgroundColor: colorForName(name) }}
                   />
-                ))}
-              </div>
+                ) : (
+                  <span
+                    key={m.seq}
+                    aria-hidden="true"
+                    data-testid="gap"
+                    className="h-3 min-w-[3px] flex-1 rounded-sm bg-matrix-border/40"
+                  />
+                ),
+              )}
+            </div>
+            {turns.length === 0 && (
+              <p className="mt-0.5 text-[11px] text-amber-400/80">never spoke</p>
             )}
           </li>
         ))}
       </ul>
+      {/* The axis, once at the bottom. Without it the rows are a pattern with no scale —
+          a reader cannot tell whether a gap is three turns or thirty. */}
+      <div className="mt-1 flex justify-between text-[10px] text-slate-600">
+        {/* The FIRST and LAST turn numbers in the feed, not 1 and the count. A branch's
+            feed starts at the fork — turns 13..40 — and labelling that "turn 1 … turn 28"
+            would misdescribe every position on the axis. */}
+        <span>turn {feed[0].turn}</span>
+        <span>turn {feed[feed.length - 1].turn}</span>
+      </div>
     </section>
   )
 }

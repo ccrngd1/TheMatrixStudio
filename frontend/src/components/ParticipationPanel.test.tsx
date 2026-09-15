@@ -66,6 +66,59 @@ describe('ParticipationPanel', () => {
     expect(cells[2]).toHaveAccessibleName('Jump to turn 4, Ada')
   })
 
+  it('places each marker at its position in the run, not packed to the left', () => {
+    // Bo speaks only at turn 2 of 4. A packed strip would put his single marker first,
+    // which reads as "Bo opened the conversation" — the opposite of the truth. Every row
+    // is the full length of the run so the columns are turns.
+    render(<ParticipationPanel feed={feed} order={ORDER} onJump={() => {}} />)
+    const strip = within(row('Bo')).getByRole('button').parentElement as HTMLElement
+    const cells = Array.from(strip.children)
+    expect(cells).toHaveLength(feed.length)
+    expect(cells.map((c) => c.tagName)).toEqual(['SPAN', 'BUTTON', 'SPAN', 'SPAN'])
+  })
+
+  it('gives every row the same number of cells, so the columns line up', () => {
+    render(<ParticipationPanel feed={feed} order={ORDER} onJump={() => {}} />)
+    for (const name of ['Ada', 'Bo', 'Cy']) {
+      const r = row(name)
+      const filled = within(r).queryAllByRole('button').length
+      const gaps = within(r).queryAllByTestId('gap').length
+      expect(filled + gaps).toBe(feed.length)
+    }
+  })
+
+  it('labels the axis so a gap has a scale', () => {
+    render(<ParticipationPanel feed={feed} order={ORDER} onJump={() => {}} />)
+    expect(screen.getByText('turn 1')).toBeInTheDocument()
+    expect(screen.getByText('turn 4')).toBeInTheDocument()
+  })
+
+  it('labels the axis with the feed’s own turn numbers, not 1..count', () => {
+    // A branch's feed begins at the fork. Labelling turns 13–16 as "turn 1 … turn 4"
+    // misdescribes every position on the axis, and the count alone cannot tell.
+    const branchFeed: FeedMessage[] = [
+      { turn: 13, seq: 26, speaker: 'Ada', content: 'a' },
+      { turn: 14, seq: 28, speaker: 'Bo', content: 'b' },
+      { turn: 15, seq: 30, speaker: 'Ada', content: 'c' },
+      { turn: 16, seq: 32, speaker: 'Ada', content: 'd' },
+    ]
+    render(<ParticipationPanel feed={branchFeed} order={ORDER} onJump={() => {}} />)
+    expect(screen.getByText('turn 13')).toBeInTheDocument()
+    expect(screen.getByText('turn 16')).toBeInTheDocument()
+    expect(screen.queryByText('turn 1')).not.toBeInTheDocument()
+  })
+
+  it('does not jump when an empty slot is clicked', () => {
+    // The gaps are spacers. Wiring them to a jump would send a click on "Bo did not speak
+    // here" to whichever turn happened to be underneath.
+    const onJump = vi.fn()
+    render(<ParticipationPanel feed={feed} order={ORDER} onJump={onJump} />)
+    for (const gap of within(row('Bo')).getAllByTestId('gap')) {
+      ;(gap as HTMLElement).click()
+    }
+    expect(onJump).not.toHaveBeenCalled()
+  })
+
   it('jumps by seq, not by turn', () => {
     // seq is what identifies a message in the feed; turn numbers repeat across a branch's
     // replayed prefix, so jumping by turn would land on the wrong message there.
