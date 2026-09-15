@@ -10,7 +10,11 @@ work — the previous round's error was choosing what counted as success after s
 
 - **prompt**: every persona's *public* description, the last **10** messages, the last
   speaker's name, and "Choose naturally based on conversation flow".
-- **model**: `speaker_selection` role — Haiku 4.5 by default, `temperature=0.3`, 120 tokens.
+- **model**: `speaker_selection` role — Haiku 4.5 by default, `temperature=0.3`, and **no
+  output cap** since 2026-09-15. It was 120 tokens (50 with cognition off); that cap was the
+  binding constraint on the first model sweep and is the subject of
+  `docs/SELECTION-MODEL-DEFAULT.md` §6–§7. Every number in §2 and §8 was measured with it
+  still in place.
 - **output**: `{"speaker": …, "reason": …}` with cognition on; a bare name with it off.
 - **resolution**: `_match` scans the cast in order for a name that appears as a substring.
 - **fallback**: the first cast member who is not the last speaker.

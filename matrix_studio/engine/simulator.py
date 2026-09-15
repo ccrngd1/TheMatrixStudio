@@ -216,13 +216,27 @@ Respond with ONLY the name of the persona who should speak next. Choose naturall
                 return name
         return None
 
+    # NO `max_tokens`. There used to be one — 120 with cognition on, 50 without — and it
+    # was a Haiku-era number that quietly became the binding constraint on this call.
+    #
+    # Measured 2026-09-15 (`docs/SELECTION-MODEL-DEFAULT.md` §6): a reply that hits the cap
+    # comes back with `finish_reason="length"`, `completion_tokens=120` and **empty
+    # content** — not a partial object — so there is no name to match and the fallback
+    # fires. Haiku averages 75 tokens against that cap and Sonnet 5 averages 80–87, which
+    # made the 120 look survivable while it was actually costing Sonnet 43% of its picks in
+    # replay. Haiku's own margin was ~45 tokens; one more sentence in this prompt would
+    # have pushed it over the same cliff.
+    #
+    # Removing the cap costs nothing in the normal case — output tokens are billed by use,
+    # and the observed replies are 40–90 tokens — and Bedrock accepts an omitted maxTokens
+    # on both models (verified). The residual risk is a runaway reply billed to the model's
+    # own ceiling, which is why `finish_reason` is now recorded below rather than ignored.
     kwargs: Dict[str, Any] = dict(
         # `speaker_selection`, not the conversation model: temperature 0.3 is
         # deliberate and Sonnet 5 would silently drop it. See models.py.
         model=model_for(model, "speaker_selection") or settings.litellm_model,
         messages=messages,
         temperature=0.3,  # Lower temperature for more consistent selection
-        max_tokens=120 if cognition_on else 50,
     )
     if cognition_on:
         kwargs["response_format"] = {"type": "json_object"}
@@ -235,6 +249,7 @@ Respond with ONLY the name of the persona who should speak next. Choose naturall
     try:
         response = await litellm.acompletion(**kwargs)
         raw = (response.choices[0].message.content or "").strip()
+        finish = getattr(response.choices[0], "finish_reason", None)
     except Exception as e:
         logger.error(f"Speaker selection call failed: {e}", exc_info=True)
         return _fallback_speaker(agent_names, last_speaker, "call_failed")
@@ -257,7 +272,14 @@ Respond with ONLY the name of the persona who should speak next. Choose naturall
 
     # The reply named nobody in the cast. The reason (if any) is kept — it says what the
     # moderator was trying to do — but the NAME is ours, and the event will say so.
-    return _fallback_speaker(agent_names, last_speaker, "unresolved", reason)
+    #
+    # `truncated` and `unresolved` are separate causes because they need opposite fixes:
+    # one means the model ran out of room mid-answer (raise the ceiling, or shorten what it
+    # is asked to write), the other means it named somebody who is not in the cast (fix the
+    # prompt or the resolver). With no `max_tokens` above, `truncated` should now never
+    # appear — and that is exactly why it is worth recording if it does.
+    why = "truncated" if finish == "length" else "unresolved"
+    return _fallback_speaker(agent_names, last_speaker, why, reason)
 
 
 async def _generate_response(

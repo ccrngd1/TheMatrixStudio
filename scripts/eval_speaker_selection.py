@@ -208,11 +208,15 @@ async def select(prompt: str, cast_names: List[str], model: str) -> Tuple[Option
     """One selection call. Returns `(name or None, raw)`; None means unresolvable."""
     from matrix_studio.lazy_litellm import litellm
 
+    # No `max_tokens`, matching the engine as of 2026-09-15. The 120 that used to be here
+    # was the single biggest confound in the first model sweep: Sonnet 5 averages 80–87
+    # output tokens on the `counts` prompt, and a reply that hits the cap returns EMPTY
+    # content, so 43% of its picks were scored as unresolvable when the model had in fact
+    # answered. See `docs/SELECTION-MODEL-DEFAULT.md` §6.
     response = await litellm.acompletion(
         model=model,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.3,
-        max_tokens=120,
         response_format={"type": "json_object"},
     )
     raw = (response.choices[0].message.content or "").strip()

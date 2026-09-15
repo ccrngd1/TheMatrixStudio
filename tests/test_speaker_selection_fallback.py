@@ -33,8 +33,10 @@ pytestmark = pytest.mark.asyncio
 
 
 class _Resp:
-    def __init__(self, content):
-        self.choices = [MagicMock(message=MagicMock(content=content))]
+    def __init__(self, content, finish_reason="stop"):
+        self.choices = [
+            MagicMock(message=MagicMock(content=content), finish_reason=finish_reason)
+        ]
         self.usage = MagicMock(prompt_tokens=10, completion_tokens=5)
         self._hidden_params = {"response_cost": 0.0}
 
@@ -46,13 +48,16 @@ def _cast(*names):
 CONVERSATION = [{"speaker": "Ada", "content": "the schedule slipped"}]
 
 
-async def _select(reply, cast=None, last_speaker="Ada", cognition=None, **kw):
+async def _select(reply, cast=None, last_speaker="Ada", cognition=None,
+                  finish_reason="stop", seen=None, **kw):
     cast = cast if cast is not None else _cast("Ada", "Bo", "Cy")
 
     async def fake(**kwargs):
+        if seen is not None:
+            seen.update(kwargs)
         if isinstance(reply, Exception):
             raise reply
-        return _Resp(reply)
+        return _Resp(reply, finish_reason=finish_reason)
 
     with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=fake):
         return await _select_next_speaker(
@@ -175,6 +180,56 @@ async def test_every_fallback_logs_a_warning_naming_the_speaker_and_the_cause(ca
     text = warnings[-1].getMessage()
     assert "call_failed" in text and choice.name in text
     assert "No model made this choice." in text
+
+
+# --------------------------------------------------------------------------- #
+# (2b) the output cap that made a bigger model look like it was refusing
+# --------------------------------------------------------------------------- #
+
+
+class TestThereIsNoOutputCap:
+    """The selection call sent `max_tokens=120` (50 with cognition off) until 2026-09-15.
+
+    Measured in `docs/SELECTION-MODEL-DEFAULT.md` §6: a reply that hits the cap returns
+    `finish_reason="length"`, 120 completion tokens and **empty content** — not a partial
+    object — so nothing can be matched and the fallback fires. Haiku averaged 75 tokens
+    against that cap and Sonnet 5 averaged 80–87, so the cap cost Sonnet 43% of its picks
+    in replay while looking survivable on Haiku's ~45 tokens of headroom.
+    """
+
+    async def test_the_call_sends_no_max_tokens_with_cognition_on(self):
+        seen = {}
+        await _select('{"speaker": "Bo", "reason": "r"}',
+                      cognition=CognitionConfig(enabled=True), seen=seen)
+        assert "max_tokens" not in seen, seen.get("max_tokens")
+
+    async def test_the_call_sends_no_max_tokens_with_cognition_off(self):
+        """The cognition-off path had the tighter cap of the two (50 tokens)."""
+        seen = {}
+        await _select("Bo", seen=seen)
+        assert "max_tokens" not in seen, seen.get("max_tokens")
+
+    async def test_a_truncated_reply_is_recorded_as_truncated_not_unresolved(self):
+        """Opposite fixes: `truncated` means the model ran out of room mid-answer,
+        `unresolved` means it named somebody who is not in the cast. Recording both as
+        `unresolved` is what hid an output-budget problem inside a prompt problem."""
+        choice = await _select("", finish_reason="length",
+                               cognition=CognitionConfig(enabled=True))
+        assert choice.fallback == "truncated"
+        assert choice.name in {"Bo", "Cy"}
+
+    async def test_a_name_outside_the_cast_is_still_unresolved(self):
+        choice = await _select('{"speaker": "Quill", "reason": "r"}', finish_reason="stop",
+                               cognition=CognitionConfig(enabled=True))
+        assert choice.fallback == "unresolved"
+
+    async def test_a_truncated_reply_that_still_named_somebody_is_a_real_pick(self):
+        """Truncation only matters if it cost us the name. A cut-off reply whose speaker
+        field survived is a decision, and marking it as a fallback would overcount."""
+        choice = await _select('{"speaker": "Cy", "reason": "half a sen',
+                               finish_reason="length",
+                               cognition=CognitionConfig(enabled=True))
+        assert (choice.name, choice.fallback) == ("Cy", None)
 
 
 # --------------------------------------------------------------------------- #
