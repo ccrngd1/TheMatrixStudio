@@ -148,6 +148,13 @@ class SelectionConfigModel(BaseModel):
     Set ``{"fairness": false}`` for the pre-2026-09-15 prompt."""
 
     fairness: bool = True
+    #: Intervention H: the moderator may end the run when nobody has anything left to add.
+    #: Guarded in the engine — every persona must have spoken, and it takes two consecutive
+    #: declines. The run still ends as `complete`; `sim.completed` carries `converged: true`
+    #: and the turn it happened, so a 26-turn run that asked for 40 says why.
+    #: Off by default — see `SelectionConfig` for the pre-registered criterion it has not
+    #: yet met. Opt in per run while it is being validated.
+    stop_when_converged: bool = False
 
 
 class RetrievalConfigModel(BaseModel):

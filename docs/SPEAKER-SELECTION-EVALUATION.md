@@ -611,3 +611,75 @@ about $0.30, and losing fifteen turns of argument is worth the whole run.
 **What replay cannot answer**, again: whether the conversation *should* have ended at 26 is a
 judgement about content, and only reading the transcript settles it. Replay can only show
 whether the moderator's verdict tracks the point a reader would pick.
+
+---
+
+## 15. Intervention H, measured (2026-09-15): the prompt half works, the stop half cannot fire
+
+### Offline, against the criterion committed in §14
+
+| transcript | closed loop | open loop |
+|---|---|---|
+| `d7d739dd` (the fair run, pads from turn 26) | **stop@26** both repeats | **stop@26** |
+| `64cff65d` (the control, substantive to turn 40) | **stop@17** both repeats | **never honoured** |
+| `3abd39b3`, `2d2ac45b`, `793b54c4` | no declines | — |
+
+Turn 26 is exactly where a reader sees the padding start, and it reproduced. But turn 17 on the
+control is a **premature stop**, and §14 committed that one of those rejects the arm.
+
+The turn-17 stop is the closed-loop artefact for the third time in this document: the arm is
+shown participation counts derived from its *own* fair picks while reading a transcript in
+which two personas dominate, so it sees "everyone has had their share" beside a duel and
+concludes the room is done. **That state cannot occur in production** — the engine's picks
+*are* the transcript — which is a real argument that open loop is the faithful protocol for
+this arm rather than a convenient one. It is also an argument I only made after seeing which
+protocol favoured the arm, so it does not get to decide. `stop_when_converged` therefore
+**ships off**, and the live run decides.
+
+### Live, opted in: `28235cec` vs the two earlier runs
+
+| | control `64cff65d` | fair `d7d739dd` | fair + H `28235cec` |
+|---|---|---|---|
+| turns | 40 | 40 | 40 |
+| Gini | 0.458 | 0.075 | **0.033** |
+| shares | 16,11,8,3,1,1 | 8,7,7,7,6,5 | **7,7,7,7,6,6** |
+| longest A-B-A-B | 17 | 4 | **3** |
+| turns in closing language | 1/40 | **13/40** | **3/40** |
+| utterance chars, 1st → 2nd half | 754 → 868 | 874 → **584** | **1026 → 743** |
+| cost | $0.9061 | $0.9056 | $0.9698 |
+
+**The relevance wording alone fixed most of the padding.** Asking the moderator to prefer an
+overdue participant *only if they have something specific to add* cut closing-language turns
+from 13 to 3 and kept utterances a third longer in the second half, while pushing the turn
+share to its flattest yet. That half of H is a clear win and it is on by default with
+`fairness`.
+
+**The stop half never fired, and could not have.** The moderator declined eleven times —
+turns 26, 27, 28, 32, 33, 35–40 — with reasons that are specific and, read against the
+transcript, correct: *"all positions stated, disagreements explicitly parked (Avery's objection
+to the gate itself is noted but not blocking launch), concrete next steps assigned … the group
+has moved from debate to execution."* Every one was recorded as `consecutive: 1` and
+`honoured: false`, **including three on consecutive turns.**
+
+The cause is architectural, not a tuning problem. `declines` is a local variable in
+`_run_turns`, and the deployed path runs **one turn per Lambda invocation** (`turn_budget=1`,
+`orchestration.py`), so the counter is re-initialised to zero on every turn. The k=2 guard is
+unsatisfiable in production while working perfectly in-process, which is why the local tests
+pass. Same shape as cognition shipping inert in v0.2 and as `config.model` being dropped: a
+thing that works on the path the tests take and not on the path that ships.
+
+It failed safe — a guard that can never be satisfied means a run that never stops early — but
+the feature is inert. To fix it the streak has to be reconstructed from durable state rather
+than held in a closure: count the trailing `speaker.declined` events since the last
+`agent.response`, which the turn Lambda can read, and pass it in. Filed in `docs/BACKLOG.md`.
+
+### What this leaves
+
+- **Adopted and on:** A+B, plus H's relevance sentence. Together: Gini 0.033, dyad 3, padding
+  3/40, cost within 7% of the control.
+- **Off and unproven:** H's stop. It needs the cross-invocation counter before it can be
+  measured live at all, and then a fresh live run — with the §14 criterion intact, since the
+  premature-stop question is genuinely unanswered.
+- **Worth noting:** the eleven declines are free evidence. The moderator's verdict landed on
+  turn 26 live and in replay, from two different protocols. That is the strongest sign yet
+  that a convergence stop is the right feature; it just has to be built so it can happen.

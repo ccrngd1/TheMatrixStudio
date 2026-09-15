@@ -140,6 +140,29 @@ class SelectionConfig(BaseModel):
         default=True,
         description="Show the moderator participation counts and the fair share",
     )
+    #: Intervention H, and the other half of `fairness`.
+    #:
+    #: Fair rotation front-loads the substance: run `d7d739dd` stated every position by turn
+    #: 25 of 40 and then spent fifteen turns on "confirmed, nothing to add" — and the padding
+    #: was not misallocation, since the persona with the MOST turns padded too. So the
+    #: moderator is allowed to answer "nobody", and that ends the run.
+    #:
+    #: Guarded twice in the turn loop, because the errors are not symmetric: fifteen turns of
+    #: filler cost about $0.30, fifteen turns of argument cut short cost the run. It cannot
+    #: fire until every persona has spoken at least once, and it needs two consecutive
+    #: declines.
+    #: **Default OFF, on purpose.** The pre-registered criterion in §14 says one premature
+    #: convergence rejects the arm, and the closed-loop replay produced exactly that — turn 17
+    #: of the 40-turn control, reproducibly. Open-loop replay does not (never honoured on the
+    #: control, turn 26 on the fair run, which is the right answer), and open loop is the
+    #: faithful protocol here because production's participation counts always agree with the
+    #: transcript. But that protocol was chosen AFTER seeing which one favoured the arm, so it
+    #: does not get to decide. A live run does; until one passes, this stays off and a caller
+    #: opts in with `{"selection": {"stop_when_converged": true}}`.
+    stop_when_converged: bool = Field(
+        default=False,
+        description="Let the moderator end the run when nobody has anything left to add",
+    )
 
     @classmethod
     def from_config(cls, config: Optional[Dict[str, Any]]) -> "SelectionConfig":
