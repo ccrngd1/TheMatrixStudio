@@ -332,3 +332,86 @@ run against `renewal-renewal-opus`, read by a human, with `floor_fired` recorded
 A cheap belt-and-braces option worth testing at the same time: **C on top of A**. The floor
 guarantees nobody starves; the counts let the model avoid *needing* the floor, which should
 reduce how often it fires and therefore how often a turn is forced.
+
+---
+
+## 11. The same six arms on Sonnet 5 (2026-09-15): the ranking does not transfer
+
+Identical protocol to §10 — six cells × 4 transcripts × 3 repeats, closed loop, no output cap
+— with `speaker_selection` on `global.anthropic.claude-sonnet-5`. 73 replays, ~2,050 calls,
+**~$21** (2.6× the Haiku pass; see `docs/SELECTION-MODEL-DEFAULT.md` §6 for why the multiplier
+is 2.6 and not 2). Note Sonnet discards `temperature=0.3`, so every cell here ran at an
+effective temperature of 1 — which is the main reason three repeats is the minimum.
+
+| cell | gini | sd | min turns | replays that starved somebody to 0 | dyad | last-two % |
+|---|---|---|---|---|---|---|
+| baseline | 0.335 | 0.075 | 0.92 | **4 of 12** | 4.5 | 48.8 |
+| baseline+floor (C) | 0.242 | 0.045 | 2.17 | 0 | 3.9 | 32.4 |
+| counts (A) | 0.266 | 0.061 | 1.83 | 1 | 4.8 | 31.8 |
+| **counts+budget (A+B)** | **0.185** | 0.064 | **2.42** | 0 | 3.8 | 22.3 |
+| best (G) | 0.317 | 0.082 | 1.08 | **6 of 13** | 3.5 | 45.0 |
+| best+counts (G+A) | 0.263 | 0.049 | 1.75 | 1 | 3.8 | 29.2 |
+
+### Head to head with §10
+
+| cell | Haiku 4.5 | Sonnet 5 |
+|---|---|---|
+| baseline | 0.332 | 0.335 |
+| baseline+floor (C) | **0.178** | 0.242 |
+| counts (A) | 0.224 | 0.266 |
+| counts+budget (A+B) | 0.223 | **0.185** |
+| best (G) | 0.289 | 0.317 |
+| best+counts (G+A) | 0.268 | 0.263 |
+
+**Four findings, and the second is the one that changes how this evaluation should be run.**
+
+1. **The baselines are indistinguishable — 0.332 vs 0.335.** With the shipped prompt, a model
+   2.6× the price is *exactly as unfair*. This is now measured twice by two different routes
+   (`SELECTION-MODEL-DEFAULT.md` §6 and here), and it is the strongest single result in this
+   document: the skew is a property of the prompt, not of the selector's capability.
+2. **The best intervention is model-dependent, and the ranking inverts.** On Haiku the
+   deterministic floor wins (0.178) and the budget sentence adds nothing over the bare counts
+   (0.223 vs 0.224). On Sonnet the budget sentence is the winner (0.185) and the floor is
+   mid-table (0.242). So "which intervention should we adopt" cannot be answered
+   independently of "which model selects" — and an arm validated on the cheap model may be the
+   wrong arm for the expensive one. Every future arm needs measuring on the model that will
+   actually run it.
+3. **The plausible mechanism for that inversion:** B is a *reasoning* instruction ("a fair
+   share is roughly N turns each … do not let a participant fall far behind"), and the more
+   capable model acts on it. Sonnet+A+B drove picks-from-the-last-two down to 22.3% and
+   reached Gini **0.117 with a minimum of 5 turns** on the 40-turn transcript, its best cell
+   anywhere. Haiku responded to the bare *information* and largely ignored the instruction.
+4. **G is actively harmful on Sonnet.** "Choose the BEST next speaker" scores 0.317 — no
+   better than the baseline — and starves somebody to zero in **6 of 13 replays**, worse than
+   the baseline's 4. The likely reason is uncomfortable and worth stating: a stronger model
+   has firmer opinions about who is *best qualified*, so asked to optimise contribution
+   quality it returns to the same authority repeatedly. **Quality-maximising language
+   increases inequality on the stronger model.** On Haiku the same wording was mildly helpful
+   (0.332 → 0.289), which is exactly the trap in finding 2.
+
+Consistent with §10: stacking G onto A is worse than the best counts-family arm on both
+models (0.263 vs 0.185 here; 0.268 vs 0.223 there).
+
+### What this means for adoption
+
+Under the §6 rule, on Sonnet: **A+B wins** (better Gini and minimum-turns than the control on
+4 of 4 transcripts, no guardrail tripped, nobody starved), C also passes but is dominated, A
+passes weakly (3 of 4, one starvation), **G is rejected** (better on only 2 of 4, and the
+worst starvation of any arm), G+A passes but is dominated.
+
+Taking both sweeps together, the arm to carry into Stage 2 is **A+B — counts plus the fair
+share** — not because it wins either sweep outright (C wins on Haiku, A+B on Sonnet) but
+because it is the only arm that is *near the top on both* (0.223 / 0.185), starves nobody on
+either model, and keeps picks-from-the-last-two above the guardrail on both. It also needs no
+new mechanism: it is ~90 tokens of prompt. C remains the strongest single-model result and the
+only arm that reaches the coverage target, but 19% of its turns are chosen by the guard rather
+than the model, which is the thing Stage 2 exists to judge.
+
+**Still nothing adopted.** `ROLE_DEFAULTS` and the engine's selection prompt are unchanged.
+
+### Instrument note
+
+The Sonnet passes drew intermittent `400 Bad Request` from `bedrock-runtime` — 3 occurrences,
+one whole pass lost and topped up by hand. Not the prompt: the same prompt ran 20/20 clean on
+retry. That is the second sweep in a row where the missing retry (see `docs/BACKLOG.md`) cost
+paid work, and on Sonnet a lost pass costs ~$1.70 rather than ~$0.43.
