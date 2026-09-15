@@ -8,15 +8,37 @@ interface Props {
   agents: Record<string, AgentView>
   activeSpeaker: string | null
   thinking: boolean
+  /** Scroll this message into view and flag it briefly. Sent by the participation panel. */
+  jumpTo?: { seq: number; nonce: number } | null
 }
 
-export function ConversationFeed({ feed, agents, activeSpeaker, thinking }: Props) {
+export function ConversationFeed({
+  feed, agents, activeSpeaker, thinking, jumpTo,
+}: Props) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const [autoScroll, setAutoScroll] = useState(true)
+  const [highlight, setHighlight] = useState<number | null>(null)
 
   useEffect(() => {
     if (autoScroll) bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [feed.length, thinking, autoScroll])
+
+  // The jump carries a `nonce` so clicking the same turn twice scrolls twice — the seq
+  // alone would not change and the effect would not re-run.
+  //
+  // Auto-scroll is switched OFF on a jump rather than fought with: on a live run the next
+  // turn would otherwise yank the view back to the bottom, which reads as the click having
+  // done nothing.
+  useEffect(() => {
+    if (!jumpTo) return
+    setAutoScroll(false)
+    setHighlight(jumpTo.seq)
+    document
+      .getElementById(`turn-${jumpTo.seq}`)
+      ?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    const timer = setTimeout(() => setHighlight(null), 2000)
+    return () => clearTimeout(timer)
+  }, [jumpTo])
 
   return (
     <div className="flex h-full flex-col">
@@ -36,7 +58,13 @@ export function ConversationFeed({ feed, agents, activeSpeaker, thinking }: Prop
           <p className="text-sm text-slate-500">Waiting for the conversation to begin…</p>
         )}
         {feed.map((m) => (
-          <div key={`${m.seq}`} className="flex gap-3">
+          <div
+            key={`${m.seq}`}
+            id={`turn-${m.seq}`}
+            className={`flex gap-3 rounded transition-colors ${
+              highlight === m.seq ? 'bg-matrix-accent/10 ring-1 ring-matrix-accent/60' : ''
+            }`}
+          >
             <AvatarBadge name={m.speaker} portrait={agents[m.speaker]?.portrait ?? null}
               portraitUrl={agents[m.speaker]?.portraitUrl ?? null} size={36} />
             <div className="min-w-0 flex-1">
