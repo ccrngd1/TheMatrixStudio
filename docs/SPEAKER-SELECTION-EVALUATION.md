@@ -550,3 +550,64 @@ cost $2.27. Nothing about the speaker-selection conclusions changes (selection w
 Haiku in both runs by `config.models`, which *is* read), but the transcript labelled "Opus"
 in §11 and in `data/renewalBrief/run.json` is a Sonnet transcript. The silent drop is filed
 as a defect.
+
+---
+
+## 14. Intervention H: the moderator may decline — pre-registered 2026-09-15
+
+**Committed before the arm is written or run**, as with §6. The measurement that motivates it
+is in §13; the measurement that decides it is below.
+
+### What §13 actually showed, which is not quite what it looked like
+
+The complaint is "later turns are personas saying nothing to add". The obvious reading is that
+the fairness prompt called on people who had nothing to contribute. The transcript says
+otherwise:
+
+| | |
+|---|---|
+| fairness-motivated picks **before** turn 26 | 5 (turns 7, 16, 19, 20, 25) |
+| of those, low value | **0** — 642–1255 chars, all formed memories and relationship updates |
+| turns from 26 onward opening in closing language | **15 of 15**, whoever was picked |
+| padding by the *most*-heard persona (Morgan, 8 turns) | turns 29 and 36 |
+
+So the wasted turns are not misallocated; there was nothing left to allocate. A relevance
+gate that re-picks would have searched the cast at turn 26 and found nobody eligible. The
+mechanism has to be able to answer "nobody", and the engine has to be able to act on that.
+
+### The arm
+
+One change to the selection prompt, no extra call:
+
+- prefer an overdue participant **only if they have something specific to add** to the point
+  on the table, rather than because they are behind;
+- and permit `{"speaker": null, "reason": "…"}` for "nobody has anything substantive left".
+
+A declined selection ends the run with a new terminal status **`converged`**, distinct from
+`complete`, carrying the moderator's reason and the turn it happened. Two deterministic guards,
+because a moderator that bails early destroys a run in a way that padding never does:
+
+1. it cannot converge until **every persona has spoken at least once** — otherwise the
+   starvation this whole document is about returns wearing a better name;
+2. it needs **two consecutive declines**, so one odd judgement costs a turn rather than a run.
+
+### Acceptance criteria, committed now
+
+Measured by replaying five transcripts (the four in §10 plus the fair run `d7d739dd`) and
+recording the turn of the first sustained decline.
+
+| | target |
+|---|---|
+| declines on `d7d739dd` | at turn **23–29** (the human-visible tail starts at 26) |
+| declines on a transcript whose tail is genuinely late (`64cff65d`) | **not before turn 36**, or not at all |
+| declines before every persona has spoken | **never** (the guard makes this structural, so a hit is a bug) |
+| turn shares when it does not decline | **unchanged** from §13 within run-to-run noise — this must not undo A+B |
+
+**Decision rule:** adopt only if it declines within the target window on `d7d739dd` **and**
+does not declare convergence early on any of the other four. A single premature stop rejects
+the arm regardless of how well it trims the fair run — losing fifteen turns of filler is worth
+about $0.30, and losing fifteen turns of argument is worth the whole run.
+
+**What replay cannot answer**, again: whether the conversation *should* have ended at 26 is a
+judgement about content, and only reading the transcript settles it. Replay can only show
+whether the moderator's verdict tracks the point a reader would pick.
