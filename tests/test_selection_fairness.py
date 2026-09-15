@@ -101,7 +101,7 @@ class TestItMatchesTheMeasuredArm:
 
         engine = await _prompt()
         seen = [m["speaker"] for m in CONVERSATION]
-        arm = harness.ARMS["counts+budget"](
+        arm = harness.ARMS["counts+budget+decline"](
             topic="the topic",
             personas_desc="\n".join(
                 f"- {n}: " + public_persona(f"a {n}", None, enabled=False) for n in CAST
@@ -163,7 +163,9 @@ class TestTheDefaultAndTheOffSwitch:
 
     async def test_off_restores_the_pre_2026_09_15_prompt(self):
         """The off switch is what makes the comparison re-measurable after shipping."""
-        off = await _prompt(selection=SelectionConfig(fairness=False))
+        off = await _prompt(
+            selection=SelectionConfig(fairness=False, stop_when_converged=False)
+        )
         assert off.rstrip().endswith("Choose naturally based on conversation flow.")
         assert "Participation so far" not in off
         assert "fair share" not in off
@@ -192,7 +194,9 @@ class TestTheBudgetSentence:
     async def test_no_run_length_means_counts_without_a_fair_share(self):
         """A fair share computed from the wrong denominator is worse than none: it would
         tell the moderator everyone is over their share, on every turn."""
-        p = await _prompt(max_messages=None)
+        p = await _prompt(
+            max_messages=None, selection=SelectionConfig(stop_when_converged=False)
+        )
         assert "Participation so far" in p
         assert "fair share" not in p
         assert p.rstrip().endswith("Choose naturally based on conversation flow.")

@@ -16,6 +16,7 @@ import os
 import random
 import time
 import uuid
+from collections import Counter
 from typing import Any, Awaitable, Callable, Dict, List, NamedTuple, Optional
 
 # Deferred: importing litellm costs 1.7 s of the API Lambda's 1.9 s import, which
@@ -76,6 +77,11 @@ logger = logging.getLogger(__name__)
 class SpeakerChoice(NamedTuple):
     """Who speaks next, and whether anybody actually chose them.
 
+    ``name`` is **None** only when the moderator declined to nominate anyone — intervention H,
+    "the discussion has finished". The turn loop decides what to do about that; this function
+    does not, because the guards (has everybody spoken, is this the second decline in a row)
+    are about the run rather than about one selection.
+
     ``fallback`` is ``None`` for a real decision and names the degradation otherwise.
     Before this existed the fallback returned a bare name like any other pick, so a
     provider outage and a moderator's judgement were the same event in the transcript —
@@ -83,7 +89,7 @@ class SpeakerChoice(NamedTuple):
     be attributed between the model and the shrug.
     """
 
-    name: str
+    name: Optional[str]
     reason: Optional[str]
     fallback: Optional[str] = None
 
@@ -159,6 +165,23 @@ def _fairness_block(
             + ", but do not let a participant fall far behind their share without reason."
         )
     return block + _NATURALLY
+
+
+#: Intervention H: relevance before fairness, and permission to say nobody.
+#:
+#: Measured in `docs/SPEAKER-SELECTION-EVALUATION.md` §13–§14: with turns spread evenly the
+#: renewal run finished its argument at turn 25 and then spent fifteen turns on "confirmed,
+#: nothing to add" — and the padding was NOT misallocation. The five fairness-motivated picks
+#: before turn 26 were all substantive; from 26 every turn was filler whoever was chosen,
+#: including the persona with the most turns. So the moderator needs a way to answer "nobody",
+#: because at that point there was no better pick to make.
+_RELEVANCE = (
+    " Prefer a participant who is behind ONLY if they have something specific to add to the "
+    "point being discussed right now; being overdue is not on its own a reason to speak. If "
+    "the discussion has genuinely finished — every position stated, the disagreements either "
+    'resolved or explicitly parked, and nobody has anything substantive left — reply with '
+    '{"speaker": null, "reason": "<what is finished>"} instead of naming someone.'
+)
 
 
 async def _select_next_speaker(
@@ -271,6 +294,14 @@ Respond with ONLY the name of the persona who should speak next. Choose naturall
             _NATURALLY, _fairness_block(agent_names, conversation, max_messages)
         )
 
+    # Intervention H rides on the cognition-on prompt only: it asks for `{"speaker": null}`,
+    # and the cognition-off prompt asks for a bare name, which has no way to express "nobody".
+    may_decline = bool(
+        cognition_on and (selection is None or selection.stop_when_converged)
+    )
+    if may_decline:
+        selection_prompt += _RELEVANCE
+
     messages = [{"role": "user", "content": selection_prompt}]
 
     def _match(text: str) -> Optional[str]:
@@ -319,6 +350,7 @@ Respond with ONLY the name of the persona who should speak next. Choose naturall
 
     reason: Optional[str] = None
     selected = raw
+    declined = False
     if cognition_on:
         # Tolerant parse: this model wraps JSON in a markdown fence, which a bare
         # json.loads rejects. See matrix_studio/jsonio.py.
@@ -327,6 +359,15 @@ Respond with ONLY the name of the persona who should speak next. Choose naturall
             selected = str(parsed.get("speaker", "")).strip() or raw
             r = parsed.get("reason")
             reason = str(r).strip() if r else None
+            # Intervention H. An EXPLICIT null is the verdict "nobody has anything left";
+            # a MISSING key is a malformed reply, and the two must not be confused — the
+            # second would end runs on a parse accident. `"speaker": null` is the contract,
+            # so the key has to be present and its value has to be null.
+            declined = may_decline and "speaker" in parsed and parsed["speaker"] is None
+
+    if declined:
+        logger.info("Moderator declined to nominate: %s", reason)
+        return SpeakerChoice(None, reason, None)
 
     # Validate selection
     matched = _match(selected)
@@ -1371,6 +1412,12 @@ async def _run_turns(
     # of the seven things a turn carries.
     generated = 0
 
+    # Intervention H state. `converged` is set when the moderator has declined to nominate
+    # anybody and both guards allow it; `declines` counts CONSECUTIVE declines, so a single
+    # odd judgement costs a turn rather than a run.
+    converged: Optional[Dict[str, Any]] = None
+    declines = 0
+
     try:
         while turn < max_messages and (turn_budget is None or generated < turn_budget):
             turn += 1
@@ -1387,6 +1434,56 @@ async def _run_turns(
                 # persona's fair share was one turn.
                 max_messages=max_messages,
             )
+
+            # Intervention H: the moderator said nobody has anything left to add.
+            #
+            # Two deterministic guards before that is allowed to end a run, because the
+            # asymmetry is severe: fifteen turns of "confirmed, nothing to add" cost about
+            # $0.30, and fifteen turns of argument cut short cost the whole run.
+            if choice.name is None:
+                declines += 1
+                spoken = {m.get("speaker") for m in conversation}
+                everyone_spoke = all(n in spoken for n in agents)
+                honoured = everyone_spoke and declines >= 2
+                await emit(
+                    turn=turn,
+                    seq=next_seq(),
+                    event_type="speaker.declined",
+                    payload={
+                        "reason": choice.reason,
+                        "consecutive": declines,
+                        "everyone_spoke": everyone_spoke,
+                        "honoured": honoured,
+                    },
+                )
+                if honoured:
+                    # This turn produced no message, so it is not a turn.
+                    turn -= 1
+                    generated -= 1
+                    converged = {"reason": choice.reason, "at_turn": turn}
+                    logger.info(
+                        "Simulation %s converged at turn %d of %d: %s",
+                        run_id, turn, max_messages, choice.reason,
+                    )
+                    break
+                # Overridden. The reason the guard exists is that somebody has not been
+                # heard from, so the override calls on the least-heard persona rather than
+                # drawing at random — and marks the turn, because the moderator did not
+                # choose this speaker.
+                counted = Counter(m.get("speaker") for m in conversation)
+                pool = [n for n in agents if n != last_speaker] or list(agents)
+                pick = min(pool, key=lambda n: (counted.get(n, 0), n))
+                logger.warning(
+                    "Moderator declined at turn %d but %s; calling on %s instead",
+                    turn,
+                    "not everybody has spoken" if not everyone_spoke
+                    else "this is only the first decline",
+                    pick,
+                )
+                choice = SpeakerChoice(pick, choice.reason, "declined_override")
+            else:
+                declines = 0
+
             speaker_name, selection_reason = choice.name, choice.reason
 
             # speaker.selected payload is additive-only: the reason key appears
@@ -1962,7 +2059,10 @@ async def _run_turns(
         # Nothing is emitted and no status is written here: the run is mid-flight and
         # its last turn already checkpointed itself. The caller gets `running`, which
         # is what `CheckContinue` routes on.
-        if turn < max_messages:
+        # `converged is None` matters as much as the turn count: a converged run has turns
+        # left in its budget by definition, so without this it would return `running`, and
+        # the state machine would call the next turn Lambda and the run would never end.
+        if turn < max_messages and converged is None:
             return {
                 "run_id": run_id,
                 "status": "running",
@@ -1988,6 +2088,17 @@ async def _run_turns(
                 "total_turns": turn,
                 "message_count": len(conversation),
                 "total_cost_usd": total_cost,
+                # Additive, and only when it happened. A `converged` STATUS was the first
+                # design and was rejected: `TERMINAL_STATUSES` is duplicated in
+                # `orchestration`, `storage.dynamo` and the SPA's `runStatus.ts`, and one
+                # copy missing an entry has already caused two bugs of exactly that shape
+                # (a stream that never ends, a button that never appears). What a reader
+                # actually needs is not a new lifecycle state but the reason this run has
+                # 26 turns when it asked for 40 — which is a payload field.
+                **({"converged": True,
+                    "converged_at_turn": converged["at_turn"],
+                    "converged_reason": converged["reason"],
+                    "turns_unused": max_messages - turn} if converged else {}),
             },
         )
 
@@ -2016,6 +2127,7 @@ async def _run_turns(
         return {
             "run_id": run_id,
             "status": "complete",
+            **({"converged": converged} if converged else {}),
             "topic": topic,
             "conversation": conversation,
             "agents": {name: agent.model_dump() for name, agent in agents.items()},

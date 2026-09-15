@@ -203,10 +203,32 @@ def arm_best_counts(**kw) -> str:
     return arm_counts(**kw).replace(NATURAL, BEST)
 
 
+#: Intervention H, verbatim from `matrix_studio/engine/simulator.py::_RELEVANCE`. The engine
+#: appends this to the fairness prompt, so `counts+budget+decline` IS the shipped prompt and
+#: `--check-baseline` compares against it.
+RELEVANCE = (
+    " Prefer a participant who is behind ONLY if they have something specific to add to the "
+    "point being discussed right now; being overdue is not on its own a reason to speak. If "
+    "the discussion has genuinely finished — every position stated, the disagreements either "
+    'resolved or explicitly parked, and nobody has anything substantive left — reply with '
+    '{"speaker": null, "reason": "<what is finished>"} instead of naming someone.'
+)
+
+#: What `select()` returns when the moderator declined to nominate anyone. Distinct from
+#: `None`, which means "the reply named nobody in the cast" — a failure, not a verdict.
+DECLINED = "\x00declined"
+
+
+def arm_counts_budget_decline(**kw) -> str:
+    """A+B+H: the shipped prompt as of 2026-09-15."""
+    return arm_counts_budget(**kw) + RELEVANCE
+
+
 ARMS = {
     "baseline": arm_baseline,
     "counts": arm_counts,
     "counts+budget": arm_counts_budget,
+    "counts+budget+decline": arm_counts_budget_decline,
     "best": arm_best,
     "best+counts": arm_best_counts,
 }
@@ -257,6 +279,10 @@ async def select(prompt: str, cast_names: List[str], model: str) -> Tuple[Option
     )
     raw = (response.choices[0].message.content or "").strip()
     parsed = extract_json_object(raw)
+    # An EXPLICIT null is intervention H's verdict; a missing key is a malformed reply. The
+    # engine draws the same distinction, and conflating them would end runs on a parse slip.
+    if parsed is not None and "speaker" in parsed and parsed["speaker"] is None:
+        return DECLINED, raw
     text = str((parsed or {}).get("speaker", "")).strip() or raw
     # Longest name first, so `Dr. Jordan` cannot be resolved as `Jordan` — the resolver bug
     # recorded as intervention F in the design doc.
@@ -303,6 +329,13 @@ async def replay(
 
     picks: List[str] = []
     unresolved = floor_fired = 0
+    # Intervention H, mirroring the engine's guards exactly: a decline is honoured only once
+    # every persona has spoken AND it is the second in a row. `declined_at` is the turn the
+    # engine would have STOPPED at; the replay keeps going afterwards so the distribution
+    # metrics stay comparable with the other arms.
+    declines = 0
+    declined_at: Optional[int] = None
+    declines_total = 0
     for i in range(len(messages)):
         history = messages[:i]
         # Whose participation the arm is shown: the transcript's, or its own picks.
@@ -328,6 +361,19 @@ async def replay(
             "max_messages": int(config.get("max_messages") or len(messages)),
         }
         name, _raw = await select(ARMS[arm](**kw), cast_names, model)
+        if name == DECLINED:
+            declines += 1
+            declines_total += 1
+            everyone_spoke = all(n in set(picks) for n in cast_names)
+            if declined_at is None and everyone_spoke and declines >= 2:
+                declined_at = i  # the engine would have ended the run here
+            # Same override as the engine: call on the least-heard persona.
+            name = min(
+                [n for n in cast_names if n != kw["last_speaker"]] or cast_names,
+                key=lambda n: (Counter(picks).get(n, 0), n),
+            )
+        else:
+            declines = 0
         if name is None:
             unresolved += 1
             # Same degradation as the engine, so the arm is not flattered by a better
@@ -343,11 +389,12 @@ async def replay(
         picks.append(name)
 
     out = score(picks, cast_names)
-    out.update({"unresolved": unresolved, "floor_fired": floor_fired})
+    out.update({"unresolved": unresolved, "floor_fired": floor_fired,
+                "declined_at": declined_at, "declines": declines_total})
     return out
 
 
-async def check_baseline(db, run_id: str, arm: str = "counts+budget") -> bool:
+async def check_baseline(db, run_id: str, arm: str = "counts+budget+decline") -> bool:
     """Confirm the named arm is byte-identical to what the engine sends.
 
     The default is `counts+budget`, not `baseline`, because **that is what ships** as of
@@ -456,7 +503,7 @@ async def main() -> int:
     )
     parser.add_argument("--check-baseline", action="store_true")
     parser.add_argument(
-        "--check-baseline-arm", default="counts+budget", choices=sorted(ARMS),
+        "--check-baseline-arm", default="counts+budget+decline", choices=sorted(ARMS),
         help="which arm the engine's prompt should match (default: what ships)",
     )
     args = parser.parse_args()
@@ -478,17 +525,18 @@ async def main() -> int:
         arms = args.arm or ["baseline"]
         print(f"model {args.model} · floor {'on' if args.floor else 'off'} · "
               f"{'closed' if args.closed_loop else 'open'} loop\n")
-        header = f"{'run':<12} {'arm':<14} {'gini':>5} {'min':>4} {'max':>4} {'dyad':>5} {'cover':>6} {'self':>5} {'last2':>6} {'unres':>6} {'floor':>6}"
+        header = f"{'run':<12} {'arm':<22} {'gini':>5} {'min':>4} {'max':>4} {'dyad':>5} {'cover':>6} {'self':>5} {'last2':>6} {'unres':>6} {'floor':>6} {'decl':>5} {'stop@':>6}"
         print(header); print("-" * len(header))
         for run_id in args.run:
             for arm in arms:
                 s = await replay(
                     bound, run_id, arm, args.model, args.floor, args.closed_loop,
                 )
-                print(f"{run_id[:11]:<12} {arm:<14} {s['gini']:>5.2f} {s['min_turns']:>4} "
+                print(f"{run_id[:11]:<12} {arm:<22} {s['gini']:>5.2f} {s['min_turns']:>4} "
                       f"{s['max_turns']:>4} {s['dyad_chain']:>5} "
                       f"{str(s['coverage_turn']):>6} {s['self_repeats']:>5} "
-                      f"{s['picks_from_last_two']:>6} {s['unresolved']:>6} {s['floor_fired']:>6}")
+                      f"{s['picks_from_last_two']:>6} {s['unresolved']:>6} {s['floor_fired']:>6} "
+                      f"{s['declines']:>5} {str(s['declined_at']):>6}")
                 if s["never_spoke"]:
                     print(f"{'':<27}never spoke: {', '.join(s['never_spoke'])}")
         return 0
