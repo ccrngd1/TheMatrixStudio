@@ -339,6 +339,8 @@ export interface TurnTrace {
   available: boolean
   speaker?: string
   selection_reason?: string | null
+  /** Set only when nobody chose this speaker: `call_failed` or `unresolved`. */
+  selection_fallback?: string | null
   utterance?: string
   rationale?: string
   goal_served?: string

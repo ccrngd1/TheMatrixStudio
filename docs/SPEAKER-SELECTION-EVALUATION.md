@@ -56,9 +56,12 @@ What is NOT broken, so an intervention must not regress it:
    optimal instruction: the most conversationally natural next speaker is usually someone
    already in the exchange. Naturalness compounds into a dyad lock because each individually
    reasonable choice narrows the field.
-3. **The fallback has a cast-position bias and is silent.** `candidates[0]` is always the same
-   person for a given last speaker, and nothing logs that it fired — so we cannot currently
-   tell whether any part of the skew above *is* the fallback rather than the model.
+3. ~~**The fallback has a cast-position bias and is silent.**~~ **Fixed 2026-09-15** — see §9.
+   `candidates[0]` was always the same person for a given last speaker and nothing logged that
+   it fired, so no part of the skew above could be attributed between the model and the
+   fallback. The fallback is now random, logged, and marked on the `speaker.selected` event as
+   `selection_fallback`. **Every arm measured from now on can say how often nobody chose**, and
+   the numbers in §2 and §8 were taken before that was true.
 4. **`_match` resolves by substring scan in cast order.** Two live hazards: with cognition
    **off**, `selected` is the model's whole reply, so the first cast-order name mentioned wins
    rather than the one chosen; and any name that is a substring of another (`Jordan` inside
@@ -146,6 +149,10 @@ experiments: they make the mechanism honest about what it did. Doing them first 
 mechanism 3 as a confound from every arm that follows — otherwise a fallback firing silently
 looks like the model making a choice.
 
+**Done 2026-09-15:** the fallback half of **D** (random pick, warning, `selection_fallback` on
+the event) plus the error-laundering fix. The resolver half of **F** — exact match before
+substring, longest name first — is still open; the harness already does it, the engine does not.
+
 ---
 
 ## 8. Stage 1 results, first pass (2026-09-14)
@@ -195,18 +202,40 @@ So the loop matters, and neither setting is simply correct:
 project keeps relearning: a cheap proxy metric has to be validated against the thing it stands
 in for before its numbers are used to decide anything.
 
-## 9. Two defects found by reading the code, worth fixing regardless
+## 9. Two defects found by reading the code — fixed 2026-09-15, before any further arm
 
-Neither is a quality question, and both are now in `docs/BACKLOG.md`:
+Neither was a quality question. Both are fixed and both are in `docs/BACKLOG.md`.
 
-1. **A programming error in the selection call is indistinguishable from a choice.** While
+1. **A programming error in the selection call was indistinguishable from a choice.** While
    building the harness I called `_select_next_speaker(agents, topic, …)` with the first two
    arguments swapped. `list(agents.keys())` failed on a string, the function's broad
    `except Exception` caught it, and it returned a fallback speaker — **no model call, no
    error surfaced, a speaker chosen anyway.** In a run that would appear as the moderator
    making an odd but plausible pick, every turn, for ever.
-2. **The fallback is silent and cast-position biased.** `candidates[0]` is deterministic, and
-   nothing records that it fired — so the skew measured in §2 cannot currently be attributed
-   between the model and the fallback. Intervention F plus a log line fixes both, and should
-   land before any further arm is measured, because otherwise a fallback firing looks like a
-   decision.
+
+   Now: `agents` is type-checked and an empty cast raises, and **only the provider call is
+   inside the `try`**. A throttle or an expired credential still degrades — that failure is
+   external and the run should continue — but a `TypeError` in our own prompt building,
+   parsing or matching stops the run instead of quietly becoming a speaker.
+
+2. **The fallback was silent and cast-position biased.** Now it draws at random from the
+   candidates other than the last speaker, logs a warning naming the pick and the cause, and
+   marks the `speaker.selected` event with `selection_fallback` (`call_failed` or
+   `unresolved`) — present only when nobody chose. The turn-trace route returns it and the
+   dossier's why-panel says "drawn at random. Nothing chose them." instead of showing a
+   "chosen because" next to a name no model produced.
+
+   The harness's own fallback was changed to match, so an arm is still not flattered by a
+   better degradation than the one that ships.
+
+**What this buys the evaluation:** every arm from here on reports `unresolved` alongside its
+distribution numbers, so a run of identical picks can be read as either a model preference or a
+fallback storm. The §2 and §8 numbers were measured before that was possible, and any arm that
+replaces them should be re-measured with the marker present.
+
+Still open, and deliberately not part of that change: **`_match` resolves by substring scan in
+cast order** (intervention F). Writing one of the new tests surfaced it — a moderator naming
+"Nobody At All" resolved to a cast member called **Bo** — so a wrong resolution is silent in
+exactly the way the fallback used to be. It is pinned as a strict `xfail` in
+`tests/test_speaker_selection_fallback.py`, which will fail the suite the moment F lands and the
+marker becomes a lie.

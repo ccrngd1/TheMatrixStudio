@@ -35,6 +35,7 @@ import argparse
 import asyncio
 import json
 import os
+import random
 import sys
 from collections import Counter
 from pathlib import Path
@@ -290,8 +291,12 @@ async def replay(
         if name is None:
             unresolved += 1
             # Same degradation as the engine, so the arm is not flattered by a better
-            # fallback than the one that ships.
-            name = next((n for n in cast_names if n != kw["last_speaker"]), cast_names[0])
+            # fallback than the one that ships: a RANDOM candidate other than the last
+            # speaker. It used to be `candidates[0]` in both places, which handed every
+            # unresolved turn to the same persona and looked like a preference.
+            name = random.choice(
+                [n for n in cast_names if n != kw["last_speaker"]] or cast_names
+            )
         if floor:
             name, fired = apply_floor(name, kw)
             floor_fired += int(fired)
@@ -325,19 +330,21 @@ async def check_baseline(db, run_id: str) -> bool:
         raise RuntimeError("captured")
 
     L.acompletion = spy
+    # No try/except around this any more. The spy's RuntimeError is raised inside the
+    # engine's provider-call guard and degrades to a fallback pick there, which is fine —
+    # the prompt is already captured. Anything else that escapes is a real error, and
+    # swallowing it here is how the argument-order mistake above stayed invisible.
     try:
-        # (topic, agents, ...) — in that order. Passing them the other way round made
-        # `list(agents.keys())` fail on a string, which the function's broad
-        # `except Exception` swallowed into a silent fallback pick: no call, no error, a
-        # speaker returned anyway. Recorded in the design doc as an observability gap.
+        # (topic, agents, ...) — in that order. Passing them the other way round used to
+        # be swallowed into a silent fallback pick: no call, no error, a speaker returned
+        # anyway. `_select_next_speaker` now type-checks `agents` and raises, and only the
+        # provider call is inside a `try`, so the same mistake is loud.
         await simulator._select_next_speaker(
             run["topic"], snapshot.agents, conversation,
             conversation[-1]["speaker"], get_settings(),
             cognition=CognitionConfig.from_config(config),
             personas=PersonaConfig.from_config(config),
         )
-    except Exception:
-        pass
     finally:
         L.acompletion = original
 

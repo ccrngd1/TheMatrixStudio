@@ -13,9 +13,10 @@ import asyncio
 import json
 import logging
 import os
+import random
 import time
 import uuid
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, NamedTuple, Optional
 
 # Deferred: importing litellm costs 1.7 s of the API Lambda's 1.9 s import, which
 # pushed its init phase past Lambda's hard 10 s limit. The proxy also applies
@@ -71,6 +72,47 @@ logger = logging.getLogger(__name__)
 # `analysis.py` and `pressure.py` do not.
 
 
+class SpeakerChoice(NamedTuple):
+    """Who speaks next, and whether anybody actually chose them.
+
+    ``fallback`` is ``None`` for a real decision and names the degradation otherwise.
+    Before this existed the fallback returned a bare name like any other pick, so a
+    provider outage and a moderator's judgement were the same event in the transcript —
+    and the turn-share skew measured in `docs/SPEAKER-SELECTION-EVALUATION.md` could not
+    be attributed between the model and the shrug.
+    """
+
+    name: str
+    reason: Optional[str]
+    fallback: Optional[str] = None
+
+
+def _fallback_speaker(
+    agent_names: List[str],
+    last_speaker: Optional[str],
+    why: str,
+    reason: Optional[str] = None,
+) -> SpeakerChoice:
+    """Pick a speaker when selection failed — loudly, and without a cast-position bias.
+
+    Two properties, both deliberate:
+
+    - **Random, not ``candidates[0]``.** The old fallback always returned the same
+      person for a given last speaker, so a fallback that fired often enough looked
+      exactly like a persona the moderator favoured.
+    - **A warning, and a named reason on the event.** A silent degradation that returns
+      a plausible answer is the failure mode this project keeps hitting.
+    """
+    candidates = [n for n in agent_names if n != last_speaker] or list(agent_names)
+    pick = random.choice(candidates)
+    logger.warning(
+        "Speaker selection fell back (%s): chose %s at random from %d candidate(s); "
+        "last speaker was %s. No model made this choice.",
+        why, pick, len(candidates), last_speaker,
+    )
+    return SpeakerChoice(pick, reason, why)
+
+
 async def _select_next_speaker(
     topic: str,
     agents: Dict[str, AgentState],
@@ -80,7 +122,7 @@ async def _select_next_speaker(
     model: Optional[str] = None,
     cognition: Optional[CognitionConfig] = None,
     personas: Optional[PersonaConfig] = None,
-) -> tuple[str, Optional[str]]:
+) -> SpeakerChoice:
     """
     Use LLM to select the next speaker.
 
@@ -100,8 +142,20 @@ async def _select_next_speaker(
             structured persona reaches this prompt — see below.
 
     Returns:
-        ``(selected_agent_name, reason_or_None)``
+        A `SpeakerChoice` — ``(name, reason_or_None, fallback_or_None)``.
     """
+    # Checked, rather than left to fail somewhere further down, because the failure this
+    # prevents is invisible: calling this with `agents` and `topic` swapped used to raise
+    # inside the function, get caught by a broad `except Exception`, and return a fallback
+    # speaker — no model call, no error, a plausible-looking pick on every turn for ever.
+    if not isinstance(agents, dict):
+        raise TypeError(
+            "_select_next_speaker(topic, agents, ...): agents must be a dict of "
+            f"name -> AgentState, got {type(agents).__name__}"
+        )
+    if not agents:
+        raise ValueError("_select_next_speaker: no agents to choose a speaker from")
+
     agent_names = list(agents.keys())
     personas_on = bool(personas and personas.enabled)
 
@@ -162,46 +216,48 @@ Respond with ONLY the name of the persona who should speak next. Choose naturall
                 return name
         return None
 
+    kwargs: Dict[str, Any] = dict(
+        # `speaker_selection`, not the conversation model: temperature 0.3 is
+        # deliberate and Sonnet 5 would silently drop it. See models.py.
+        model=model_for(model, "speaker_selection") or settings.litellm_model,
+        messages=messages,
+        temperature=0.3,  # Lower temperature for more consistent selection
+        max_tokens=120 if cognition_on else 50,
+    )
+    if cognition_on:
+        kwargs["response_format"] = {"type": "json_object"}
+
+    # ONLY the provider call is guarded, and deliberately so. Everything above and below
+    # is this repo's own code: a TypeError there is a defect, and degrading to a fallback
+    # speaker would hide it behind a run that still looks like it worked. A throttle, a
+    # bad model id or a credential expiry is a different thing — genuinely external, and
+    # the run should keep going while saying loudly that nobody chose.
     try:
-        kwargs: Dict[str, Any] = dict(
-            # `speaker_selection`, not the conversation model: temperature 0.3 is
-            # deliberate and Sonnet 5 would silently drop it. See models.py.
-            model=model_for(model, "speaker_selection") or settings.litellm_model,
-            messages=messages,
-            temperature=0.3,  # Lower temperature for more consistent selection
-            max_tokens=120 if cognition_on else 50,
-        )
-        if cognition_on:
-            kwargs["response_format"] = {"type": "json_object"}
         response = await litellm.acompletion(**kwargs)
-
-        raw = response.choices[0].message.content.strip()
-
-        reason: Optional[str] = None
-        selected = raw
-        if cognition_on:
-            # Tolerant parse: this model wraps JSON in a markdown fence, which a bare
-            # json.loads rejects. See matrix_studio/jsonio.py.
-            parsed = extract_json_object(raw)
-            if parsed is not None:
-                selected = str(parsed.get("speaker", "")).strip() or raw
-                r = parsed.get("reason")
-                reason = str(r).strip() if r else None
-
-        # Validate selection
-        matched = _match(selected)
-        if matched is not None:
-            return matched, reason
-
-        # Fallback: if unclear, pick someone other than last speaker
-        candidates = [n for n in agent_names if n != last_speaker]
-        return (candidates[0] if candidates else agent_names[0]), reason
-
+        raw = (response.choices[0].message.content or "").strip()
     except Exception as e:
-        logger.error(f"Error selecting speaker: {e}", exc_info=True)
-        # Fallback
-        candidates = [n for n in agent_names if n != last_speaker]
-        return (candidates[0] if candidates else agent_names[0]), None
+        logger.error(f"Speaker selection call failed: {e}", exc_info=True)
+        return _fallback_speaker(agent_names, last_speaker, "call_failed")
+
+    reason: Optional[str] = None
+    selected = raw
+    if cognition_on:
+        # Tolerant parse: this model wraps JSON in a markdown fence, which a bare
+        # json.loads rejects. See matrix_studio/jsonio.py.
+        parsed = extract_json_object(raw)
+        if parsed is not None:
+            selected = str(parsed.get("speaker", "")).strip() or raw
+            r = parsed.get("reason")
+            reason = str(r).strip() if r else None
+
+    # Validate selection
+    matched = _match(selected)
+    if matched is not None:
+        return SpeakerChoice(matched, reason)
+
+    # The reply named nobody in the cast. The reason (if any) is kept — it says what the
+    # moderator was trying to do — but the NAME is ours, and the event will say so.
+    return _fallback_speaker(agent_names, last_speaker, "unresolved", reason)
 
 
 async def _generate_response(
@@ -1233,10 +1289,11 @@ async def _run_turns(
             generated += 1
 
             # Phase 1: Select next speaker
-            speaker_name, selection_reason = await _select_next_speaker(
+            choice = await _select_next_speaker(
                 topic, agents, conversation, last_speaker, settings,
                 model=model, cognition=cognition, personas=personas,
             )
+            speaker_name, selection_reason = choice.name, choice.reason
 
             # speaker.selected payload is additive-only: the reason key appears
             # only when cognition produced one, so cognition-off runs stay
@@ -1247,6 +1304,11 @@ async def _run_turns(
             }
             if selection_reason:
                 speaker_payload["reason"] = selection_reason
+            # Present ONLY when nobody chose. Reading a transcript, `selection_fallback`
+            # is the difference between "the moderator picked them" and "the call failed
+            # and we drew a name" — which the turn shares cannot otherwise distinguish.
+            if choice.fallback:
+                speaker_payload["selection_fallback"] = choice.fallback
             await emit(
                 turn=turn,
                 seq=next_seq(),
