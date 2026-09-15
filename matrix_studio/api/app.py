@@ -141,6 +141,15 @@ class CognitionConfigModel(BaseModel):
     thread_stale_after: int = Field(default=5, ge=1)
 
 
+class SelectionConfigModel(BaseModel):
+    """Next-speaker selection. Unlike the others this defaults to ON: the moderator gets
+    participation counts and the run's fair share, which is measured to halve the Gini of
+    turn share and to stop starving personas entirely (§10–§11 of the evaluation doc).
+    Set ``{"fairness": false}`` for the pre-2026-09-15 prompt."""
+
+    fairness: bool = True
+
+
 class RetrievalConfigModel(BaseModel):
     """Phase 5 per-run document retrieval. Omitted -> disabled (pre-Phase-5
     behavior). ``max_chars`` is a hard ceiling on retrieved document text per
@@ -188,6 +197,9 @@ class RunConfigModel(BaseModel):
     cognition: Optional[CognitionConfigModel] = None
     # Phase 5: optional document retrieval. Independent of cognition.
     retrieval: Optional[RetrievalConfigModel] = None
+    # Next-speaker fairness. Omitted -> ON, which is the opposite of every other block
+    # here; see SelectionConfigModel for the measurement that earned that default.
+    selection: Optional[SelectionConfigModel] = None
     # Phase 6: optional structured personas. Omitted -> disabled, and any
     # `structured` block on a cast member is ignored (pre-Phase-6 prompts).
     personas: Optional[PersonaConfigModel] = None
