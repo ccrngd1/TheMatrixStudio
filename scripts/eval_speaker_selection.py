@@ -347,11 +347,22 @@ async def replay(
     return out
 
 
-async def check_baseline(db, run_id: str) -> bool:
-    """Confirm `arm_baseline` is byte-identical to what the engine sends."""
+async def check_baseline(db, run_id: str, arm: str = "counts+budget") -> bool:
+    """Confirm the named arm is byte-identical to what the engine sends.
+
+    The default is `counts+budget`, not `baseline`, because **that is what ships** as of
+    2026-09-15: the engine's selection prompt now carries the participation counts and the
+    fair share (`SelectionConfig.fairness`, on by default). `baseline` is still the right
+    answer for a run whose config sets `{"selection": {"fairness": false}}`, and passing
+    `--check-baseline-arm baseline` checks that instead.
+
+    This check is the thing that keeps the numbers in the design doc meaningful. An arm is
+    a claim about a prompt; if the engine's copy of that prompt drifts by a word, every
+    measurement in §10–§11 silently starts describing something that is not running.
+    """
     from matrix_studio.engine import simulator
     from matrix_studio.settings import get_settings
-    from matrix_studio.state import CognitionConfig, PersonaConfig
+    from matrix_studio.state import CognitionConfig, PersonaConfig, SelectionConfig
     import litellm as L
 
     run = await db.get_run(run_id)
@@ -384,11 +395,19 @@ async def check_baseline(db, run_id: str) -> bool:
             conversation[-1]["speaker"], get_settings(),
             cognition=CognitionConfig.from_config(config),
             personas=PersonaConfig.from_config(config),
+            selection=SelectionConfig.from_config(config),
+            max_messages=int(config.get("max_messages") or len(conversation)),
         )
     finally:
         L.acompletion = original
 
-    mine = arm_baseline(
+    # The state the engine had at that call, rebuilt for the arm. Participation is counted
+    # over the WHOLE conversation including the last message, because that is what the
+    # engine holds when it selects: `last_speaker` is the final element of `conversation`,
+    # so the persona who just spoke reads as "last spoke 0 turn(s) ago". Counting over
+    # `conversation[:-1]` instead shifted every `since` by one and this check caught it.
+    seen = [m["speaker"] for m in conversation]
+    mine = ARMS[arm](
         topic=run["topic"],
         personas_desc=_personas_block(
             cast, bool((config.get("personas") or {}).get("enabled"))
@@ -397,6 +416,16 @@ async def check_baseline(db, run_id: str) -> bool:
             f"{m['speaker']}: {m['content']}" for m in conversation[-WINDOW:]
         ),
         last_speaker=conversation[-1]["speaker"],
+        cast_names=[c["name"] for c in cast],
+        taken=Counter(seen),
+        since={
+            n: next(
+                (len(seen) - j - 1 for j in range(len(seen) - 1, -1, -1) if seen[j] == n),
+                None,
+            )
+            for n in [c["name"] for c in cast]
+        },
+        max_messages=int(config.get("max_messages") or len(conversation)),
     )
     same = captured.get("prompt") == mine
     print(f"baseline prompt identical to the engine's: {same}")
@@ -426,6 +455,10 @@ async def main() -> int:
         "--model", default="bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0"
     )
     parser.add_argument("--check-baseline", action="store_true")
+    parser.add_argument(
+        "--check-baseline-arm", default="counts+budget", choices=sorted(ARMS),
+        help="which arm the engine's prompt should match (default: what ships)",
+    )
     args = parser.parse_args()
 
     if not os.environ.get("DATA_BUCKET"):
@@ -439,7 +472,8 @@ async def main() -> int:
     bound = db.for_owner(args.owner)
     try:
         if args.check_baseline:
-            return 0 if await check_baseline(bound, args.run[0]) else 1
+            ok = await check_baseline(bound, args.run[0], args.check_baseline_arm)
+            return 0 if ok else 1
 
         arms = args.arm or ["baseline"]
         print(f"model {args.model} · floor {'on' if args.floor else 'off'} · "

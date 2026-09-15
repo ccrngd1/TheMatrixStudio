@@ -48,6 +48,7 @@ from matrix_studio.state import (
     CognitionConfig,
     PersonaConfig,
     RetrievalConfig,
+    SelectionConfig,
     SimSnapshot,
 )
 from matrix_studio.storage import Database
@@ -706,6 +707,7 @@ async def execute_slice(
         pending_threads=threads,
         retrieval=RetrievalConfig.from_config(cfg),
         personas=PersonaConfig.from_config(cfg),
+        selection=SelectionConfig.from_config(cfg),
         firsthand_citations=ledger,
         # A stop is a DynamoDB flag read once per slice, not an in-memory set. The
         # engine still polls it AFTER each turn is persisted, so the in-flight turn

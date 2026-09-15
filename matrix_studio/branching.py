@@ -45,6 +45,7 @@ from matrix_studio.state import (
     PersonaConfig,
     PendingThread,
     RetrievalConfig,
+    SelectionConfig,
     SimSnapshot,
 )
 from matrix_studio.storage import Database
@@ -476,6 +477,7 @@ async def execute_branch(
         # about, so losing them at the fork would make the branch answer a
         # different question than the one asked.
         personas=PersonaConfig.from_config(branch_config),
+        selection=SelectionConfig.from_config(branch_config),
     )
 
 
@@ -639,4 +641,5 @@ async def resume_run_in_place(
         retrieval=RetrievalConfig.from_config(resume_cfg),
         # Phase 6: same for structured personas — the run's own config.
         personas=PersonaConfig.from_config(resume_cfg),
+        selection=SelectionConfig.from_config(resume_cfg),
     )

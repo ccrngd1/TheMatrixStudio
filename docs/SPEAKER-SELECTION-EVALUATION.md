@@ -9,7 +9,12 @@ work — the previous round's error was choosing what counted as success after s
 `matrix_studio/engine/simulator.py:_select_speaker`. One LLM call per turn:
 
 - **prompt**: every persona's *public* description, the last **10** messages, the last
-  speaker's name, and "Choose naturally based on conversation flow".
+  speaker's name, **each persona's turn count and how long since they last spoke, the run's
+  length and the resulting fair share** (interventions A+B, adopted 2026-09-15 — §12), and
+  "Choose naturally based on conversation flow, but do not let a participant fall far behind
+  their share without reason". Before that adoption the last two items were absent, which is
+  the `baseline` arm and the configuration every measurement in §2, §8, §10 and §11 was taken
+  against.
 - **model**: `speaker_selection` role — Haiku 4.5 by default, `temperature=0.3`, and **no
   output cap** since 2026-09-15. It was 120 tokens (50 with cognition off); that cap was the
   binding constraint on the first model sweep and is the subject of
@@ -415,3 +420,57 @@ The Sonnet passes drew intermittent `400 Bad Request` from `bedrock-runtime` —
 one whole pass lost and topped up by hand. Not the prompt: the same prompt ran 20/20 clean on
 retry. That is the second sweep in a row where the missing retry (see `docs/BACKLOG.md`) cost
 paid work, and on Sonnet a lost pass costs ~$1.70 rather than ~$0.43.
+
+---
+
+## 12. Adopted 2026-09-15: A+B ships, ON by default
+
+`SelectionConfig.fairness`, default **True**. The moderator's prompt now carries the
+participation counts and the fair share on every turn of every run.
+
+**Why A+B and not the better single number.** C (the deterministic floor) wins on Haiku
+(0.178) and A+B wins on Sonnet (0.185); C is mid-table on Sonnet (0.242) and B is worthless on
+Haiku. The ranking of every other intervention **inverts between models** (§11), so choosing
+the per-model winner means choosing an arm that silently becomes the wrong one the next time
+somebody sets `models.speaker_selection`. A+B is the only arm near the top on both, and the
+only one that never starved anybody on either model — 0 of 24 replays against the baseline's 6.
+It is also ~90 tokens of prompt with no new mechanism, so it is the cheapest thing to ship and
+the cheapest to withdraw.
+
+| | baseline | A+B |
+|---|---|---|
+| Gini, Haiku 4.5 | 0.332 | **0.223** |
+| Gini, Sonnet 5 | 0.335 | **0.185** |
+| minimum turns | 1.08 / 0.92 | 2.17 / 2.42 |
+| replays starving somebody to zero | 6 of 24 | **0 of 24** |
+| cost per 40-turn run (Haiku) | $0.133 | $0.137 |
+
+**Default ON is the unusual part**, and deliberate: every other config block in `state.py`
+defaults to the pre-feature behaviour, because those features change what a run *is*. This one
+corrects a measured defect, and an opt-in default would have meant almost no run got the fix.
+`{"selection": {"fairness": false}}` restores the old prompt — which is also what makes the
+comparison re-measurable after shipping, since an intervention with no off switch cannot be
+A/B'd again.
+
+**The text is byte-identical to the `counts+budget` arm**, including "last spoke 0 turn(s)
+ago" for the persona who just spoke. Two checks enforce that: a unit test that rebuilds the
+arm offline, and `--check-baseline`, which now defaults to comparing the engine against
+`counts+budget` rather than `baseline` and was run against `64cff65d` (True). Tidying the
+phrasing would be a different prompt wearing this document's numbers.
+
+**Wired through every path**, because the deployed stack runs turns via
+`orchestration` → `resume_simulation`, not `run_simulation`: a config parsed only in the
+fresh-run path is a feature that works on a laptop and is dead in production, which is how
+cognition shipped inert in v0.2. Tests assert the orchestrated turn path and both branching
+resume calls pass it, and that `RunConfigModel` (which is strict) accepts the block.
+
+**What is still owed.** This is a Stage-1 result applied to production, not a Stage-2 one. The
+open question is unchanged and only a live run answers it: does a conversation whose turns are
+spread more evenly still *follow itself*? Next step is one 40-turn run on the
+`renewal-renewal` definition against `64cff65d` as the control, comparing the distribution
+metrics and reading the transcript. C stays a candidate on top of A+B — the counts should mean
+the floor rarely needs to fire.
+
+18 tests; six mutants killed (default flipped off, block appended instead of replacing the
+closing sentence, off switch ignored, never-spoken rendered as "0 turn(s) ago", budget sentence
+dropped, orchestrated path losing the config).

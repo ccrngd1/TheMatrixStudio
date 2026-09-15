@@ -115,6 +115,45 @@ class CognitionConfig(BaseModel):
         return cls(**{k: v for k, v in raw.items() if k in cls.model_fields})
 
 
+class SelectionConfig(BaseModel):
+    """Next-speaker selection flags (per-run, read from ``config['selection']``).
+
+    ``fairness`` adds two things to the moderator's prompt: each persona's turn count
+    and how long since they last spoke (intervention A), and the run's length with the
+    resulting fair share (intervention B).
+
+    **It defaults to ON**, which is unlike every other config block in this file, and the
+    reason is that the alternative is measured to be worse. Across 146 replays over four
+    transcripts and two models (`docs/SPEAKER-SELECTION-EVALUATION.md` §10–§11), the
+    shipped prompt without it scores a Gini of turn share of 0.332 (Haiku 4.5) and 0.335
+    (Sonnet 5), and starves at least one persona to **zero turns** in 6 of 24 replays. With
+    it: 0.223 and 0.185, and nobody was ever starved on either model.
+
+    A run that wants the old behaviour sets ``{"selection": {"fairness": false}}`` — which
+    is also how the comparison gets re-measured later, since an intervention with no off
+    switch cannot be A/B'd again after it ships.
+    """
+
+    type: str = Field(default="SelectionConfig", description="Type discriminator")
+    schema_version: str = Field(default="1.0.0", description="Schema version")
+    fairness: bool = Field(
+        default=True,
+        description="Show the moderator participation counts and the fair share",
+    )
+
+    @classmethod
+    def from_config(cls, config: Optional[Dict[str, Any]]) -> "SelectionConfig":
+        """Parse from a run ``config`` dict. Missing/invalid -> the default (fairness ON).
+
+        Note the asymmetry with the other blocks: a missing ``selection`` key means the
+        feature is ON, because it is the measured default rather than an opt-in.
+        """
+        raw = (config or {}).get("selection")
+        if not isinstance(raw, dict):
+            return cls()
+        return cls(**{k: v for k, v in raw.items() if k in cls.model_fields})
+
+
 class RetrievalConfig(BaseModel):
     """Phase 5 document-retrieval flags (per-run, read from ``config['retrieval']``).
 

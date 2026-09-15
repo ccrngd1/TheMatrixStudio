@@ -58,6 +58,7 @@ from matrix_studio.state import (
     PendingThread,
     PersonaConfig,
     RetrievalConfig,
+    SelectionConfig,
     SimSnapshot,
 )
 from matrix_studio.storage import Database
@@ -113,6 +114,53 @@ def _fallback_speaker(
     return SpeakerChoice(pick, reason, why)
 
 
+#: The closing instruction of the selection prompt, and the anchor the fairness block
+#: replaces. Named because three prompts and one test now depend on the exact string.
+_NATURALLY = "Choose naturally based on conversation flow."
+
+
+def _fairness_block(
+    agent_names: List[str],
+    conversation: List[Dict[str, Any]],
+    max_messages: Optional[int],
+) -> str:
+    """Interventions A and B: the participation counts, then the run's fair share.
+
+    **The wording here is byte-identical to the `counts+budget` arm of
+    `scripts/eval_speaker_selection.py`, deliberately, and must stay that way.** That arm
+    is what was measured across 146 replays; a reworded copy of it in the engine would mean
+    the numbers in `docs/SPEAKER-SELECTION-EVALUATION.md` §10–§11 describe a prompt that no
+    longer exists. `--check-baseline` asserts the two are the same text.
+
+    That includes the parts a copy-editor would fix. "last spoke 0 turn(s) ago" for the
+    persona who just spoke is odd English and it is what the measured arm says.
+    """
+    seen = [m.get("speaker") for m in conversation]
+    lines = []
+    for name in agent_names:
+        taken = sum(1 for s in seen if s == name)
+        since = next(
+            (len(seen) - j - 1 for j in range(len(seen) - 1, -1, -1) if seen[j] == name),
+            None,
+        )
+        ago = "has not spoken yet" if since is None else f"last spoke {since} turn(s) ago"
+        lines.append(f"- {name}: {taken} turn(s) so far, {ago}")
+    block = "Participation so far:\n" + "\n".join(lines) + "\n\n"
+    if max_messages:
+        # Intervention B. Omitted when the run's length is unknown rather than guessed:
+        # a fair share computed from the wrong denominator is worse than no fair share,
+        # and B is the half of this that the stronger model actually acts on (§11).
+        fair = max_messages / max(1, len(agent_names))
+        return (
+            block
+            + f"This conversation runs for {max_messages} turns with {len(agent_names)} "
+            f"participants, so a fair share is roughly {fair:.0f} turns each. "
+            + _NATURALLY[:-1]
+            + ", but do not let a participant fall far behind their share without reason."
+        )
+    return block + _NATURALLY
+
+
 async def _select_next_speaker(
     topic: str,
     agents: Dict[str, AgentState],
@@ -122,6 +170,8 @@ async def _select_next_speaker(
     model: Optional[str] = None,
     cognition: Optional[CognitionConfig] = None,
     personas: Optional[PersonaConfig] = None,
+    selection: Optional[SelectionConfig] = None,
+    max_messages: Optional[int] = None,
 ) -> SpeakerChoice:
     """
     Use LLM to select the next speaker.
@@ -207,6 +257,19 @@ Recent conversation:
 Last speaker: {last_speaker or 'None (start of conversation)'}
 
 Respond with ONLY the name of the persona who should speak next. Choose naturally based on conversation flow."""
+
+    # Interventions A+B, ON by default. Measured across 146 replays on two models: the
+    # prompt above alone gives a Gini of turn share of 0.332 (Haiku) / 0.335 (Sonnet) and
+    # leaves somebody with zero turns in 6 of 24 replays; with this block, 0.223 / 0.185 and
+    # nobody starved. See `docs/SPEAKER-SELECTION-EVALUATION.md` §10–§11.
+    #
+    # Note it is appended to BOTH prompts. The measurement used the cognition-on one, since
+    # that is what every recorded transcript ran; the closing sentence is the same string in
+    # both, and there is no reason a cognition-off run should be the unfair one.
+    if selection is None or selection.fairness:
+        selection_prompt = selection_prompt.replace(
+            _NATURALLY, _fairness_block(agent_names, conversation, max_messages)
+        )
 
     messages = [{"role": "user", "content": selection_prompt}]
 
@@ -909,6 +972,7 @@ async def run_simulation(
     cognition = CognitionConfig.from_config(config)
     retrieval = RetrievalConfig.from_config(config)
     personas_cfg = PersonaConfig.from_config(config)
+    selection_cfg = SelectionConfig.from_config(config)
     run_name = request.get("name")
     run_description = request.get("description")
     # Who the run belongs to. Absent for a direct engine call (CLI, tests, the
@@ -1019,6 +1083,7 @@ async def run_simulation(
         cognition=cognition,
         retrieval=retrieval,
         personas=personas_cfg,
+        selection=selection_cfg,
         should_stop=should_stop,
     )
 
@@ -1243,6 +1308,7 @@ async def _run_turns(
     pending_threads: Optional[List[PendingThread]] = None,
     retrieval: Optional[RetrievalConfig] = None,
     personas: Optional[PersonaConfig] = None,
+    selection: Optional[SelectionConfig] = None,
     should_stop: Optional[Callable[[], bool]] = None,
     firsthand_citations: Optional[List[List[str]]] = None,
     turn_budget: Optional[int] = None,
@@ -1314,6 +1380,12 @@ async def _run_turns(
             choice = await _select_next_speaker(
                 topic, agents, conversation, last_speaker, settings,
                 model=model, cognition=cognition, personas=personas,
+                selection=selection,
+                # The run's TOTAL budget, not this call's turn_budget: intervention B is
+                # about pacing across the whole conversation, and a Step Functions turn
+                # Lambda that passed its own budget of 1 would tell the moderator every
+                # persona's fair share was one turn.
+                max_messages=max_messages,
             )
             speaker_name, selection_reason = choice.name, choice.reason
 
@@ -2285,6 +2357,9 @@ async def resume_simulation(
     pending_threads: Optional[List[PendingThread]] = None,
     retrieval: Optional[RetrievalConfig] = None,
     personas: Optional[PersonaConfig] = None,
+    # Next-speaker fairness (A+B). None means the default, which is ON — a resumed or
+    # branched run must not quietly become the unfair one.
+    selection: Optional[SelectionConfig] = None,
     should_stop: Optional[Callable[[], bool]] = None,
     firsthand_citations: Optional[List[List[str]]] = None,
     # Phase 5: turns THIS call may generate (None = the run's whole remaining budget).
@@ -2423,5 +2498,6 @@ async def resume_simulation(
         turn_budget=turn_budget,
         retrieval=retrieval,
         personas=personas,
+        selection=selection,
         should_stop=should_stop,
     )
