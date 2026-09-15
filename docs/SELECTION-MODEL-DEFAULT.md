@@ -444,3 +444,42 @@ Primary sweep $8.05, addendum $2.58, probes and diagnostics ~$1.0 — **~$11.6 t
 $4 estimate in §5**. The estimate was low for the same two reasons the cost table was:
 completion tokens twice what I assumed, and Sonnet's tokenizer counting 36% more input. The
 per-call figure in §3 ($0.0035 on Haiku) was accurate; the per-replay figure was not.
+
+---
+
+## 7. The cap is gone (2026-09-15), and that was the whole "refusal"
+
+`max_tokens` has been **removed from the selection call entirely** — it was 120 with
+cognition on, 50 without. Verified first that Bedrock accepts an omitted `maxTokens` on both
+Haiku 4.5 and Sonnet 5 through litellm (`finish_reason=stop`, 42–55 tokens out), because a
+silently-rejected parameter is how this file got written in the first place.
+
+Re-running the cell that §6 had to disqualify, same protocol, no cap:
+
+| transcript | gini | min | dyad | coverage | **unresolved** |
+|---|---|---|---|---|---|
+| renewal-renewal-2 | 0.18 | 3 | 3 | 11 | **0** (was 41.7%) |
+| renewal-opus40 | 0.23 | 3 | 4 | 7 | **0** (was 50.8%) |
+
+**The cap was the entire cause.** Sonnet was never refusing or failing to follow the format;
+it was being cut off mid-reply, and a truncated reply comes back as empty content rather than
+a partial object. Uncapped, it resolves every single pick, and its Gini (0.18 / 0.23, one
+pass each) is in the same region as `haiku-counts` (0.197 / 0.227, three passes) — which
+means §6's *cost* argument now carries the whole decision, not the guardrail. Sonnet is still
+2.6× the price for no measured fairness gain, so `ROLE_DEFAULTS` stays on Haiku, but the
+honest statement is that Sonnet was disqualified on a defect of ours rather than on merit.
+
+Also changed: a truncated reply that costs us the name is now recorded as
+`selection_fallback="truncated"`, distinct from `"unresolved"`. They need opposite fixes —
+one is an output-budget problem, the other a prompt or resolver problem — and collapsing them
+is what let an output-budget problem hide inside what looked like a prompt problem. A
+truncated reply whose `speaker` field survived is still counted as a real decision.
+
+Costs nothing in the normal case: output tokens are billed by use and the observed replies
+are 40–90 tokens. The residual risk is a runaway reply billed to the model's own ceiling
+(128k on Sonnet 5, ~$1.28), which is why `finish_reason` is now read instead of ignored.
+
+**The other caps were not touched**, and one of them is the same shape of hazard: `reflection`
+also sits at 120 tokens for a one-sentence belief. `validation` (50) writes pass/fail and
+`naming` (60) writes two words, so both have room; `voice` (2048) is comfortable against a
+measured mean of ~220 tokens per utterance. Reflection is the one worth checking next.

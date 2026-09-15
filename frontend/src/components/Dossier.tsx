@@ -427,7 +427,9 @@ function MessageRow({ m, runId, traceable }: { m: FeedMessage; runId: string; tr
                 <p className="rounded bg-amber-950/40 p-1 text-[11px] text-amber-300">
                   {trace.selection_fallback === 'call_failed'
                     ? 'The speaker-selection call failed on this turn'
-                    : 'The moderator’s reply named nobody in the cast'}
+                    : trace.selection_fallback === 'truncated'
+                      ? 'The moderator’s reply was cut off before it named anyone'
+                      : 'The moderator’s reply named nobody in the cast'}
                   , so this speaker was drawn at random. Nothing chose them.
                 </p>
               ) : (
