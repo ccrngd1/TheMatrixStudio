@@ -474,3 +474,79 @@ the floor rarely needs to fire.
 18 tests; six mutants killed (default flipped off, block appended instead of replacing the
 closing sentence, off switch ignored, never-spoken rendered as "0 turn(s) ago", budget sentence
 dropped, orchestrated path losing the config).
+
+---
+
+## 13. Stage 2 (2026-09-15): the live run, and what it exposed
+
+One 40-turn run on the `renewal-renewal` definition against `64cff65d` as the control. Same
+cast, same knowledge bases, same retrieval and cognition config, same voice model (Sonnet 5 —
+see the correction below), same length. The only difference is A+B in the selection prompt.
+
+| | control `64cff65d` | fair `d7d739dd` |
+|---|---|---|
+| turn shares | 16, 11, 8, 3, 1, 1 | **8, 7, 7, 7, 6, 5** |
+| Gini | 0.458 | **0.075** |
+| min / max turns | 1 / 16 | **5 / 8** |
+| longest A-B-A-B chain | **17** | **4** |
+| everyone had spoken by | turn 36 | **turn 8** |
+| self-repetition | 0 | 0 |
+| selection fallbacks | none | none |
+| rationales / memories / reflections | 40/40 · 44 · 10 | 40/40 · 44 · 10 |
+| retrieval hit | 40/40 turns | 40/40 turns |
+| cost | $0.9061 | $0.9056 |
+
+Every distribution target in §6 is met at once, for the first time: Gini 0.075 against a
+target of ≤ 0.15, minimum 5 against ≥ 2, dyad chain 4 against ≤ 4, coverage turn 8 against
+≤ 8. It cost nothing — the two runs are within $0.0005 of each other — and cognition,
+retrieval and the fallback markers are all unaffected.
+
+**And the forced turns are responsive, which was the risk.** Dr. Jordan's turn 5, chosen
+because "the discussion has moved from statutory text to clinical mechanism", answers
+Riley's mechanism argument directly with board-complaint experience. Avery's turn 7,
+chosen because "Avery hasn't spoken yet", opens by agreeing with Casey's framing and then
+addresses Jordan by name. Neither reads as a quota being filled.
+
+### The problem the fair run exposed, which the unfair one was hiding
+
+| | control | fair |
+|---|---|---|
+| turns opening in closing language | 1/40 | **15/40** |
+| run goes terminal at | never | **turn 26** |
+| utterance length, first half → second half | 754 → 868 chars | 874 → **584** |
+| consecutive turns with the same opening phrase | 0 | **6** |
+
+The fair conversation **finishes its business at turn 25 and then pads for fifteen turns**.
+Four different personas open consecutive turns with almost the same sentence ("Nothing wrong
+from where I sit…"), and the last six turns are all variations on "confirmed, nothing to add".
+
+This is not A+B misbehaving; it is A+B removing the thing that was concealing a different
+defect. In the control, the Morgan/Riley duel spent turns on substance while four
+personas waited, and the quiet ones entered at turns 35 and 36 — *"I've been quiet because
+this whole back-and-forth has been a practice-act question"* — so new material was still
+arriving at turn 40. Unfairness was acting as an accidental pacing mechanism: it rationed
+the cast so the run could not run out of things to say. Spread the turns evenly and every
+position is on the table by turn 25, at which point the run has fifteen turns of budget and
+nothing to allocate.
+
+**The real defect is that a run has no termination criterion other than `max_messages`.**
+Nothing detects that a conversation has converged, so the engine keeps buying turns after
+the argument is over — at Sonnet prices, about $0.30 of the $0.91 here bought fifteen turns
+of people agreeing. That is now in `docs/BACKLOG.md`.
+
+**A+B stays.** The first 25 turns of the fair run are better by every measure that matters
+and the last 15 are cheap filler; the control's 40 turns are a two-person argument with an
+audience of four. Options, cheapest first: shorten this definition to ~25 turns (one line of
+config); or add a convergence stop, which is the general fix and needs designing.
+
+### Correction to §11 and to `SELECTION-MODEL-DEFAULT.md`
+
+`64cff65d` was reported as an **Opus 5** run. It was not: `model` is a top-level field of
+`CreateRunModel`, not a field of `RunConfigModel`, so the `config.model` in
+`data/renewalBrief/run.json` was silently discarded by Pydantic and the voice ran on the
+deployment default, Sonnet 5. The stored config has `model: null`, and the arithmetic agrees
+— 305,617 in / 29,488 out at $0.9061 is exactly Sonnet's $2/$10 per million; Opus would have
+cost $2.27. Nothing about the speaker-selection conclusions changes (selection was pinned to
+Haiku in both runs by `config.models`, which *is* read), but the transcript labelled "Opus"
+in §11 and in `data/renewalBrief/run.json` is a Sonnet transcript. The silent drop is filed
+as a defect.
