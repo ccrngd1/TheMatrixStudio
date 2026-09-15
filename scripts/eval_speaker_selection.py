@@ -169,10 +169,46 @@ def arm_counts_budget(**kw) -> str:
     )
 
 
+#: The shipped closing instruction, which every prompt arm either keeps or replaces.
+NATURAL = "Choose naturally based on conversation flow."
+
+#: Intervention G: ask for the BEST next speaker instead of the most natural one.
+#:
+#: "Naturally" is the word under suspicion. §3 mechanism 2 argues it is a locally optimal
+#: instruction — the most conversationally natural next speaker is usually somebody already
+#: in the exchange, so naturalness compounds into a dyad lock one reasonable choice at a
+#: time. But "pick the BEST speaker" on its own is only emphasis: "best" has no meaning
+#: unless the prompt says best *at what*. So this states the criterion, names the specific
+#: failure to avoid, and leaves one explicit exception so it cannot destroy the thing that
+#: is working (answering a direct question — the ≥15% picks-from-the-last-two guardrail).
+BEST = (
+    "Choose the BEST next speaker rather than the most obvious one: the participant whose "
+    "turn would add the most that is not already in the conversation. Weigh who has "
+    "relevant expertise or a real stake in the specific point just made, who has been "
+    "asked or challenged and has not yet answered, and whose position the discussion has "
+    "not yet tested. Do not simply continue the exchange between the last two speakers "
+    "unless a direct question is waiting on an answer."
+)
+
+
+def arm_best(**kw) -> str:
+    """Intervention G alone: the wording change, with no extra information."""
+    return arm_baseline(**kw).replace(NATURAL, BEST)
+
+
+def arm_best_counts(**kw) -> str:
+    """G + A. Separating them is the point: one supplies a criterion, the other supplies
+    the facts the criterion needs. If G alone matches G+A, the win is the wording; if only
+    G+A moves, the moderator needed to see who was overdue as well as be told to care."""
+    return arm_counts(**kw).replace(NATURAL, BEST)
+
+
 ARMS = {
     "baseline": arm_baseline,
     "counts": arm_counts,
     "counts+budget": arm_counts_budget,
+    "best": arm_best,
+    "best+counts": arm_best_counts,
 }
 
 #: Intervention C is not a prompt — it is a deterministic guard applied to any arm's pick.

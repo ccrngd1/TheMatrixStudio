@@ -95,6 +95,14 @@ Cheapest first. Each is independently testable, and the numbers in §2 are the b
   the same ally — which is itself worth measuring rather than assuming away.
 - **F. Strengthen the resolver.** Exact match first, then longest-name-first substring, and
   log every fallback. Correctness, not quality; do it regardless.
+- **G. Ask for the BEST next speaker, not the most natural one.** Added 2026-09-15. Attacks
+  mechanism 2 directly: "naturally" is the word that makes each locally reasonable choice
+  narrow the field. On its own "pick the best" is only emphasis, so the arm states the
+  criterion (whose turn adds the most that is not already in the conversation; who has a
+  stake in the point just made; who has been challenged and not answered; whose position is
+  untested), names the failure to avoid (continuing the last two speakers' exchange), and
+  keeps one exception so it cannot break answering a direct question. Free — a longer prompt
+  by ~90 tokens, no extra call.
 
 ## 5. How to evaluate — two stages, and the first one is nearly free
 
@@ -243,3 +251,84 @@ cast order** (intervention F). Writing one of the new tests surfaced it — a mo
 exactly the way the fallback used to be. It is pinned as a strict `xfail` in
 `tests/test_speaker_selection_fallback.py`, which will fail the suite the moment F lands and the
 marker becomes a lie.
+
+---
+
+## 10. Stage 1, second pass (2026-09-15): every intervention, three repeats, with a control
+
+The first pass (§8) had no same-protocol baseline and one pass per cell. This one has both,
+on Haiku 4.5 — the shipping default — with the output cap removed (see
+`docs/SELECTION-MODEL-DEFAULT.md` §7, which is why these numbers supersede §8's rather than
+extend them). Six cells × 4 transcripts × 3 repeats, closed loop, 73 replays, ~2,300
+selection calls, **~$8.8**.
+
+### Pooled over the four transcripts
+
+| cell | n | gini | sd | range | min turns | replays that starved somebody to 0 | dyad | last-two % | floor fired |
+|---|---|---|---|---|---|---|---|---|---|
+| baseline (control) | 12 | 0.332 | 0.097 | 0.18–0.45 | 1.08 | **2** | 8.5 | 42.3 | — |
+| **baseline+floor (C)** | 12 | **0.178** | 0.073 | 0.07–0.29 | **2.50** | 0 | 5.8 | 26.5 | 65 / 336 turns |
+| counts (A) | 13 | 0.224 | 0.032 | 0.18–0.28 | 1.92 | 0 | 4.2 | 36.4 | — |
+| counts+budget (A+B) | 12 | 0.223 | 0.043 | 0.15–0.27 | 2.17 | 0 | 4.0 | 40.5 | — |
+| best (G) | 12 | 0.289 | 0.069 | 0.20–0.40 | 1.25 | 0 | 4.4 | 42.6 | — |
+| best+counts (G+A) | 12 | 0.268 | 0.057 | 0.17–0.35 | 1.75 | 0 | 3.0 | 45.2 | — |
+
+### Per transcript, Gini (mean of 3 repeats)
+
+| cell | renewal-renewal | renewal-renewal-2 | renewal-opus40 | supply-bridge-2 |
+|---|---|---|---|---|
+| baseline | 0.403 | 0.267 | 0.443 | 0.213 |
+| baseline+floor | **0.210** | **0.123** | **0.267** | **0.113** |
+| counts | 0.227 | 0.198 | 0.220 | 0.260 ✗ |
+| counts+budget | 0.253 | 0.150 | 0.253 | 0.233 ✗ |
+| best | 0.377 | 0.250 | 0.330 | 0.200 |
+| best+counts | 0.307 | 0.183 | 0.263 | 0.317 ✗ |
+
+### Applying the §6 rule
+
+- **Intervention C (the deterministic floor) wins it, and is the only arm to hit a target.**
+  It improves Gini and minimum-turns against the control on **4 of 4** transcripts, with
+  non-overlapping repeat ranges on three of them, no guardrail tripped
+  (picks-from-the-last-two 26.5%, well above the 15% floor), and it is the **only** cell that
+  reaches the coverage target — every participant has spoken by turn **6–8**, against 10–36
+  for everything else. It also costs nothing: no prompt tokens, no call, no model.
+- **A and A+B pass the rule too** (3 of 4 transcripts each) and are indistinguishable from
+  each other — 0.224 vs 0.223. The budget sentence, unproven in §8, remains unproven: it
+  buys nothing over the counts alone. `counts` has the tightest spread of any prompt arm
+  (sd 0.032), which is its own argument: it is the most *predictable* intervention.
+- **G — "pick the BEST speaker" — helps, but least.** 0.332 → 0.289 pooled, better than the
+  control on 4 of 4 but marginally on three (overlapping ranges), and min-turns barely moves
+  (1.08 → 1.25). Wording alone is a weaker lever than information, which is what §3's
+  mechanism 1 predicted.
+- **G+A is worse than A alone** (0.268 vs 0.224), and worse than the control on supply-bridge
+  (0.317 vs 0.213). **Two objectives dilute the one that works**: told both to maximise
+  contribution value *and* shown who is overdue, the model optimises the first and the
+  fairness signal weakens. Worth keeping as a finding — the instinct to stack good ideas is
+  what this measures against.
+- **Nothing else reaches Gini ≤ 0.15 pooled**, though C gets to 0.113–0.123 on two
+  transcripts and A+B hit exactly 0.150 on one.
+
+### Two things this pass establishes beyond the ranking
+
+1. **The harness reproduces the real skew.** The baseline arm on the 40-turn Opus transcript
+   gives one speaker a mean of **16.0 turns of 40** — the same 16 that Dr. Morgan actually
+   took in that run. A replay proxy that reproduces the defect it is measuring is worth
+   trusting a little more than one that merely correlates.
+2. **The reasons stay specific on every arm** (guardrail 3, ten sampled). Qualitatively, G
+   does visibly what it says: where the baseline picked the *over-represented* persona three
+   times in five samples, G picked **Casey** — who spoke once in 40 turns of the real run —
+   and said why her audit would add something. Its Gini gain is small; its reasoning is not
+   worse, and arguably it reads better.
+
+### What C's win does and does not mean
+
+19% of turns (65 of 336) were chosen by the floor rather than by the model. Unlike the random
+fallback in §9, that is a designed mechanism rather than a defect — but the caution is the
+same: **part of that Gini is the guard, not the selector.** Whether a *forced* speaker says
+something responsive or a non-sequitur is exactly what replay cannot see (§5), and it is
+intervention C's whole risk. So C is the Stage-2 candidate, not an adoption: one live 40-turn
+run against `renewal-renewal-opus`, read by a human, with `floor_fired` recorded per turn.
+
+A cheap belt-and-braces option worth testing at the same time: **C on top of A**. The floor
+guarantees nobody starves; the counts let the model avoid *needing* the floor, which should
+reduce how often it fires and therefore how often a turn is forced.
