@@ -423,8 +423,17 @@ function MessageRow({ m, runId, traceable }: { m: FeedMessage; runId: string; tr
           )}
           {!loading && trace && trace.available && (
             <div className="space-y-1">
-              {trace.selection_reason && (
-                <Line label="Chosen because" value={trace.selection_reason} />
+              {trace.selection_fallback ? (
+                <p className="rounded bg-amber-950/40 p-1 text-[11px] text-amber-300">
+                  {trace.selection_fallback === 'call_failed'
+                    ? 'The speaker-selection call failed on this turn'
+                    : 'The moderator’s reply named nobody in the cast'}
+                  , so this speaker was drawn at random. Nothing chose them.
+                </p>
+              ) : (
+                trace.selection_reason && (
+                  <Line label="Chosen because" value={trace.selection_reason} />
+                )
               )}
               {trace.rationale && <Line label="Rationale" value={trace.rationale} />}
               {trace.goal_served && <Line label="Goal served" value={trace.goal_served} />}

@@ -109,6 +109,70 @@ describe('Dossier', () => {
   })
 
   // ------------------------------------------------------------------
+  // The why-trace must not present a fallback as a decision
+  // ------------------------------------------------------------------
+
+  const capturedDossier = {
+    run_id: 'r1', agent: 'Ada', persona: 'A cautious ethicist', goals: ['Raise risks'],
+    memory_stream: [
+      { id: 'm1', content: 'the group values consent', importance: 0.8, tags: ['fact'], timestamp: 1 },
+    ],
+    beliefs: [], relationships: {},
+    tokens_in: 10, tokens_out: 5, cost_usd: 0.001, portrait_b64: null,
+  }
+
+  async function openTrace(trace: Record<string, unknown>) {
+    ;(api.getDossier as ReturnType<typeof vi.fn>).mockResolvedValue(capturedDossier)
+    ;(api.getTurnTrace as ReturnType<typeof vi.fn>).mockResolvedValue({
+      run_id: 'r1', turn: 1, available: true, speaker: 'Ada', ...trace,
+    })
+    render(<Dossier agent={agent} feed={feed} runId="r1" onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByText('why?')).toBeInTheDocument())
+    screen.getByText('why?').click()
+  }
+
+  it('says nothing chose the speaker when selection fell back', async () => {
+    // A drawn name with a plausible-looking reason beside it is exactly the confusion
+    // `selection_fallback` exists to end: the reason describes what the moderator wanted,
+    // and on this turn the moderator never answered.
+    await openTrace({
+      selection_fallback: 'call_failed',
+      selection_reason: null,
+      rationale: 'I wanted to raise consent',
+    })
+    await waitFor(() =>
+      expect(screen.getByText(/drawn at random/i)).toBeInTheDocument(),
+    )
+    expect(screen.getByText(/selection call failed/i)).toBeInTheDocument()
+    expect(screen.queryByText('Chosen because')).not.toBeInTheDocument()
+  })
+
+  it('names the unresolved case differently from a failed call', async () => {
+    await openTrace({
+      selection_fallback: 'unresolved',
+      selection_reason: 'the CFO should answer',
+      rationale: 'I wanted to raise consent',
+    })
+    await waitFor(() =>
+      expect(screen.getByText(/named nobody in the cast/i)).toBeInTheDocument(),
+    )
+    // The moderator's reason is NOT shown as the reason this speaker was chosen — it
+    // asked for somebody who does not exist.
+    expect(screen.queryByText(/the CFO should answer/)).not.toBeInTheDocument()
+  })
+
+  it('shows the moderator’s reason on a healthy turn', async () => {
+    await openTrace({
+      selection_reason: 'Ada was addressed directly',
+      rationale: 'I wanted to raise consent',
+    })
+    await waitFor(() =>
+      expect(screen.getByText('Ada was addressed directly')).toBeInTheDocument(),
+    )
+    expect(screen.queryByText(/drawn at random/i)).not.toBeInTheDocument()
+  })
+
+  // ------------------------------------------------------------------
   // Phase 6 — convictions, and the leakage guard that matters most
   // ------------------------------------------------------------------
 

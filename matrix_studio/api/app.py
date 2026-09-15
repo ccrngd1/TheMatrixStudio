@@ -1795,6 +1795,12 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             "available": True,
             "speaker": payload.get("speaker"),
             "selection_reason": (selected or {}).get("payload", {}).get("reason"),
+            # None on every healthy turn. Names the degradation when selection failed and
+            # the speaker was drawn at random, so the why-trace cannot present a fallback
+            # as a decision.
+            "selection_fallback": (selected or {}).get("payload", {}).get(
+                "selection_fallback"
+            ),
             "utterance": payload.get("message"),
             "rationale": payload.get("rationale"),
             "goal_served": payload.get("goal_served"),
