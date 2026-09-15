@@ -7,6 +7,7 @@ import { isLive, isResumable, isTerminal } from '../lib/runStatus'
 import { CastBoard } from '../components/CastBoard'
 import { ConversationFeed } from '../components/ConversationFeed'
 import { CostMeter } from '../components/CostMeter'
+import { ParticipationPanel } from '../components/ParticipationPanel'
 import { PlaybackControls } from '../components/PlaybackControls'
 import { Dossier } from '../components/Dossier'
 import { SummaryPanel } from '../components/SummaryPanel'
@@ -35,6 +36,9 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh }: Props) {
   const [imported, setImported] = useState<StoredSummary | null>(null)
   const [defaultInstructions, setDefaultInstructions] = useState<string>('')
   const [scrubbing, setScrubbing] = useState(false)
+  // The turn the participation panel last asked for. `nonce` makes a repeat click on the
+  // same turn a new request, since the seq on its own would not change.
+  const [jumpTo, setJumpTo] = useState<{ seq: number; nonce: number } | null>(null)
   const [branching, setBranching] = useState(false)
   const [branchError, setBranchError] = useState<string | null>(null)
   const [resuming, setResuming] = useState(false)
@@ -325,6 +329,14 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh }: Props) {
           <CastBoard state={state} onSelect={setSelected} />
           {completed && (
             <>
+              {/* Only on a finished run: mid-run the counts change under the reader, and
+                  the question this answers ("who actually spoke, and when?") is one asked
+                  of a transcript rather than of a conversation in progress. */}
+              <ParticipationPanel
+                feed={state.feed}
+                order={state.order}
+                onJump={(seq) => setJumpTo({ seq, nonce: Date.now() })}
+              />
               <SummaryPanel
                 runId={runId}
                 generated={generated}
@@ -350,6 +362,7 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh }: Props) {
             agents={state.agents}
             activeSpeaker={state.activeSpeaker}
             thinking={state.thinking}
+            jumpTo={jumpTo}
           />
         </main>
       </div>
