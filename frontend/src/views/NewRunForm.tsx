@@ -52,7 +52,11 @@ export function NewRunForm({ onStarted, onCancel, fromRunId }: Props) {
   // What the turn count was before the toggle raised it, so turning it off puts it back
   // rather than leaving the operator with a 100-turn bill they did not choose.
   const [turnsBeforeCeiling, setTurnsBeforeCeiling] = useState<number | null>(null)
-  const [avatars, setAvatars] = useState(false)
+  // ON by default, matching the engine default (`enable_avatars`): a cast board of
+  // placeholder initials is the first thing an operator sees, and the form used to send
+  // an explicit `false` that overrode the deployment default nobody had turned off.
+  // Still a toggle, so a run that does not want the image-model spend can decline.
+  const [avatars, setAvatars] = useState(true)
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   // Phase 1.5 summary options (collapsed by default; useful default = enabled).
