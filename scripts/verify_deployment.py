@@ -62,6 +62,17 @@ from typing import Dict, List, NamedTuple, Optional
 
 ROOT = Path(__file__).resolve().parents[1]
 
+#: When `tenant-isolation` last passed, and against which deployment.
+#:
+#: Hand-maintained, which is a weakness worth naming: it is exactly as trustworthy as the last
+#: person to run the check and edit this line. It exists because the alternative is worse — that
+#: check can only run behind a deliberate, temporary widening of the tenant role's trust policy,
+#: so it will never be green in a routine run, and a permanent amber with no date tells a reader
+#: nothing about whether the boundary was ever tested or when.
+#:
+#: Update it in the same commit as the run. If you cannot say when it last passed, it has not.
+TENANT_ISOLATION_LAST_PASSED = "2026-09-16 (10/10 checks, us-east-1, account 791580863750)"
+
 
 class Check(NamedTuple):
     name: str
@@ -100,11 +111,15 @@ CHECKS: List[Check] = [
         "§3: scoped credentials REFUSE cross-tenant access — the one control that says a "
         "missing predicate cannot leak data",
         needs_setup=(
-            "the tenant role must temporarily trust a human principal:\n"
+            f"last passed {TENANT_ISOLATION_LAST_PASSED}\n"
+            "      To run it again, the tenant role must temporarily trust a human "
+            "principal:\n"
             "      cd infra && npx cdk deploy --require-approval never \\\n"
             "        -c verify_principal_arn=arn:aws:iam::$(aws sts get-caller-identity "
             "--query Account --output text):role/Admin\n"
-            "      … run this check … then deploy again WITHOUT the flag to close it"
+            "      … run this check … then deploy again WITHOUT the flag to close it.\n"
+            "      Step three is not cleanup: until it runs, anything that can assume that "
+            "principal can reach every tenant's data."
         ),
     ),
     Check(
@@ -223,7 +238,9 @@ def main() -> int:
         print(
             f"\n{len(needs)} check(s) need setup and did not run. Not a pass: the "
             "tenancy boundary is the one control that says a missing predicate cannot "
-            "leak data, and it is unverified until this runs."
+            "leak data, and it is unverified until this runs. The date above is the last "
+            "recorded pass and is maintained by hand, so treat it as a note rather than "
+            "as evidence about the deployment in front of you."
         )
     if failed:
         print(f"\nFAILED: {', '.join(failed)}")
