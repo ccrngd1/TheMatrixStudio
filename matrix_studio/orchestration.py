@@ -703,7 +703,18 @@ async def execute_slice(
             run_id, removed, start_turn,
         )
 
-    if start_turn >= max_messages:
+    # A pending closing round is work the run still owes, so the budget being met is not the
+    # same as the run being over. `start_turn > max_messages` means the closing round has
+    # already happened — it is the only thing that can push a turn past the ceiling — which
+    # is what keeps this from opening one on every subsequent slice.
+    #
+    # This guard is why the first version of the closing round did nothing in production: the
+    # engine was fixed to keep generating and the orchestrator finalised the run before ever
+    # calling it. Two layers had to agree, and only one of them was tested.
+    closing_pending = (
+        SelectionConfig.from_config(cfg).closing_round and start_turn <= max_messages
+    )
+    if start_turn >= max_messages and not closing_pending:
         # Budget already met — the previous slice was the last one. Finalising here
         # rather than generating a turn nobody asked for.
         return await finalise(db, run_id, status="complete")

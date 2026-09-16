@@ -211,5 +211,122 @@ async def test_a_closing_round_where_everybody_passes_is_not_a_convergence(db):
         script={"Ada": [_say("a"), PASS], "Ben": [_say("b"), PASS], "Cy": [_say("c"), PASS]},
     )
     assert "converged" not in result
-    assert result["total_turns"] == 1, "the closing round produced no turns"
+    # The turn number KEEPS the empty closing round, because `turn > max_messages` is how
+    # the next Lambda invocation knows the round already happened. Decrementing it made the
+    # deployed run open a closing round for ever; `closing_round_empty` records the truth.
+    assert result["total_turns"] == 2
     assert result["status"] == "complete"
+    done = [e for e in await db.get_events("all-pass-close")
+            if e["event_type"] == "sim.completed"][0]
+    payload = done["payload"]
+    payload = json.loads(payload) if isinstance(payload, str) else payload
+    assert payload["closing_round_empty"] is True
+
+
+# --------------------------------------------------------------------------- #
+# (4) the deployed shape — one round per Lambda invocation
+# --------------------------------------------------------------------------- #
+
+
+async def test_the_closing_round_fires_when_rounds_arrive_one_slice_at_a_time(db):
+    """The regression test for a defect that shipped.
+
+    Every test above drives `run_simulation`, which loops in one process. The deployed stack
+    calls `execute_slice` with `turn_budget=1` — one ROUND per Lambda — and the slice that
+    finishes the last round spends its budget and returns. `_run_turns` then asked "is
+    `turn < max_messages`?", got no, and reported the run complete: **the closing round never
+    opened.** A live run (`c055b500`) produced 8 rounds and zero closing statements while
+    every in-process test passed.
+
+    The fix is two-part and both halves are asserted here: a pending closing round makes the
+    slice report `running`, and `turn > max_messages` is what tells the NEXT invocation the
+    round has already happened — a flag in the function would reset on every slice, which is
+    exactly how the decline streak went inert.
+    """
+    from matrix_studio import orchestration
+
+    await db.create_run(
+        run_id="slice-close", topic="AI ethics", cast=CAST,
+        config={"max_messages": 2, "generate_avatars": False,
+                "cognition": {"enabled": True},
+                "selection": {"method": "simultaneous", "closing_round": True}},
+    )
+    turn, seen = 0, []
+    for _ in range(6):  # generous; the run should finish on its own well before this
+        fake = _engine()
+        with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=fake):
+            out = await orchestration.execute_slice(
+                db, "slice-close", turn=turn, turn_budget=1
+            )
+        seen.append((out["turn"], out["status"]))
+        turn = out["turn"]
+        if out.get("done"):
+            break
+
+    rs = await _responses(db, "slice-close")
+    # Two conversation rounds, then the closing round — nine turns of three personas.
+    assert [r["turn"] for r in rs] == [1, 1, 1, 2, 2, 2, 3, 3, 3], seen
+    assert [r["agent"] for r in rs if r["turn"] == 3] == ["Ada", "Ben", "Cy"]
+    assert all(r["closing"] is True for r in rs if r["turn"] == 3)
+    # The slice after the last conversation round must NOT have called the run complete.
+    assert seen[1] == (2, "running"), seen
+    assert seen[-1][1] == "complete", seen
+
+
+async def test_a_finished_closing_round_does_not_open_another_one(db):
+    """The other half. If doneness were a local flag it would reset on the next invocation
+    and the run would generate closing rounds until the ceiling logic gave up — which is what
+    the first version of this fix did when it decremented the turn for an empty round."""
+    from matrix_studio import orchestration
+
+    await db.create_run(
+        run_id="slice-once", topic="AI ethics", cast=CAST,
+        config={"max_messages": 1, "generate_avatars": False,
+                "cognition": {"enabled": True},
+                "selection": {"method": "simultaneous", "closing_round": True}},
+    )
+    turn, slices = 0, 0
+    for _ in range(6):
+        fake = _engine()
+        with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=fake):
+            out = await orchestration.execute_slice(
+                db, "slice-once", turn=turn, turn_budget=1
+            )
+        slices += 1
+        turn = out["turn"]
+        if out.get("done"):
+            break
+    rs = await _responses(db, "slice-once")
+    assert [r["turn"] for r in rs] == [1, 1, 1, 2, 2, 2]
+    assert slices == 2, "one conversation round, one closing round, then done"
+
+
+async def test_resuming_past_the_ceiling_does_not_open_a_second_closing_round(db):
+    """Branching and resume call `resume_simulation` directly, so the orchestrator's guard
+    does not apply — the engine has to know on its own that the closing round is done.
+
+    It knows by deriving it: `turn > max_messages` can only be true because a closing round
+    already ran. A mutant that made that a plain `False` passed every other test in this
+    file, because `execute_slice` was catching it one layer up.
+    """
+    from matrix_studio.engine.simulator import resume_simulation
+
+    fake = _engine()
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=fake):
+        result = await resume_simulation(
+            run_id="resumed", topic="AI ethics",
+            agents={c["name"]: __import__(
+                "matrix_studio.state", fromlist=["AgentState"]
+            ).AgentState(name=c["name"], persona=c["persona"], goals=c["goals"])
+                for c in CAST},
+            # A run of 1 round whose closing round already happened, so it sits at turn 2.
+            conversation=[{"speaker": "Ada", "content": "a", "turn": 1},
+                          {"speaker": "Ada", "content": "final", "turn": 2}],
+            from_turn=2, start_seq=100, max_messages=1, db=db,
+            cognition=__import__(
+                "matrix_studio.state", fromlist=["CognitionConfig"]
+            ).CognitionConfig(enabled=True),
+            selection=SelectionConfig(method="simultaneous", closing_round=True),
+        )
+    assert fake.prompts == [], "nothing should have been generated"
+    assert result["total_turns"] == 2

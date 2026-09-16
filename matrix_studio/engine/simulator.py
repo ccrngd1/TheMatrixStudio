@@ -1531,7 +1531,13 @@ async def _run_turns(
     # nothing to add, and asking again would contradict that.
     closing_enabled = bool(selection and selection.closing_round)
     in_closing = False
-    closing_done = False
+    # Derived, not carried: a closing round is the only thing that can push `turn` past the
+    # ceiling, so `turn > max_messages` means it has already run. That matters because the
+    # deployed turn loop runs ONE turn per Lambda invocation, and a flag in this function
+    # would be re-initialised on every slice — the same defect that made the decline streak
+    # inert in production, found again the same way (a live run that did nothing).
+    closing_done = turn > max_messages
+    closing_empty = False
     round_queue: List[str] = []
     #: What the personas in this round can see. Frozen at the top of the round, which is
     #: the whole semantic difference: nobody in a round reads anybody else in it.
@@ -1908,12 +1914,13 @@ async def _run_turns(
                     if in_closing:
                         in_closing, closing_done = False, True
                         if not round_spoke:
-                            # Everybody declined their closing statement, so the round
-                            # produced no messages and is not a turn. NOT recorded as a
-                            # convergence either: the run ended because the budget did,
-                            # and claiming the room was finished would be a nicer story
-                            # than the truth.
-                            turn -= 1
+                            # Everybody declined their closing statement. The turn number is
+                            # KEPT even though the round produced no messages, because
+                            # `turn > max_messages` is how the next Lambda invocation knows
+                            # the closing round already happened — decrementing it made the
+                            # next slice open another one, for ever. Recorded on
+                            # `sim.completed` instead so the count is not silently wrong.
+                            closing_empty = True
                     elif not round_spoke:
                         # Nobody had anything to add. Not a judgement by a moderator — six
                         # personas were each asked and each declined, which is the strongest
@@ -2315,7 +2322,11 @@ async def _run_turns(
         # `converged is None` matters as much as the turn count: a converged run has turns
         # left in its budget by definition, so without this it would return `running`, and
         # the state machine would call the next turn Lambda and the run would never end.
-        if turn < max_messages and converged is None:
+        # A pending closing round is unfinished work exactly like a remaining turn: the slice
+        # that completes the last round spends its budget and returns here, and reporting
+        # `complete` would end the run before the closing round ever opened.
+        closing_pending = closing_enabled and not closing_done and converged is None
+        if (turn < max_messages or closing_pending) and converged is None:
             return {
                 "run_id": run_id,
                 "status": "running",
@@ -2348,6 +2359,10 @@ async def _run_turns(
                 # (a stream that never ends, a button that never appears). What a reader
                 # actually needs is not a new lifecycle state but the reason this run has
                 # 26 turns when it asked for 40 — which is a payload field.
+                # An empty closing round is a real outcome — everybody was asked for a
+                # final position and nobody had one — and it is the only case where a turn
+                # number counts a round that produced no messages.
+                **({"closing_round_empty": True} if closing_empty else {}),
                 **({"converged": True,
                     "converged_at_turn": converged["at_turn"],
                     "converged_reason": converged["reason"],
