@@ -202,8 +202,33 @@ async def record_spend(
         )
 
 
+async def decline_streak_from_log(db: Database, run_id: str, turn: int) -> int:
+    """Consecutive un-honoured moderator declines ending at ``turn``, from the event log.
+
+    The fallback for a slice with no snapshot to read. Returning 0 instead would be the
+    same defect this function exists to fix, one layer down: the streak would silently
+    reset whenever a run resumed without a checkpoint, and the guard would go quiet again
+    for reasons nobody could see.
+    """
+    rows = await db.get_events(run_id)
+    by_turn: Dict[int, str] = {}
+    for r in rows:
+        if r["event_type"] in ("speaker.declined", "agent.response"):
+            # A declined turn emits BOTH when it is overridden, and the response is what
+            # ends the turn, so the decline has to win for that turn to count.
+            if r["event_type"] == "speaker.declined" or r["turn"] not in by_turn:
+                by_turn[r["turn"]] = r["event_type"]
+    streak = 0
+    t = turn
+    while by_turn.get(t) == "speaker.declined":
+        streak += 1
+        t -= 1
+    return streak
+
+
 async def load_state(db: Database, run: Dict[str, Any], turn: int):
-    """Engine state as of ``turn``: ``(topic, agents, conversation, threads, ledger)``.
+    """Engine state as of ``turn``: ``(topic, agents, conversation, threads, ledger,
+    decline_streak)``.
 
     Snapshot first (O(1)); replay second (O(turn)). The two are not equivalent and
     the order matters: the snapshot is what the previous slice wrote, so using it
@@ -243,13 +268,17 @@ async def load_state(db: Database, run: Dict[str, Any], turn: int):
             list(snap.conversation),
             list(snap.pending_threads),
             [list(p) for p in snap.firsthand_citations],
+            snap.decline_streak,
         )
 
     logger.info(
         "No snapshot for run %s at turn %d; replaying the event log instead",
         run["id"], turn,
     )
-    return await reconstruct_at_turn(db, run, turn)
+    # `reconstruct_at_turn` is shared with branching and returns five things; the streak is
+    # derived separately from the same log rather than widening that signature for one int.
+    return (*await reconstruct_at_turn(db, run, turn),
+            await decline_streak_from_log(db, run["id"], turn))
 
 
 def turn_loop_arn() -> str:
@@ -679,7 +708,7 @@ async def execute_slice(
         # rather than generating a turn nobody asked for.
         return await finalise(db, run_id, status="complete")
 
-    topic, agents, conversation, threads, ledger = await load_state(
+    topic, agents, conversation, threads, ledger, streak = await load_state(
         db, run, start_turn
     )
     if not agents:
@@ -709,6 +738,9 @@ async def execute_slice(
         personas=PersonaConfig.from_config(cfg),
         selection=SelectionConfig.from_config(cfg),
         firsthand_citations=ledger,
+        # Without this the moderator's "nobody has anything left" verdict can never be
+        # acted on: one turn per invocation means a local counter is always 0.
+        decline_streak=streak,
         # A stop is a DynamoDB flag read once per slice, not an in-memory set. The
         # engine still polls it AFTER each turn is persisted, so the in-flight turn
         # always finishes — the contract does not move, only where the flag lives.

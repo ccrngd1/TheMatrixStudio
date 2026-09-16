@@ -332,7 +332,7 @@ async def test_load_state_prefers_the_snapshot_over_replay(db):
         await orchestration.execute_slice(db, "sl-load", turn=0, turn_budget=1)
     run = await db.get_run("sl-load")
     with patch("matrix_studio.branching.reconstruct_at_turn") as replay:
-        topic, agents, conversation, _threads, _ledger = await orchestration.load_state(
+        topic, agents, conversation, _threads, _ledger, _streak = await orchestration.load_state(
             db, run, 1
         )
     replay.assert_not_called()
@@ -350,7 +350,7 @@ async def test_load_state_falls_back_to_replay_without_a_snapshot(db):
     )
     run = await db.get_run("sl-noshot")
     assert await db.get_snapshot("sl-noshot", 1) is None, "fixture must have no snapshot"
-    _topic, agents, conversation, _threads, _ledger = await orchestration.load_state(
+    _topic, agents, conversation, _threads, _ledger, _streak = await orchestration.load_state(
         db, run, 1
     )
     assert [m["content"] for m in conversation] == ["from the log alone"]
@@ -377,7 +377,7 @@ async def test_load_state_restores_persona_text_a_snapshot_omitted(db):
         status="running", created_at=0, total_turns=1,
     ))
     run = await db.get_run("sl-persona")
-    _topic, agents, _conv, _threads, _ledger = await orchestration.load_state(db, run, 1)
+    _topic, agents, _conv, _threads, _ledger, _streak = await orchestration.load_state(db, run, 1)
     assert agents["Ada"].persona == "an engineer"
     assert agents["Ada"].goals == ["ship it"]
     # And the cast member missing from the snapshot is added back.

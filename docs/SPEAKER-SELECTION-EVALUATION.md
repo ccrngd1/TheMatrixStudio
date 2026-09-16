@@ -683,3 +683,62 @@ than held in a closure: count the trailing `speaker.declined` events since the l
 - **Worth noting:** the eleven declines are free evidence. The moderator's verdict landed on
   turn 26 live and in replay, from two different protocols. That is the strongest sign yet
   that a convergence stop is the right feature; it just has to be built so it can happen.
+
+---
+
+## 16. The decline streak made durable (2026-09-16), and H's first real measurement
+
+The guard could not be satisfied on the deployed path (§15): `declines` was a local in
+`_run_turns`, and Step Functions runs one turn per Lambda. The streak now travels the way
+`pending_threads` and `firsthand_citations` already do — `SimSnapshot.decline_streak`, seeded
+into `_run_turns`, defaulted so every earlier snapshot still parses. The replay fallback (a
+slice with no checkpoint) derives it from the log instead of resetting to zero, because
+resetting there would be the same defect one layer down.
+
+### Live, opted in: `c8f0c876`
+
+| | control | A+B | A+B+H inert | **A+B+H live** |
+|---|---|---|---|---|
+| turns | 40 | 40 | 40 | **32 of 40** |
+| Gini | 0.458 | 0.075 | 0.033 | 0.094 |
+| longest A-B-A-B | 17 | 4 | 3 | 3 |
+| **turns in closing language** | 1/40 | 13/40 | 3/40 | **0/32** |
+| chars, 1st → 2nd half | 754→868 | 874→**584** | 1026→743 | **875→800** |
+| cost | $0.9061 | $0.9056 | $0.9698 | **$0.7442** |
+
+The mechanism behaved exactly as designed, and the guards earned their place:
+
+```
+turn 28   declined, consecutive 1  -> overridden, the run continued
+turn 32   declined, consecutive 1  -> overridden (29-31 were real picks, resetting the streak)
+turn 33   declined, consecutive 2  -> honoured; run ends at turn 32, 8 turns unused
+```
+
+**Zero padding turns.** Not three, not thirteen — the run ended before a single "nothing to
+add" turn was generated, and utterance length barely fell across the halves (875 → 800, against
+874 → 584 for A+B alone). It cost **$0.22 less than the 40-turn version, a 23% saving**, on the
+same definition.
+
+And the ending reads as an ending rather than a truncation:
+
+> **[31] Quinn:** "Good, that's everyone signed on to the same document, and I've got the two
+> lines I needed kept separate…"
+> **[32] Dr. Jordan:** "That's exactly the right way to leave it, Quinn — my point stays open,
+> not settled, and it stays open on the terms Riley and I already agreed."
+
+Everyone signs, the dissent is parked explicitly rather than resolved, and the last turn
+acknowledges the framing. That is what a converged conversation looks like.
+
+### The default stays off, and here is what would move it
+
+This is **n=1 on one definition**. §14's criterion is not yet met on the terms it was written:
+the closed-loop replay premature stop (turn 17 of the control) has an explanation, not a
+refutation, and one live run cannot rule out that a different cast converges too early. What
+this run does establish is that the mechanism works, the guards fire, and the failure it was
+built for is gone.
+
+To flip the default, one more live run on a **different definition** — `supply-bridge`, 8
+personas in 24 turns, a much tighter per-persona budget and therefore the harder case for
+premature stopping — with the same three checks: does it stop, does the transcript read as
+finished at that point, and were any declines overridden on the way (evidence the guard is
+load-bearing rather than decorative). About $0.50.
