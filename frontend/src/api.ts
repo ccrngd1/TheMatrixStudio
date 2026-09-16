@@ -138,6 +138,7 @@ export interface CreateRunBody {
     selection?: {
       method?: 'moderated' | 'simultaneous'
       stop_when_converged?: boolean
+      closing_round?: boolean
       fairness?: boolean
     }
     // Phase 6: collections EVERY persona may search — the cast-wide case. Declared
