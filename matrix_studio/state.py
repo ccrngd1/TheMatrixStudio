@@ -140,6 +140,34 @@ class SelectionConfig(BaseModel):
         default=True,
         description="Show the moderator participation counts and the fair share",
     )
+    #: How the next speaker is decided.
+    #:
+    #:   moderated      one LLM call picks one speaker per turn — everything §1–§17 of
+    #:                  `docs/SPEAKER-SELECTION-EVALUATION.md` measures.
+    #:   simultaneous   NOBODY picks. Every persona is asked every round, against the state
+    #:                  as it stood when the round opened, so none of them can see what the
+    #:                  others are saying that round. Whoever declines is dropped and never
+    #:                  reaches the transcript; the survivors all share one turn number,
+    #:                  because they genuinely happened at once.
+    #:
+    #: In `simultaneous` the whole selection apparatus is bypassed — `fairness` and
+    #: `stop_when_converged` do nothing, because a rotation makes turn share equal by
+    #: construction and a round where everybody passes IS convergence, measured rather than
+    #: judged. That is the strongest argument for the mode and the reason it is worth having
+    #: two: it answers by construction what the other one approximates with a prompt.
+    method: str = Field(
+        default="moderated", description="moderated | simultaneous"
+    )
+
+    @field_validator("method")
+    @classmethod
+    def _known_method(cls, v: str) -> str:
+        """Rejected rather than defaulted. A typo'd method silently falling back to
+        `moderated` would look like the new mode simply not working."""
+        if v not in ("moderated", "simultaneous"):
+            raise ValueError(f"unknown selection method {v!r}: moderated | simultaneous")
+        return v
+
     #: Intervention H, and the other half of `fairness`.
     #:
     #: Fair rotation front-loads the substance: run `d7d739dd` stated every position by turn

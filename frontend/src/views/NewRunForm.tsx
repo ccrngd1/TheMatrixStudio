@@ -48,6 +48,10 @@ export function NewRunForm({ onStarted, onCancel, fromRunId }: Props) {
   // turn count stops being a plan and becomes a ceiling, so the number is raised and
   // relabelled — a 10-turn "budget" would cut a converging conversation off long before it
   // converged, and the whole point is that the run decides its own length.
+  // `moderated` (a model picks one speaker per turn) or `simultaneous` (everyone is asked
+  // every round, passes are dropped). Not a checkbox: there are two named methods and a
+  // third is plausible, and "☐ simultaneous" would leave the default mode unnamed.
+  const [method, setMethod] = useState<'moderated' | 'simultaneous'>('moderated')
   const [stopWhenConverged, setStopWhenConverged] = useState(false)
   // What the turn count was before the toggle raised it, so turning it off puts it back
   // rather than leaving the operator with a 100-turn bill they did not choose.
@@ -349,7 +353,15 @@ export function NewRunForm({ onStarted, onCancel, fromRunId }: Props) {
           personas: anyConvictions ? { enabled: true } : undefined,
           // Only sent when asked for: it defaults off server-side while it is being
           // validated, and an absent block means "use the deployment default".
-          selection: stopWhenConverged ? { stop_when_converged: true } : undefined,
+          // Sent only when it differs from the server's default, so a plain run's config
+          // stays as small as it was before either option existed.
+          selection:
+            method !== 'moderated' || stopWhenConverged
+              ? {
+                  ...(method !== 'moderated' ? { method } : {}),
+                  ...(stopWhenConverged ? { stop_when_converged: true } : {}),
+                }
+              : undefined,
           // Retrieval has to be ON for a binding to do anything: `retrieve_for_turn` is
           // never called with it disabled, so a run that bound three collections and
           // pasted no documents would search none of them and say nothing about why.
@@ -478,9 +490,39 @@ export function NewRunForm({ onStarted, onCancel, fromRunId }: Props) {
           />
         </label>
         <label className="flex items-center gap-2 text-sm text-slate-300">
+          Conversation method
+          <Hint label="conversation method">
+            <strong>Moderated</strong> — a model reads the room each turn and picks one
+            speaker. One voice call per turn; who speaks is a judgement, and everything in
+            docs/SPEAKER-SELECTION-EVALUATION.md is about making that judgement fairer.
+            <br />
+            <br />
+            <strong>Simultaneous</strong> — every persona is asked every round, all against
+            the state as it stood when the round opened, so none of them can see what the
+            others are saying that round. Anyone with nothing to add passes, and a pass never
+            reaches the transcript. Turn share is equal by construction and a round where
+            everybody passes ends the run.
+            <br />
+            <br />
+            Costs N voice calls per round instead of one, and the cost per surviving turn
+            RISES as the room quietens — a round where five of six pass still costs six
+            calls. New and barely measured; the moderated path is the one with numbers
+            behind it.
+          </Hint>
+          <select
+            value={method}
+            onChange={(e) => setMethod(e.target.value as 'moderated' | 'simultaneous')}
+            className="rounded border border-matrix-border bg-matrix-bg p-1 text-sm"
+          >
+            <option value="moderated">Moderated — one speaker per turn</option>
+            <option value="simultaneous">Simultaneous — everyone, every round</option>
+          </select>
+        </label>
+        <label className="flex items-center gap-2 text-sm text-slate-300">
           <input
             type="checkbox"
             checked={stopWhenConverged}
+            disabled={method === 'simultaneous'}
             onChange={(e) => {
               const on = e.target.checked
               setStopWhenConverged(on)
@@ -493,6 +535,11 @@ export function NewRunForm({ onStarted, onCancel, fromRunId }: Props) {
             }}
           />
           End when the conversation is finished
+          {method === 'simultaneous' && (
+            <span className="text-[11px] text-slate-500">
+              (automatic — a round where everyone passes ends the run)
+            </span>
+          )}
           <Hint label="stop when converged">
             The moderator picks the next speaker every turn; with this on it may also say
             nobody has anything substantive left, which ends the run. Measured on one run:

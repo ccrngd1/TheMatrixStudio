@@ -148,6 +148,10 @@ class SelectionConfigModel(BaseModel):
     Set ``{"fairness": false}`` for the pre-2026-09-15 prompt."""
 
     fairness: bool = True
+    #: `moderated` (one speaker per turn, chosen by a model) or `simultaneous` (everyone is
+    #: asked every round, passes are dropped, survivors share a turn). In `simultaneous` the
+    #: two flags below do nothing — see `SelectionConfig`.
+    method: str = "moderated"
     #: Intervention H: the moderator may end the run when nobody has anything left to add.
     #: Guarded in the engine — every persona must have spoken, and it takes two consecutive
     #: declines. The run still ends as `complete`; `sim.completed` carries `converged: true`
