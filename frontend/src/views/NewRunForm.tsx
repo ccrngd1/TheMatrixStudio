@@ -4,7 +4,7 @@ import { api } from '../api'
 import { Hint } from '../components/Hint'
 import { buildStructured } from '../lib/convictions'
 import { parseSetup, parseSetupObject, ImportError } from '../lib/importSetup'
-import { blankPersona, type DraftDoc, type DraftPersona } from './newRunTypes'
+import { blankPersona, CEILING_TURNS, type DraftDoc, type DraftPersona } from './newRunTypes'
 import { KbPicker } from '../components/KbPicker'
 
 interface Props {
@@ -44,6 +44,14 @@ export function NewRunForm({ onStarted, onCancel, fromRunId }: Props) {
   // which generalises Phase 5's `persona_name IS NULL` exactly.
   const [runKbs, setRunKbs] = useState<string[]>([])
   const [maxMessages, setMaxMessages] = useState(10)
+  // Let the moderator end the run when nobody has anything left to add. When it is on the
+  // turn count stops being a plan and becomes a ceiling, so the number is raised and
+  // relabelled — a 10-turn "budget" would cut a converging conversation off long before it
+  // converged, and the whole point is that the run decides its own length.
+  const [stopWhenConverged, setStopWhenConverged] = useState(false)
+  // What the turn count was before the toggle raised it, so turning it off puts it back
+  // rather than leaving the operator with a 100-turn bill they did not choose.
+  const [turnsBeforeCeiling, setTurnsBeforeCeiling] = useState<number | null>(null)
   const [avatars, setAvatars] = useState(false)
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
@@ -159,6 +167,7 @@ export function NewRunForm({ onStarted, onCancel, fromRunId }: Props) {
     if (setup.name) setName(setup.name)
     if (setup.description) setDescription(setup.description)
     if (setup.maxMessages) setMaxMessages(setup.maxMessages)
+    if (setup.stopWhenConverged !== undefined) setStopWhenConverged(setup.stopWhenConverged)
     if (setup.model) setModel(setup.model)
     if (setup.generateAvatars !== undefined) setAvatars(setup.generateAvatars)
     // Same "absent is not empty" rule as avatars: a setup file written before knowledge
@@ -334,6 +343,9 @@ export function NewRunForm({ onStarted, onCancel, fromRunId }: Props) {
           // existed. Enabling a feature nobody configured would cost tokens for
           // an empty prompt block.
           personas: anyConvictions ? { enabled: true } : undefined,
+          // Only sent when asked for: it defaults off server-side while it is being
+          // validated, and an absent block means "use the deployment default".
+          selection: stopWhenConverged ? { stop_when_converged: true } : undefined,
           // Retrieval has to be ON for a binding to do anything: `retrieve_for_turn` is
           // never called with it disabled, so a run that bound three collections and
           // pasted no documents would search none of them and say nothing about why.
@@ -429,22 +441,69 @@ export function NewRunForm({ onStarted, onCancel, fromRunId }: Props) {
 
       <div className="mt-4 flex flex-wrap items-center gap-4">
         <label className="flex items-center gap-2 text-sm text-slate-300">
-          Max messages
-          <Hint label="max messages">
-            Turn budget for the run. Cost scales roughly linearly with it — one turn is
-            two model calls. With five personas, 15 turns gives each about three turns,
-            which is often too few for a position to be challenged and held; 30 gives
-            about six. Longer runs also make rate-style measurements more meaningful,
-            since a single turn is a smaller fraction of the total.
+          {stopWhenConverged ? 'Turn ceiling' : 'Max messages'}
+          <Hint label={stopWhenConverged ? 'turn ceiling' : 'max messages'}>
+            {stopWhenConverged ? (
+              <>
+                A safety net, not a target. The run ends when the moderator judges the
+                discussion finished, so this only stops a conversation that never gets
+                there. Leave it high.
+                <br />
+                <br />
+                You are still billed for the turns actually generated, so a run that
+                converges at 32 costs 32 turns — but a run that never converges costs the
+                whole ceiling, which is why there is one.
+              </>
+            ) : (
+              <>
+                Turn budget for the run. Cost scales roughly linearly with it — one turn is
+                two model calls. With five personas, 15 turns gives each about three turns,
+                which is often too few for a position to be challenged and held; 30 gives
+                about six. Longer runs also make rate-style measurements more meaningful,
+                since a single turn is a smaller fraction of the total.
+              </>
+            )}
           </Hint>
           <input
             type="number"
             min={1}
-            max={100}
+            max={stopWhenConverged ? 300 : 100}
             value={maxMessages}
             onChange={(e) => setMaxMessages(Number(e.target.value))}
             className="w-20 rounded border border-matrix-border bg-matrix-bg p-1 text-sm"
           />
+        </label>
+        <label className="flex items-center gap-2 text-sm text-slate-300">
+          <input
+            type="checkbox"
+            checked={stopWhenConverged}
+            onChange={(e) => {
+              const on = e.target.checked
+              setStopWhenConverged(on)
+              if (on) {
+                setTurnsBeforeCeiling(maxMessages)
+                if (maxMessages < CEILING_TURNS) setMaxMessages(CEILING_TURNS)
+              } else if (turnsBeforeCeiling !== null) {
+                setMaxMessages(turnsBeforeCeiling)
+              }
+            }}
+          />
+          End when the conversation is finished
+          <Hint label="stop when converged">
+            The moderator picks the next speaker every turn; with this on it may also say
+            nobody has anything substantive left, which ends the run. Measured on one run:
+            32 turns of a 40 ceiling, zero turns of "confirmed, nothing to add", 23% cheaper
+            than the same conversation padded to 40.
+            <br />
+            <br />
+            Two guards, because stopping early is worse than stopping late: it cannot fire
+            until every persona has spoken at least once, and it needs the moderator to
+            decline twice in a row.
+            <br />
+            <br />
+            Still being validated — one live run on one cast — so it is off by default and
+            the turn ceiling is what stops a run that never converges.
+          </Hint>
         </label>
         <label className="flex items-center gap-2 text-sm text-slate-300">
           <input type="checkbox" checked={avatars} onChange={(e) => setAvatars(e.target.checked)} />

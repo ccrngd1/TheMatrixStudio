@@ -132,6 +132,10 @@ export interface CreateRunBody {
     // prompt block.
     personas?: { enabled: boolean; withhold_concerns?: boolean; dismissal_rule?: string }
     retrieval?: { enabled: boolean; mode?: string; k?: number; max_chars?: number }
+    // Lets the moderator end the run when nobody has anything substantive left, which
+    // turns `max_messages` into a ceiling. Off server-side by default while it is being
+    // validated, so this is only sent when the operator asks for it.
+    selection?: { stop_when_converged?: boolean; fairness?: boolean }
     // Phase 6: collections EVERY persona may search — the cast-wide case. Declared
     // rather than left to a conditional spread: `...(cond ? {x} : {})` bypasses excess
     // property checking, so these were being sent with no type at all and a rename on

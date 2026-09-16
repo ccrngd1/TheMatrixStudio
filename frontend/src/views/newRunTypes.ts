@@ -51,3 +51,14 @@ export function blankPersona(): DraftPersona {
     documents: [], knowledgeBases: [],
   }
 }
+
+/**
+ * The turn count a run gets when "end when the conversation is finished" is switched on.
+ *
+ * High on purpose: with that on, the number is a ceiling that only catches a conversation
+ * which never converges, and a low one would cut a converging run short — reintroducing the
+ * arbitrary length the feature exists to remove. 100 is about 3x the longest observed
+ * convergence point (turn 32 of 40 on a 6-persona cast), which leaves room for a bigger cast
+ * without being an unbounded bill.
+ */
+export const CEILING_TURNS = 100

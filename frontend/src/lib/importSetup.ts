@@ -54,6 +54,8 @@ export interface ImportedSetup {
    * should clear what the form already has.
    */
   knowledgeBases?: string[]
+  /** Whether the setup asks the moderator to end the run when the discussion is done. */
+  stopWhenConverged?: boolean
   /** Problems that did not stop the load. Shown to the operator verbatim. */
   warnings: string[]
 }
@@ -222,6 +224,15 @@ export function parseSetupObject(data: unknown): ImportedSetup {
       config.knowledge_bases === undefined
         ? undefined
         : asStringList(config.knowledge_bases),
+    // Absent stays undefined, like every other flag here: a setup written before this
+    // existed must not silently turn it off, and one written with it off must not turn on.
+    stopWhenConverged:
+      (config.selection as Record<string, unknown> | undefined)?.stop_when_converged ===
+      undefined
+        ? undefined
+        : Boolean(
+            (config.selection as Record<string, unknown>).stop_when_converged,
+          ),
     warnings,
   }
 }
