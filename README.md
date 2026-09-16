@@ -85,8 +85,8 @@ export TABLE_PREFIX=matrix-studio
 export DATA_BUCKET=$(out DataBucketName)
 export VECTOR_BUCKET=$(out VectorBucketName)
 
-python scripts/verify_deployment.py           # free checks
-python scripts/verify_deployment.py --paid    # + generation and retrieval (~$0.13)
+python scripts/verify_deployment.py                   # every check (~$0.10 of Bedrock)
+python scripts/verify_deployment.py --only kb-grants # or one by name
 ```
 
 It refuses to run at all with those unset, rather than testing nothing: a verification
