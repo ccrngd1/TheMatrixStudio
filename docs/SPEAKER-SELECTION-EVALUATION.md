@@ -742,3 +742,43 @@ personas in 24 turns, a much tighter per-persona budget and therefore the harder
 premature stopping — with the same three checks: does it stop, does the transcript read as
 finished at that point, and were any declines overridden on the way (evidence the guard is
 load-bearing rather than decorative). About $0.50.
+
+---
+
+## 17. The ceiling wording shortens conversations (2026-09-16, `7ec91f7f`)
+
+Same definition, `max_messages: 60` as a ceiling, `stop_when_converged` on, avatars on.
+
+| | A+B, 40 cap | A+B+H, 40 cap | **A+B+H, 60 ceiling** |
+|---|---|---|---|
+| turns | 40 | 32 | **21** |
+| cost | $0.9056 | $0.7442 | **$0.4623** |
+| Gini | 0.075 | 0.094 | 0.151 |
+| min turns | 5 | 4 | **2** |
+| everyone spoke by | 8 | 8 | 8 |
+| closing-language turns | 13/40 | 0/32 | **0/21** |
+| chars 1st → 2nd half | 874 → 584 | 875 → 800 | **979 → 906** |
+| declines | — | 28, 32, **33 honoured** | 21, **22 honoured** |
+| avatars generated | 0 | 0 | **6** |
+
+The mechanism worked cleanly — two declines, the first overridden, the second honoured — and
+the transcript closes properly: Morgan concedes on §4826(b) when Riley produces the text,
+Quinn locks a two-state design, Casey and Jordan sign off with named conditions, Avery's
+objection to the gate itself is parked. No padding, the longest utterances of any run, half the
+cost. The avatar path also ran end to end for the first time (6 `avatar.ready` events).
+
+**But 21 turns is eleven fewer than the same definition took with a 40-turn cap**, and the
+likely cause is the ceiling wording itself. The capped run was told "a fair share is roughly 7
+turns each" — 6 × 7 = 42, so the number was also acting as a **length target**. The ceiling run
+was given no number at all, so nothing anchored the conversation to a length and it ended when
+the content ended.
+
+Whether that is better is a content judgement, not a metric. At 21 turns each persona gets ~3.5,
+and this document's own §2 reasoning says three turns each is "often too few for a position to
+be challenged and held". The Gini rise to 0.151 and the minimum of 2 are mostly arithmetic — a
+21-turn run over 6 speakers has an expected share of 3.5, so the same absolute spread scores
+worse — rather than evidence that fairness regressed.
+
+**What this suggests, untested:** ceiling mode may want a floor as well as a ceiling — "expect at
+least N turns before concluding" — so the absence of a share number does not silently become
+permission to wrap up early. That is a new arm, and it needs the harness before it needs code.
