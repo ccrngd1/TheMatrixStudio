@@ -57,25 +57,45 @@ export function ConversationFeed({
         {feed.length === 0 && !thinking && (
           <p className="text-sm text-slate-500">Waiting for the conversation to begin…</p>
         )}
-        {feed.map((m) => (
-          <div
-            key={`${m.seq}`}
-            id={`turn-${m.seq}`}
-            className={`flex gap-3 rounded transition-colors ${
-              highlight === m.seq ? 'bg-matrix-accent/10 ring-1 ring-matrix-accent/60' : ''
-            }`}
-          >
-            <AvatarBadge name={m.speaker} portrait={agents[m.speaker]?.portrait ?? null}
-              portraitUrl={agents[m.speaker]?.portraitUrl ?? null} size={36} />
-            <div className="min-w-0 flex-1">
-              <div className="flex items-baseline gap-2">
-                <span className="font-semibold text-slate-200">{m.speaker}</span>
-                <span className="text-[11px] text-slate-500">turn {m.turn}</span>
+        {feed.map((m, i) => {
+          // The simultaneous method puts every survivor of a round on ONE turn number.
+          // Rendered as a flat list they read as a sequence — as though the second speaker
+          // had heard the first — which is precisely what did not happen. So a turn with
+          // more than one message is drawn as a round: a divider naming it, and every
+          // message after the first marked "at the same time".
+          const roundSize = feed.filter((x) => x.turn === m.turn).length
+          const opensRound = roundSize > 1 && feed[i - 1]?.turn !== m.turn
+          return (
+            <div key={`${m.seq}`} className="space-y-3">
+              {opensRound && (
+                <div className="flex items-center gap-2 pt-1 text-[11px] text-slate-500">
+                  <span className="h-px flex-1 bg-matrix-border" />
+                  round {m.turn} · {roundSize} spoke at once
+                  <span className="h-px flex-1 bg-matrix-border" />
+                </div>
+              )}
+              <div
+                id={`turn-${m.seq}`}
+                className={`flex gap-3 rounded transition-colors ${
+                  highlight === m.seq ? 'bg-matrix-accent/10 ring-1 ring-matrix-accent/60' : ''
+                }`}
+              >
+                <AvatarBadge name={m.speaker} portrait={agents[m.speaker]?.portrait ?? null}
+                  portraitUrl={agents[m.speaker]?.portraitUrl ?? null} size={36} />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-baseline gap-2">
+                    <span className="font-semibold text-slate-200">{m.speaker}</span>
+                    <span className="text-[11px] text-slate-500">turn {m.turn}</span>
+                    {roundSize > 1 && !opensRound && (
+                      <span className="text-[11px] text-slate-600">· at the same time</span>
+                    )}
+                  </div>
+                  <p className="whitespace-pre-wrap text-sm text-slate-300">{m.content}</p>
+                </div>
               </div>
-              <p className="whitespace-pre-wrap text-sm text-slate-300">{m.content}</p>
             </div>
-          </div>
-        ))}
+          )
+        })}
         {thinking && activeSpeaker && (
           <div className="flex items-center gap-3 text-slate-400">
             <AvatarBadge name={activeSpeaker} portrait={agents[activeSpeaker]?.portrait ?? null}

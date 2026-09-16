@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import random
+import re
 import time
 import uuid
 from collections import Counter
@@ -411,6 +412,17 @@ Respond with ONLY the name of the persona who should speak next. Choose naturall
     return _fallback_speaker(agent_names, last_speaker, why, reason)
 
 
+#: A pass declared in prose rather than by setting the field. The backstop exists because
+#: the field is the contract and the prose is what a model does when it ignores contracts;
+#: when the two disagree the engine logs it, so "the filter ate a real turn" is answerable.
+_PROSE_PASS = re.compile(
+    r"^\W*(?:i(?:'| a)?m going to |i(?:'ll| will) )?(?:pass|skip)\b"
+    r"|^\W*(?:i have |i've got )?nothing (?:to add|further|else)\b"
+    r"|^\W*no(?:thing)? comment\b",
+    re.IGNORECASE,
+)
+
+
 async def _generate_response(
     speaker_name: str,
     agent: AgentState,
@@ -418,6 +430,10 @@ async def _generate_response(
     conversation: List[Dict[str, Any]],
     settings,
     model: Optional[str] = None,
+    # Simultaneous mode only: this persona may decline the turn. Everyone is asked every
+    # round, so without this the quiet ones would be forced to invent something — which is
+    # the failure the sequential engine spent all of §13 learning to avoid.
+    allow_pass: bool = False,
     cognition: Optional[CognitionConfig] = None,
     retrieved_memories: Optional[List["MemoryItem"]] = None,
     open_threads: Optional[List["PendingThread"]] = None,
@@ -535,6 +551,22 @@ async def _generate_response(
             "goal_served": {"type": "string"},
         }
         extra_instr = ""
+        if allow_pass:
+            # Declared, not detected. A boolean the persona sets is unambiguous; deciding
+            # from the prose whether "Nothing here changes my position, but —" is a pass
+            # would drop real turns, and that is a silent loss of content.
+            fields.append(
+                '"pass": <true if you have nothing substantive to add this round, else false>'
+            )
+            properties["pass"] = {"type": "boolean"}
+            extra_instr += (
+                "\n\nEveryone in this conversation is asked to respond every round, so it is "
+                "entirely normal to have nothing to add. If the discussion has not moved to "
+                "anything you have a stake in, or your position is already on the record and "
+                "unchanged, set \"pass\": true and leave the utterance empty. Passing is not "
+                "a failure and it is not recorded as speech — say something only when you "
+                "have something to say."
+            )
         if memory_on:
             fields.append(
                 '"memories": [{"content": "<a short thing you just learned or decided this turn>", '
@@ -821,6 +853,16 @@ Respond naturally as this character. Keep responses conversational (2-4 sentence
         }
         # Additive only when cognition is on, so the cognition-off event/result
         # payloads stay byte-for-byte identical to pre-2c.
+        if allow_pass:
+            # The field wins; the prose is a backstop for a model that ignored the field.
+            declared = bool((parsed or {}).get("pass")) if cognition_on else False
+            prose = bool(_PROSE_PASS.search((content or "").strip()[:80]))
+            result["passed"] = declared or prose
+            if declared != prose:
+                logger.info(
+                    "%s pass signal: field=%s prose=%s — %r",
+                    speaker_name, declared, prose, (content or "")[:90],
+                )
         if cognition_on:
             result["rationale"] = rationale
             result["goal_served"] = goal_served
@@ -1448,22 +1490,59 @@ async def _run_turns(
     converged: Optional[Dict[str, Any]] = None
     declines = decline_streak
 
-    try:
-        while turn < max_messages and (turn_budget is None or generated < turn_budget):
-            turn += 1
-            generated += 1
+    # Simultaneous mode. A ROUND is one turn: every persona is asked, against the state as
+    # it stood when the round opened, and the ones who pass never reach the transcript.
+    #
+    # Implemented by driving the EXISTING per-turn body once per persona rather than by
+    # writing a second one. The body is ~350 lines of retrieval, validation, cognition,
+    # citations and cost accounting, and a parallel copy of it would drift — the sequential
+    # path is also the one every measurement in the design doc describes, so it is left
+    # byte-for-byte alone.
+    simultaneous = bool(selection and selection.method == "simultaneous")
+    round_queue: List[str] = []
+    #: What the personas in this round can see. Frozen at the top of the round, which is
+    #: the whole semantic difference: nobody in a round reads anybody else in it.
+    round_state: List[Dict[str, Any]] = []
+    round_spoke: List[str] = []
+    round_passed: List[str] = []
 
-            # Phase 1: Select next speaker
-            choice = await _select_next_speaker(
-                topic, agents, conversation, last_speaker, settings,
-                model=model, cognition=cognition, personas=personas,
-                selection=selection,
-                # The run's TOTAL budget, not this call's turn_budget: intervention B is
-                # about pacing across the whole conversation, and a Step Functions turn
-                # Lambda that passed its own budget of 1 would tell the moderator every
-                # persona's fair share was one turn.
-                max_messages=max_messages,
-            )
+    try:
+        # `round_queue or` is what lets a round span iterations: in simultaneous mode the
+        # turn number does not advance between the personas of a round, so re-checking the
+        # turn cap mid-round would end the run after its FIRST speaker on the last round.
+        # `generated` only ticks when a round closes, so the per-call budget is unaffected.
+        while (round_queue or turn < max_messages) and (
+            turn_budget is None or generated < turn_budget
+        ):
+            if simultaneous:
+                if not round_queue:
+                    # Open a round. Cast order is arbitrary and that is fine — the personas
+                    # are blind to each other within the round, so the order affects only
+                    # which survivor is written first.
+                    round_queue = list(agents.keys())
+                    round_state = list(conversation)
+                    round_spoke, round_passed = [], []
+                    turn += 1
+            else:
+                turn += 1
+                generated += 1
+
+            # Phase 1: Select next speaker — unless nobody selects. In simultaneous mode
+            # the queue IS the answer, so the selection call is skipped entirely: no
+            # moderator, no fairness prompt, no decline, and none of §10–§17 applies.
+            if simultaneous:
+                choice = SpeakerChoice(round_queue.pop(0), None, None)
+            else:
+                choice = await _select_next_speaker(
+                    topic, agents, conversation, last_speaker, settings,
+                    model=model, cognition=cognition, personas=personas,
+                    selection=selection,
+                    # The run's TOTAL budget, not this call's turn_budget: intervention B
+                    # is about pacing across the whole conversation, and a Step Functions
+                    # turn Lambda that passed its own budget of 1 would tell the moderator
+                    # every persona's fair share was one turn.
+                    max_messages=max_messages,
+                )
 
             # Intervention H: the moderator said nobody has anything left to add.
             #
@@ -1523,6 +1602,12 @@ async def _run_turns(
                 "speaker": speaker_name,
                 "candidates": list(agents.keys()),
             }
+            # Additive, and only in the mode where it is true. Without it a reader of the
+            # log would see `speaker.selected` on every turn of a run in which nothing
+            # selected anybody.
+            if simultaneous:
+                speaker_payload["method"] = "simultaneous"
+                speaker_payload["round"] = turn
             if selection_reason:
                 speaker_payload["reason"] = selection_reason
             # Present ONLY when nobody chose. Reading a transcript, `selection_fallback`
@@ -1632,11 +1717,17 @@ async def _run_turns(
             disclose = bool(
                 retrieval_on and not passages and retrieval.disclose_unsupported
             )
+            # `round_state` is the frozen view in simultaneous mode, and IS the semantic
+            # difference between the two modes: passing `conversation` here would let the
+            # second persona in a round read the first, which is a rotation wearing this
+            # mode's name.
+            visible = round_state if simultaneous else conversation
             response_data = await _generate_response(
-                speaker_name, speaker, topic, conversation, settings,
+                speaker_name, speaker, topic, visible, settings,
                 model=model, cognition=cognition, retrieved_memories=retrieved,
                 open_threads=open_threads, retrieved_passages=passages,
                 disclose_unsupported=disclose, personas=personas,
+                allow_pass=simultaneous,
             )
 
             # Phase 4a: pre-emit priority-hierarchy validation gate. The
@@ -1719,7 +1810,8 @@ async def _run_turns(
                     speaker.total_cost_usd += response_data["cost_usd"]
                     attempt += 1
                     response_data = await _generate_response(
-                        speaker_name, speaker, topic, conversation, settings,
+                        speaker_name, speaker, topic, visible, settings,
+                        allow_pass=simultaneous,
                         model=model, cognition=cognition,
                         retrieved_memories=retrieved,
                         open_threads=open_threads,
@@ -1730,6 +1822,48 @@ async def _run_turns(
                         disclose_unsupported=disclose,
                         personas=personas,
                     )
+
+            # A pass never reaches the transcript. Emitted, so the run can say who was
+            # asked and declined — the whole convergence signal in this mode is "everybody
+            # passed", and that is only auditable if each pass is on the record.
+            if simultaneous and response_data.get("passed"):
+                round_passed.append(speaker_name)
+                await emit(
+                    turn=turn,
+                    seq=next_seq(),
+                    event_type="agent.passed",
+                    agent_name=speaker_name,
+                    payload={
+                        "speaker": speaker_name,
+                        "round": turn,
+                        # The tokens were spent whether or not anything was said, and the
+                        # per-content cost of this mode rises as the room quietens. Not
+                        # recording it would make a converging run look free.
+                        "tokens_in": response_data.get("tokens_in", 0),
+                        "tokens_out": response_data.get("tokens_out", 0),
+                        "cost_usd": response_data.get("cost_usd", 0.0),
+                    },
+                )
+                speaker.total_tokens_in += response_data.get("tokens_in", 0)
+                speaker.total_tokens_out += response_data.get("tokens_out", 0)
+                speaker.total_cost_usd += response_data.get("cost_usd", 0.0)
+                if not round_queue:
+                    generated += 1
+                    if not round_spoke:
+                        # Nobody had anything to add. Not a judgement by a moderator — six
+                        # personas were each asked and each declined, which is the strongest
+                        # form this signal takes anywhere in the engine.
+                        turn -= 1
+                        converged = {
+                            "reason": "every participant passed this round",
+                            "at_turn": turn,
+                        }
+                        logger.info(
+                            "Simulation %s converged at round %d of %d: all %d passed",
+                            run_id, turn, max_messages, len(round_passed),
+                        )
+                        break
+                continue
 
             # Update conversation
             message = {
@@ -1984,6 +2118,20 @@ async def _run_turns(
             last_speaker = speaker_name
 
             logger.info(f"Turn {turn}/{max_messages}: {speaker_name}: {response_data['content'][:100]}...")
+
+            # A survivor. The round is only over when the queue is empty, and only then
+            # does the run's per-call budget tick — a slice generates a whole round, not
+            # a sixth of one, or `turn_budget=1` under Step Functions would stop mid-round
+            # and the next invocation would open a fresh one with the earlier speakers lost.
+            if simultaneous:
+                round_spoke.append(speaker_name)
+                if not round_queue:
+                    generated += 1
+                    logger.info(
+                        "Round %d of %d: %d spoke, %d passed (%s)",
+                        turn, max_messages, len(round_spoke), len(round_passed),
+                        ", ".join(round_passed) or "nobody",
+                    )
 
             # Operator stop, checked BEFORE the cost cap: if both would end the run
             # on the same turn, "you stopped it" is the more informative answer,
