@@ -129,6 +129,7 @@ def _fairness_block(
     agent_names: List[str],
     conversation: List[Dict[str, Any]],
     max_messages: Optional[int],
+    ceiling: bool = False,
 ) -> str:
     """Interventions A and B: the participation counts, then the run's fair share.
 
@@ -152,6 +153,25 @@ def _fairness_block(
         ago = "has not spoken yet" if since is None else f"last spoke {since} turn(s) ago"
         lines.append(f"- {name}: {taken} turn(s) so far, {ago}")
     block = "Participation so far:\n" + "\n".join(lines) + "\n\n"
+    if max_messages and ceiling:
+        # `max_messages` is a SAFETY CEILING, not a plan: the operator turned on
+        # `stop_when_converged` and set the number high so the run cannot loop for ever.
+        # Rendering intervention B's arithmetic against it would be actively misleading —
+        # "a fair share is roughly 17 turns each" invites the moderator to pace for a
+        # hundred turns and argues directly against the stop it is being offered.
+        #
+        # So the share arithmetic is dropped and B's actual directive is kept: the measured
+        # win in §11 was "do not let a participant fall far behind", not the number.
+        #
+        # UNMEASURED. Every figure in §10–§11 used the arithmetic form. This wording has
+        # not been through the harness, and it only applies to ceiling runs.
+        return (
+            block
+            + f"This conversation may run for up to {max_messages} turns, but it should end "
+            "as soon as the discussion is genuinely finished rather than filling the budget. "
+            + _NATURALLY[:-1]
+            + ", but do not let a participant fall far behind the others without reason."
+        )
     if max_messages:
         # Intervention B. Omitted when the run's length is unknown rather than guessed:
         # a fair share computed from the wrong denominator is worse than no fair share,
@@ -291,7 +311,12 @@ Respond with ONLY the name of the persona who should speak next. Choose naturall
     # both, and there is no reason a cognition-off run should be the unfair one.
     if selection is None or selection.fairness:
         selection_prompt = selection_prompt.replace(
-            _NATURALLY, _fairness_block(agent_names, conversation, max_messages)
+            _NATURALLY,
+            _fairness_block(
+                agent_names, conversation, max_messages,
+                # A run that may stop early is a run whose budget is a ceiling.
+                ceiling=bool(selection and selection.stop_when_converged),
+            ),
         )
 
     # Intervention H rides on the cognition-on prompt only: it asks for `{"speaker": null}`,
