@@ -423,6 +423,22 @@ _PROSE_PASS = re.compile(
 )
 
 
+#: The closing round's instruction. Asks for POSITIONS AND TERMS, not agreement.
+#:
+#: "Work toward a consensus" was the obvious wording and is the dangerous one. The Phase 6
+#: dismissal work measured the same sentence moving a persona's visible behaviour from 0.000
+#: to 0.333 depending only on how it was framed, and `distinct_positions` is already the
+#: least stable metric in the harness — so an instruction to agree would reliably produce
+#: agreement, every run would end resolved, and nothing would distinguish a real resolution
+#: from a manufactured one. The last sentence is the guard.
+_CLOSING = (
+    "\n\nThis is the FINAL round of the conversation. State your position as it now stands, "
+    "name specifically what you can accept from what others have proposed, and name what you "
+    "cannot accept and why. If your position moved during this conversation, say what moved "
+    "it. Do not agree to something you do not agree with in order to close."
+)
+
+
 async def _generate_response(
     speaker_name: str,
     agent: AgentState,
@@ -434,6 +450,9 @@ async def _generate_response(
     # round, so without this the quiet ones would be forced to invent something — which is
     # the failure the sequential engine spent all of §13 learning to avoid.
     allow_pass: bool = False,
+    # The last round, run when a conversation hits its ceiling without finishing. Changes
+    # what is asked for, not who is asked.
+    closing: bool = False,
     cognition: Optional[CognitionConfig] = None,
     retrieved_memories: Optional[List["MemoryItem"]] = None,
     open_threads: Optional[List["PendingThread"]] = None,
@@ -567,6 +586,8 @@ async def _generate_response(
                 "a failure and it is not recorded as speech — say something only when you "
                 "have something to say."
             )
+        if closing:
+            extra_instr += _CLOSING
         if memory_on:
             fields.append(
                 '"memories": [{"content": "<a short thing you just learned or decided this turn>", '
@@ -1499,6 +1520,18 @@ async def _run_turns(
     # path is also the one every measurement in the design doc describes, so it is left
     # byte-for-byte alone.
     simultaneous = bool(selection and selection.method == "simultaneous")
+    # The closing round. A run that hits its ceiling stops mid-argument — the simultaneous
+    # renewal run ended with four personas all answering the same question, because the
+    # budget ran out rather than because anything finished. One final round, asked of
+    # everybody at once, turns an arbitrary cutoff into an ending.
+    #
+    # It runs AFTER the ceiling (turn `max_messages + 1`), not inside it: taking a normal
+    # round for it would leave the cutoff exactly as arbitrary as before. And only when the
+    # run reached the ceiling — a converged run has already had every persona say it had
+    # nothing to add, and asking again would contradict that.
+    closing_enabled = bool(selection and selection.closing_round)
+    in_closing = False
+    closing_done = False
     round_queue: List[str] = []
     #: What the personas in this round can see. Frozen at the top of the round, which is
     #: the whole semantic difference: nobody in a round reads anybody else in it.
@@ -1511,10 +1544,30 @@ async def _run_turns(
         # turn number does not advance between the personas of a round, so re-checking the
         # turn cap mid-round would end the run after its FIRST speaker on the last round.
         # `generated` only ticks when a round closes, so the per-call budget is unaffected.
-        while (round_queue or turn < max_messages) and (
-            turn_budget is None or generated < turn_budget
-        ):
-            if simultaneous:
+        while (
+            round_queue
+            or turn < max_messages
+            # `converged is None` is belt-and-braces: a convergence `break`s out of this
+            # loop, so the condition is never re-evaluated after one and a mutant removing
+            # this changes nothing measurable. It stays as a statement of intent for whoever
+            # replaces that `break` — at which point it becomes the thing doing the work.
+            or (closing_enabled and not closing_done and converged is None)
+        ) and (turn_budget is None or generated < turn_budget):
+            # The closing round opens only once the conversation proper is over, so it is
+            # decided here rather than by the loop condition — which has to keep letting a
+            # round in progress finish.
+            if (
+                not round_queue
+                and turn >= max_messages
+                and closing_enabled
+                and not closing_done
+            ):
+                in_closing = True
+            # Rounds are used by the simultaneous METHOD and by the closing round in either
+            # method: closing statements are naturally concurrent, and it means one
+            # implementation rather than a sequential variant nobody measured.
+            rounds_now = simultaneous or in_closing
+            if rounds_now:
                 if not round_queue:
                     # Open a round. Cast order is arbitrary and that is fine — the personas
                     # are blind to each other within the round, so the order affects only
@@ -1530,7 +1583,7 @@ async def _run_turns(
             # Phase 1: Select next speaker — unless nobody selects. In simultaneous mode
             # the queue IS the answer, so the selection call is skipped entirely: no
             # moderator, no fairness prompt, no decline, and none of §10–§17 applies.
-            if simultaneous:
+            if rounds_now:
                 choice = SpeakerChoice(round_queue.pop(0), None, None)
             else:
                 choice = await _select_next_speaker(
@@ -1605,9 +1658,11 @@ async def _run_turns(
             # Additive, and only in the mode where it is true. Without it a reader of the
             # log would see `speaker.selected` on every turn of a run in which nothing
             # selected anybody.
-            if simultaneous:
+            if rounds_now:
                 speaker_payload["method"] = "simultaneous"
                 speaker_payload["round"] = turn
+            if in_closing:
+                speaker_payload["closing"] = True
             if selection_reason:
                 speaker_payload["reason"] = selection_reason
             # Present ONLY when nobody chose. Reading a transcript, `selection_fallback`
@@ -1721,13 +1776,14 @@ async def _run_turns(
             # difference between the two modes: passing `conversation` here would let the
             # second persona in a round read the first, which is a rotation wearing this
             # mode's name.
-            visible = round_state if simultaneous else conversation
+            visible = round_state if rounds_now else conversation
             response_data = await _generate_response(
                 speaker_name, speaker, topic, visible, settings,
                 model=model, cognition=cognition, retrieved_memories=retrieved,
                 open_threads=open_threads, retrieved_passages=passages,
                 disclose_unsupported=disclose, personas=personas,
-                allow_pass=simultaneous,
+                allow_pass=rounds_now,
+                closing=in_closing,
             )
 
             # Phase 4a: pre-emit priority-hierarchy validation gate. The
@@ -1811,7 +1867,7 @@ async def _run_turns(
                     attempt += 1
                     response_data = await _generate_response(
                         speaker_name, speaker, topic, visible, settings,
-                        allow_pass=simultaneous,
+                        allow_pass=rounds_now, closing=in_closing,
                         model=model, cognition=cognition,
                         retrieved_memories=retrieved,
                         open_threads=open_threads,
@@ -1826,7 +1882,7 @@ async def _run_turns(
             # A pass never reaches the transcript. Emitted, so the run can say who was
             # asked and declined — the whole convergence signal in this mode is "everybody
             # passed", and that is only auditable if each pass is on the record.
-            if simultaneous and response_data.get("passed"):
+            if rounds_now and response_data.get("passed"):
                 round_passed.append(speaker_name)
                 await emit(
                     turn=turn,
@@ -1849,7 +1905,16 @@ async def _run_turns(
                 speaker.total_cost_usd += response_data.get("cost_usd", 0.0)
                 if not round_queue:
                     generated += 1
-                    if not round_spoke:
+                    if in_closing:
+                        in_closing, closing_done = False, True
+                        if not round_spoke:
+                            # Everybody declined their closing statement, so the round
+                            # produced no messages and is not a turn. NOT recorded as a
+                            # convergence either: the run ended because the budget did,
+                            # and claiming the room was finished would be a nicer story
+                            # than the truth.
+                            turn -= 1
+                    elif not round_spoke:
                         # Nobody had anything to add. Not a judgement by a moderator — six
                         # personas were each asked and each declined, which is the strongest
                         # form this signal takes anywhere in the engine.
@@ -1901,6 +1966,11 @@ async def _run_turns(
             # reader counting these gets the parse-failure rate for the run.
             if response_data.get("cognition_parsed") is False:
                 response_payload["cognition_parsed"] = False
+            # Additive, and the reason a reader can trust the ending: a final position
+            # stated under the closing instruction is a different artefact from a turn in
+            # the middle of an argument, and the analysis layer should be able to tell.
+            if in_closing:
+                response_payload["closing"] = True
             # Phase 2c memory: the retrieved memory ids are the causal refs that
             # were in-context for this turn (present only when memory is on).
             if memory_on:
@@ -2123,15 +2193,18 @@ async def _run_turns(
             # does the run's per-call budget tick — a slice generates a whole round, not
             # a sixth of one, or `turn_budget=1` under Step Functions would stop mid-round
             # and the next invocation would open a fresh one with the earlier speakers lost.
-            if simultaneous:
+            if rounds_now:
                 round_spoke.append(speaker_name)
                 if not round_queue:
                     generated += 1
                     logger.info(
-                        "Round %d of %d: %d spoke, %d passed (%s)",
+                        "%s %d of %d: %d spoke, %d passed (%s)",
+                        "Closing round" if in_closing else "Round",
                         turn, max_messages, len(round_spoke), len(round_passed),
                         ", ".join(round_passed) or "nobody",
                     )
+                    if in_closing:
+                        in_closing, closing_done = False, True
 
             # Operator stop, checked BEFORE the cost cap: if both would end the run
             # on the same turn, "you stopped it" is the more informative answer,

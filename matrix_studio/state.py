@@ -168,6 +168,20 @@ class SelectionConfig(BaseModel):
             raise ValueError(f"unknown selection method {v!r}: moderated | simultaneous")
         return v
 
+    #: One final round when the run hits its ceiling without finishing.
+    #:
+    #: Asked of everybody at once, in either method, and it asks for POSITIONS AND TERMS
+    #: rather than agreement — see `_CLOSING` in the simulator for why the obvious wording
+    #: ("work toward consensus") is the dangerous one.
+    #:
+    #: Runs at turn `max_messages + 1`, so it does not consume a round of the conversation,
+    #: and only when the ceiling was reached: a converged run has already had every persona
+    #: say it had nothing left, and asking again would contradict that.
+    closing_round: bool = Field(
+        default=False,
+        description="One final round asking for final positions when the ceiling is hit",
+    )
+
     #: Intervention H, and the other half of `fairness`.
     #:
     #: Fair rotation front-loads the substance: run `d7d739dd` stated every position by turn

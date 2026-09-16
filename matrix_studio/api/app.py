@@ -152,6 +152,9 @@ class SelectionConfigModel(BaseModel):
     #: asked every round, passes are dropped, survivors share a turn). In `simultaneous` the
     #: two flags below do nothing — see `SelectionConfig`.
     method: str = "moderated"
+    #: One final round when a run hits its ceiling without finishing: everyone states their
+    #: final position and terms. Runs at `max_messages + 1`, so it costs one extra round.
+    closing_round: bool = False
     #: Intervention H: the moderator may end the run when nobody has anything left to add.
     #: Guarded in the engine — every persona must have spoken, and it takes two consecutive
     #: declines. The run still ends as `complete`; `sim.completed` carries `converged: true`

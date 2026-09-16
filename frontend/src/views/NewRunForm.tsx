@@ -53,6 +53,8 @@ export function NewRunForm({ onStarted, onCancel, fromRunId }: Props) {
   // third is plausible, and "☐ simultaneous" would leave the default mode unnamed.
   const [method, setMethod] = useState<'moderated' | 'simultaneous'>('moderated')
   const [stopWhenConverged, setStopWhenConverged] = useState(false)
+  // One final round when the run hits its ceiling without finishing.
+  const [closingRound, setClosingRound] = useState(false)
   // What the turn count was before the toggle raised it, so turning it off puts it back
   // rather than leaving the operator with a 100-turn bill they did not choose.
   const [turnsBeforeCeiling, setTurnsBeforeCeiling] = useState<number | null>(null)
@@ -356,10 +358,11 @@ export function NewRunForm({ onStarted, onCancel, fromRunId }: Props) {
           // Sent only when it differs from the server's default, so a plain run's config
           // stays as small as it was before either option existed.
           selection:
-            method !== 'moderated' || stopWhenConverged
+            method !== 'moderated' || stopWhenConverged || closingRound
               ? {
                   ...(method !== 'moderated' ? { method } : {}),
                   ...(stopWhenConverged ? { stop_when_converged: true } : {}),
+                  ...(closingRound ? { closing_round: true } : {}),
                 }
               : undefined,
           // Retrieval has to be ON for a binding to do anything: `retrieve_for_turn` is
@@ -517,6 +520,30 @@ export function NewRunForm({ onStarted, onCancel, fromRunId }: Props) {
             <option value="moderated">Moderated — one speaker per turn</option>
             <option value="simultaneous">Simultaneous — everyone, every round</option>
           </select>
+        </label>
+        <label className="flex items-center gap-2 text-sm text-slate-300">
+          <input
+            type="checkbox"
+            checked={closingRound}
+            onChange={(e) => setClosingRound(e.target.checked)}
+          />
+          Closing round when the ceiling is reached
+          <Hint label="closing round">
+            A run that hits its turn ceiling stops mid-argument. With this on it gets one
+            extra round — asked of everybody at once, in either method — for final positions.
+            <br />
+            <br />
+            It asks each persona to state where they now stand, what they can accept from
+            what others proposed, and what they cannot accept and why. It deliberately does
+            NOT ask them to reach a consensus: the Phase 6 work measured the same sentence
+            moving a persona's behaviour from 0.000 to 0.333 on framing alone, so an
+            instruction to agree would produce agreement every time and nothing would
+            separate a real resolution from a manufactured one.
+            <br />
+            <br />
+            Costs one extra round. Never runs after a conversation that ended on its own —
+            everyone had already said they had nothing to add.
+          </Hint>
         </label>
         <label className="flex items-center gap-2 text-sm text-slate-300">
           <input
