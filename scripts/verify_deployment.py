@@ -36,9 +36,17 @@ is declared explicitly: `verify_tenant_isolation.py` requires the tenant role to
 human principal, which is a deliberate, temporary widening — so it reports NEEDS-SETUP
 with the command, and that state is loud rather than green.
 
+**Every check runs, including the ones that cost money.** `--paid` used to gate the two that
+make billable Bedrock calls, and the default was to skip them — which meant the command people
+actually typed verified the control plane and not the thing the product does. The turn loop is
+the most valuable check in the suite and it was the one most often not run. ~$0.10 is cheaper
+than shipping a broken engine, so it is no longer a decision.
+
+To run a subset deliberately, name it: `--only kb-grants` takes any check by name, which is the
+same escape hatch with an explicit choice attached rather than a silent default.
+
 Usage:
-    AWS_PROFILE=... python scripts/verify_deployment.py              # free checks only
-    AWS_PROFILE=... python scripts/verify_deployment.py --paid       # + generation (~$0.10)
+    AWS_PROFILE=... python scripts/verify_deployment.py              # everything (~$0.10)
     AWS_PROFILE=... python scripts/verify_deployment.py --only kb-grants
 """
 
@@ -59,8 +67,10 @@ class Check(NamedTuple):
     name: str
     script: str
     args: List[str]
-    #: True when it makes billable Bedrock calls. Off by default, because a verification
-    #: run that silently costs money is one people stop doing.
+    #: True when it makes billable Bedrock calls. Kept as a LABEL, not a gate: it is worth
+    #: knowing which checks spend money, and it is printed in the summary. It used to mean
+    #: "skipped unless asked for", which made the turn loop — the check that exercises the
+    #: actual product — the one least often run.
     paid: bool
     what: str
     #: Set when the check needs infrastructure a normal deployment does not have. It is
@@ -154,10 +164,6 @@ def run(check: Check, timeout: int) -> tuple[str, float, str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--paid", action="store_true",
-        help="also run checks that make billable Bedrock calls (~$0.10)",
-    )
     parser.add_argument("--only", action="append", help="run only these checks, by name")
     parser.add_argument("--timeout", type=int, default=1800)
     args = parser.parse_args()
@@ -172,15 +178,13 @@ def main() -> int:
         )
         return 2
 
-    selected = [
-        c for c in CHECKS
-        if (not args.only or c.name in args.only) and (c.paid <= args.paid)
-    ]
-    skipped_paid = [c for c in CHECKS if c.paid and not args.paid and (
-        not args.only or c.name in args.only
-    )]
+    selected = [c for c in CHECKS if not args.only or c.name in args.only]
+    billable = [c for c in selected if c.paid]
 
-    print(f"Verifying the deployment — {len(selected)} check(s)\n")
+    print(f"Verifying the deployment — {len(selected)} check(s)"
+          + (f", {len(billable)} of which make billable Bedrock calls (~$0.10)"
+             if billable else "")
+          + "\n")
     results: Dict[str, tuple[str, float, str]] = {}
     for check in selected:
         print(f"▶ {check.name}: {check.what}")
@@ -198,19 +202,22 @@ def main() -> int:
     print("=" * 72)
     for check in selected:
         verdict, elapsed, _ = results[check.name]
-        print(f"  {verdict:<11} {check.name:<18} {elapsed:>6.1f}s")
-    for check in skipped_paid:
-        print(f"  {'NOT RUN':<11} {check.name:<18} {'—':>7}  (needs --paid)")
+        print(f"  {verdict:<11} {check.name:<18} {elapsed:>6.1f}s"
+              + ("  (billable)" if check.paid else ""))
 
     failed = [n for n, (v, _, _) in results.items() if v in ("FAIL", "ERROR")]
     needs = [n for n, (v, _, _) in results.items() if v == "NEEDS-SETUP"]
     print("=" * 72)
 
-    if skipped_paid:
+    unrun = [c for c in CHECKS if c not in selected]
+    if unrun:
+        # Only reachable via `--only`, which is a deliberate narrowing. Still said out loud:
+        # the contract at the top of this file is that a check which did not run is never
+        # silently green.
         print(
-            f"\n{len(skipped_paid)} generation check(s) were NOT RUN. They cost ~$0.10 and "
-            "cover the turn loop — completion, stop, the cost cap, branch and resume. "
-            "Run with --paid before a release."
+            f"\n{len(unrun)} check(s) were not selected: "
+            + ", ".join(c.name for c in unrun)
+            + ". Drop --only to run the whole suite."
         )
     if needs:
         print(
