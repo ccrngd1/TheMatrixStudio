@@ -1353,6 +1353,11 @@ async def _run_turns(
     should_stop: Optional[Callable[[], bool]] = None,
     firsthand_citations: Optional[List[List[str]]] = None,
     turn_budget: Optional[int] = None,
+    # Intervention H's streak, carried in because ONE TURN PER CALL is what ships: a
+    # counter local to this function is reset on every turn under Step Functions, which
+    # made the two-declines-in-a-row guard unsatisfiable in production while passing every
+    # in-process test. See `SimSnapshot.decline_streak`.
+    decline_streak: int = 0,
 ) -> Dict[str, Any]:
     """
     Shared turn loop + completion/failure handling for both a fresh run and a
@@ -1416,7 +1421,7 @@ async def _run_turns(
     # anybody and both guards allow it; `declines` counts CONSECUTIVE declines, so a single
     # odd judgement costs a turn rather than a run.
     converged: Optional[Dict[str, Any]] = None
-    declines = 0
+    declines = decline_streak
 
     try:
         while turn < max_messages and (turn_budget is None or generated < turn_budget):
@@ -1938,6 +1943,7 @@ async def _run_turns(
                         conversation=conversation,
                         pending_threads=pending_threads,
                         firsthand_citations=ledger,
+                        decline_streak=declines,
                         status="running",
                         created_at=int(time.time()),
                         total_turns=turn,
@@ -1979,6 +1985,7 @@ async def _run_turns(
                         conversation=conversation,
                         pending_threads=pending_threads,
                         firsthand_citations=ledger,
+                        decline_streak=declines,
                         status="stopped",
                         created_at=completion_time,
                         completed_at=completion_time,
@@ -2472,6 +2479,9 @@ async def resume_simulation(
     # Next-speaker fairness (A+B). None means the default, which is ON — a resumed or
     # branched run must not quietly become the unfair one.
     selection: Optional[SelectionConfig] = None,
+    # Intervention H's decline streak as of `from_turn`, read off the snapshot by the
+    # caller. 0 for a branch, which starts its own streak.
+    decline_streak: int = 0,
     should_stop: Optional[Callable[[], bool]] = None,
     firsthand_citations: Optional[List[List[str]]] = None,
     # Phase 5: turns THIS call may generate (None = the run's whole remaining budget).
@@ -2611,5 +2621,6 @@ async def resume_simulation(
         retrieval=retrieval,
         personas=personas,
         selection=selection,
+        decline_streak=decline_streak,
         should_stop=should_stop,
     )

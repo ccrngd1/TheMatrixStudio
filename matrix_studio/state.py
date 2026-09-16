@@ -404,6 +404,18 @@ class SimSnapshot(BaseModel):
         default_factory=list,
         description="[[speaker, document_title], ...] first-hand citations so far",
     )
+    # Consecutive un-honoured declines by the moderator immediately before this turn
+    # (intervention H). Cross-turn state, so it belongs here for the same reason
+    # `pending_threads` and `firsthand_citations` do — and for a sharper one: the deployed
+    # turn loop runs ONE turn per Lambda invocation, so a counter held in a local variable
+    # is re-initialised on every turn and the "two declines in a row" guard can never be
+    # satisfied. That shipped, and the live run `28235cec` declined eleven times — three on
+    # consecutive turns — with every event recording `consecutive: 1`.
+    #
+    # Defaulted, so every snapshot written before 2026-09-16 still parses.
+    decline_streak: int = Field(
+        default=0, description="Consecutive un-honoured moderator declines (intervention H)"
+    )
     status: str = Field(description="Simulation status: pending|running|complete|failed")
     created_at: int = Field(description="Unix timestamp of snapshot creation")
     completed_at: Optional[int] = Field(default=None, description="Unix timestamp of completion")

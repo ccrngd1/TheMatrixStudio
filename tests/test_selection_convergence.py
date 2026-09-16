@@ -315,3 +315,138 @@ class TestTheRecord:
         assert result["status"] == "complete"
         run = await db.get_run("not-live")
         assert run["status"] == "complete"
+
+
+# --------------------------------------------------------------------------- #
+# (4) ONE TURN PER INVOCATION — the path that ships
+# --------------------------------------------------------------------------- #
+
+
+class TestTheStreakSurvivesAcrossInvocations:
+    """The tests above drive `run_simulation`, which loops in one process. **That is not
+    what ships.** Step Functions calls a turn Lambda with `turn_budget=1`, so the loop runs
+    one iteration and returns, and anything held in a local variable is gone.
+
+    The first version of intervention H kept the decline counter in a local. Every test
+    above passed and the feature was inert in production: run `28235cec` declined eleven
+    times, three of them on consecutive turns, and every event recorded `consecutive: 1`
+    because the counter restarted each turn. These tests drive the deployed shape instead.
+    """
+
+    async def test_the_snapshot_carries_the_streak(self, db):
+        """One decline, one turn: the streak has to be on the checkpoint, because the next
+        invocation has nothing else to read."""
+        replies = [_pick("Ada"), _pick("Ben"), _pick("Cy"), DECLINE, _pick("Ada")]
+        await _run(db, "streak-snap", replies, max_messages=5)
+        snap = await db.get_snapshot("streak-snap", 4)
+        assert snap is not None
+        assert snap.decline_streak == 1, "turn 4 was an overridden decline"
+        assert (await db.get_snapshot("streak-snap", 3)).decline_streak == 0
+
+    async def test_an_old_snapshot_without_the_field_still_loads(self, db):
+        """Every snapshot written before 2026-09-16 lacks it. A required field here would
+        make historical runs unopenable, which is a worse failure than a reset counter."""
+        from matrix_studio.state import SimSnapshot
+
+        raw = {
+            "run_id": "old", "turn": 3, "topic": "t", "agents": {},
+            "conversation": [], "status": "running", "created_at": 0, "total_turns": 3,
+        }
+        assert SimSnapshot(**raw).decline_streak == 0
+
+    async def test_convergence_fires_when_turns_arrive_one_at_a_time(self, db):
+        """The regression test for the shipped defect. Two declines on consecutive turns,
+        delivered by two SEPARATE calls with `turn_budget=1`, must converge — which is only
+        possible if the streak came back off the snapshot."""
+        from matrix_studio.engine.simulator import resume_simulation
+        from matrix_studio.orchestration import load_state
+
+        # Three ordinary turns first, so the coverage guard is satisfied.
+        await _run(db, "slices", [_pick("Ada"), _pick("Ben"), _pick("Cy")], max_messages=9)
+        run = await db.get_run("slices")
+
+        results = []
+        for expected_turn in (4, 5):
+            topic, agents, conversation, threads, ledger, streak = await load_state(
+                db, run, expected_turn - 1
+            )
+            with patch("matrix_studio.engine.simulator.litellm.acompletion",
+                       side_effect=_fake_engine([DECLINE])):
+                results.append(await resume_simulation(
+                    run_id="slices", topic=topic, agents=agents,
+                    conversation=conversation, from_turn=expected_turn - 1,
+                    start_seq=await db.max_seq("slices") + 1, max_messages=9, db=db,
+                    cognition=CognitionConfig(enabled=True),
+                    selection=SelectionConfig(stop_when_converged=True),
+                    pending_threads=threads, firsthand_citations=ledger,
+                    decline_streak=streak, turn_budget=1,
+                ))
+
+        # First slice: decline overridden (streak was 0 coming in), so a turn happened.
+        assert results[0]["status"] == "running"
+        assert results[0]["total_turns"] == 4
+        # Second slice: the streak arrived as 1, so this decline is the second in a row.
+        assert results[1]["status"] == "complete", results[1]["status"]
+        assert results[1]["converged"]["at_turn"] == 4
+        declined = await _events(db, "slices", "speaker.declined")
+        assert [d["consecutive"] for d in declined] == [1, 2], declined
+
+    async def test_a_slice_reads_the_streak_from_the_log_when_there_is_no_snapshot(self, db):
+        """The replay fallback. `reconstruct_at_turn` rebuilds state from events for a slice
+        with no checkpoint, and returning 0 there would reset the streak invisibly — the same
+        bug one layer down."""
+        from matrix_studio.orchestration import decline_streak_from_log
+
+        replies = [_pick("Ada"), _pick("Ben"), _pick("Cy"), DECLINE, _pick("Ada")]
+        await _run(db, "from-log", replies, max_messages=5)
+        assert await decline_streak_from_log(db, "from-log", 4) == 1
+        assert await decline_streak_from_log(db, "from-log", 3) == 0
+        assert await decline_streak_from_log(db, "from-log", 5) == 0
+
+    async def test_it_converges_through_execute_slice_the_way_the_machine_calls_it(self, db):
+        """The seam that actually broke. Everything above can pass while the deployed path
+        stays inert, because the deployed path is `execute_slice` — one call per turn, fresh
+        process, state only from the checkpoint. A mutant that hardcodes `decline_streak=0`
+        in `orchestration.run_turn` survives every other test in this file and is caught here.
+        """
+        from matrix_studio import orchestration
+
+        await db.create_run(
+            run_id="slice-conv", topic="t",
+            cast=[{"name": n, "persona": "p", "goals": []} for n in ("Ada", "Ben", "Cy")],
+            config={"max_messages": 9, "generate_avatars": False,
+                    "cognition": {"enabled": True},
+                    "selection": {"stop_when_converged": True}},
+        )
+        # Three real turns so the coverage guard is satisfied, one slice at a time.
+        turn = 0
+        for name in ("Ada", "Ben", "Cy"):
+            with patch("matrix_studio.engine.simulator.litellm.acompletion",
+                       side_effect=_fake_engine([_pick(name)])):
+                out = await orchestration.execute_slice(
+                    db, "slice-conv", turn=turn, turn_budget=1
+                )
+            turn = out["turn"]
+        assert turn == 3 and out["status"] == "running"
+
+        # Now two declines, in two separate slices.
+        with patch("matrix_studio.engine.simulator.litellm.acompletion",
+                   side_effect=_fake_engine([DECLINE])):
+            first = await orchestration.execute_slice(
+                db, "slice-conv", turn=turn, turn_budget=1
+            )
+        assert first["status"] == "running", "one decline must not end a run"
+
+        with patch("matrix_studio.engine.simulator.litellm.acompletion",
+                   side_effect=_fake_engine([DECLINE])):
+            second = await orchestration.execute_slice(
+                db, "slice-conv", turn=first["turn"], turn_budget=1
+            )
+        assert second["status"] == "complete", second
+        assert second["done"] is True
+        declined = await _events(db, "slice-conv", "speaker.declined")
+        assert [d["consecutive"] for d in declined] == [1, 2], declined
+        done = await _events(db, "slice-conv", "sim.completed")
+        assert done[0]["converged"] is True
+        assert done[0]["converged_at_turn"] == 4
+        assert done[0]["turns_unused"] == 5
