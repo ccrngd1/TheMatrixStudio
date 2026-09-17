@@ -4,7 +4,9 @@ import { api } from '../api'
 import { Hint } from '../components/Hint'
 import { buildStructured } from '../lib/convictions'
 import { parseSetup, parseSetupObject, ImportError } from '../lib/importSetup'
-import { blankPersona, CEILING_TURNS, type DraftDoc, type DraftPersona } from './newRunTypes'
+import {
+  blankPersona, CEILING_TURNS, type DraftDoc, type DraftPersona, type Method,
+} from './newRunTypes'
 import { KbPicker } from '../components/KbPicker'
 
 interface Props {
@@ -51,7 +53,11 @@ export function NewRunForm({ onStarted, onCancel, fromRunId }: Props) {
   // `moderated` (a model picks one speaker per turn) or `simultaneous` (everyone is asked
   // every round, passes are dropped). Not a checkbox: there are two named methods and a
   // third is plausible, and "☐ simultaneous" would leave the default mode unnamed.
-  const [method, setMethod] = useState<'moderated' | 'simultaneous'>('moderated')
+  const [method, setMethod] = useState<Method>('moderated')
+  // Only used by `hybrid`. Two by default, from the one live simultaneous run: round 1 put
+  // every position on the table, round 2 was the strongest of eight, and the parallel
+  // restatement starts at round 3.
+  const [openingRounds, setOpeningRounds] = useState(2)
   const [stopWhenConverged, setStopWhenConverged] = useState(false)
   // One final round when the run hits its ceiling without finishing.
   const [closingRound, setClosingRound] = useState(false)
@@ -361,6 +367,7 @@ export function NewRunForm({ onStarted, onCancel, fromRunId }: Props) {
             method !== 'moderated' || stopWhenConverged || closingRound
               ? {
                   ...(method !== 'moderated' ? { method } : {}),
+                  ...(method === 'hybrid' ? { hybrid_opening_rounds: openingRounds } : {}),
                   ...(stopWhenConverged ? { stop_when_converged: true } : {}),
                   ...(closingRound ? { closing_round: true } : {}),
                 }
@@ -500,27 +507,66 @@ export function NewRunForm({ onStarted, onCancel, fromRunId }: Props) {
             docs/SPEAKER-SELECTION-EVALUATION.md is about making that judgement fairer.
             <br />
             <br />
-            <strong>Simultaneous</strong> — every persona is asked every round, all against
-            the state as it stood when the round opened, so none of them can see what the
-            others are saying that round. Anyone with nothing to add passes, and a pass never
-            reaches the transcript. Turn share is equal by construction and a round where
-            everybody passes ends the run.
+            <strong>Rotation</strong> — everyone speaks once per round, in order, each one
+            seeing what the earlier speakers in that round said. Turn share is equal by
+            construction rather than by prompt, and the conversation stays cumulative
+            because nobody is blind.
             <br />
             <br />
-            Costs N voice calls per round instead of one, and the cost per surviving turn
-            RISES as the room quietens — a round where five of six pass still costs six
-            calls. New and barely measured; the moderated path is the one with numbers
-            behind it.
+            <strong>All talk</strong> — everyone is asked every round against the state as it
+            stood when the round OPENED, so none of them can see the others' contributions
+            that round. Genuinely concurrent, and measurably more parallel: the one live run
+            has four personas opening a round by answering the same question, none of them
+            acknowledging the others.
+            <br />
+            <br />
+            <strong>Hybrid</strong> — all-talk rounds to open, then moderated. The two live
+            runs failed in opposite directions: all-talk opened superbly and degenerated into
+            restatement by round 3, while moderated takes 8–11 turns to introduce the cast but
+            stays cumulative.
+            <br />
+            <br />
+            In every method except moderated, anyone with nothing to add passes and a pass
+            never reaches the transcript, and a round where everybody passes ends the run.
+            Rounds cost N voice calls instead of one, and the cost per surviving turn RISES as
+            the room quietens — a round where five of six pass still costs six calls. Only
+            moderated has numbers behind it; the rest are new.
           </Hint>
           <select
             value={method}
-            onChange={(e) => setMethod(e.target.value as 'moderated' | 'simultaneous')}
+            onChange={(e) => setMethod(e.target.value as Method)}
             className="rounded border border-matrix-border bg-matrix-bg p-1 text-sm"
           >
-            <option value="moderated">Moderated — one speaker per turn</option>
-            <option value="simultaneous">Simultaneous — everyone, every round</option>
+            <option value="moderated">Moderated — a model picks one speaker per turn</option>
+            <option value="rotation">Rotation — everyone once per round, in order</option>
+            <option value="simultaneous">All talk — everyone at once, blind to each other</option>
+            <option value="hybrid">Hybrid — all talk to open, then moderated</option>
           </select>
         </label>
+        {method === 'hybrid' && (
+          <label className="flex items-center gap-2 pl-6 text-sm text-slate-300">
+            Opening rounds
+            <Hint label="opening rounds">
+              How many all-talk rounds before the moderator takes over. Two by default,
+              from the one live all-talk run: round 1 put every position on the table,
+              round 2 was the strongest of the eight, and the parallel restatement — four
+              personas answering the same question — starts at round 3.
+              <br />
+              <br />
+              The moderator inherits those turns, so when it takes over everyone already
+              has an equal share on the board, which is the state the fairness prompt
+              spends tokens trying to reach.
+            </Hint>
+            <input
+              type="number"
+              min={1}
+              max={10}
+              value={openingRounds}
+              onChange={(e) => setOpeningRounds(Number(e.target.value))}
+              className="w-16 rounded border border-matrix-border bg-matrix-bg p-1 text-sm"
+            />
+          </label>
+        )}
         <label className="flex items-center gap-2 text-sm text-slate-300">
           <input
             type="checkbox"
@@ -549,7 +595,7 @@ export function NewRunForm({ onStarted, onCancel, fromRunId }: Props) {
           <input
             type="checkbox"
             checked={stopWhenConverged}
-            disabled={method === 'simultaneous'}
+            disabled={method === 'rotation' || method === 'simultaneous'}
             onChange={(e) => {
               const on = e.target.checked
               setStopWhenConverged(on)
@@ -562,7 +608,7 @@ export function NewRunForm({ onStarted, onCancel, fromRunId }: Props) {
             }}
           />
           End when the conversation is finished
-          {method === 'simultaneous' && (
+          {(method === 'rotation' || method === 'simultaneous') && (
             <span className="text-[11px] text-slate-500">
               (automatic — a round where everyone passes ends the run)
             </span>

@@ -1519,7 +1519,24 @@ async def _run_turns(
     # citations and cost accounting, and a parallel copy of it would drift — the sequential
     # path is also the one every measurement in the design doc describes, so it is left
     # byte-for-byte alone.
-    simultaneous = bool(selection and selection.method == "simultaneous")
+    method = selection.method if selection else "moderated"
+    # Rounds are used by three of the four methods, and the two dimensions are independent:
+    # WHETHER everyone speaks this turn, and WHETHER they can see each other while doing it.
+    #
+    #   rotation       rounds, sighted   — cumulative, equal turn share by construction
+    #   simultaneous   rounds, blind     — concurrent, measurably more parallel
+    #   hybrid         rounds, blind, for the opening N; then moderated
+    #   moderated      no rounds
+    #
+    # The closing round is always a round and always blind, in every method.
+    always_rounds = method in ("rotation", "simultaneous")
+    hybrid_opening = (
+        selection.hybrid_opening_rounds if selection and method == "hybrid" else 0
+    )
+    # Only `simultaneous` is blind for the WHOLE run. Hybrid's blindness comes from
+    # `in_opening` and the closing round's from `in_closing`, so listing either here
+    # would be dead logic — a mutant that dropped "hybrid" from this set changed nothing.
+    blind_method = method == "simultaneous"
     # The closing round. A run that hits its ceiling stops mid-argument — the simultaneous
     # renewal run ended with four personas all answering the same question, because the
     # budget ran out rather than because anything finished. One final round, asked of
@@ -1539,6 +1556,9 @@ async def _run_turns(
     closing_done = turn > max_messages
     closing_empty = False
     round_queue: List[str] = []
+    #: Whether the round currently in progress is blind. Held for the round rather than
+    #: recomputed per speaker, so a phase change cannot take effect halfway through one.
+    round_blind = False
     #: What the personas in this round can see. Frozen at the top of the round, which is
     #: the whole semantic difference: nobody in a round reads anybody else in it.
     round_state: List[Dict[str, Any]] = []
@@ -1572,19 +1592,32 @@ async def _run_turns(
             # Rounds are used by the simultaneous METHOD and by the closing round in either
             # method: closing statements are naturally concurrent, and it means one
             # implementation rather than a sequential variant nobody measured.
-            rounds_now = simultaneous or in_closing
-            if rounds_now:
-                if not round_queue:
-                    # Open a round. Cast order is arbitrary and that is fine — the personas
-                    # are blind to each other within the round, so the order affects only
-                    # which survivor is written first.
-                    round_queue = list(agents.keys())
-                    round_state = list(conversation)
-                    round_spoke, round_passed = [], []
-                    turn += 1
-            else:
+            # A round IN PROGRESS is a round, whatever the phase now says. Deciding this
+            # from `turn` alone was a bug worth remembering: `turn` is incremented when a
+            # round opens, so on the second opening round of a hybrid run `turn` already
+            # equalled `hybrid_opening`, the phase flipped to moderated after the FIRST
+            # speaker, and `[Ben, Cy]` were abandoned in the queue — which then kept the
+            # loop condition true and ran the conversation to turn 20 of a 4-turn budget.
+            in_opening = bool(hybrid_opening and turn < hybrid_opening)
+            starting_round = not round_queue and (always_rounds or in_opening or in_closing)
+            rounds_now = bool(round_queue) or starting_round
+            if starting_round:
+                # Blindness belongs to the ROUND, so it is decided once here and held for
+                # the round's duration: hybrid's opening rounds are blind and its moderated
+                # turns are not, and the closing round is blind in every method — a final
+                # statement written after reading the others' final statements is a reply,
+                # not a closing statement.
+                round_blind = (always_rounds and blind_method) or in_opening or in_closing
+                # Cast order is arbitrary and that is fine — in a blind round the order
+                # affects only which survivor is written first.
+                round_queue = list(agents.keys())
+                round_state = list(conversation)
+                round_spoke, round_passed = [], []
+                turn += 1
+            elif not rounds_now:
                 turn += 1
                 generated += 1
+            blind = rounds_now and round_blind
 
             # Phase 1: Select next speaker — unless nobody selects. In simultaneous mode
             # the queue IS the answer, so the selection call is skipped entirely: no
@@ -1665,7 +1698,7 @@ async def _run_turns(
             # log would see `speaker.selected` on every turn of a run in which nothing
             # selected anybody.
             if rounds_now:
-                speaker_payload["method"] = "simultaneous"
+                speaker_payload["method"] = method
                 speaker_payload["round"] = turn
             if in_closing:
                 speaker_payload["closing"] = True
@@ -1782,7 +1815,7 @@ async def _run_turns(
             # difference between the two modes: passing `conversation` here would let the
             # second persona in a round read the first, which is a rotation wearing this
             # mode's name.
-            visible = round_state if rounds_now else conversation
+            visible = round_state if blind else conversation
             response_data = await _generate_response(
                 speaker_name, speaker, topic, visible, settings,
                 model=model, cognition=cognition, retrieved_memories=retrieved,

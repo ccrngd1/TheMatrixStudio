@@ -62,3 +62,6 @@ export function blankPersona(): DraftPersona {
  * without being an unbounded bill.
  */
 export const CEILING_TURNS = 100
+
+/** How the next speaker is decided. Mirrors `SelectionConfig.method` in the engine. */
+export type Method = 'moderated' | 'rotation' | 'simultaneous' | 'hybrid'
