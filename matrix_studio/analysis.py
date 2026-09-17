@@ -93,6 +93,11 @@ async def _acompletion(
         max_tokens=max_tokens or settings.summary_max_tokens,
     )
     content = response.choices[0].message.content or ""
+    # A truncated reply comes back EMPTY, not partial, so the only way to tell "the model
+    # declined" from "the model ran out of room" is this field. Three separate features
+    # today lost hours to that: the 120-token selection cap, the closing-round synthesis,
+    # and the ensemble report.
+    finish_reason = getattr(response.choices[0], "finish_reason", None)
     usage = getattr(response, "usage", None)
     tokens_in = getattr(usage, "prompt_tokens", 0) if usage else 0
     tokens_out = getattr(usage, "completion_tokens", 0) if usage else 0
@@ -105,6 +110,7 @@ async def _acompletion(
         "tokens_in": tokens_in,
         "tokens_out": tokens_out,
         "cost_usd": cost_usd,
+        "finish_reason": finish_reason,
     }
 
 
