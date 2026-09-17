@@ -136,7 +136,8 @@ export interface CreateRunBody {
     // turns `max_messages` into a ceiling. Off server-side by default while it is being
     // validated, so this is only sent when the operator asks for it.
     selection?: {
-      method?: 'moderated' | 'simultaneous'
+      method?: 'moderated' | 'rotation' | 'simultaneous' | 'hybrid'
+      hybrid_opening_rounds?: number
       stop_when_converged?: boolean
       closing_round?: boolean
       fairness?: boolean

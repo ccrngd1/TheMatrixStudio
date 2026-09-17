@@ -62,6 +62,50 @@ describe('NewRunForm conversation method', () => {
     expect(body.config.selection).toEqual({ method: 'simultaneous' })
   })
 
+  it('sends rotation', async () => {
+    await form()
+    fireEvent.change(methodBox(), { target: { value: 'rotation' } })
+    expect((await submitted()).config.selection).toEqual({ method: 'rotation' })
+  })
+
+  it('sends hybrid with its opening-round count', async () => {
+    await form()
+    fireEvent.change(methodBox(), { target: { value: 'hybrid' } })
+    expect((await submitted()).config.selection).toEqual({
+      method: 'hybrid', hybrid_opening_rounds: 2,
+    })
+  })
+
+  it('shows the opening-rounds control only for hybrid, and sends what is set', async () => {
+    await form()
+    expect(screen.queryByText('Opening rounds')).not.toBeInTheDocument()
+    fireEvent.change(methodBox(), { target: { value: 'hybrid' } })
+    const rounds = screen.getByText('Opening rounds').closest('label')!
+      .querySelector('input[type="number"]') as HTMLInputElement
+    fireEvent.change(rounds, { target: { value: '3' } })
+    expect((await submitted()).config.selection).toEqual({
+      method: 'hybrid', hybrid_opening_rounds: 3,
+    })
+  })
+
+  it('does not send an opening-round count for the other methods', async () => {
+    // It would be inert — the engine ignores it unless the method is hybrid — and a config
+    // carrying a number nothing reads invites the next reader to believe it matters.
+    await form()
+    fireEvent.change(methodBox(), { target: { value: 'rotation' } })
+    expect((await submitted()).config.selection).not.toHaveProperty('hybrid_opening_rounds')
+  })
+
+  it('makes convergence automatic for rotation too, not just all-talk', async () => {
+    // Both are round-based, so a round where everybody passes ends the run whatever the
+    // checkbox says. Hybrid keeps the toggle: its moderated phase can genuinely use it.
+    await form()
+    fireEvent.change(methodBox(), { target: { value: 'rotation' } })
+    expect(convergeBox().disabled).toBe(true)
+    fireEvent.change(methodBox(), { target: { value: 'hybrid' } })
+    expect(convergeBox().disabled).toBe(false)
+  })
+
   it('combines the method with the convergence flag when both are set', async () => {
     await form()
     fireEvent.click(convergeBox())

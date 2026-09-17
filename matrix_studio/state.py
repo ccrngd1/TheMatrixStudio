@@ -140,32 +140,57 @@ class SelectionConfig(BaseModel):
         default=True,
         description="Show the moderator participation counts and the fair share",
     )
-    #: How the next speaker is decided.
+    #: How the next speaker is decided. Four answers, and they differ in two dimensions:
+    #: whether one persona speaks per turn or all of them, and whether they can see each
+    #: other while doing it.
     #:
-    #:   moderated      one LLM call picks one speaker per turn — everything §1–§17 of
-    #:                  `docs/SPEAKER-SELECTION-EVALUATION.md` measures.
-    #:   simultaneous   NOBODY picks. Every persona is asked every round, against the state
-    #:                  as it stood when the round opened, so none of them can see what the
-    #:                  others are saying that round. Whoever declines is dropped and never
-    #:                  reaches the transcript; the survivors all share one turn number,
-    #:                  because they genuinely happened at once.
+    #:   moderated      One LLM call picks one speaker per turn. Everything §1–§17 of
+    #:                  `docs/SPEAKER-SELECTION-EVALUATION.md` measures. Turn share is a
+    #:                  judgement, and making that judgement fair took eight interventions.
+    #:   rotation       Everyone speaks once per round, in cast order, each SEEING what the
+    #:                  earlier speakers in that round said. Turn share is equal by
+    #:                  construction — it is what the moderated interventions approximate —
+    #:                  and the conversation stays cumulative because nobody is blind.
+    #:   simultaneous   Everyone is asked every round against the state as it stood when the
+    #:                  round OPENED, so none of them can see the others' contributions that
+    #:                  round. Genuinely concurrent, and measurably more parallel: run
+    #:                  `36231059` has four personas opening a round by answering the same
+    #:                  question, none acknowledging the others.
+    #:   hybrid         `hybrid_opening_rounds` simultaneous rounds, then moderated. Measured
+    #:                  motivation: the simultaneous run's opening was its best part (every
+    #:                  position on the table by turn 1, no dyad lock) and its later rounds
+    #:                  its worst (parallel restatement), while the moderated run's weakness
+    #:                  is the opposite — it takes 8–11 turns to introduce the cast.
     #:
-    #: In `simultaneous` the whole selection apparatus is bypassed — `fairness` and
-    #: `stop_when_converged` do nothing, because a rotation makes turn share equal by
-    #: construction and a round where everybody passes IS convergence, measured rather than
-    #: judged. That is the strongest argument for the mode and the reason it is worth having
-    #: two: it answers by construction what the other one approximates with a prompt.
+    #: In every method except `moderated` the selection apparatus is bypassed for the round
+    #: phases: `fairness` does nothing there, because a rotation makes turn share equal
+    #: outright, and a round where everybody passes IS convergence — measured rather than
+    #: judged. `hybrid` gets both: rounds while it opens, then the full moderated machinery.
     method: str = Field(
-        default="moderated", description="moderated | simultaneous"
+        default="moderated",
+        description="moderated | rotation | simultaneous | hybrid",
+    )
+
+    #: How many opening rounds `hybrid` runs before it switches to moderated selection.
+    #:
+    #: Two by default, from the one live run there is: in `36231059` round 1 put every
+    #: position on the table and round 2 was the strongest of the eight (956 chars average,
+    #: the peak); the parallel restatement starts at round 3, when four personas all answer
+    #: the same question. Ignored unless the method is `hybrid`.
+    hybrid_opening_rounds: int = Field(
+        default=2, ge=1, description="Opening simultaneous rounds before moderated selection"
     )
 
     @field_validator("method")
     @classmethod
     def _known_method(cls, v: str) -> str:
         """Rejected rather than defaulted. A typo'd method silently falling back to
-        `moderated` would look like the new mode simply not working."""
-        if v not in ("moderated", "simultaneous"):
-            raise ValueError(f"unknown selection method {v!r}: moderated | simultaneous")
+        `moderated` would look like the chosen mode simply not working."""
+        if v not in ("moderated", "rotation", "simultaneous", "hybrid"):
+            raise ValueError(
+                f"unknown selection method {v!r}: "
+                "moderated | rotation | simultaneous | hybrid"
+            )
         return v
 
     #: One final round when the run hits its ceiling without finishing.

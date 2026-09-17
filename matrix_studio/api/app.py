@@ -148,10 +148,13 @@ class SelectionConfigModel(BaseModel):
     Set ``{"fairness": false}`` for the pre-2026-09-15 prompt."""
 
     fairness: bool = True
-    #: `moderated` (one speaker per turn, chosen by a model) or `simultaneous` (everyone is
-    #: asked every round, passes are dropped, survivors share a turn). In `simultaneous` the
-    #: two flags below do nothing — see `SelectionConfig`.
+    #: `moderated` (a model picks one speaker per turn), `rotation` (everyone once per round,
+    #: each seeing the earlier speakers), `simultaneous` (everyone at once, blind to each
+    #: other that round) or `hybrid` (opening simultaneous rounds, then moderated). See
+    #: `SelectionConfig` for what each one costs and what it is measured to do.
     method: str = "moderated"
+    #: Opening rounds before `hybrid` switches to moderated selection.
+    hybrid_opening_rounds: int = 2
     #: One final round when a run hits its ceiling without finishing: everyone states their
     #: final position and terms. Runs at `max_messages + 1`, so it costs one extra round.
     closing_round: bool = False
