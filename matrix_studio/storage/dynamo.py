@@ -137,7 +137,48 @@ _RUN_FIELDS = (
     # run's lifetime. The GRANT is still re-read every turn, which is what §8b requires;
     # only membership is stale.
     "groups_json",
+    # Ensemble membership: the parent's id and the label of the CELL this run belongs to.
+    #
+    # Deliberately NOT `parent_run_id`. That field means "forked from", and the lineage
+    # walk in `get_run_tree` follows it — ensemble members would render as a branch tree
+    # they have nothing to do with. They are siblings, not descendants.
+    #
+    # `ensemble_cell` is carried on the member rather than derived from its config at
+    # report time, because docs/ENSEMBLE-CONVERSATIONS.md §4 turns on never flattening the
+    # cells: a member's config alone does not say which label it was created under, and in
+    # the default (replicates-only) ensemble every member's config is identical by design,
+    # so the label is unrecoverable if it is not stored.
+    "ensemble_id",
+    "ensemble_cell",
 )
+_ENSEMBLE_FIELDS = (
+    "id", "owner_sub", "topic", "name", "description", "slug", "status", "created_at",
+    "completed_at",
+    # `describe()` output: the cells, each with its label, n and declared overrides. Stored
+    # rather than recomputed from the members, because a cell whose runs all failed still
+    # has to appear in the report as a cell that produced nothing.
+    "spec_json",
+    # The base run config every cell starts from, so a report can show what was held fixed
+    # and not merely what varied.
+    "base_config_json",
+    # `[{run_id, cell, index}]`, written in the same transaction as the parent. The parent
+    # is authoritative about its membership: deriving it by filtering runs on `ensemble_id`
+    # would make a member whose creation failed invisible, which is exactly the case a
+    # report must not silently drop.
+    "members_json",
+    # The stored stage-1 report, once generated. JSON on the row, following `payload_json`
+    # on summaries. `MAX_REPORT_BYTES` guards the item limit.
+    "report_json",
+    "report_generated_at",
+    "report_cost_usd",
+)
+
+#: Ceiling on a stored ensemble report. A DynamoDB item is capped at 400 KB in total, and
+#: the parent row also carries the spec, the base config and the member list; 300 KB leaves
+#: room for those and for a future field. A report over this is refused at write time with
+#: its size, rather than failing the transaction with `ValidationException: Item size has
+#: exceeded the maximum allowed size`, which says nothing about which field caused it.
+MAX_REPORT_BYTES = 300 * 1024
 _EVENT_FIELDS = (
     "run_id", "turn", "seq", "event_type", "agent_name", "payload", "created_at",
 )
@@ -187,6 +228,20 @@ def _run_sk(run_id: str) -> str:
 
 def _name_sk(name: str) -> str:
     return f"NAME#{name}"
+
+
+def _ensemble_sk(ensemble_id: str) -> str:
+    """Sort key for an ensemble's parent row, in the owner's partition.
+
+    `USER#{sub}` like a run, because an ensemble is owned by exactly one person and is
+    never shared — unlike a knowledge base, which is why that one is keyed `KB#{id}`.
+
+    The prefix matters for what it keeps OUT: `list_runs` and the stale-run sweep both
+    select on `begins_with(sk, "RUN#")`, so a parent row cannot appear in the run list, be
+    resumed, or be swept as a stale run. An ensemble has no turns to generate, and a row
+    that looked like a run would eventually be handed to the turn loop.
+    """
+    return f"ENSEMBLE#{ensemble_id}"
 
 
 def _event_sk(run_id: str, seq: int) -> str:
@@ -701,6 +756,8 @@ class DynamoStorage:
         branch_turn: Optional[int] = None,
         owner_sub: Optional[str] = None,
         groups: Optional[Sequence[str]] = None,
+        ensemble_id: Optional[str] = None,
+        ensemble_cell: Optional[str] = None,
     ) -> None:
         """Create a run, refusing a name this owner already used.
 
@@ -743,6 +800,11 @@ class DynamoStorage:
             # DynamoDB list for the same reason `cast_json` is: one decode path, and
             # empty is indistinguishable from absent either way.
             "groups_json": json.dumps([str(g) for g in groups]) if groups else None,
+            # Written even when None, like the fields above, so a member and a standalone
+            # run have the same keys and no caller needs `.get` for one and `[]` for the
+            # other.
+            "ensemble_id": ensemble_id,
+            "ensemble_cell": ensemble_cell,
         }
 
         writes: List[Dict[str, Any]] = [
@@ -1269,6 +1331,185 @@ class DynamoStorage:
             if run.get("parent_run_id") == run_id
         ]
         out.sort(key=lambda b: (-(b["created_at"] or 0), b["run_id"]))
+        return out
+
+    # ------------------------------------------------------------------ #
+    # Ensembles
+    # ------------------------------------------------------------------ #
+
+    async def create_ensemble(
+        self,
+        ensemble_id: str,
+        topic: str,
+        spec: Sequence[Dict[str, Any]],
+        members: Sequence[Dict[str, Any]],
+        *,
+        base_config: Optional[Dict[str, Any]] = None,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        slug: Optional[str] = None,
+        owner_sub: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Write the parent row, with its full membership, before any member exists.
+
+        The parent is written FIRST and already lists every member id. That ordering is
+        the point: member run ids are generated up front, so a fan-out interrupted halfway
+        leaves a parent that knows it is missing runs, rather than a set of orphan runs
+        with nothing to aggregate them. The reverse order — create runs, then record them —
+        loses the ensemble entirely if the process dies, and every surviving run looks like
+        a standalone conversation somebody started by hand.
+
+        No name-marker item, unlike `create_run`: a name is unique among an owner's RUNS,
+        and an ensemble's name is not in that space. The members carry derived names which
+        do go through the run uniqueness check.
+        """
+        owner_sub = self._owner(owner_sub)
+        now = int(time.time())
+        item = {
+            "pk": _user_pk(owner_sub),
+            "sk": _ensemble_sk(ensemble_id),
+            "id": ensemble_id,
+            "owner_sub": owner_sub,
+            "topic": topic,
+            "name": name,
+            "description": description,
+            "slug": slug or name,
+            # `pending` until a member starts, matching a run's own first status so the two
+            # read the same way in a UI.
+            "status": "pending",
+            "created_at": now,
+            "completed_at": None,
+            "spec_json": json.dumps(list(spec)),
+            "base_config_json": json.dumps(base_config or {}),
+            "members_json": json.dumps(list(members)),
+            "report_json": None,
+            "report_generated_at": None,
+            "report_cost_usd": None,
+        }
+        await self._call(
+            self._table("runs").put_item,
+            Item=_to_ddb(item),
+            ConditionExpression="attribute_not_exists(pk) AND attribute_not_exists(sk)",
+        )
+        return _row(_to_ddb(item), _ENSEMBLE_FIELDS)
+
+    async def get_ensemble(
+        self, ensemble_id: str, *, owner_sub: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """One ensemble by id. None for "not found" and "not yours" alike — the row is
+        simply not in another owner's partition."""
+        owner_sub = self._owner(owner_sub)
+        got = await self._call(
+            self._table("runs").get_item,
+            Key={"pk": _user_pk(owner_sub), "sk": _ensemble_sk(ensemble_id)},
+        )
+        item = got.get("Item")
+        return _row(item, _ENSEMBLE_FIELDS) if item else None
+
+    async def list_ensembles(
+        self, limit: int = 100, *, owner_sub: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """This owner's ensembles, newest first.
+
+        A separate `sk` prefix means this is one query that reads only ensemble rows — it
+        does not read and discard every run, which a status filter on the run list would.
+        """
+        owner_sub = self._owner(owner_sub)
+        items = await self._query_all(
+            "runs",
+            KeyConditionExpression="pk = :pk AND begins_with(sk, :prefix)",
+            ExpressionAttributeValues={":pk": _user_pk(owner_sub), ":prefix": "ENSEMBLE#"},
+        )
+        out = [_row(i, _ENSEMBLE_FIELDS) for i in items]
+        out.sort(key=lambda e: e.get("created_at") or 0, reverse=True)
+        return out[:limit]
+
+    async def update_ensemble(
+        self,
+        ensemble_id: str,
+        *,
+        status: Optional[str] = None,
+        completed_at: Optional[int] = None,
+        report: Optional[Dict[str, Any]] = None,
+        report_cost_usd: Optional[float] = None,
+        owner_sub: Optional[str] = None,
+    ) -> None:
+        """Set whichever of these were supplied, leaving the rest untouched.
+
+        An `UpdateExpression` over named attributes rather than a read-modify-write of the
+        whole row: the report is written from one request while members may still be
+        flipping the status from another, and a full-item put would have one clobber the
+        other.
+        """
+        owner_sub = self._owner(owner_sub)
+        sets: Dict[str, Any] = {}
+        if status is not None:
+            sets["status"] = status
+        if completed_at is not None:
+            sets["completed_at"] = int(completed_at)
+        if report is not None:
+            encoded = json.dumps(report)
+            size = len(encoded.encode("utf-8"))
+            if size > MAX_REPORT_BYTES:
+                raise ValueError(
+                    f"Ensemble report is {size} bytes, over the {MAX_REPORT_BYTES}-byte "
+                    "limit for a stored row. Narrow the report (fewer pairwise "
+                    "comparisons) or move it to a blob."
+                )
+            sets["report_json"] = encoded
+            sets["report_generated_at"] = int(time.time())
+        if report_cost_usd is not None:
+            sets["report_cost_usd"] = report_cost_usd
+        if not sets:
+            return
+
+        # `#n0` placeholders throughout: `status` is a DynamoDB reserved word, and naming
+        # only that one would leave the next field added here to rediscover it.
+        names = {f"#n{i}": key for i, key in enumerate(sets)}
+        values = {f":v{i}": val for i, val in enumerate(sets.values())}
+        expression = "SET " + ", ".join(
+            f"#n{i} = :v{i}" for i in range(len(sets))
+        )
+        await self._call(
+            self._table("runs").update_item,
+            Key={"pk": _user_pk(owner_sub), "sk": _ensemble_sk(ensemble_id)},
+            UpdateExpression=expression,
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=_to_ddb(values),
+            ConditionExpression="attribute_exists(pk) AND attribute_exists(sk)",
+        )
+
+    async def list_ensemble_members(
+        self, ensemble_id: str, *, owner_sub: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Every member run of this ensemble, in the parent's declared order.
+
+        Driven by the parent's `members_json`, not by filtering runs on `ensemble_id`. A
+        member whose run row was never created therefore appears with `run: None` instead
+        of vanishing — the aggregator has to know a cell is short, because 4 of 5 runs
+        agreeing is a different statement from 4 of 4.
+        """
+        owner_sub = self._owner(owner_sub)
+        parent = await self.get_ensemble(ensemble_id, owner_sub=owner_sub)
+        if not parent:
+            return []
+        try:
+            declared = json.loads(parent.get("members_json") or "[]")
+        except json.JSONDecodeError:
+            declared = []
+
+        out: List[Dict[str, Any]] = []
+        for entry in declared:
+            run_id = str(entry.get("run_id") or "")
+            run = await self.get_run(run_id, owner_sub=owner_sub) if run_id else None
+            out.append(
+                {
+                    "run_id": run_id,
+                    "cell": entry.get("cell"),
+                    "index": entry.get("index"),
+                    "run": run,
+                }
+            )
         return out
 
     # ------------------------------------------------------------------ #

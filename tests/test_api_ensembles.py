@@ -1,0 +1,476 @@
+# SPDX-License-Identifier: Apache-2.0
+"""
+Fanning one brief out into N runs: the parent row, the members, and what the route refuses.
+
+Two things here are load-bearing rather than incidental, and both come from
+docs/ENSEMBLE-CONVERSATIONS.md:
+
+**The parent is written before any member.** §8 — an interrupted fan-out must leave a parent
+that knows it is short, not a set of orphan runs that each look like a conversation somebody
+started by hand. Driven by `TestAPartialFanOut`, at the manager level: on the local path a
+member's *creation* cannot fail through HTTP (the engine runs in a background task, so a
+raising engine is logged rather than returned), and forcing it through the route would test
+the fake instead of the fan-out.
+
+**Cells are never flattened.** §4 — each member carries its cell label on the row, because in
+the default replicates-only ensemble every member's config is identical and the label cannot
+be recovered from the config. `report_ready` is the other half: a report generated while a
+cell is still running would count a conclusion as absent from a run that had not reached it
+yet, which is the censoring of §3.4.
+
+The engine is faked throughout, as everywhere else in the API tests: the real environment
+carries a Bedrock key and a real fan-out would make five billable runs.
+"""
+
+import json
+import time
+from unittest.mock import patch
+
+import pytest
+from fastapi.testclient import TestClient
+
+from matrix_studio.api.app import create_app
+from tests.test_api import make_fake_run, REQUEST
+
+
+@pytest.fixture(autouse=True)
+def _storage_backend(aws_backend):
+    """The app's lifespan connects to DynamoDB; without this it reaches real AWS."""
+
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    async def fake_name(topic, cast_names=None, model=None, name_exists=None):
+        base = "trusted-robot"
+        name = base
+        n = 2
+        while name_exists is not None and await name_exists(name):
+            name = f"{base}-{n}"
+            n += 1
+        return {"name": name, "description": "A test simulation", "slug": name,
+                "source": "llm"}
+
+    monkeypatch.setattr("matrix_studio.api.manager.generate_run_name", fake_name)
+    monkeypatch.setattr("matrix_studio.api.app.generate_run_name", fake_name)
+
+    app = create_app(db_path=str(tmp_path / "test.db"))
+    with TestClient(app) as c:
+        yield c
+
+
+def _body(**overrides):
+    body = {
+        "topic": REQUEST["topic"],
+        "cast": REQUEST["cast"],
+        "name": "renewal",
+        "config": {"max_messages": 4},
+    }
+    body.update(overrides)
+    return body
+
+
+def _create(client, turns=2, **overrides):
+    with patch("matrix_studio.api.manager.run_simulation", make_fake_run(turns=turns)):
+        res = client.post("/api/ensembles", json=_body(**overrides))
+        if res.status_code == 201:
+            _settle(client, res.json()["ensemble_id"])
+    return res
+
+
+def _settle(client, ensemble_id, tries=200):
+    """Wait until every member has reached a terminal status.
+
+    Members run as background asyncio tasks on the local path, so a status read straight
+    after the POST catches them mid-flight. Polling `report_ready` rather than sleeping a
+    fixed time, since that is the same predicate the aggregator will gate on.
+    """
+    for _ in range(tries):
+        out = client.get(f"/api/ensembles/{ensemble_id}").json()
+        if out.get("report_ready"):
+            return out
+        time.sleep(0.02)
+    return client.get(f"/api/ensembles/{ensemble_id}").json()
+
+
+def _run(client, run_id):
+    """The run detail body, which is flat — no `run` wrapper."""
+    res = client.get(f"/api/runs/{run_id}")
+    assert res.status_code == 200, res.text
+    return res.json()
+
+
+def _member_config(client, run_id):
+    return _run(client, run_id).get("config") or {}
+
+
+# --------------------------------------------------------------------------- #
+# the default shape
+# --------------------------------------------------------------------------- #
+
+
+class TestTheDefaultIsReplicates:
+    def test_omitting_cells_gives_one_cell_and_nothing_varied(self, client):
+        res = _create(client)
+        assert res.status_code == 201, res.text
+        out = res.json()
+
+        assert out["spec"] == [{"label": "base", "n": 5, "overrides": {}}]
+        assert len(out["members"]) == 5
+        assert out["status"] == "running"
+
+    def test_members_are_real_runs_carrying_their_cell(self, client):
+        out = _create(client).json()
+        detail = client.get(f"/api/ensembles/{out['ensemble_id']}").json()
+
+        assert [m["cell"] for m in detail["members"]] == ["base"] * 5
+        assert [m["index"] for m in detail["members"]] == [1, 2, 3, 4, 5]
+        for member in detail["members"]:
+            assert _run(client, member["run_id"])["run_id"] == member["run_id"]
+
+    def test_every_member_config_is_identical(self, client):
+        # The premise of the default mode. If the configs differed, the ensemble would be
+        # measuring a config difference and calling it sampling variance.
+        out = _create(client).json()
+        configs = {
+            json.dumps(_member_config(client, m["run_id"]), sort_keys=True)
+            for m in out["members"]
+        }
+        assert len(configs) == 1
+
+    def test_members_are_not_branches(self, client):
+        # `parent_run_id` means 'forked from', and the lineage walk follows it. Members are
+        # siblings; using that field would render them as a branch tree.
+        out = _create(client).json()
+        for member in out["members"]:
+            assert _run(client, member["run_id"])["parent_run_id"] is None
+
+    def test_an_ensemble_does_not_appear_in_the_run_list(self, client):
+        # The parent has no turns to generate. A row that looked like a run would
+        # eventually be resumed or swept as stale.
+        out = _create(client).json()
+        runs = client.get("/api/runs").json()["runs"]
+        assert out["ensemble_id"] not in {r["run_id"] for r in runs}
+        assert len(runs) == 5
+
+    def test_member_names_say_which_cell_they_are_in(self, client):
+        out = _create(client).json()
+        assert [m["name"] for m in out["members"]] == [
+            f"renewal-base{i}" for i in range(1, 6)
+        ]
+
+
+# --------------------------------------------------------------------------- #
+# cells
+# --------------------------------------------------------------------------- #
+
+
+class TestCells:
+    CELLS = [
+        {"label": "base", "n": 2},
+        {"label": "hybrid", "n": 2, "overrides": {"selection.method": "hybrid"}},
+    ]
+
+    def test_a_hybrid_cell_diverges_only_where_declared(self, client):
+        res = _create(client, cells=self.CELLS)
+        assert res.status_code == 201, res.text
+        detail = client.get(f"/api/ensembles/{res.json()['ensemble_id']}").json()
+
+        by_cell: dict = {}
+        for member in detail["members"]:
+            by_cell.setdefault(member["cell"], []).append(
+                _member_config(client, member["run_id"])
+            )
+
+        assert all(c["selection"]["method"] == "hybrid" for c in by_cell["hybrid"])
+        assert all("selection" not in c for c in by_cell["base"])
+        # Held fixed across both cells, which is what makes the comparison mean anything.
+        assert all(c["max_messages"] == 4 for cs in by_cell.values() for c in cs)
+
+    def test_cells_are_counted_per_cell_never_pooled(self, client):
+        res = _create(
+            client,
+            cells=[
+                {"label": "base", "n": 2},
+                {"label": "hybrid", "n": 3, "overrides": {"selection.method": "hybrid"}},
+            ],
+        )
+        detail = client.get(f"/api/ensembles/{res.json()['ensemble_id']}").json()
+        assert detail["cells"] == [
+            {"cell": "base", "declared": 2, "complete": 2, "settled": 2},
+            {"cell": "hybrid", "declared": 3, "complete": 3, "settled": 3},
+        ]
+
+    def test_the_spec_and_base_config_are_stored_not_derived(self, client):
+        # A cell has to appear in the report even if every one of its runs failed, so the
+        # spec is stored rather than recomputed from the members.
+        res = _create(client, cells=[{"label": "base", "n": 2, "overrides": {}}])
+        detail = client.get(f"/api/ensembles/{res.json()['ensemble_id']}").json()
+        assert detail["spec"] == [{"label": "base", "n": 2, "overrides": {}}]
+        # The MATERIALISED base config, which is what the members were built from —
+        # including the defaults Pydantic filled in. Storing what the user typed instead
+        # would make the report's "held fixed" section a claim about the request rather
+        # than about the runs.
+        assert detail["base_config"]["max_messages"] == 4
+        assert detail["base_config"]["knowledge_bases"] == []
+
+
+# --------------------------------------------------------------------------- #
+# what the route refuses
+# --------------------------------------------------------------------------- #
+
+
+class TestRefusals:
+    def test_varying_turn_count_is_422_with_the_reason(self, client):
+        res = _create(
+            client,
+            cells=[
+                {"label": "long", "n": 2},
+                {"label": "short", "n": 2, "overrides": {"max_messages": 8}},
+            ],
+        )
+        assert res.status_code == 422
+        # The reason is the useful part — "invalid" would teach nothing.
+        assert "censoring" in res.json()["detail"]
+
+    def test_a_cell_of_one_is_422(self, client):
+        res = _create(client, cells=[{"label": "base", "n": 1}])
+        assert res.status_code == 422
+        assert "within-cell variance" in res.json()["detail"]
+
+    def test_persona_jitter_is_422(self, client):
+        res = _create(
+            client,
+            cells=[
+                {"label": "base", "n": 2},
+                {"label": "blunt", "n": 2,
+                 "overrides": {"personas.dismissal_rule": "blunt"}},
+            ],
+        )
+        assert res.status_code == 422
+        assert "measuring instrument" in res.json()["detail"]
+
+    def test_no_cast_is_422_as_it_is_for_a_single_run(self, client):
+        res = _create(client, cast=[])
+        assert res.status_code == 422
+        assert "persona" in res.json()["detail"]
+
+    def test_nothing_is_created_when_the_spec_is_refused(self, client):
+        # The spec is checked before the parent row is written, so a refusal leaves no
+        # ensemble and no runs behind.
+        _create(client, cells=[{"label": "base", "n": 1}])
+        assert client.get("/api/ensembles").json()["ensembles"] == []
+        assert client.get("/api/runs").json()["runs"] == []
+
+    def test_an_unknown_ensemble_is_404(self, client):
+        assert client.get("/api/ensembles/nope").status_code == 404
+
+
+# --------------------------------------------------------------------------- #
+# report readiness
+# --------------------------------------------------------------------------- #
+
+
+class TestReportReadiness:
+    def test_ready_once_every_member_is_settled(self, client):
+        out = _create(client).json()
+        detail = client.get(f"/api/ensembles/{out['ensemble_id']}").json()
+        assert detail["report_ready"] is True
+        assert detail["has_report"] is False
+        assert detail["report"] is None
+
+    def test_not_ready_while_a_member_is_still_generating(self, client):
+        # A report over a running cell would count a conclusion as absent from a run that
+        # simply had not reached it — §3.4's censoring, arrived at by impatience.
+        with patch(
+            "matrix_studio.api.manager.run_simulation", make_fake_run(turns=2, delay=1.0)
+        ):
+            res = client.post("/api/ensembles", json=_body())
+            detail = client.get(f"/api/ensembles/{res.json()['ensemble_id']}").json()
+
+        assert detail["report_ready"] is False
+        assert detail["cells"][0]["settled"] < detail["cells"][0]["declared"]
+
+    def test_a_failed_member_counts_as_settled(self, client):
+        # 'Settled' is not 'succeeded'. A failed run will never finish, so waiting for it
+        # would mean an ensemble with one bad member is never reportable at all.
+        with patch(
+            "matrix_studio.api.manager.run_simulation", make_fake_run(turns=1, fail=True)
+        ):
+            res = client.post("/api/ensembles", json=_body())
+            detail = _settle(client, res.json()["ensemble_id"])
+
+        assert detail["report_ready"] is True
+        assert detail["cells"][0]["settled"] == 5
+        assert detail["cells"][0]["complete"] == 0
+
+
+# --------------------------------------------------------------------------- #
+# listing, and the checks a fan-out owes
+# --------------------------------------------------------------------------- #
+
+
+class TestListingAndPreflight:
+    def test_listed_without_shipping_the_reports(self, client):
+        _create(client, name="first")
+        _create(client, name="second")
+        rows = client.get("/api/ensembles").json()["ensembles"]
+
+        assert {r["name"] for r in rows} == {"first", "second"}
+        assert all(r["has_report"] is False for r in rows)
+        assert all("report" in r for r in rows)
+
+    def test_the_cost_cap_is_checked_before_a_fan_out(self, client, monkeypatch):
+        # The worst place to skip the cap: it starts five runs, not one. Shared with the
+        # single-run route via `_preflight` so the two cannot drift.
+        async def over(*_a, **_k):
+            return {"spent": 12.0, "cap": 10.0}
+
+        monkeypatch.setattr("matrix_studio.orchestration.over_monthly_cap", over)
+        res = _create(client)
+        assert res.status_code == 402
+        assert client.get("/api/ensembles").json()["ensembles"] == []
+        assert client.get("/api/runs").json()["runs"] == []
+
+
+# --------------------------------------------------------------------------- #
+# a fan-out that only partly succeeds
+# --------------------------------------------------------------------------- #
+
+
+class TestAPartialFanOut:
+    """The parent row is authoritative about membership.
+
+    Driven against `RunManager.create_ensemble` directly, because the case is a member whose
+    *creation* fails, and on the local path creation cannot fail through the route — the
+    engine runs in a background task, so a raising engine is logged and the run row still
+    exists. Patching `create_run` is the only honest way to reach the branch.
+    """
+
+    @pytest.fixture
+    def manager(self, db, monkeypatch):
+        from matrix_studio.api.manager import RunManager
+
+        async def fake_name(topic, cast_names=None, model=None, name_exists=None):
+            return {"name": "ens", "description": "d", "slug": "ens", "source": "llm"}
+
+        monkeypatch.setattr("matrix_studio.api.manager.generate_run_name", fake_name)
+        return RunManager(db)
+
+    @pytest.mark.asyncio
+    async def test_a_member_that_failed_to_create_is_reported_not_dropped(
+        self, manager, db, monkeypatch
+    ):
+        # The case §3.4 is about: a cell of 5 that produced 3 runs must not report as 3 of
+        # 3. The aggregator has to see that two are missing, or it will read a conclusion
+        # those runs never reached as one they declined.
+        from matrix_studio import ensemble_spec
+
+        calls = {"n": 0}
+
+        async def flaky(request, *, owner_sub, groups=None, run_id=None, **kwargs):
+            calls["n"] += 1
+            if calls["n"] in (2, 4):
+                raise RuntimeError("member refused")
+            await db.create_run(
+                run_id=run_id, topic=request["topic"], cast=request["cast"],
+                name=request.get("name"), config=request.get("config"),
+                ensemble_id=kwargs.get("ensemble_id"),
+                ensemble_cell=kwargs.get("ensemble_cell"),
+            )
+            return {"run_id": run_id, "name": request.get("name")}
+
+        monkeypatch.setattr(manager, "create_run", flaky)
+
+        out = await manager.create_ensemble(
+            {"topic": "t", "cast": [{"name": "A", "persona": "p", "goals": ["g"]}],
+             "config": {"max_messages": 2}, "name": "ens"},
+            ensemble_spec.replicates(n=5),
+            owner_sub=db._owner_sub,
+        )
+
+        assert len(out["members"]) == 3
+        assert len(out["failed"]) == 2
+        assert out["status"] == "running", (
+            "Three paid-for conversations must not be thrown away because the fourth "
+            "failed."
+        )
+
+        # The parent still declares five, which is the whole point.
+        members = await db.list_ensemble_members(out["ensemble_id"])
+        assert len(members) == 5
+        assert sum(1 for m in members if m["run"] is None) == 2
+        assert [m["index"] for m in members] == [1, 2, 3, 4, 5]
+
+    @pytest.mark.asyncio
+    async def test_an_ensemble_whose_every_member_failed_is_marked_failed(
+        self, manager, db, monkeypatch
+    ):
+        from matrix_studio import ensemble_spec
+
+        async def always_fails(*_a, **_k):
+            raise RuntimeError("no")
+
+        monkeypatch.setattr(manager, "create_run", always_fails)
+
+        out = await manager.create_ensemble(
+            {"topic": "t", "cast": [{"name": "A", "persona": "p", "goals": ["g"]}],
+             "name": "ens"},
+            ensemble_spec.replicates(n=2),
+            owner_sub=db._owner_sub,
+        )
+        assert out["status"] == "failed"
+        row = await db.get_ensemble(out["ensemble_id"])
+        assert row["status"] == "failed"
+
+
+# --------------------------------------------------------------------------- #
+# the launch stagger
+# --------------------------------------------------------------------------- #
+
+
+class TestTheStagger:
+    """Read at call time, not bound at import.
+
+    Pinned because the import-time version failed silently in both directions: the
+    test-mode branch never fired (`_MSS_TEST_MODE` is set by a fixture that runs long
+    after import, so the suite paid a second per member — a flat 5.05 s per fan-out, which
+    is how it was found), and on Lambda the value froze into the sandbox so the
+    environment variable could not change it without a redeploy. A silent 5x slowdown is
+    the kind of regression nothing else here would catch.
+    """
+
+    def test_tests_pay_nothing(self, monkeypatch):
+        from matrix_studio.api import manager
+
+        monkeypatch.setenv("_MSS_TEST_MODE", "1")
+        assert manager._ensemble_stagger() == 0.0
+
+    def test_the_default_applies_outside_tests(self, monkeypatch):
+        from matrix_studio.api import manager
+
+        monkeypatch.delenv("_MSS_TEST_MODE", raising=False)
+        monkeypatch.delenv("ENSEMBLE_STAGGER_SECONDS", raising=False)
+        assert manager._ensemble_stagger() == manager.ENSEMBLE_STAGGER_SECONDS
+
+    def test_the_environment_overrides_it_without_a_redeploy(self, monkeypatch):
+        from matrix_studio.api import manager
+
+        monkeypatch.delenv("_MSS_TEST_MODE", raising=False)
+        monkeypatch.setenv("ENSEMBLE_STAGGER_SECONDS", "0.25")
+        assert manager._ensemble_stagger() == 0.25
+
+    def test_nonsense_falls_back_rather_than_raising(self, monkeypatch):
+        # Read on the create path, so a typo in an environment variable must not turn
+        # every fan-out into a 500.
+        from matrix_studio.api import manager
+
+        monkeypatch.delenv("_MSS_TEST_MODE", raising=False)
+        monkeypatch.setenv("ENSEMBLE_STAGGER_SECONDS", "soon")
+        assert manager._ensemble_stagger() == manager.ENSEMBLE_STAGGER_SECONDS
+
+    def test_a_negative_stagger_is_clamped(self, monkeypatch):
+        from matrix_studio.api import manager
+
+        monkeypatch.delenv("_MSS_TEST_MODE", raising=False)
+        monkeypatch.setenv("ENSEMBLE_STAGGER_SECONDS", "-5")
+        assert manager._ensemble_stagger() == 0.0
