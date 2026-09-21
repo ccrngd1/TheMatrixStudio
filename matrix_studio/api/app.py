@@ -528,6 +528,10 @@ def _ensemble_summary(row: Dict[str, Any]) -> Dict[str, Any]:
         "report": report or None,
         "report_generated_at": row.get("report_generated_at"),
         "report_cost_usd": row.get("report_cost_usd"),
+        # Why there is no report, when one was attempted and refused. "Not generated yet"
+        # and "refused because a cell was still running" are different states and only one
+        # is worth retrying, so the reason is served rather than inferred from absence.
+        "report_error": row.get("report_error"),
     }
 
 
@@ -1016,6 +1020,59 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         if not row:
             raise HTTPException(status_code=404, detail="Ensemble not found")
 
+        return await _ensemble_detail(owned, row)
+
+    @app.post("/api/ensembles/{ensemble_id}/report")
+    async def generate_ensemble_report(
+        ensemble_id: str,
+        force: bool = Query(
+            default=False,
+            description="Regenerate even if a report exists or is already claimed. "
+                        "Pays for a full extraction pass and synthesis again.",
+        ),
+        user: str = Depends(current_user),
+    ) -> Dict[str, Any]:
+        """Build and store the report now.
+
+        Normally unnecessary — the last member to finish generates it. This exists for the
+        two cases that path cannot cover: a retry after a failure (`report_error` is set on
+        the row), and an ensemble whose members finished before this feature existed.
+
+        **Latency.** The extraction pass is one call per member and the synthesis asks for up
+        to 20k output tokens, so this can run for minutes and will exceed API Gateway's 29 s
+        limit on the deployed stack. That is a known limitation rather than a surprise: the
+        automatic path runs inside a member's final Step Functions state, which has a Lambda
+        timeout rather than a gateway one, and is the route that is meant to be used. A
+        client calling this against AWS should expect a 504 and poll `GET` for the report,
+        which will still appear — the work continues server-side.
+        """
+        from matrix_studio import ensemble_reporting
+
+        owned = db.for_owner(user)
+        row = await owned.get_ensemble(ensemble_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Ensemble not found")
+
+        report = await ensemble_reporting.generate(owned, ensemble_id, force=force)
+        if report is None:
+            fresh = await owned.get_ensemble(ensemble_id) or row
+            error = fresh.get("report_error")
+            if error:
+                # 409 rather than 500: the ensemble is in a state that refuses a report — a
+                # cell still running, or too few usable runs — and the caller can act on the
+                # reason. A 500 would suggest a bug on our side.
+                raise HTTPException(status_code=409, detail=error)
+            # No error and no report means somebody else holds the claim.
+            return {
+                "ensemble_id": ensemble_id,
+                "claimed_by_another": True,
+                "detail": "A report for this ensemble is already being generated.",
+            }
+
+        return await _ensemble_detail(owned, await owned.get_ensemble(ensemble_id) or row)
+
+    async def _ensemble_detail(owned, row: Dict[str, Any]) -> Dict[str, Any]:
+        ensemble_id = row["id"]
         members = await owned.list_ensemble_members(ensemble_id)
         out = _ensemble_summary(row)
         out["members"] = [

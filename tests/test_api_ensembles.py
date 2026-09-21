@@ -92,6 +92,22 @@ def _settle(client, ensemble_id, tries=200):
     return client.get(f"/api/ensembles/{ensemble_id}").json()
 
 
+def _wait_report(client, ensemble_id, tries=300):
+    """Wait for the stored report, which lands strictly AFTER settlement.
+
+    `report_ready` only says the aggregator MAY run. The last member flips its own status and
+    then generates, in that order, so there is a window where every member is settled and no
+    report exists yet. Anything asserting on the automatic path has to wait for the report
+    itself rather than for readiness.
+    """
+    for _ in range(tries):
+        out = client.get(f"/api/ensembles/{ensemble_id}").json()
+        if out.get("has_report") or out.get("report_error"):
+            return out
+        time.sleep(0.02)
+    return client.get(f"/api/ensembles/{ensemble_id}").json()
+
+
 def _run(client, run_id):
     """The run detail body, which is flat — no `run` wrapper."""
     res = client.get(f"/api/runs/{run_id}")
@@ -310,14 +326,16 @@ class TestReportReadiness:
 
 
 class TestListingAndPreflight:
-    def test_listed_without_shipping_the_reports(self, client):
+    def test_listed_with_the_report_fields_present(self, client):
         _create(client, name="first")
         _create(client, name="second")
         rows = client.get("/api/ensembles").json()["ensembles"]
 
         assert {r["name"] for r in rows} == {"first", "second"}
-        assert all(r["has_report"] is False for r in rows)
-        assert all("report" in r for r in rows)
+        # `has_report` lets a list view say whether one exists; the fields are always present
+        # so a client never has to distinguish absent-key from null.
+        assert all("has_report" in r and "report" in r for r in rows)
+        assert all("report_error" in r for r in rows)
 
     def test_the_cost_cap_is_checked_before_a_fan_out(self, client, monkeypatch):
         # The worst place to skip the cap: it starts five runs, not one. Shared with the
@@ -474,3 +492,65 @@ class TestTheStagger:
         monkeypatch.delenv("_MSS_TEST_MODE", raising=False)
         monkeypatch.setenv("ENSEMBLE_STAGGER_SECONDS", "-5")
         assert manager._ensemble_stagger() == 0.0
+
+
+# --------------------------------------------------------------------------- #
+# the report route
+# --------------------------------------------------------------------------- #
+
+
+class TestTheReportRoute:
+    """`POST /api/ensembles/{id}/report` — the retry path, not the normal one.
+
+    Normally the last member to finish generates the report. This route exists for a retry
+    after a failure and for ensembles that finished before the feature existed. The
+    extractions here come from the suite-wide analysis mock, so the report's CONTENT is
+    meaningless — what these assert is the route's contract.
+    """
+
+    def test_the_report_appears_without_being_asked_for(self, client):
+        # The automatic path: no POST anywhere in this test.
+        out = _create(client).json()
+        detail = _wait_report(client, out["ensemble_id"])
+
+        assert detail["has_report"] is True, detail.get("report_error")
+        assert detail["report"]["ensemble_id"] == out["ensemble_id"]
+        assert [c["cell"] for c in detail["report"]["cells"]] == ["base"]
+        assert detail["report_cost_usd"] > 0
+        assert detail["report_error"] is None
+
+    def test_a_second_request_does_not_pay_again(self, client):
+        out = _create(client).json()
+        before = _wait_report(client, out["ensemble_id"])
+
+        res = client.post(f"/api/ensembles/{out['ensemble_id']}/report")
+        assert res.status_code == 200
+        assert res.json()["claimed_by_another"] is True
+        after = client.get(f"/api/ensembles/{out['ensemble_id']}").json()
+        assert after["report_cost_usd"] == before["report_cost_usd"]
+
+    def test_force_regenerates_and_returns_the_detail(self, client):
+        out = _create(client).json()
+        _wait_report(client, out["ensemble_id"])
+        res = client.post(f"/api/ensembles/{out['ensemble_id']}/report?force=true")
+
+        assert res.status_code == 200, res.text
+        body = res.json()
+        assert body["has_report"] is True
+        assert body["ensemble_id"] == out["ensemble_id"]
+        assert body["members"], "the detail shape, not a bare report"
+
+    def test_a_refusal_is_409_with_the_reason(self, client):
+        # A cell still running. 409 rather than 500: the caller can act on it — wait.
+        with patch(
+            "matrix_studio.api.manager.run_simulation", make_fake_run(turns=2, delay=1.0)
+        ):
+            created = client.post("/api/ensembles", json=_body()).json()
+            res = client.post(
+                f"/api/ensembles/{created['ensemble_id']}/report?force=true"
+            )
+            assert res.status_code == 409
+            assert "still running" in res.json()["detail"]
+
+    def test_an_unknown_ensemble_is_404(self, client):
+        assert client.post("/api/ensembles/nope/report").status_code == 404

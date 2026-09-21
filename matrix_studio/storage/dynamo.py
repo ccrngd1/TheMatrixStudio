@@ -171,6 +171,17 @@ _ENSEMBLE_FIELDS = (
     "report_json",
     "report_generated_at",
     "report_cost_usd",
+    # Set by `claim_ensemble_report` when one caller takes ownership of generating the
+    # report. A claim rather than a check-then-write, because the natural trigger is the
+    # LAST member's completion and members finish concurrently — two members whose final
+    # Lambda both read "everything is settled" would both pay for a full extraction pass
+    # and a 20k-token synthesis, and the loser's result would overwrite the winner's.
+    "report_claimed_at",
+    # Why there is no report, when there is none and generation was attempted anyway.
+    # Recorded rather than left blank: "no report" and "a report was refused because two
+    # usable runs is the minimum" are different states, and only one of them is worth
+    # retrying.
+    "report_error",
 )
 
 #: Ceiling on a stored ensemble report. A DynamoDB item is capped at 400 KB in total, and
@@ -1432,6 +1443,7 @@ class DynamoStorage:
         completed_at: Optional[int] = None,
         report: Optional[Dict[str, Any]] = None,
         report_cost_usd: Optional[float] = None,
+        report_error: Optional[str] = None,
         owner_sub: Optional[str] = None,
     ) -> None:
         """Set whichever of these were supplied, leaving the rest untouched.
@@ -1460,24 +1472,83 @@ class DynamoStorage:
             sets["report_generated_at"] = int(time.time())
         if report_cost_usd is not None:
             sets["report_cost_usd"] = report_cost_usd
-        if not sets:
+
+        removes: List[str] = []
+        if report_error is not None:
+            if report_error:
+                sets["report_error"] = report_error
+            else:
+                # `report_error=""` clears it, which is what a retry that succeeded wants —
+                # otherwise a stale error sits beside a good report. A REMOVE rather than
+                # setting None, because `_to_ddb` drops None values and the SET clause would
+                # then reference a placeholder with no value.
+                removes.append("report_error")
+
+        if not sets and not removes:
             return
 
         # `#n0` placeholders throughout: `status` is a DynamoDB reserved word, and naming
         # only that one would leave the next field added here to rediscover it.
-        names = {f"#n{i}": key for i, key in enumerate(sets)}
+        keys = list(sets) + removes
+        names = {f"#n{i}": key for i, key in enumerate(keys)}
         values = {f":v{i}": val for i, val in enumerate(sets.values())}
-        expression = "SET " + ", ".join(
-            f"#n{i} = :v{i}" for i in range(len(sets))
-        )
+
+        clauses = []
+        if sets:
+            clauses.append("SET " + ", ".join(f"#n{i} = :v{i}" for i in range(len(sets))))
+        if removes:
+            clauses.append(
+                "REMOVE " + ", ".join(
+                    f"#n{i}" for i in range(len(sets), len(sets) + len(removes))
+                )
+            )
+
         await self._call(
             self._table("runs").update_item,
             Key={"pk": _user_pk(owner_sub), "sk": _ensemble_sk(ensemble_id)},
-            UpdateExpression=expression,
+            UpdateExpression=" ".join(clauses),
             ExpressionAttributeNames=names,
-            ExpressionAttributeValues=_to_ddb(values),
+            **({"ExpressionAttributeValues": _to_ddb(values)} if values else {}),
             ConditionExpression="attribute_exists(pk) AND attribute_exists(sk)",
         )
+
+    async def claim_ensemble_report(
+        self, ensemble_id: str, *, force: bool = False,
+        owner_sub: Optional[str] = None,
+    ) -> bool:
+        """Take exclusive ownership of generating this ensemble's report. True if won.
+
+        The natural trigger for a report is the LAST member finishing, and members finish
+        concurrently: two members whose final Lambda both read "everything is settled" would
+        both run a full extraction pass and a 20k-token synthesis, and the loser's result
+        would overwrite the winner's. So the claim is a conditional write — the only kind of
+        mutual exclusion available here — and a caller that loses it does nothing.
+
+        `force=True` overwrites an existing claim, for an explicit regenerate. That is the
+        one case where paying twice is the point.
+        """
+        owner_sub = self._owner(owner_sub)
+        from botocore.exceptions import ClientError
+
+        condition = "attribute_exists(pk) AND attribute_exists(sk)"
+        if not force:
+            condition += " AND attribute_not_exists(report_claimed_at)"
+        try:
+            await self._call(
+                self._table("runs").update_item,
+                Key={"pk": _user_pk(owner_sub), "sk": _ensemble_sk(ensemble_id)},
+                UpdateExpression="SET report_claimed_at = :now",
+                ExpressionAttributeValues={":now": int(time.time())},
+                ConditionExpression=condition,
+            )
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                # Either somebody else holds the claim, or the ensemble does not exist. Both
+                # mean "not mine to generate", and neither is an error for the caller — the
+                # winner will produce the report.
+                return False
+            raise
+        return True
 
     async def list_ensemble_members(
         self, ensemble_id: str, *, owner_sub: Optional[str] = None
