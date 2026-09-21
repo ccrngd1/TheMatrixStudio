@@ -73,6 +73,13 @@ def make_fake_run(turns=2, fail=False, delay=0.0):
                 # be asserting its own behaviour, not the system's.
                 **({"owner_sub": request["owner_sub"]}
                    if request.get("owner_sub") else {}),
+                # Same rule as `owner_sub` above: the real engine puts these on the row,
+                # so a fake that dropped them would let every ensemble test pass against
+                # a backend that had lost which cell a member belonged to.
+                **({"ensemble_id": request["ensemble_id"]}
+                   if request.get("ensemble_id") else {}),
+                **({"ensemble_cell": request["ensemble_cell"]}
+                   if request.get("ensemble_cell") else {}),
             )
             await db.update_run_status(run_id, "running")
 

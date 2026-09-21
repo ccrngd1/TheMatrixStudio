@@ -1109,6 +1109,13 @@ async def run_simulation(
     # `create_run`'s own default handles the absent case, and it fails closed —
     # see its docstring for why the read paths do not get that courtesy.
     run_owner_sub = request.get("owner_sub")
+    # Ensemble membership, when this run is one member of a fan-out. Pure metadata: the
+    # engine reads it only to put it on the row, exactly as it does `owner_sub`, and no
+    # turn behaviour depends on it. A member conversation is an ordinary conversation —
+    # that is the premise the whole ensemble rests on, since replicates are only
+    # comparable if nothing about being a replicate changes how a run behaves.
+    run_ensemble_id = request.get("ensemble_id")
+    run_ensemble_cell = request.get("ensemble_cell")
 
     # Generate run ID
     if run_id is None:
@@ -1170,6 +1177,8 @@ async def run_simulation(
             description=run_description,
             config=config,
             **({"owner_sub": run_owner_sub} if run_owner_sub else {}),
+            **({"ensemble_id": run_ensemble_id} if run_ensemble_id else {}),
+            **({"ensemble_cell": run_ensemble_cell} if run_ensemble_cell else {}),
         )
         await db.update_run_status(run_id, "running")
 

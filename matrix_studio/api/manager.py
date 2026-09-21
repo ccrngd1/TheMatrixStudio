@@ -14,6 +14,7 @@ buffered stream a client sees is identical whether the run is live or finished.
 
 import asyncio
 import logging
+import os
 import uuid
 from functools import partial
 from typing import Any, Dict, List, Optional, Sequence, Set
@@ -31,6 +32,35 @@ logger = logging.getLogger(__name__)
 TERMINAL_EVENTS = {
     "sim.completed", "sim.failed", "sim.interrupted", "sim.capped", "sim.stopped",
 }
+
+#: Default seconds between starting one ensemble member and the next. See
+#: `create_ensemble` for what this does and does not buy.
+ENSEMBLE_STAGGER_SECONDS = 1.0
+
+
+def _ensemble_stagger() -> float:
+    """The stagger to use for this fan-out, read at call time.
+
+    Read per call rather than bound to a module constant at import. A constant looked
+    tidier and was wrong twice over: `_MSS_TEST_MODE` is set by a pytest fixture that runs
+    long after this module is imported, so the test-mode branch never fired and the suite
+    silently paid a second per member (a flat 5.05 s per fan-out, which is how it was
+    found); and on Lambda it froze the value into the sandbox, so changing the environment
+    variable would have needed a redeploy to take effect.
+    """
+    if os.environ.get("_MSS_TEST_MODE"):
+        return 0.0
+    raw = os.environ.get("ENSEMBLE_STAGGER_SECONDS")
+    if raw is None:
+        return ENSEMBLE_STAGGER_SECONDS
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        logger.warning(
+            "ENSEMBLE_STAGGER_SECONDS=%r is not a number; using %.1fs",
+            raw, ENSEMBLE_STAGGER_SECONDS,
+        )
+        return ENSEMBLE_STAGGER_SECONDS
 
 
 class RunBroker:
@@ -86,6 +116,9 @@ class RunManager:
         *,
         owner_sub: str,
         groups: Optional[Sequence[str]] = None,
+        run_id: Optional[str] = None,
+        ensemble_id: Optional[str] = None,
+        ensemble_cell: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Resolve the run's name/description, then start the simulation as a
@@ -95,13 +128,23 @@ class RunManager:
         ``owner_sub`` is required and keyword-only: this is the one place a run's
         owner is established, and defaulting it would attribute somebody's
         conversation to an identity they do not have.
+
+        ``run_id`` lets a caller supply the id instead of having one generated. Only the
+        ensemble fan-out does: it writes the parent row listing every member id *before*
+        creating any member, so an interrupted fan-out leaves a parent that knows what is
+        missing rather than orphan runs with nothing to aggregate them.
+
+        ``ensemble_id`` / ``ensemble_cell`` mark this run as a member of a cell. Carried
+        onto the row rather than inferred later — in the default replicates-only ensemble
+        every member's config is identical by design, so the label is unrecoverable from
+        the config alone.
         """
         topic = request["topic"]
         cast = request.get("cast", [])
         cast_names = [c.get("name", "") for c in cast]
         model = request.get("model")
 
-        run_id = str(uuid.uuid4())
+        run_id = run_id or str(uuid.uuid4())
 
         # Bound up front, because the name checks below are the first storage calls and
         # `owner_sub=` alone does NOT attach the tenant-scoped credentials — it scopes
@@ -196,6 +239,8 @@ class RunManager:
                 config=engine_request.get("config") or {},
                 owner_sub=owner_sub,
                 groups=groups,
+                ensemble_id=ensemble_id,
+                ensemble_cell=ensemble_cell,
             )
             # `pending`, not `running`: the first slice owns that flip, so a run left
             # at `pending` is visibly one whose execution never started rather than one
@@ -266,6 +311,134 @@ class RunManager:
             "name_source": name_source,
             "topic": topic,
             "status": "running",
+        }
+
+    async def create_ensemble(
+        self,
+        request: Dict[str, Any],
+        cells: Sequence[Any],
+        *,
+        owner_sub: str,
+        groups: Optional[Sequence[str]] = None,
+    ) -> Dict[str, Any]:
+        """Fan one brief out into N member runs and return immediately.
+
+        `cells` is a sequence of `ensemble_spec.Cell`. The plan is validated and proven
+        isolated by `ensemble_spec.plan` BEFORE the parent row is written, so an ensemble
+        whose cells differ in some way nobody declared never reaches storage — see
+        docs/ENSEMBLE-CONVERSATIONS.md §3.3 for the sweep that produced that rule.
+
+        Ordering, and why it is this way round:
+
+          1. name the parent (one naming call for the whole ensemble, not one per member)
+          2. write the parent row, already listing every member id
+          3. create each member and start its execution
+
+        Step 2 before step 3 means a fan-out that dies halfway leaves a parent that knows
+        it is short. The reverse leaves N orphan runs indistinguishable from conversations
+        somebody started by hand, and the ensemble itself simply gone.
+
+        A member that fails to create is recorded and the rest continue. Refusing the whole
+        ensemble because the seventh run failed would throw away six paid-for
+        conversations, and a short cell is reportable — `list_ensemble_members` returns
+        `run: None` for a missing member precisely so the aggregator can say "4 of 5"
+        rather than silently reporting 4 of 4.
+        """
+        from matrix_studio import ensemble_spec
+
+        members = ensemble_spec.plan(request.get("config") or {}, cells)
+
+        topic = request["topic"]
+        owned = self.db.for_owner(owner_sub)
+        ensemble_id = str(uuid.uuid4())
+
+        # One naming call for the ensemble; members get derived names, which take
+        # `create_run`'s supplied-name path and make no LLM call of their own. Eight
+        # generated codenames would cost eight calls to produce names that deliberately
+        # hide the one thing a member's name should say — which cell it is in.
+        supplied = (request.get("name") or "").strip().lower() or None
+        if supplied:
+            base_name, description = supplied, request.get("description") or topic[:80]
+        else:
+            naming = await generate_run_name(
+                topic=topic,
+                cast_names=[c.get("name", "") for c in request.get("cast", [])],
+                model=request.get("model"),
+                # Deliberately NOT `owned.name_exists`: that checks the run-name space, and
+                # the ensemble's own name does not live there — only its members' derived
+                # names do. Passing it would reject a perfectly free ensemble name because
+                # some old run happened to hold it.
+                name_exists=None,
+            )
+            base_name = naming["name"]
+            description = request.get("description") or naming["description"]
+
+        member_rows = [
+            {"run_id": str(uuid.uuid4()), "cell": m.cell, "index": m.index}
+            for m in members
+        ]
+        await owned.create_ensemble(
+            ensemble_id=ensemble_id,
+            topic=topic,
+            spec=ensemble_spec.describe(cells),
+            members=member_rows,
+            base_config=request.get("config") or {},
+            name=base_name,
+            description=description,
+            owner_sub=owner_sub,
+        )
+
+        started: List[Dict[str, Any]] = []
+        failed: List[Dict[str, Any]] = []
+        for member, row in zip(members, member_rows):
+            member_request = dict(request)
+            member_request["config"] = member.config
+            member_request["name"] = member.name_for(base_name)
+            member_request["description"] = description
+            member_request["ensemble_id"] = ensemble_id
+            member_request["ensemble_cell"] = member.cell
+            try:
+                created = await self.create_run(
+                    member_request,
+                    owner_sub=owner_sub,
+                    groups=groups,
+                    run_id=row["run_id"],
+                    ensemble_id=ensemble_id,
+                    ensemble_cell=member.cell,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception(
+                    "Ensemble %s member %s/%s failed to start", ensemble_id,
+                    member.cell, member.index,
+                )
+                failed.append({**row, "error": str(exc)})
+                continue
+            started.append({**row, "name": created.get("name")})
+
+            # Spread the FIRST turn, which is the one moment every member calls the model
+            # at once. Later turns drift apart on their own as replies come back at
+            # different lengths, so this is not general throttle protection and is not
+            # pretending to be — §8.1 records that Bedrock TPM headroom for a full fan-out
+            # is still unverified. It costs a second of request latency and removes one
+            # real, predictable spike.
+            stagger = _ensemble_stagger()
+            if stagger:
+                await asyncio.sleep(stagger)
+
+        if not started:
+            await owned.update_ensemble(ensemble_id, status="failed", owner_sub=owner_sub)
+        else:
+            await owned.update_ensemble(ensemble_id, status="running", owner_sub=owner_sub)
+
+        return {
+            "ensemble_id": ensemble_id,
+            "name": base_name,
+            "description": description,
+            "topic": topic,
+            "status": "failed" if not started else "running",
+            "spec": ensemble_spec.describe(cells),
+            "members": started,
+            "failed": failed,
         }
 
     async def create_branch(

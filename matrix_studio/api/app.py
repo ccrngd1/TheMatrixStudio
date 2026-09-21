@@ -49,7 +49,9 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from matrix_studio import analysis, bindings, blobs, orchestration, service
+from matrix_studio import (
+    analysis, bindings, blobs, ensemble_spec, orchestration, service,
+)
 from matrix_studio.api.identity import current_groups, current_user, current_user_ws
 from matrix_studio.api.manager import RunManager, TERMINAL_EVENTS, event_row_to_wire
 from matrix_studio.documents import (
@@ -273,6 +275,35 @@ class CreateRunModel(BaseModel):
     summary: Optional[SummaryConfigModel] = None
 
 
+class EnsembleCellModel(BaseModel):
+    """One labelled group of replicates. `overrides` is a flat map of dotted config paths,
+    e.g. `{"selection.method": "hybrid"}`; `ensemble_spec` decides which are permitted and
+    refuses the rest with the reason."""
+
+    label: str
+    n: int = ensemble_spec.DEFAULT_REPLICATES
+    overrides: Dict[str, Any] = Field(default_factory=dict)
+
+
+class CreateEnsembleModel(BaseModel):
+    """Run one brief several times and aggregate.
+
+    `cells` omitted → the default shape of docs/ENSEMBLE-CONVERSATIONS.md §8: one cell,
+    nothing varied. That default is the argument of the whole document — replicates
+    measure whether a conclusion survives resampling, which is the question an ensemble is
+    asked, and they are the control any varied cell has to be compared against.
+    """
+
+    topic: str
+    cast: List[PersonaModel]
+    config: RunConfigModel = Field(default_factory=RunConfigModel)
+    model: Optional[str] = None
+    name: Optional[str] = None
+    description: Optional[str] = None
+    summary: Optional[SummaryConfigModel] = None
+    cells: Optional[List[EnsembleCellModel]] = None
+
+
 class SummaryRequestModel(BaseModel):
     """Body for on-demand (re)generation of a run's structured summary."""
 
@@ -425,6 +456,25 @@ def _parse_config(run: Dict[str, Any]) -> Dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _parse_json_field(raw: Any, default: Any = None) -> Any:
+    """Best-effort decode of a stored JSON column, given the value rather than the row.
+
+    The same tolerance as `_parse_config` and for the same reason — a malformed blob is
+    descriptive metadata and should not fail a read — but taking the value directly,
+    because the ensemble row has four of these and a per-field function each would be four
+    copies of this.
+    """
+    if default is None:
+        default = {}
+    if not raw:
+        return default
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return default
+    return parsed if isinstance(parsed, type(default)) else default
+
+
 def _run_summary(run: Dict[str, Any]) -> Dict[str, Any]:
     """Shape a runs-table row (+ derived stats) for list/detail responses."""
     return {
@@ -445,6 +495,73 @@ def _run_summary(run: Dict[str, Any]) -> Dict[str, Any]:
         # "branched from <parent> @ turn N". Both null for a fresh (root) run.
         "parent_run_id": run.get("parent_run_id"),
         "branch_turn": run.get("branch_turn"),
+    }
+
+
+#: Run statuses that mean the engine will send nothing more for that run.
+_TERMINAL_RUN_STATUSES = frozenset({"complete", "failed", "stopped", "capped", "interrupted"})
+
+
+def _ensemble_summary(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Shape an ensembles row for list/detail responses.
+
+    `spec` and `base_config` are decoded here rather than served raw: the spec is what the
+    report header renders, and a client that had to parse `spec_json` itself would be the
+    second place that knows the shape.
+
+    The report is served as `report` (decoded) and `has_report`, so a list response can say
+    whether one exists without shipping every report in the list.
+    """
+    report = _parse_json_field(row.get("report_json"))
+    return {
+        "ensemble_id": row["id"],
+        "name": row.get("name"),
+        "description": row.get("description"),
+        "slug": row.get("slug"),
+        "topic": row.get("topic"),
+        "status": row.get("status"),
+        "created_at": row.get("created_at"),
+        "completed_at": row.get("completed_at"),
+        "spec": _parse_json_field(row.get("spec_json"), default=[]),
+        "base_config": _parse_json_field(row.get("base_config_json")),
+        "has_report": bool(report),
+        "report": report or None,
+        "report_generated_at": row.get("report_generated_at"),
+        "report_cost_usd": row.get("report_cost_usd"),
+    }
+
+
+def _ensemble_progress(members: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Per-cell completion, and whether the aggregator may run yet.
+
+    `report_ready` is deliberately "every declared member has reached a terminal status",
+    NOT "some runs finished". A report over a cell that is still generating would count a
+    conclusion as absent from a run that simply had not reached it yet — censoring, which
+    docs/ENSEMBLE-CONVERSATIONS.md §3.4 identifies as the way a missing datum gets read as
+    a dissent. A member that failed to create counts as settled (it will never finish), so
+    a partly-created ensemble is still reportable, with its cell honestly short.
+    """
+    cells: Dict[str, Dict[str, Any]] = {}
+    for m in members:
+        label = m.get("cell") or "?"
+        cell = cells.setdefault(label, {"cell": label, "declared": 0, "complete": 0, "settled": 0})
+        cell["declared"] += 1
+        run = m.get("run")
+        if run is None:
+            cell["settled"] += 1
+            continue
+        status = run.get("status")
+        if status in _TERMINAL_RUN_STATUSES:
+            cell["settled"] += 1
+        if status == "complete":
+            cell["complete"] += 1
+
+    ordered = [cells[k] for k in sorted(cells)]
+    return {
+        "cells": ordered,
+        "report_ready": bool(ordered) and all(
+            c["settled"] == c["declared"] for c in ordered
+        ),
     }
 
 
@@ -772,13 +889,14 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         return {"cast": cast, "count": len(cast)}
 
-    @app.post("/api/runs", status_code=201)
-    async def create_run(
-        body: CreateRunModel,
-        user: str = Depends(current_user),
-        groups: List[str] = Depends(current_groups),
-    ) -> Dict[str, Any]:
-        request = body.model_dump(exclude_none=True)
+    async def _preflight(request: Dict[str, Any], user: str, groups: List[str]) -> None:
+        """The checks every run-starting route owes, in one place.
+
+        Factored out when the ensemble route arrived. A fan-out that skipped the cost cap
+        or the KB-binding check would be the worst place to skip them — it starts five runs
+        rather than one — and the way that happens is a second route drifting from the
+        first, so there is no second copy to drift.
+        """
         if not request.get("cast"):
             raise HTTPException(status_code=422, detail="At least one persona is required")
 
@@ -834,6 +952,15 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
                 ),
             )
 
+    @app.post("/api/runs", status_code=201)
+    async def create_run(
+        body: CreateRunModel,
+        user: str = Depends(current_user),
+        groups: List[str] = Depends(current_groups),
+    ) -> Dict[str, Any]:
+        request = body.model_dump(exclude_none=True)
+        await _preflight(request, user, groups)
+
         # `groups` is carried onto the run row, not just used for the check above. A turn
         # runs in a Step Functions state with no JWT, so this is the only moment the
         # creator's verified group membership is available to record — and without it a
@@ -841,6 +968,69 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         # PHASE6-KB-DESIGN.md §8.3 states the window that buys.
         result = await manager.create_run(request, owner_sub=user, groups=groups)
         return result
+
+    # ------------------------------------------------------------------ #
+    # Ensembles — docs/ENSEMBLE-CONVERSATIONS.md
+    # ------------------------------------------------------------------ #
+
+    @app.post("/api/ensembles", status_code=201)
+    async def create_ensemble(
+        body: CreateEnsembleModel,
+        user: str = Depends(current_user),
+        groups: List[str] = Depends(current_groups),
+    ) -> Dict[str, Any]:
+        request = body.model_dump(exclude_none=True)
+        cells_body = request.pop("cells", None)
+        await _preflight(request, user, groups)
+
+        # `cells` omitted → replicates, nothing varied. §8: the default mode, and the
+        # control every other axis is defined against.
+        try:
+            cells = (
+                ensemble_spec.cells_from(cells_body)
+                if cells_body
+                else ensemble_spec.replicates()
+            )
+        except ensemble_spec.SpecError as exc:
+            # 422, not 400: the body parsed fine and the spec is the thing that is wrong.
+            # The message carries the reason the key is refused, which is the useful part —
+            # a caller varying `max_messages` needs to know it is censoring, not that it is
+            # "invalid".
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        return await manager.create_ensemble(
+            request, cells, owner_sub=user, groups=groups,
+        )
+
+    @app.get("/api/ensembles")
+    async def list_ensembles(user: str = Depends(current_user)) -> Dict[str, Any]:
+        rows = await db.for_owner(user).list_ensembles()
+        return {"ensembles": [_ensemble_summary(r) for r in rows]}
+
+    @app.get("/api/ensembles/{ensemble_id}")
+    async def get_ensemble(
+        ensemble_id: str, user: str = Depends(current_user)
+    ) -> Dict[str, Any]:
+        owned = db.for_owner(user)
+        row = await owned.get_ensemble(ensemble_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Ensemble not found")
+
+        members = await owned.list_ensemble_members(ensemble_id)
+        out = _ensemble_summary(row)
+        out["members"] = [
+            {
+                "run_id": m["run_id"],
+                "cell": m["cell"],
+                "index": m["index"],
+                # None when the member run was never created. Reported rather than
+                # filtered: a cell that is short changes what its counts mean.
+                "run": _run_summary(m["run"]) if m["run"] else None,
+            }
+            for m in members
+        ]
+        out.update(_ensemble_progress(members))
+        return out
 
     @app.get("/api/runs")
     async def list_runs(
