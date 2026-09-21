@@ -998,6 +998,7 @@ async def finalise(
         # the only place left to do it — `RunManager._runner` used to, in a background
         # task that Lambda no longer runs.
         await _summarise_once(db, run_id, str(run.get("status")))
+        await _report_ensemble_once(db, run)
         return _payload(run_id, str(run.get("status")), run, 0)
 
     if run.get("stop_requested") and status == "complete":
@@ -1027,7 +1028,37 @@ async def finalise(
     await db.update_run_status(run_id, status, completion_time)
     await _summarise_once(db, run_id, status)
     fresh = await db.get_run(run_id) or run
+    # After the status write, deliberately: the ensemble check asks whether every member has
+    # reached a terminal status, and this run is one of them. Called before the write it would
+    # always see itself as outstanding and no member would ever be the last.
+    await _report_ensemble_once(db, fresh)
     return _payload(run_id, status, fresh, turn)
+
+
+async def _report_ensemble_once(db: Database, run: Dict[str, Any]) -> None:
+    """If this run was its ensemble's last outstanding member, build the ensemble's report.
+
+    Here rather than in a background task for the reason `_summarise_once` is here: on the
+    deployed path a run's last act happens inside a Step Functions state, and Lambda freezes
+    the sandbox when the handler returns, so an `asyncio.create_task` would be dropped.
+
+    Unlike the summary this is guarded by a durable CLAIM rather than an existence check,
+    because members finish concurrently and two of them can both see "everything is settled".
+    A same-run retry of the Finalise state is covered by the same claim.
+
+    Never raises. A run must not fail because commentary on it did.
+    """
+    if not run.get("ensemble_id"):
+        return
+    try:
+        from matrix_studio import ensemble_reporting
+
+        await ensemble_reporting.maybe_report_for_member(db, run)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "Ensemble report attempt failed after run %s finished; the run is unaffected",
+            run.get("id"),
+        )
 
 
 async def _summarise_once(db: Database, run_id: str, status: str) -> None:

@@ -5,11 +5,12 @@ committed as `49ad370`. The design below is what the stage-1 evidence argues for
 before the fan-out was built so the reasoning is on the record rather than reconstructed
 afterwards.
 
-> **Progress, 2026-09-21.** Stage 2a's *fan-out* half is implemented: `ensemble_spec` (the
-> planner and its refusals), the parent row and member linkage, `POST /api/ensembles`, and
-> `report_ready`. What is **not** built is the half that generates the report — nothing calls
-> `ensemble.synthesise` on a finished ensemble yet, so `has_report` is always false. Stage
-> 2b (stratified counts) and stage 3 (UI) are untouched. §8 carries the status per step.
+> **Progress, 2026-09-21.** **Stage 2a is complete, and 2b's per-cell counts came with it.**
+> `ensemble_spec` plans and proves the cells isolated; the parent row, member linkage and
+> `POST /api/ensembles` fan out; `ensemble_reporting` builds and stores the report, triggered
+> by the last member to finish and guarded by a durable claim. Per-claim tiers are computed
+> **within each cell against that cell's own denominator**, which is 2b's substance. Stage 3
+> (UI) is untouched. §8 carries the status per step.
 
 **The short version.** The default ensemble mode should be **N replicates with nothing
 varied**, not N runs with different settings. That is counter-intuitive and it is the whole
@@ -244,16 +245,19 @@ Replicates first, because every other axis is defined relative to them.
 
 1. **Stage 2a — replicate fan-out.** Parent run row, N child runs with identical config,
    stored report. Default N = 5.
-   **DONE except the report.** `matrix_studio/ensemble_spec.py` plans and proves the cells
-   isolated; the parent row lives at `USER#{sub}` / `ENSEMBLE#{id}` with the spec, base
-   config and full membership; `POST /api/ensembles` fans out; `GET /api/ensembles/{id}`
-   returns per-cell counts and `report_ready`. Nothing generates the report yet — that is
-   the remaining half, and it is the wiring from `report_ready` to
-   `ensemble.synthesise` plus `update_ensemble(report=…)`.
+   **DONE.** `matrix_studio/ensemble_spec.py` plans and proves the cells isolated; the parent
+   row lives at `USER#{sub}` / `ENSEMBLE#{id}` with the spec, base config and full
+   membership; `POST /api/ensembles` fans out; `GET /api/ensembles/{id}` returns per-cell
+   counts, `report_ready` and the report. `matrix_studio/ensemble_reporting.py` builds and
+   stores it, triggered by the last member to finish.
 2. **Stage 2b — stratified report.** Per-cell robustness tiers. Cell labels are structural,
    present from the first version even when there is only one cell.
-   *Partly prepared:* `ensemble_spec.tier` exists and cells are already carried on every
-   member row and counted per cell by the API. The report itself is not stratified yet.
+   **DONE for the counts.** `report["claims"]` is one row per demand or refusal with a
+   `per_cell` column, each tiered against *that cell's* denominator — so `unanimous` in one
+   cell beside `absent` in another stays visible as a method-dependent finding instead of
+   averaging to a weak-looking 2/4. A cell that produced no usable extraction reports
+   `null`, not `0 of N`: an empty cell has no opinion, and 0-of-N would let a reader
+   conclude it rejected the claim. Not done: the synthesis prose is not yet cell-aware.
 3. **Stage 2c — second cell.** `hybrid`, 2 opening rounds, per §5.1.
    *Reachable now* — `ensemble_spec.with_hybrid()` and the `cells` body field both work, so
    this is a data choice rather than a code change. That was the point of building cells in
@@ -275,6 +279,36 @@ That is §3.3 made executable. The override allowlist is two keys (`selection.me
 *with the reason from this document in the error message*. A bare "not permitted" is a rule
 someone deletes to make their branch pass.
 
+### 8.0b Who generates the report, and when
+
+The trigger is **the last member to reach a terminal status**, from
+`orchestration.finalise` — the same place and for the same reason as the per-run
+auto-summary. On the deployed path a run's last act happens inside a Step Functions state,
+and Lambda freezes the sandbox when the handler returns, so a background task there is
+dropped. (That mistake has now been made three times in this project; see the cognition,
+decline-streak and closing-round entries.)
+
+**Terminal, not successful.** A failed member will never finish, so waiting for success
+would leave an ensemble with one bad run permanently unreportable.
+
+**Guarded by a durable claim, not an existence check.** Members finish concurrently, so two
+of them can both observe "everything is settled". Without `claim_ensemble_report` — a
+conditional write, the only mutual exclusion available here — both would pay for a full
+extraction pass and a 20k-token synthesis, and the loser's result would overwrite the
+winner's.
+
+`POST /api/ensembles/{id}/report` exists for the two cases the automatic path cannot cover:
+a retry after a recorded failure, and an ensemble whose members finished before the feature
+existed. **It will exceed API Gateway's 29 s limit on the deployed stack** — the extraction
+pass is one call per member and the synthesis asks for up to 20k output tokens. That is a
+known limitation, not a surprise: expect a 504 and poll `GET`, because the work continues
+server-side. The automatic path has a Lambda timeout rather than a gateway one, and is the
+route meant to be used.
+
+**Refusals are recorded, not raised.** `report_error` on the parent distinguishes "no report
+yet" from "refused because a cell was still running" — only one of those is worth retrying.
+A run never fails because commentary on it did.
+
 ### 8.1 Before any fan-out launches
 
 - **Bedrock throughput.** 8 concurrent runs making per-turn calls may exceed account TPM on
@@ -288,9 +322,20 @@ someone deletes to make their branch pass.
 - **N = 5 buys coarse tiers only** — unanimous / split / rare. Not significance. That is
   enough for "should I trust this finding", and will not support a claim from a 3/5 vs 2/5
   difference.
-- **`per_persona` currently under-reports agreement.** Without canonical-label clustering,
-  `_normalise` is deliberately crude and most demands read 1/9 when several are the same
-  demand in different words. Stage 1.5.
+- **Claim counts are a FLOOR, not a measurement.** `_normalise` is deliberately crude, so the
+  same demand phrased differently counts twice and agreement is under-reported. That is the
+  safe direction — over-merging would silently delete a dissent — but it means a `rare` tier
+  may be an artefact of wording. The report now **carries this caveat in its own body**
+  rather than only here, because whoever reads "1 of 5" in a UI has no link to this document.
+  Canonical-label clustering is stage 1.5.
+- **A report needs two usable runs.** Below `MIN_USABLE_RUNS` it is refused with a recorded
+  reason rather than written. One conversation under an "ensemble report" heading is the most
+  misleading artefact this system could emit: it looks like corroborated evidence and is one
+  sample.
+- **`report_ready` does not mean the report exists.** The last member flips its status and
+  then generates, in that order, so there is a window where every member is settled and
+  `has_report` is still false. A client polls `has_report` / `report_error`, not
+  `report_ready`.
 - **Synthesis output budget.** `synthesise` defaults to `max_tokens=20000` with
   `max_pairs=8`. Truncated replies come back **empty**, not partial; `finish_reason` is the
   only discriminator, and the empty case is logged explicitly rather than reported as a
@@ -327,6 +372,9 @@ and the report should say so rather than presenting five echoes as agreement.
   `agreements_and_dissents`, `synthesise`
 - `matrix_studio/ensemble_spec.py` — stage 2a: `Cell`, `plan`, `check_isolated`, the override
   allowlist and `tier`
+- `matrix_studio/ensemble_reporting.py` — stage 2a/2b: `build`, `generate`, the claim, and
+  `maybe_report_for_member`
 - `scripts/ensemble_report.py` — stage-1 CLI (`--match`, `--cache`, `--no-synthesis`)
 - `tests/test_ensemble_spec.py`, `tests/test_ensemble_storage.py`,
-  `tests/test_api_ensembles.py` — 91 tests, mostly asserting refusals
+  `tests/test_ensemble_reporting.py`, `tests/test_api_ensembles.py` — 120 tests, mostly
+  asserting refusals

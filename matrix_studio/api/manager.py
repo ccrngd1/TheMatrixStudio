@@ -294,6 +294,17 @@ class RunManager:
                 # affects the canonical run. Best-effort: it never raises.
                 if result.get("status") == "complete":
                     await maybe_autogenerate_summary(owned, run_id)
+                # The local counterpart of `orchestration._report_ensemble_once`. Attempted
+                # for ANY terminal status, not just `complete`: a failed member will never
+                # finish, so waiting for it would leave an ensemble with one bad run
+                # permanently unreportable. The durable claim is what makes it safe for
+                # several members to finish at once and all reach here.
+                if ensemble_id:
+                    from matrix_studio import ensemble_reporting
+
+                    row = await owned.get_run(run_id)
+                    if row:
+                        await ensemble_reporting.maybe_report_for_member(owned, row)
             except Exception:  # noqa: BLE001
                 logger.exception("Background run %s crashed", run_id)
             finally:
