@@ -70,6 +70,20 @@ def _harvest_claims(
                                 "kind": kind, "text": text, "cell": label,
                                 "run": view.name, "persona": persona.get("name"),
                             })
+            # `unresolved` belongs to the RUN, not to a persona, and is harvested here so it is
+            # clustered in the same pass — one model call per kind either way. Without it the
+            # unresolved tally kept its own text matching and every question counted 1, which
+            # made "the same question was left open in all five runs" unsayable.
+            #
+            # Excluded from the claim table by `_claims_by_cell`: an open question is not a
+            # position anybody held.
+            for raw in view.positions.get("unresolved") or []:
+                text = str(raw).strip()
+                if text:
+                    out.append({
+                        "kind": "unresolved", "text": text, "cell": label,
+                        "run": view.name, "persona": None,
+                    })
     return out
 
 
@@ -94,14 +108,22 @@ def _claims_by_cell(
     they came from. That is what makes a merge auditable — a reader who thinks two claims were
     wrongly combined can see it and say so, which is not possible from a count alone.
     """
-    claims = _harvest_claims(views_by_cell)
+    # Demands and refusals only. An open question is not a position anybody held, so it has no
+    # place in a table of who required what — even though it IS clustered, in the same pass.
+    claims = [
+        (i, c) for i, c in enumerate(_harvest_claims(views_by_cell))
+        if c["kind"] in ("demand", "refusal")
+    ]
 
     held: Dict[Any, Dict[str, set]] = defaultdict(lambda: defaultdict(set))
     label_of: Dict[Any, str] = {}
     kind_of: Dict[Any, str] = {}
     variants: Dict[Any, Dict[str, set]] = defaultdict(lambda: defaultdict(set))
 
-    for i, claim in enumerate(claims):
+    for i, claim in claims:
+        # Indexed by the claim's position in the FULL harvest, because that is the index space
+        # the clustering was numbered in. Re-enumerating the filtered list here would attach
+        # every label to the wrong claim, and no arithmetic check would catch it.
         if keys is not None:
             key, label = keys[i]
         else:
@@ -256,6 +278,7 @@ async def build(
     # counts beats no report, and `clustered` records which one a reader is looking at.
     harvested = _harvest_claims(views_by_cell)
     keys: Optional[Dict[int, Any]] = None
+    canonical: Optional[ensemble.Canonical] = None
     cluster_note: Optional[str] = None
     if cluster and len(harvested) >= 2:
         pairs = [(c["kind"], c["text"]) for c in harvested]
@@ -264,6 +287,13 @@ async def build(
             cost += float(clusters[0].get("_cost_usd") or 0.0)
             try:
                 keys = ensemble.apply_clusters(pairs, clusters)
+                # Keyed by `(kind, text)` so the per-persona and unresolved sections can look a
+                # claim up without knowing its harvest position. First occurrence wins where the
+                # same sentence appears twice — `apply_clusters` guarantees each POSITION is
+                # assigned once, not that identical texts land in the same cluster.
+                canonical = {}
+                for i, (kind, text) in enumerate(pairs):
+                    canonical.setdefault((kind, text), keys[i])
             except ensemble.ClusteringRejected as exc:
                 # Rejected rather than partially trusted. A clustering that dropped claims
                 # would under-count exactly like the bug it replaces, while looking fixed.
@@ -271,6 +301,8 @@ async def build(
                     "Rejected the claim clustering for ensemble %s (%s); falling back to text "
                     "matching, which under-reports agreement.", ensemble_id, exc,
                 )
+                keys = None
+                canonical = None
                 cluster_note = f"Clustering was rejected as unsound ({exc})."
         else:
             cluster_note = "The clustering call returned nothing usable."
@@ -307,17 +339,20 @@ async def build(
         # ensemble, so its counts are not a worse version of the clustered ones, they are
         # noise. A reader has to know which they are looking at.
         "clustered": keys is not None,
-        "per_persona": ensemble.per_persona(usable),
-        "agreements": ensemble.agreements_and_dissents(usable),
+        # Both take the SAME canonical labels as the claim table. They did not, briefly, and
+        # the result was a table reporting a unanimous finding beside a persona section
+        # reporting zero invariant demands — computed from identical extractions.
+        "per_persona": ensemble.per_persona(usable, canonical),
+        "agreements": ensemble.agreements_and_dissents(usable, canonical),
         "synthesis": synthesis.get("content") or "",
         "cost_usd": round(cost, 4),
         # Carried in the artefact, not only in a doc: whoever reads a count in a UI has no
         # link to §8.2.
         "caveats": [
             (
-                "Claims were grouped into canonical labels by a model, biased against "
-                "merging. Each row lists the phrasings that were grouped and the runs they "
-                "came from — check them before trusting a count."
+                "Claims, refusals and open questions were grouped into canonical labels by a "
+                "model, biased against merging. Each row lists the phrasings that were grouped "
+                "and the runs they came from — check them before trusting a count."
                 if keys is not None else
                 "Claim counts are NOT RELIABLE. Claims fell back to crude text matching, so "
                 "the same demand phrased differently counts separately and agreement is "

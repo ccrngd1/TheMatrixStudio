@@ -838,3 +838,141 @@ class TestTheExtractionsRunConcurrently:
 
         await ensemble_reporting.build(db, "ens", call=call)
         assert peak["max"] == 3, f"extractions overlapped only {peak['max']} deep"
+
+
+# --------------------------------------------------------------------------- #
+# one keying for every section that counts
+# --------------------------------------------------------------------------- #
+
+
+class TestEverySectionSharesTheLabels:
+    """The claim table, the per-persona view and the unresolved tally must agree.
+
+    They did not, briefly: the table reported a unanimous finding while the persona section
+    reported zero invariant demands — from the same extractions. A report that contradicts
+    itself is worse than one that is merely coarse, because a reader has no way to choose.
+    """
+
+    async def _three_runs(self, db):
+        await _ensemble(db, [{"label": "base", "n": 3, "overrides": {}}],
+                        [{"run_id": "r1", "cell": "base", "index": 1},
+                         {"run_id": "r2", "cell": "base", "index": 2},
+                         {"run_id": "r3", "cell": "base", "index": 3}])
+        await _member(db, "ens", "r1", "base", "m1", "alpha")
+        await _member(db, "ens", "r2", "base", "m2", "beta")
+        await _member(db, "ens", "r3", "base", "m3", "gamma")
+        # One demand, one refusal and one open question — each worded differently per run.
+        return {
+            "alpha": {
+                "personas": [{"name": "Ada", "final_position": "p",
+                              "demands": ["a verified weight before approval"],
+                              "refusals": ["will not accept a checkbox"], "concessions": []}],
+                "outcome": "shipped", "unresolved": ["who pays for the labwork"],
+            },
+            "beta": {
+                "personas": [{"name": "Ada", "final_position": "p",
+                              "demands": ["a confirmed weight is required first"],
+                              "refusals": ["refuses to take a checkbox as evidence"],
+                              "concessions": []}],
+                "outcome": "shipped", "unresolved": ["cost of the labwork is unsettled"],
+            },
+            "gamma": {
+                "personas": [{"name": "Ada", "final_position": "p",
+                              "demands": ["weight must be verified before we approve"],
+                              "refusals": ["a checkbox is not acceptable to her"],
+                              "concessions": []}],
+                "outcome": "shipped", "unresolved": ["nobody owns the labwork bill"],
+            },
+        }
+
+    def _clustering(self, by_marker):
+        """Groups each kind into one cluster, numbered over the FULL harvest index space."""
+
+        class WithClusters(FakeModel):
+            async def __call__(self, messages, **kwargs):
+                prompt = messages[0]["content"]
+                if "Group the numbered claims" in prompt:
+                    n = sum(1 for line in prompt.splitlines() if line[:1].isdigit())
+                    kind = ("demand" if "[demand]" in prompt
+                            else "refusal" if "[refusal]" in prompt else "unresolved")
+                    return {"content": json.dumps({"clusters": [
+                        {"label": f"the {kind}", "members": list(range(n))},
+                    ]}), "cost_usd": 0.0, "tokens_in": 1, "tokens_out": 1,
+                        "finish_reason": "stop"}
+                return await super().__call__(messages, **kwargs)
+
+        return WithClusters(by_marker)
+
+    async def test_the_persona_section_finds_an_invariant_demand(self, db):
+        # THE bug: a persona who demanded the same thing in all three runs, in three different
+        # sentences, previously looked like one who had changed their mind three times.
+        by_marker = await self._three_runs(db)
+        report = await ensemble_reporting.build(db, "ens", call=self._clustering(by_marker))
+
+        ada = report["per_persona"]["Ada"]
+        assert ada["appears_in_runs"] == 3
+        assert [d["claim"] for d in ada["invariant_demands"]] == ["the demand"]
+        assert ada["invariant_demands"][0]["runs"] == ["m1", "m2", "m3"]
+        assert ada["situational_demands"] == []
+
+    async def test_the_persona_refusals_are_grouped_too(self, db):
+        by_marker = await self._three_runs(db)
+        report = await ensemble_reporting.build(db, "ens", call=self._clustering(by_marker))
+
+        refusals = report["per_persona"]["Ada"]["refusals"]
+        assert [r["claim"] for r in refusals] == ["the refusal"]
+        assert refusals[0]["runs"] == ["m1", "m2", "m3"]
+
+    async def test_the_same_open_question_counts_as_one(self, db):
+        # The most useful thing this section can say — "all three runs left this open" — was
+        # unsayable while every question counted 1.
+        by_marker = await self._three_runs(db)
+        report = await ensemble_reporting.build(db, "ens", call=self._clustering(by_marker))
+
+        unresolved = report["agreements"]["unresolved_by_frequency"]
+        assert len(unresolved) == 1
+        assert unresolved[0]["count"] == 3
+        assert unresolved[0]["runs"] == ["m1", "m2", "m3"]
+
+    async def test_the_table_and_the_persona_view_do_not_contradict(self, db):
+        # Same extractions, same labels: a claim the table calls unanimous must be invariant for
+        # the persona who made it.
+        by_marker = await self._three_runs(db)
+        report = await ensemble_reporting.build(db, "ens", call=self._clustering(by_marker))
+
+        unanimous = {
+            c["claim"] for c in report["claims"]
+            if c["per_cell"]["base"]["tier"] == "unanimous"
+        }
+        invariant = {d["claim"] for d in report["per_persona"]["Ada"]["invariant_demands"]}
+        assert invariant <= unanimous, (
+            f"the persona section claims {invariant - unanimous} is invariant while the table "
+            "does not call it unanimous"
+        )
+
+    async def test_an_open_question_is_not_in_the_claim_table(self, db):
+        # It is clustered in the same pass, but it is not a position anybody held.
+        by_marker = await self._three_runs(db)
+        report = await ensemble_reporting.build(db, "ens", call=self._clustering(by_marker))
+
+        assert {c["kind"] for c in report["claims"]} == {"demand", "refusal"}
+        assert "the unresolved" not in {c["claim"] for c in report["claims"]}
+
+    async def test_a_rejected_clustering_leaves_every_section_on_text_matching(self, db):
+        # Half the report on canonical labels and half on text matching would be the
+        # contradiction this class exists to prevent, arrived at from the other direction.
+        by_marker = await self._three_runs(db)
+
+        class DropsOne(FakeModel):
+            async def __call__(self, messages, **kwargs):
+                if "Group the numbered claims" in messages[0]["content"]:
+                    return {"content": json.dumps({"clusters": [
+                        {"label": "partial", "members": [0]},
+                    ]}), "cost_usd": 0.0, "tokens_in": 1, "tokens_out": 1}
+                return await super().__call__(messages, **kwargs)
+
+        report = await ensemble_reporting.build(db, "ens", call=DropsOne(by_marker))
+
+        assert report["clustered"] is False
+        assert report["per_persona"]["Ada"]["invariant_demands"] == []
+        assert len(report["claims"]) == 6, "three demands and three refusals, ungrouped"
