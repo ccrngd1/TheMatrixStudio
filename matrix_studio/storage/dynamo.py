@@ -190,6 +190,14 @@ _ENSEMBLE_FIELDS = (
 #: its size, rather than failing the transaction with `ValidationException: Item size has
 #: exceeded the maximum allowed size`, which says nothing about which field caused it.
 MAX_REPORT_BYTES = 300 * 1024
+
+#: How long a report claim is honoured before another caller may take it over.
+#:
+#: Must exceed the longest a build can take, or two callers work at once and one overwrites
+#: the other. 20 minutes against the finalise Lambda's 15-minute timeout: a live claimant
+#: cannot be overtaken, and a claimant killed by that timeout frees the lease five minutes
+#: later. See `claim_ensemble_report` for why a permanent claim strands the report.
+REPORT_LEASE_SECONDS = 20 * 60
 _EVENT_FIELDS = (
     "run_id", "turn", "seq", "event_type", "agent_name", "payload", "created_at",
 )
@@ -1514,9 +1522,10 @@ class DynamoStorage:
 
     async def claim_ensemble_report(
         self, ensemble_id: str, *, force: bool = False,
+        lease_seconds: int = REPORT_LEASE_SECONDS,
         owner_sub: Optional[str] = None,
     ) -> bool:
-        """Take exclusive ownership of generating this ensemble's report. True if won.
+        """Take ownership of generating this ensemble's report, for a while. True if won.
 
         The natural trigger for a report is the LAST member finishing, and members finish
         concurrently: two members whose final Lambda both read "everything is settled" would
@@ -1524,28 +1533,47 @@ class DynamoStorage:
         would overwrite the winner's. So the claim is a conditional write — the only kind of
         mutual exclusion available here — and a caller that loses it does nothing.
 
-        `force=True` overwrites an existing claim, for an explicit regenerate. That is the
-        one case where paying twice is the point.
+        **A LEASE rather than a permanent claim.** A claim that never expired would strand the
+        report on any death that skips the failure handler: a Lambda timeout, an OOM, a deploy
+        mid-build. The stranding is total in that case, because on the automatic path there is
+        exactly ONE trigger — the last member to finish — and nothing else ever tries again.
+        The ensemble would sit at "building the report" for ever with no error to act on.
+
+        `lease_seconds` must therefore exceed the longest a build can take, or two callers
+        could work at once; it is deliberately longer than the finalise Lambda's timeout so a
+        live claimant is never overtaken.
+
+        `force=True` ignores the lease, for an explicit regenerate. That is the one case where
+        paying twice is the point.
         """
         owner_sub = self._owner(owner_sub)
         from botocore.exceptions import ClientError
 
         condition = "attribute_exists(pk) AND attribute_exists(sk)"
+        values: Dict[str, Any] = {":now": int(time.time())}
         if not force:
-            condition += " AND attribute_not_exists(report_claimed_at)"
+            # `<=` rather than `<`, so `lease_seconds=0` means "treat every claim as
+            # expired" — which is how a caller says "I do not care who holds it". At the real
+            # lease the boundary is irrelevant: a claim exactly 20 minutes old is either
+            # finished or dead.
+            condition += (
+                " AND (attribute_not_exists(report_claimed_at) "
+                "OR report_claimed_at <= :cutoff)"
+            )
+            values[":cutoff"] = int(time.time()) - int(lease_seconds)
         try:
             await self._call(
                 self._table("runs").update_item,
                 Key={"pk": _user_pk(owner_sub), "sk": _ensemble_sk(ensemble_id)},
                 UpdateExpression="SET report_claimed_at = :now",
-                ExpressionAttributeValues={":now": int(time.time())},
+                ExpressionAttributeValues=values,
                 ConditionExpression=condition,
             )
         except ClientError as exc:
             if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-                # Either somebody else holds the claim, or the ensemble does not exist. Both
-                # mean "not mine to generate", and neither is an error for the caller — the
-                # winner will produce the report.
+                # Either a live claim is held, or the ensemble does not exist. Both mean "not
+                # mine to generate", and neither is an error for the caller — the claim holder
+                # will produce the report, or its lease will expire.
                 return False
             raise
         return True

@@ -198,8 +198,15 @@ export function EnsembleView({ ensembleId, onBack, onOpenRun }: Props) {
         {detail.report_ready && !detail.has_report && !detail.report_error && (
           <div className="space-y-2">
             <p className="text-sm text-slate-400">Building the report…</p>
+            {/* Forced, deliberately. An operator looking at "no report" and pressing a
+                button must get a report, and an unforced call returns
+                `claimed_by_another` whenever a claim is held — including one held by a
+                build that already died. On the automatic path there is exactly ONE
+                trigger (the last member to finish), so nothing else will ever retry; a
+                polite button here is a button that does nothing. Paying twice needs a
+                deliberate click and is the lesser problem. */}
             <button
-              onClick={() => generate(false)}
+              onClick={() => generate(true)}
               disabled={generating}
               className="rounded border border-matrix-border px-2 py-1 text-xs text-slate-300 disabled:opacity-50"
             >

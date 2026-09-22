@@ -289,12 +289,45 @@ async def generate(
         status="complete",
         completed_at=int(time.time()),
     )
+    await _record_report_spend(db, ensemble_id, float(report.get("cost_usd") or 0.0))
     logger.info(
         "Ensemble %s report stored: %d cells, %d claims, $%.4f",
         ensemble_id, len(report.get("cells") or []), len(report.get("claims") or []),
         report.get("cost_usd") or 0.0,
     )
     return report
+
+
+async def _record_report_spend(db, ensemble_id: str, cost: float) -> None:
+    """Add the report's cost to the owner's monthly total.
+
+    Without this the report is UNMETERED. Every member conversation is an ordinary run and its
+    spend is recorded by `execute_slice`, so the fan-out itself counts against the cap — but
+    the report is one extraction per member plus a 20k-token synthesis, charged nowhere. A
+    12-member ensemble could therefore spend real money that the cap never sees, and the cap's
+    whole job is to refuse the NEXT thing.
+
+    Never raises, for the reason `orchestration.record_spend` does not: a missed increment
+    delays the cap rather than breaking the report that was already paid for and stored.
+    """
+    if cost <= 0:
+        return
+    try:
+        parent = await db.get_ensemble(ensemble_id)
+        owner = (parent or {}).get("owner_sub")
+        if not owner:
+            logger.warning(
+                "Ensemble %s has no owner on its row, so $%.4f of report spend is "
+                "unattributed; the monthly total now under-reports.", ensemble_id, cost,
+            )
+            return
+        await db.add_user_spend(cost, owner_sub=str(owner))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Could not record $%.4f of ensemble %s report spend (%s). The monthly total "
+            "now UNDER-reports, so the cap will refuse later than it should.",
+            cost, ensemble_id, exc,
+        )
 
 
 async def maybe_report_for_member(db, run: Dict[str, Any]) -> None:

@@ -157,6 +157,22 @@ describe('EnsembleView', () => {
     await waitFor(() => expect(screen.getByText(/Building the report/)).toBeInTheDocument())
   })
 
+  it('forces when the operator asks for the report', async () => {
+    // Not politeness. An unforced call returns `claimed_by_another` whenever a claim is held,
+    // including one held by a build that already died — and on the automatic path there is
+    // exactly ONE trigger, so nothing else will ever retry. A polite button here is a button
+    // that does nothing, which is the worse failure.
+    mocked.getEnsemble.mockResolvedValue(detail({ report_ready: true, has_report: false }))
+    mocked.generateEnsembleReport.mockResolvedValue({})
+    render(<EnsembleView ensembleId="e1" onBack={() => {}} onOpenRun={() => {}} />)
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Build it now/ })).toBeInTheDocument(),
+    )
+    fireEvent.click(screen.getByRole('button', { name: /Build it now/ }))
+    await waitFor(() => expect(mocked.generateEnsembleReport).toHaveBeenCalledWith('e1', true))
+  })
+
   it('explains the wait while conversations are still running', async () => {
     // And does NOT offer a build button: the server refuses with 409, and a control that
     // always fails is worse than no control.
