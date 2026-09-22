@@ -636,6 +636,10 @@ def test_the_tenant_role_is_assumable_only_by_this_stack_s_functions(template: T
         "PrepareFunctionServiceRole",
         "TurnFunctionServiceRole",
         "FinaliseFunctionServiceRole",
+        # The ensemble report runs under the tenant role like every other worker: it reads
+        # transcripts and writes a report into one owner's partition, so §3 applies to it
+        # exactly as it does to a turn.
+        "EnsembleReportFunctionServiceRole",
     }
     matched = {
         name for name in expected
@@ -1071,7 +1075,7 @@ def test_the_workers_share_the_api_s_image(template: Template):
         code = f["Properties"].get("Code", {})
         if "ImageUri" in code:
             images[lid] = str(code["ImageUri"])
-    assert len(images) == 4, f"expected 4 image functions, got {sorted(images)}"
+    assert len(images) == 5, f"expected 5 image functions, got {sorted(images)}"
     assert len(set(images.values())) == 1, (
         f"the functions do not share one image: {images}"
     )
@@ -1089,6 +1093,7 @@ def test_each_worker_overrides_the_image_command(template: Template):
         "PrepareFunction": "matrix_studio.step_handlers.prepare",
         "TurnFunction": "matrix_studio.step_handlers.turn",
         "FinaliseFunction": "matrix_studio.step_handlers.finalise",
+        "EnsembleReportFunction": "matrix_studio.step_handlers.ensemble_report",
     }
     for prefix, handler in expected.items():
         fn = next(f for lid, f in functions.items() if lid.startswith(prefix))
@@ -1313,11 +1318,15 @@ def test_every_function_that_can_spend_money_carries_the_cap(template: Template)
         for f in functions.values()
         if isinstance(f["Properties"].get("FunctionName"), str)
     }
-    # The API plus the three workers. A custom-resource Lambda has no FunctionName, so
+    # The API plus the four workers. A custom-resource Lambda has no FunctionName, so
     # this picks out exactly the ones that run application code.
     expected = {
         "matrix-studio-api", "matrix-studio-turn",
         "matrix-studio-prepare", "matrix-studio-finalise",
+        # The ensemble report makes model calls of its own — an extraction per member, two
+        # clustering calls and a synthesis — so a version of it without the cap environment
+        # would be the uncapped path.
+        "matrix-studio-ensemble-report",
     }
     assert expected <= set(named), f"missing functions: {expected - set(named)}"
     for name in sorted(expected):

@@ -213,6 +213,13 @@ export interface EnsembleClaim {
   claim: string
   kind: 'demand' | 'refusal'
   /**
+   * The distinct phrasings grouped under this claim, with the runs each came from.
+   *
+   * What makes a merge auditable. Over-merging deletes a disagreement and nothing downstream
+   * can detect it, so the reader has to be able to see what was combined and disagree.
+   */
+  variants?: { text: string; runs: string[] }[]
+  /**
    * Null for a cell that produced no usable extraction. Null and `held: 0` are different
    * states: an empty cell has no opinion, while 0-of-N means every run in it declined the
    * claim.
@@ -234,6 +241,14 @@ export interface EnsembleReport {
   }[]
   missing_members: { run_id: string; cell: string | null; index: number | null }[]
   claims: EnsembleClaim[]
+  /**
+   * Whether the counts came from model-assigned canonical labels or from crude text matching.
+   *
+   * Not a precision detail. Text matching measured 128 of 128 claims as unique on a 5-run
+   * ensemble, so its counts are noise rather than a rougher version of the same thing — a
+   * table built from them must be presented as untrustworthy, not merely approximate.
+   */
+  clustered?: boolean
   per_persona: Record<string, unknown>
   agreements: Record<string, unknown>
   synthesis: string
@@ -377,16 +392,25 @@ export const api = {
     jsonFetch<EnsembleDetail>(`/api/ensembles/${encodeURIComponent(id)}`),
 
   /**
-   * Build the report now. The retry path, not the normal one — the last member to finish
-   * generates it automatically.
+   * Ask for the report to be built. The retry path, not the normal one — the last member to
+   * finish triggers it automatically.
    *
-   * **Expect this to time out against the deployed stack.** The extraction pass is one call
-   * per member and the synthesis asks for up to 20k output tokens, so it exceeds API
-   * Gateway's 29 s limit. The work continues server-side, so a caller that sees a network
-   * error should poll `getEnsemble` rather than retry.
+   * **Answers 202 and returns before the work is done**, on the deployed stack. A report takes
+   * minutes (measured 12–19) because the clustering model spends tens of thousands of output
+   * tokens reasoning, and API Gateway's integration timeout is 29 seconds — so the server
+   * dispatches to a dedicated function and the client polls `getEnsemble`.
+   *
+   * `accepted` marks that shape. Only the local path, which has no report function, returns a
+   * finished `EnsembleDetail` directly.
    */
   generateEnsembleReport: (id: string, force = false) =>
-    jsonFetch<EnsembleDetail & { claimed_by_another?: boolean; detail?: string }>(
+    jsonFetch<
+      Partial<EnsembleDetail> & {
+        accepted?: boolean
+        claimed_by_another?: boolean
+        detail?: string
+      }
+    >(
       `/api/ensembles/${encodeURIComponent(id)}/report${force ? '?force=true' : ''}`,
       { method: 'POST' },
     ),

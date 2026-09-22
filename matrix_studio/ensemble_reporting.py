@@ -20,10 +20,21 @@ a coin flip depending on how it splits, and a flat number cannot tell them apart
 is refused with a recorded reason rather than produced. A single conversation summarised under
 an "ensemble report" heading is the most misleading artefact this system could emit: it looks
 like corroborated evidence and is one sample.
+
+**Claims are clustered before they are counted.** The first live 5-replicate ensemble put 128
+of 128 claims in their own group under `ensemble._normalise`: every count read 1/5, every
+persona reported zero invariant demands, while the synthesis over the same extractions found
+four conclusions held in 5 of 5. The numeric half of the report contradicted the prose half and
+looked the more authoritative of the two. `ensemble.cluster_claims` now assigns canonical
+labels first, biased against merging, checked arithmetically by `apply_clusters`, and every row
+carries the phrasings that were grouped so a merge can be disputed. `clustered` in the result
+says which mode produced the counts, because the fallback's numbers are noise rather than a
+rougher version of the same thing.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections import defaultdict
@@ -38,8 +49,33 @@ logger = logging.getLogger(__name__)
 MIN_USABLE_RUNS = 2
 
 
-def _claims_by_cell(
+def _harvest_claims(
     views_by_cell: Dict[str, List[ensemble.RunView]]
+) -> List[Dict[str, Any]]:
+    """Every demand and refusal as a flat list, in a stable order.
+
+    Flat and stable because the clustering call is indexed by position: a reordering between
+    building the prompt and applying the answer would silently attach labels to the wrong
+    claims, which no arithmetic check would catch.
+    """
+    out: List[Dict[str, Any]] = []
+    for label in sorted(views_by_cell):
+        for view in sorted(views_by_cell[label], key=lambda v: v.name):
+            for persona in (view.positions.get("personas") or []):
+                for kind, field in (("demand", "demands"), ("refusal", "refusals")):
+                    for raw in persona.get(field) or []:
+                        text = str(raw).strip()
+                        if text:
+                            out.append({
+                                "kind": kind, "text": text, "cell": label,
+                                "run": view.name, "persona": persona.get("name"),
+                            })
+    return out
+
+
+def _claims_by_cell(
+    views_by_cell: Dict[str, List[ensemble.RunView]],
+    keys: Optional[Dict[int, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """Every demand and refusal, tiered within each cell against that cell's denominator.
 
@@ -47,28 +83,36 @@ def _claims_by_cell(
     `unanimous` in one cell and `absent` in another is the interesting case — a
     method-dependent finding — and it is indistinguishable from noise in a pooled count.
 
-    Uses `ensemble._normalise`, deliberately and with its limits accepted: it only collapses
-    case, punctuation and filler, so the same demand phrased differently counts twice and
-    agreement is UNDER-reported. That is the safe direction (over-merging would delete a
-    dissent) and it is the stage-1.5 item in the backlog. A count here is a floor, not a
-    measurement.
-    """
-    # key -> cell -> set of run names that held it, plus one readable text per key.
-    held: Dict[str, Dict[str, set]] = defaultdict(lambda: defaultdict(set))
-    text_of: Dict[str, str] = {}
-    kind_of: Dict[str, str] = {}
+    `keys` maps a harvested claim's index to `(cluster key, label)` from
+    `ensemble.apply_clusters`. Without it, claims are keyed by `ensemble._normalise`, which
+    only collapses case, punctuation and filler — measured on the first live ensemble to put
+    128 of 128 claims in their own group, i.e. to produce no signal whatsoever. The fallback
+    exists so a failed clustering call still yields a report; `clustered` in the result says
+    which happened, and the caveats change to match.
 
-    for label, views in views_by_cell.items():
-        for view in views:
-            for persona in (view.positions.get("personas") or []):
-                for kind, field in (("demand", "demands"), ("refusal", "refusals")):
-                    for raw in persona.get(field) or []:
-                        key = ensemble._normalise(str(raw))
-                        if not key:
-                            continue
-                        held[key][label].add(view.name)
-                        text_of.setdefault(key, str(raw))
-                        kind_of.setdefault(key, kind)
+    Each row carries its `variants`: the distinct phrasings that were grouped, with the runs
+    they came from. That is what makes a merge auditable — a reader who thinks two claims were
+    wrongly combined can see it and say so, which is not possible from a count alone.
+    """
+    claims = _harvest_claims(views_by_cell)
+
+    held: Dict[Any, Dict[str, set]] = defaultdict(lambda: defaultdict(set))
+    label_of: Dict[Any, str] = {}
+    kind_of: Dict[Any, str] = {}
+    variants: Dict[Any, Dict[str, set]] = defaultdict(lambda: defaultdict(set))
+
+    for i, claim in enumerate(claims):
+        if keys is not None:
+            key, label = keys[i]
+        else:
+            key = ensemble._normalise(claim["text"])
+            label = claim["text"]
+            if not key:
+                continue
+        held[key][claim["cell"]].add(claim["run"])
+        label_of.setdefault(key, label)
+        kind_of.setdefault(key, claim["kind"])
+        variants[key][claim["text"]].add(claim["run"])
 
     denominators = {
         label: sum(1 for v in views if v.positions)
@@ -93,9 +137,13 @@ def _claims_by_cell(
                 "runs": sorted(by_cell.get(label, ())),
             }
         rows.append({
-            "claim": text_of[key],
+            "claim": label_of[key],
             "kind": kind_of[key],
             "per_cell": per_cell,
+            "variants": [
+                {"text": text, "runs": sorted(runs)}
+                for text, runs in sorted(variants[key].items())
+            ],
         })
 
     # Most-corroborated first, then alphabetically so the order is stable between runs of
@@ -124,6 +172,7 @@ async def build(
     *,
     call: Optional[Any] = None,
     synthesise: bool = True,
+    cluster: bool = True,
 ) -> Dict[str, Any]:
     """The report for one ensemble. Reads and model calls only — stores nothing.
 
@@ -161,13 +210,24 @@ async def build(
 
     views = await ensemble.collect(db, present)
 
-    # One extraction per run. Sequential rather than gathered: this runs inside a member's
-    # final Lambda alongside whatever else that invocation is doing, and N concurrent
-    # extractions is the same first-turn spike the fan-out staggers against.
+    # One extraction per run, CONCURRENTLY.
+    #
+    # These were sequential while the report ran inside a member's final Lambda, where N
+    # simultaneous extractions would have spiked alongside whatever else that invocation was
+    # doing. The report now has its own function, so that reason is gone — and wall-clock
+    # became the binding constraint instead: measured end-to-end at 12–19 minutes against a
+    # Lambda hard ceiling of 15. Each extraction reads a whole 40-turn transcript and they are
+    # completely independent, so running them in sequence was spending minutes to save nothing.
+    #
+    # Bedrock headroom is not the limit here: 5 concurrent extractions are a fraction of the
+    # 3M input tokens/min quota, and a full 12-member ensemble is bounded by `MAX_MEMBERS`.
     cost = 0.0
-    for view in views:
-        view.positions = await ensemble.extract_positions(view, call=call)
-        cost += float(view.positions.get("_cost_usd") or 0.0)
+    extractions = await asyncio.gather(*(
+        ensemble.extract_positions(view, call=call) for view in views
+    ))
+    for view, positions in zip(views, extractions):
+        view.positions = positions
+        cost += float(positions.get("_cost_usd") or 0.0)
 
     usable = [v for v in views if v.positions]
     if len(usable) < MIN_USABLE_RUNS:
@@ -188,6 +248,32 @@ async def build(
         label = declared_cell.get("label")
         if label:
             views_by_cell.setdefault(str(label), [])
+
+    # Stage 1.5: one call to give the claims canonical labels, so the counts mean something.
+    # Before this, `_normalise` put 128 of 128 claims in their own group on the first live
+    # ensemble — the numeric half of the report carried no signal while the synthesis found
+    # four conclusions in 5 of 5. Failing SOFT on purpose: a report with honest-but-crude
+    # counts beats no report, and `clustered` records which one a reader is looking at.
+    harvested = _harvest_claims(views_by_cell)
+    keys: Optional[Dict[int, Any]] = None
+    cluster_note: Optional[str] = None
+    if cluster and len(harvested) >= 2:
+        pairs = [(c["kind"], c["text"]) for c in harvested]
+        clusters = await ensemble.cluster_claims(pairs, call=call)
+        if clusters:
+            cost += float(clusters[0].get("_cost_usd") or 0.0)
+            try:
+                keys = ensemble.apply_clusters(pairs, clusters)
+            except ensemble.ClusteringRejected as exc:
+                # Rejected rather than partially trusted. A clustering that dropped claims
+                # would under-count exactly like the bug it replaces, while looking fixed.
+                logger.warning(
+                    "Rejected the claim clustering for ensemble %s (%s); falling back to text "
+                    "matching, which under-reports agreement.", ensemble_id, exc,
+                )
+                cluster_note = f"Clustering was rejected as unsound ({exc})."
+        else:
+            cluster_note = "The clustering call returned nothing usable."
 
     synthesis = {"content": "", "cost_usd": 0.0}
     if synthesise and usable:
@@ -215,17 +301,30 @@ async def build(
         "cells": cells,
         "missing_members": missing,
         # Per-cell, per-claim tiers. The §4 table.
-        "claims": _claims_by_cell(views_by_cell),
+        "claims": _claims_by_cell(views_by_cell, keys),
+        # Which way the counts were produced. Not a detail: the two modes differ by more than
+        # precision — text matching measured 128 of 128 claims as unique on the first live
+        # ensemble, so its counts are not a worse version of the clustered ones, they are
+        # noise. A reader has to know which they are looking at.
+        "clustered": keys is not None,
         "per_persona": ensemble.per_persona(usable),
         "agreements": ensemble.agreements_and_dissents(usable),
         "synthesis": synthesis.get("content") or "",
         "cost_usd": round(cost, 4),
-        # Carried in the artefact, not only in a doc. A reader who sees "1 of 5" needs to
-        # know the matcher under-merges before concluding a persona changed their mind, and
-        # they will be reading this in a UI that does not link to §8.2.
+        # Carried in the artefact, not only in a doc: whoever reads a count in a UI has no
+        # link to §8.2.
         "caveats": [
-            "Claim counts are a FLOOR. Claims are matched by a crude text key, so the same "
-            "demand phrased differently counts twice and agreement is under-reported.",
+            (
+                "Claims were grouped into canonical labels by a model, biased against "
+                "merging. Each row lists the phrasings that were grouped and the runs they "
+                "came from — check them before trusting a count."
+                if keys is not None else
+                "Claim counts are NOT RELIABLE. Claims fell back to crude text matching, so "
+                "the same demand phrased differently counts separately and agreement is "
+                "badly under-reported — measured at 128 of 128 claims counting as unique on "
+                "a 5-run ensemble. Read the synthesis instead."
+                + (f" {cluster_note}" if cluster_note else "")
+            ),
             f"The largest cell has {widest_cell} usable run(s). That supports "
             "unanimous / split / rare and nothing finer — a difference between two "
             "non-unanimous tiers is not a finding.",
@@ -330,6 +429,64 @@ async def _record_report_spend(db, ensemble_id: str, cost: float) -> None:
         )
 
 
+def report_function_name() -> str:
+    """The dedicated report Lambda's name, or "" when there is none.
+
+    Empty is the local case, not a misconfiguration — one long-lived uvicorn process can await
+    the report in a background task. Its presence is what selects between dispatching and
+    running inline, exactly as `TURN_LOOP_ARN` does for the turn loop.
+    """
+    import os
+
+    return os.environ.get("ENSEMBLE_REPORT_FUNCTION", "")
+
+
+async def dispatch(db, ensemble_id: str, *, force: bool = False) -> bool:
+    """Ask the report Lambda to build this ensemble's report. True if it was dispatched.
+
+    Asynchronous (`InvocationType="Event"`), so the caller returns immediately. That is the
+    point: the caller is a member run's `finalise`, and a 15-minute report must not be able to
+    time out the state that writes a run's terminal status.
+
+    Returns False when there is no report function configured, which tells the caller to do the
+    work itself.
+    """
+    name = report_function_name()
+    if not name:
+        return False
+
+    import asyncio as _asyncio
+    import json
+    import os
+
+    parent = await db.get_ensemble(ensemble_id)
+    owner = (parent or {}).get("owner_sub")
+    if not owner:
+        logger.warning(
+            "Ensemble %s has no owner on its row, so no report can be dispatched — the "
+            "function assumes the tenant role per request and there is no identity to assume "
+            "it for.", ensemble_id,
+        )
+        return False
+
+    def _invoke() -> None:
+        import boto3
+
+        boto3.client("lambda", region_name=os.environ.get("AWS_REGION")).invoke(
+            FunctionName=name,
+            # Event, not RequestResponse: a synchronous invoke would make the caller wait the
+            # full report and reintroduce exactly the timeout this move exists to remove.
+            InvocationType="Event",
+            Payload=json.dumps(
+                {"ensemble_id": ensemble_id, "owner_sub": str(owner), "force": bool(force)}
+            ).encode(),
+        )
+
+    await _asyncio.to_thread(_invoke)
+    logger.info("Dispatched the report for ensemble %s to %s", ensemble_id, name)
+    return True
+
+
 async def maybe_report_for_member(db, run: Dict[str, Any]) -> None:
     """Generate the ensemble's report if this run was its last outstanding member.
 
@@ -355,6 +512,12 @@ async def maybe_report_for_member(db, run: Dict[str, Any]) -> None:
                 "Ensemble %s still has %d member(s) running; not reporting yet",
                 ensemble_id, len(outstanding),
             )
+            return
+        # Hand it to the dedicated function where there is one, and only do the work here when
+        # there is not (local, tests). The claim is taken by whoever actually builds it, not by
+        # the dispatcher — dispatching then claiming would mean a dropped invoke leaves a claim
+        # held by nobody.
+        if await dispatch(db, str(ensemble_id)):
             return
         await generate(db, str(ensemble_id))
     except Exception:  # noqa: BLE001

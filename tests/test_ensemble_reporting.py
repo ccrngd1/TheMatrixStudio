@@ -266,17 +266,30 @@ class TestTheStoredShape:
                          {"run_id": "r2", "cell": "base", "index": 2}])
         await _member(db, "ens", "r1", "base", "m1", "alpha")
         await _member(db, "ens", "r2", "base", "m2", "beta")
-        model = FakeModel({
+
+        # Answers the clustering prompt too, so this fixture is the NORMAL shape rather than
+        # the fallback one. Priced at 0.0 so the cost assertion stays about extraction and
+        # synthesis.
+        class Clustering(FakeModel):
+            async def __call__(self, messages, **kwargs):
+                if "Group the numbered claims" in messages[0]["content"]:
+                    return {"content": json.dumps({"clusters": [
+                        {"label": "labwork", "members": [0, 1]},
+                    ]}), "cost_usd": 0.0, "tokens_in": 1, "tokens_out": 1,
+                        "finish_reason": "stop"}
+                return await super().__call__(messages, **kwargs)
+
+        model = Clustering({
             "alpha": _extraction(("Ada", ["labwork"], []), unresolved=["who pays"]),
             "beta": _extraction(("Ada", ["labwork"], []), unresolved=["who pays"]),
         })
         return await ensemble_reporting.build(db, "ens", call=model)
 
     async def test_it_carries_its_own_caveats(self, report):
-        # In the artefact, not only in a doc: whoever reads "1 of 5" in a UI has no link
-        # to §8.2, and the counter under-merges.
+        # In the artefact, not only in a doc: whoever reads a count in a UI has no link to §8.2.
         text = " ".join(report["caveats"])
-        assert "FLOOR" in text
+        assert "biased against merging" in text
+        assert "check them before trusting a count" in text
         assert "unanimous / split / rare" in text
 
     async def test_the_cost_covers_every_call(self, report):
@@ -304,7 +317,9 @@ class TestTheStoredShape:
 
         report = await ensemble_reporting.build(db, "ens", call=model, synthesise=False)
         assert report["synthesis"] == ""
-        assert model.calls == 2
+        # Two extractions plus the clustering attempt. Clustering is NOT part of the synthesis:
+        # it feeds the computed counts, so skipping the prose must not silently skip it.
+        assert model.calls == 3
         assert report["claims"], "the computed sections do not need the synthesis"
 
 
@@ -562,3 +577,264 @@ class TestTheReportIsMetered:
 
         assert await ensemble_reporting.generate(db, "ens", call=model) is not None
         assert (await db.get_ensemble("ens"))["report_json"]
+
+
+# --------------------------------------------------------------------------- #
+# clustering, end to end
+# --------------------------------------------------------------------------- #
+
+
+class TestClusteredCounts:
+    """The whole point of stage 1.5, measured against the bug it fixes.
+
+    Before this, the first live 5-replicate ensemble counted 128 of 128 claims as unique: every
+    row read 1/5 while the synthesis found four conclusions in 5 of 5. These tests use the same
+    shape — one requirement worded differently in each run — and assert the count is right.
+    """
+
+    async def _three_runs_saying_the_same_thing(self, db):
+        await _ensemble(db, [{"label": "base", "n": 3, "overrides": {}}],
+                        [{"run_id": "r1", "cell": "base", "index": 1},
+                         {"run_id": "r2", "cell": "base", "index": 2},
+                         {"run_id": "r3", "cell": "base", "index": 3}])
+        await _member(db, "ens", "r1", "base", "m1", "alpha")
+        await _member(db, "ens", "r2", "base", "m2", "beta")
+        await _member(db, "ens", "r3", "base", "m3", "gamma")
+        # Three phrasings of ONE requirement. `_normalise` keys these as three claims.
+        return {
+            "alpha": _extraction(("Ada", ["a verified weight before approval"], [])),
+            "beta": _extraction(("Ada", ["a confirmed weight is required first"], [])),
+            "gamma": _extraction(("Ada", ["weight must be verified before we approve"], [])),
+        }
+
+    async def test_text_matching_produces_the_bug(self, db):
+        # The baseline, asserted so the fix is measured against something real rather than
+        # against a description of something real.
+        by_marker = await self._three_runs_saying_the_same_thing(db)
+        model = FakeModel(by_marker)
+
+        report = await ensemble_reporting.build(db, "ens", call=model, cluster=False)
+
+        assert report["clustered"] is False
+        assert len(report["claims"]) == 3, "one requirement, counted three times"
+        assert all(c["per_cell"]["base"]["tier"] == "rare" for c in report["claims"])
+
+    async def test_clustering_counts_it_once_as_unanimous(self, db):
+        by_marker = await self._three_runs_saying_the_same_thing(db)
+
+        class WithClusters(FakeModel):
+            async def __call__(self, messages, **kwargs):
+                if "Group the numbered claims" in messages[0]["content"]:
+                    return {"content": json.dumps({"clusters": [
+                        {"label": "verified weight before approval", "members": [0, 1, 2]},
+                    ]}), "cost_usd": 0.02, "tokens_in": 1, "tokens_out": 1,
+                        "finish_reason": "stop"}
+                return await super().__call__(messages, **kwargs)
+
+        report = await ensemble_reporting.build(db, "ens", call=WithClusters(by_marker))
+
+        assert report["clustered"] is True
+        assert len(report["claims"]) == 1
+        row = report["claims"][0]
+        assert row["claim"] == "verified weight before approval"
+        assert row["per_cell"]["base"] == {
+            "held": 3, "of": 3, "tier": "unanimous", "runs": ["m1", "m2", "m3"],
+        }
+
+    async def test_a_merge_is_auditable(self, db):
+        # A clustering nobody can inspect replaces one wrong number with a different wrong
+        # number. Every row keeps the phrasings that were grouped and the runs they came from,
+        # so a reader who disagrees with a merge can see it.
+        by_marker = await self._three_runs_saying_the_same_thing(db)
+
+        class WithClusters(FakeModel):
+            async def __call__(self, messages, **kwargs):
+                if "Group the numbered claims" in messages[0]["content"]:
+                    return {"content": json.dumps({"clusters": [
+                        {"label": "verified weight before approval", "members": [0, 1, 2]},
+                    ]}), "cost_usd": 0.0, "tokens_in": 1, "tokens_out": 1}
+                return await super().__call__(messages, **kwargs)
+
+        report = await ensemble_reporting.build(db, "ens", call=WithClusters(by_marker))
+        variants = report["claims"][0]["variants"]
+
+        assert len(variants) == 3
+        assert [v["runs"] for v in variants] == [["m2"], ["m1"], ["m3"]]
+        assert "a confirmed weight is required first" in {v["text"] for v in variants}
+
+    async def test_an_unsound_clustering_falls_back_and_says_so(self, db):
+        # Dropping claims under-counts exactly like the bug being fixed, while looking fixed.
+        # So it is rejected wholesale rather than partly trusted, and the caveat stops claiming
+        # the counts are reliable.
+        by_marker = await self._three_runs_saying_the_same_thing(db)
+
+        class DropsOne(FakeModel):
+            async def __call__(self, messages, **kwargs):
+                if "Group the numbered claims" in messages[0]["content"]:
+                    return {"content": json.dumps({"clusters": [
+                        {"label": "weight", "members": [0, 1]},   # claim 2 dropped
+                    ]}), "cost_usd": 0.0, "tokens_in": 1, "tokens_out": 1}
+                return await super().__call__(messages, **kwargs)
+
+        report = await ensemble_reporting.build(db, "ens", call=DropsOne(by_marker))
+
+        assert report["clustered"] is False
+        assert len(report["claims"]) == 3, "fell back to text matching, all three counted"
+        assert "NOT RELIABLE" in report["caveats"][0]
+        assert "rejected as unsound" in report["caveats"][0]
+
+    async def test_the_caveat_tells_the_reader_which_mode_produced_the_counts(self, db):
+        # The two modes are not "precise" and "less precise": text matching's numbers are
+        # noise. A reader has to be able to tell which they are looking at.
+        by_marker = await self._three_runs_saying_the_same_thing(db)
+
+        class WithClusters(FakeModel):
+            async def __call__(self, messages, **kwargs):
+                if "Group the numbered claims" in messages[0]["content"]:
+                    return {"content": json.dumps({"clusters": [
+                        {"label": "weight", "members": [0, 1, 2]},
+                    ]}), "cost_usd": 0.0, "tokens_in": 1, "tokens_out": 1}
+                return await super().__call__(messages, **kwargs)
+
+        clustered = await ensemble_reporting.build(db, "ens", call=WithClusters(by_marker))
+        assert "check them before trusting a count" in clustered["caveats"][0]
+
+        plain = await ensemble_reporting.build(db, "ens", call=FakeModel(by_marker), cluster=False)
+        assert "Read the synthesis instead" in plain["caveats"][0]
+
+    async def test_the_clustering_call_is_paid_for_once(self, db):
+        by_marker = await self._three_runs_saying_the_same_thing(db)
+
+        class WithClusters(FakeModel):
+            async def __call__(self, messages, **kwargs):
+                if "Group the numbered claims" in messages[0]["content"]:
+                    return {"content": json.dumps({"clusters": [
+                        {"label": "weight", "members": [0, 1, 2]},
+                    ]}), "cost_usd": 0.03, "tokens_in": 1, "tokens_out": 1}
+                return await super().__call__(messages, **kwargs)
+
+        report = await ensemble_reporting.build(db, "ens", call=WithClusters(by_marker))
+        # 3 extractions at 0.01, one synthesis at 0.05, one clustering at 0.03.
+        assert report["cost_usd"] == pytest.approx(0.11)
+
+
+# --------------------------------------------------------------------------- #
+# dispatching to the report function
+# --------------------------------------------------------------------------- #
+
+
+class TestDispatch:
+    """The report has its own function because it outgrew `finalise`.
+
+    Measured at 12–19 minutes against Lambda's 15-minute ceiling — not because the work is
+    large (the clustering reply is ~1,100 tokens) but because the model spends ~29,000 output
+    tokens reasoning to produce it. `finalise` writes a run's terminal status and must not be
+    able to time out behind commentary on that run.
+    """
+
+    async def _ens(self, db):
+        await _ensemble(db, [{"label": "base", "n": 2, "overrides": {}}],
+                        [{"run_id": "r1", "cell": "base", "index": 1},
+                         {"run_id": "r2", "cell": "base", "index": 2}])
+        await _member(db, "ens", "r1", "base", "m1", "alpha")
+        await _member(db, "ens", "r2", "base", "m2", "beta")
+
+    async def test_no_function_configured_means_run_it_here(self, db, monkeypatch):
+        # The local case, and not a misconfiguration: one long-lived process can await it.
+        monkeypatch.delenv("ENSEMBLE_REPORT_FUNCTION", raising=False)
+        await self._ens(db)
+        assert await ensemble_reporting.dispatch(db, "ens") is False
+
+    async def test_it_invokes_asynchronously_with_the_owner(self, db, monkeypatch):
+        await self._ens(db)
+        monkeypatch.setenv("ENSEMBLE_REPORT_FUNCTION", "matrix-studio-ensemble-report")
+        calls = []
+
+        class FakeLambda:
+            def invoke(self, **kw):
+                calls.append(kw)
+                return {}
+
+        monkeypatch.setattr("boto3.client", lambda *a, **k: FakeLambda())
+
+        assert await ensemble_reporting.dispatch(db, "ens", force=True) is True
+        assert len(calls) == 1
+        # Event, not RequestResponse: a synchronous invoke would make the caller wait the full
+        # report and reintroduce the timeout this move exists to remove.
+        assert calls[0]["InvocationType"] == "Event"
+        assert calls[0]["FunctionName"] == "matrix-studio-ensemble-report"
+        payload = json.loads(calls[0]["Payload"].decode())
+        assert payload == {"ensemble_id": "ens", "owner_sub": TEST_OWNER, "force": True}
+
+    async def test_the_member_trigger_dispatches_instead_of_working(self, db, monkeypatch):
+        await self._ens(db)
+        monkeypatch.setenv("ENSEMBLE_REPORT_FUNCTION", "fn")
+        calls = []
+        monkeypatch.setattr(
+            "boto3.client",
+            lambda *a, **k: type("L", (), {"invoke": lambda _s, **kw: calls.append(kw) or {}})(),
+        )
+
+        async def explode(*_a, **_k):
+            raise AssertionError("no model call may happen in the dispatching process")
+
+        monkeypatch.setattr("matrix_studio.analysis._acompletion", explode)
+        await ensemble_reporting.maybe_report_for_member(db, await db.get_run("r1"))
+
+        assert len(calls) == 1
+        # And nothing was claimed here: the claim belongs to whoever BUILDS it, or a dropped
+        # invoke would leave a claim held by nobody for the length of its lease.
+        assert (await db.get_ensemble("ens"))["report_claimed_at"] is None
+
+    async def test_it_does_not_dispatch_while_a_member_is_running(self, db, monkeypatch):
+        await _ensemble(db, [{"label": "base", "n": 2, "overrides": {}}],
+                        [{"run_id": "r1", "cell": "base", "index": 1},
+                         {"run_id": "r2", "cell": "base", "index": 2}])
+        await _member(db, "ens", "r1", "base", "m1", "alpha")
+        await _member(db, "ens", "r2", "base", "m2", "beta", status="running")
+        monkeypatch.setenv("ENSEMBLE_REPORT_FUNCTION", "fn")
+        calls = []
+        monkeypatch.setattr(
+            "boto3.client",
+            lambda *a, **k: type("L", (), {"invoke": lambda _s, **kw: calls.append(kw) or {}})(),
+        )
+
+        await ensemble_reporting.maybe_report_for_member(db, await db.get_run("r1"))
+        assert calls == [], "a report over a running cell would count censoring as dissent"
+
+    async def test_an_ownerless_ensemble_is_not_dispatched(self, db, monkeypatch):
+        # The function assumes the tenant role per request, so with no identity to assume it
+        # for there is nothing to dispatch to.
+        monkeypatch.setenv("ENSEMBLE_REPORT_FUNCTION", "fn")
+        assert await ensemble_reporting.dispatch(db, "missing-ensemble") is False
+
+
+class TestTheExtractionsRunConcurrently:
+    async def test_all_extractions_are_in_flight_at_once(self, db):
+        # They were sequential only because the report shared an invocation with a member's
+        # last turn. Wall-clock is now the binding constraint — 12–19 minutes against a
+        # 15-minute ceiling — and the extractions are completely independent.
+        await _ensemble(db, [{"label": "base", "n": 3, "overrides": {}}],
+                        [{"run_id": "r1", "cell": "base", "index": 1},
+                         {"run_id": "r2", "cell": "base", "index": 2},
+                         {"run_id": "r3", "cell": "base", "index": 3}])
+        for rid, said in (("r1", "alpha"), ("r2", "beta"), ("r3", "gamma")):
+            await _member(db, "ens", rid, "base", f"m-{rid}", said)
+
+        import asyncio
+
+        peak = {"now": 0, "max": 0}
+
+        async def call(messages, model=None, temperature=0.4, max_tokens=None):
+            if "Group the numbered claims" in messages[0]["content"]:
+                return {"content": json.dumps({"clusters": [{"label": "x", "members": [0, 1, 2]}]}),
+                        "cost_usd": 0.0, "tokens_in": 1, "tokens_out": 1}
+            peak["now"] += 1
+            peak["max"] = max(peak["max"], peak["now"])
+            await asyncio.sleep(0.05)
+            peak["now"] -= 1
+            return {"content": json.dumps(_extraction(("Ada", ["x"], []))),
+                    "cost_usd": 0.01, "tokens_in": 1, "tokens_out": 1}
+
+        await ensemble_reporting.build(db, "ens", call=call)
+        assert peak["max"] == 3, f"extractions overlapped only {peak['max']} deep"

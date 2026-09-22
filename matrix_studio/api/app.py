@@ -1032,19 +1032,19 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         ),
         user: str = Depends(current_user),
     ) -> Dict[str, Any]:
-        """Build and store the report now.
+        """Ask for the report to be built.
 
-        Normally unnecessary — the last member to finish generates it. This exists for the
-        two cases that path cannot cover: a retry after a failure (`report_error` is set on
-        the row), and an ensemble whose members finished before this feature existed.
+        Normally unnecessary — the last member to finish triggers it. This exists for the two
+        cases that path cannot cover: a retry after a failure (`report_error` is set on the
+        row), and an ensemble whose members finished before this feature existed.
 
-        **Latency.** The extraction pass is one call per member and the synthesis asks for up
-        to 20k output tokens, so this can run for minutes and will exceed API Gateway's 29 s
-        limit on the deployed stack. That is a known limitation rather than a surprise: the
-        automatic path runs inside a member's final Step Functions state, which has a Lambda
-        timeout rather than a gateway one, and is the route that is meant to be used. A
-        client calling this against AWS should expect a 504 and poll `GET` for the report,
-        which will still appear — the work continues server-side.
+        **Answers 202 and does not wait**, where a report function is configured. A report is
+        minutes long — measured 12–19 — because the clustering model spends tens of thousands
+        of output tokens reasoning, and API Gateway's integration timeout is 29 seconds. Doing
+        the work in the request would therefore fail every time while succeeding server-side,
+        which is the most confusing pair of facts a route can present. The client polls `GET`.
+
+        Runs inline only with no report function, which is the local case.
         """
         from matrix_studio import ensemble_reporting
 
@@ -1052,6 +1052,17 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         row = await owned.get_ensemble(ensemble_id)
         if not row:
             raise HTTPException(status_code=404, detail="Ensemble not found")
+
+        if await ensemble_reporting.dispatch(owned, ensemble_id, force=force):
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "ensemble_id": ensemble_id,
+                    "accepted": True,
+                    "detail": "The report is being built. Poll this ensemble for `report` or "
+                              "`report_error`.",
+                },
+            )
 
         report = await ensemble_reporting.generate(owned, ensemble_id, force=force)
         if report is None:

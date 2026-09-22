@@ -163,7 +163,7 @@ describe('EnsembleView', () => {
     // exactly ONE trigger, so nothing else will ever retry. A polite button here is a button
     // that does nothing, which is the worse failure.
     mocked.getEnsemble.mockResolvedValue(detail({ report_ready: true, has_report: false }))
-    mocked.generateEnsembleReport.mockResolvedValue({})
+    mocked.generateEnsembleReport.mockResolvedValue({ accepted: true })
     render(<EnsembleView ensembleId="e1" onBack={() => {}} onOpenRun={() => {}} />)
 
     await waitFor(() =>
@@ -242,7 +242,7 @@ describe('EnsembleView', () => {
     mocked.getEnsemble.mockResolvedValue(
       detail({ report_error: 'Only 1 of 5 member(s) produced a usable extraction' }),
     )
-    mocked.generateEnsembleReport.mockResolvedValue({})
+    mocked.generateEnsembleReport.mockResolvedValue({ accepted: true })
     render(<EnsembleView ensembleId="e1" onBack={() => {}} onOpenRun={() => {}} />)
 
     await waitFor(() => expect(screen.getByText(/usable extraction/)).toBeInTheDocument())
@@ -252,19 +252,43 @@ describe('EnsembleView', () => {
     await waitFor(() => expect(mocked.generateEnsembleReport).toHaveBeenCalledWith('e1', true))
   })
 
-  it('treats a generate timeout as still building, not as a failure', async () => {
-    // Expected against the deployed stack: the extraction pass plus a 20k-token synthesis
-    // outlasts the gateway limit while the work continues server-side. Saying "failed" would
-    // send the operator to retry something that is already running.
-    mocked.getEnsemble.mockResolvedValue(detail())
-    mocked.generateEnsembleReport.mockRejectedValue(new Error('504 Gateway Timeout'))
+  it('says a rebuild is in flight, and that the report on screen is the old one', async () => {
+    // The trap with a forced rebuild: `has_report` stays true throughout and the PREVIOUS
+    // report keeps being served, so without this the view looks finished the moment the
+    // request returns — and the operator reads a stale report as the new one.
+    mocked.getEnsemble.mockResolvedValue(
+      detail({ has_report: true, report: REPORT, report_generated_at: 10 }),
+    )
+    mocked.generateEnsembleReport.mockResolvedValue({ accepted: true })
     render(<EnsembleView ensembleId="e1" onBack={() => {}} onOpenRun={() => {}} />)
 
-    await waitFor(() => expect(screen.getByRole('button', { name: /Build it now/ })).toBeInTheDocument())
-    fireEvent.click(screen.getByRole('button', { name: /Build it now/ }))
+    await waitFor(() => expect(screen.getByText('labwork required')).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: /Rebuild report/ }))
 
     await waitFor(() =>
-      expect(screen.getByText(/still being built server-side/)).toBeInTheDocument(),
+      expect(screen.getByText(/previous one until the new report lands/)).toBeInTheDocument(),
+    )
+  })
+
+  it('stops saying so once the report timestamp moves', async () => {
+    // The timestamp is the only honest signal that the NEW report has landed — `has_report`
+    // cannot distinguish them.
+    mocked.getEnsemble.mockResolvedValue(
+      detail({ has_report: true, report: REPORT, report_generated_at: 10 }),
+    )
+    mocked.generateEnsembleReport.mockImplementation(async () => {
+      mocked.getEnsemble.mockResolvedValue(
+        detail({ has_report: true, report: REPORT, report_generated_at: 99 }),
+      )
+      return { accepted: true }
+    })
+    render(<EnsembleView ensembleId="e1" onBack={() => {}} onOpenRun={() => {}} />)
+
+    await waitFor(() => expect(screen.getByText('labwork required')).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: /Rebuild report/ }))
+
+    await waitFor(() =>
+      expect(screen.queryByText(/previous one until the new report lands/)).not.toBeInTheDocument(),
     )
   })
 

@@ -146,6 +146,39 @@ async def _finalise(event: Dict[str, Any]) -> Dict[str, Any]:
     )
 
 
+async def _ensemble_report(event: Dict[str, Any]) -> Dict[str, Any]:
+    """Build and store one ensemble's report. Its own function, for its own clock.
+
+    This used to run inside `finalise`, and the report outgrew it: measured end to end at 12–19
+    minutes against a Lambda hard ceiling of 15. Not because the work is large — the clustering
+    reply is about 1,100 tokens — but because Sonnet 5 spends roughly 29,000 output tokens
+    reasoning to produce it, and that takes minutes per call.
+
+    Moving it here buys two things. A clock of its own, so a slow report cannot time out the
+    state that writes a run's terminal status. And permission to run the independent calls
+    CONCURRENTLY: the extractions were sequential only because they used to share an invocation
+    with a member's last turn, and that reason is gone.
+
+    Invoked asynchronously and never awaited, so nothing about a run depends on it. Failures are
+    recorded on the ensemble row as `report_error`; `generate` does not raise.
+    """
+    from matrix_studio import ensemble_reporting
+
+    db = await _bound(_owner(event))
+    ensemble_id = str(event["ensemble_id"])
+    report = await ensemble_reporting.generate(
+        db, ensemble_id, force=bool(event.get("force")),
+    )
+    return {
+        "ensemble_id": ensemble_id,
+        # `generated: false` covers both "somebody else holds the claim" and "it was refused",
+        # which the row distinguishes. The async invoker reads neither — this is for a log.
+        "generated": report is not None,
+        "cost_usd": (report or {}).get("cost_usd"),
+    }
+
+
 prepare = _handler(_prepare)
 turn = _handler(_turn)
 finalise = _handler(_finalise)
+ensemble_report = _handler(_ensemble_report)
