@@ -72,7 +72,7 @@ const SETUP = {
 
 const loadWith = (setup: unknown = SETUP, warnings: string[] = []) => {
   ;(api.getRunSetup as any).mockResolvedValue({ run_id: 'r1', setup, warnings })
-  return render(<NewRunForm onStarted={() => {}} onCancel={() => {}} fromRunId="r1" />)
+  return render(<NewRunForm onStarted={() => {}} onEnsembleStarted={() => {}} onCancel={() => {}} fromRunId="r1" />)
 }
 
 describe('NewRunForm prefilled from a run', () => {
@@ -216,14 +216,14 @@ describe('NewRunForm prefilled from a run', () => {
 
   it('reports a failed load instead of showing a silently blank form', async () => {
     ;(api.getRunSetup as any).mockRejectedValue(new Error('404: Run not found'))
-    render(<NewRunForm onStarted={() => {}} onCancel={() => {}} fromRunId="ghost" />)
+    render(<NewRunForm onStarted={() => {}} onEnsembleStarted={() => {}} onCancel={() => {}} fromRunId="ghost" />)
     await waitFor(() => expect(screen.getByText(/Run not found/)).toBeInTheDocument())
     // And it does not claim to have prefilled anything.
     expect(screen.queryByText(/Prefilled from/i)).toBeNull()
   })
 
   it('is an ordinary blank form when no source run is given', async () => {
-    render(<NewRunForm onStarted={() => {}} onCancel={() => {}} />)
+    render(<NewRunForm onStarted={() => {}} onEnsembleStarted={() => {}} onCancel={() => {}} />)
     await waitFor(() => expect(api.getModels).toHaveBeenCalled())
     expect(api.getRunSetup).not.toHaveBeenCalled()
     expect(screen.queryByText(/Prefilled from/i)).toBeNull()

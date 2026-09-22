@@ -5,6 +5,7 @@ import { NewRunForm } from './views/NewRunForm'
 import { LiveView } from './views/LiveView'
 import { AuthGate } from './views/AuthGate'
 import { KnowledgeBases } from './views/KnowledgeBases'
+import { EnsembleView } from './views/EnsembleView'
 
 type View =
   | { name: 'history' }
@@ -15,6 +16,10 @@ type View =
   // Phase 6: the collections view. A sibling of history rather than a panel inside a
   // run, because a knowledge base outlives any one conversation — that is the point of it.
   | { name: 'knowledge' }
+  // An ensemble is its own view, not a run view. It has no transcript and no live stream —
+  // the artefact is the comparison across its members, each of which IS an ordinary run and
+  // opens as one.
+  | { name: 'ensemble'; ensembleId: string }
 
 // Minimal client-side view switching — no router dependency needed for Phase 1.
 export default function App() {
@@ -38,6 +43,7 @@ function Views() {
           key={view.fromRunId ?? 'blank'}
           fromRunId={view.fromRunId}
           onStarted={(runId) => setView({ name: 'run', runId })}
+          onEnsembleStarted={(ensembleId) => setView({ name: 'ensemble', ensembleId })}
           onCancel={() => setView({ name: 'history' })}
         />
       )
@@ -50,6 +56,14 @@ function Views() {
           onStartFresh={(runId) => setView({ name: 'new', fromRunId: runId })}
         />
       )
+    case 'ensemble':
+      return (
+        <EnsembleView
+          ensembleId={view.ensembleId}
+          onBack={() => setView({ name: 'history' })}
+          onOpenRun={(runId) => setView({ name: 'run', runId })}
+        />
+      )
     case 'knowledge':
       return <KnowledgeBases onBack={() => setView({ name: 'history' })} />
     case 'history':
@@ -59,6 +73,7 @@ function Views() {
           onOpen={(runId) => setView({ name: 'run', runId })}
           onNew={() => setView({ name: 'new' })}
           onKnowledgeBases={() => setView({ name: 'knowledge' })}
+          onOpenEnsemble={(ensembleId) => setView({ name: 'ensemble', ensembleId })}
         />
       )
   }

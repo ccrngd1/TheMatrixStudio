@@ -5,12 +5,20 @@ import { Hint } from '../components/Hint'
 import { buildStructured } from '../lib/convictions'
 import { parseSetup, parseSetupObject, ImportError } from '../lib/importSetup'
 import {
-  blankPersona, CEILING_TURNS, type DraftDoc, type DraftPersona, type Method,
+  blankPersona, CEILING_TURNS, DEFAULT_REPLICATES, MAX_MEMBERS, MIN_REPLICATES,
+  type DraftDoc, type DraftPersona, type Method, type RunType,
 } from './newRunTypes'
 import { KbPicker } from '../components/KbPicker'
 
 interface Props {
   onStarted: (runId: string) => void
+  /**
+   * Where an ensemble goes once it is fanned out. Separate from `onStarted` because an
+   * ensemble is not a run — it has no transcript and no live stream, and sending the
+   * operator to a run view would show them one of five conversations as though it were the
+   * result.
+   */
+  onEnsembleStarted: (ensembleId: string) => void
   onCancel: () => void
   /**
    * Prefill from an existing run's setup ("start fresh from this conversation").
@@ -39,8 +47,18 @@ const EXAMPLE = {
   ],
 }
 
-export function NewRunForm({ onStarted, onCancel, fromRunId }: Props) {
+export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }: Props) {
   const [topic, setTopic] = useState('')
+  // One conversation, or the same brief several times. A run TYPE rather than another
+  // speaker method: a method decides who talks inside one conversation, this decides how
+  // many conversations exist and produces a different artefact.
+  const [runType, setRunType] = useState<RunType>('single')
+  const [replicates, setReplicates] = useState(DEFAULT_REPLICATES)
+  // A second cell that differs ONLY in speaker method. Off by default, because the design
+  // doc's whole argument is that replicates answer the question an operator is asking and a
+  // varied cell answers a narrower one.
+  const [compareHybrid, setCompareHybrid] = useState(false)
+  const [hybridReplicates, setHybridReplicates] = useState(MIN_REPLICATES)
   const [cast, setCast] = useState<DraftPersona[]>([blankPersona()])
   // Phase 6: collections every persona in the run may search — the cast-wide case,
   // which generalises Phase 5's `persona_name IS NULL` exactly.
@@ -339,7 +357,7 @@ export function NewRunForm({ onStarted, onCancel, fromRunId }: Props) {
     }
     setSubmitting(true)
     try {
-      const res = await api.createRun({
+      const body = {
         topic: topic.trim(),
         cast: validCast,
         config: {
@@ -387,7 +405,39 @@ export function NewRunForm({ onStarted, onCancel, fromRunId }: Props) {
           !summaryEnabled || summaryFocus.trim()
             ? { enabled: summaryEnabled, focus: summaryFocus.trim() || undefined }
             : undefined,
-      })
+      }
+
+      if (runType === 'ensemble') {
+        // `cells` is sent even for the replicates-only case rather than omitted. The server
+        // would default to exactly this, but an explicit spec is what the report header
+        // renders, and a spec that says `n: 5` is the difference between a reader knowing
+        // five runs were asked for and inferring it from how many exist.
+        const ens = await api.createEnsemble({
+          ...body,
+          cells: [
+            { label: 'base', n: replicates },
+            // Only `selection.method` and its opening-round count differ. Anything else —
+            // turn count, fairness — would confound the comparison, and the server refuses
+            // it with the reason.
+            ...(compareHybrid
+              ? [
+                  {
+                    label: 'hybrid',
+                    n: hybridReplicates,
+                    overrides: {
+                      'selection.method': 'hybrid',
+                      'selection.hybrid_opening_rounds': openingRounds,
+                    },
+                  },
+                ]
+              : []),
+          ],
+        })
+        onEnsembleStarted(ens.ensemble_id)
+        return
+      }
+
+      const res = await api.createRun(body)
       onStarted(res.run_id)
     } catch (e) {
       setError((e as Error).message)
@@ -499,6 +549,121 @@ export function NewRunForm({ onStarted, onCancel, fromRunId }: Props) {
             className="w-20 rounded border border-matrix-border bg-matrix-bg p-1 text-sm"
           />
         </label>
+        <label className="flex items-center gap-2 text-sm text-slate-300">
+          Run
+          <Hint label="run type">
+            <strong>Once</strong> — one conversation, one transcript.
+            <br />
+            <br />
+            <strong>Several times</strong> — the same brief run N times with{' '}
+            <em>nothing varied</em>, then a report over all of them saying which conclusions
+            held in every run and which appeared in only one.
+            <br />
+            <br />
+            Running the same thing repeatedly sounds pointless and is the most useful mode.
+            Six existing conversations were compared as three pairs with byte-identical
+            settings, and two of the pairs disagreed on the biggest questions in the brief —
+            one pair diverged on whether the work's scope expanded, another on whether the
+            central legal question was ever settled. Nothing was varied to cause that, so it
+            is the brief's own ambiguity. A single run hands you either answer with equal
+            confidence.
+            <br />
+            <br />
+            Replicates are also the only way to read the comparison below: a difference
+            between two settings means nothing unless you know how much each setting varies
+            on its own.
+            <br />
+            <br />
+            Costs N times one conversation. The report adds one model call per run plus one
+            over all of them.
+          </Hint>
+          <select
+            value={runType}
+            onChange={(e) => setRunType(e.target.value as RunType)}
+            className="rounded border border-matrix-border bg-matrix-bg p-1 text-sm"
+          >
+            <option value="single">Once — a single conversation</option>
+            <option value="ensemble">Several times — same brief, then a report</option>
+          </select>
+        </label>
+        {runType === 'ensemble' && (
+          <div className="ml-6 space-y-2 border-l border-matrix-border pl-4">
+            <label className="flex items-center gap-2 text-sm text-slate-300">
+              How many times
+              <Hint label="replicates">
+                Five by default. That supports three coarse verdicts per conclusion —
+                held in every run, split, or raised only once — and nothing finer. It will not
+                support reading 3-of-5 against 2-of-5 as a difference, and the report says so
+                in its own body rather than letting you infer precision that is not there.
+                <br />
+                <br />
+                Two is the minimum: with one run a group has no internal variation, and that
+                variation is the only thing separating a real finding from a coin flip.
+              </Hint>
+              <input
+                type="number"
+                min={MIN_REPLICATES}
+                max={MAX_MEMBERS}
+                value={replicates}
+                onChange={(e) => setReplicates(Number(e.target.value))}
+                className="w-16 rounded border border-matrix-border bg-matrix-bg p-1 text-sm"
+              />
+            </label>
+            <label className="flex items-start gap-2 text-sm text-slate-300">
+              <input
+                type="checkbox"
+                className="mt-1"
+                checked={compareHybrid}
+                onChange={(e) => setCompareHybrid(e.target.checked)}
+              />
+              <span>
+                Also compare against hybrid
+                <Hint label="compare against hybrid">
+                  Adds a second group that differs in <em>one</em> thing: the speaker method.
+                  Everything else — turn count, fairness, the cast, the brief — is held
+                  identical, and the report counts each group separately rather than pooling
+                  them.
+                  <br />
+                  <br />
+                  Separate counts are the point. A conclusion that holds in every moderated
+                  run and in no hybrid run is a strong, method-dependent finding; pooled, the
+                  same numbers read as a weak half-and-half split. Those call for opposite
+                  decisions.
+                  <br />
+                  <br />
+                  Hybrid is the comparison worth making because blind opening rounds change
+                  what a persona has <em>seen</em> when they speak, so they can reach a
+                  conclusion that hearing someone else first would have suppressed. Turn count
+                  and fairness are deliberately not offered: a shorter run does not disagree,
+                  it just never arrives, and fairness is already settled.
+                </Hint>
+              </span>
+            </label>
+            {compareHybrid && (
+              <label className="flex items-center gap-2 pl-6 text-sm text-slate-300">
+                Hybrid runs
+                <input
+                  type="number"
+                  min={MIN_REPLICATES}
+                  max={MAX_MEMBERS}
+                  value={hybridReplicates}
+                  onChange={(e) => setHybridReplicates(Number(e.target.value))}
+                  className="w-16 rounded border border-matrix-border bg-matrix-bg p-1 text-sm"
+                />
+                <span className="text-[11px] text-slate-500">
+                  (uses the opening-round count below)
+                </span>
+              </label>
+            )}
+            <p className="text-[11px] text-slate-500">
+              {replicates + (compareHybrid ? hybridReplicates : 0)} conversations, each up to{' '}
+              {maxMessages} turns.
+              {compareHybrid
+                ? ' Only the speaker method differs between the two groups.'
+                : ' Nothing differs between them.'}
+            </p>
+          </div>
+        )}
         <label className="flex items-center gap-2 text-sm text-slate-300">
           Conversation method
           <Hint label="conversation method">
@@ -1183,7 +1348,14 @@ export function NewRunForm({ onStarted, onCancel, fromRunId }: Props) {
         disabled={submitting}
         className="mt-6 w-full rounded-lg bg-matrix-accent py-3 font-semibold text-matrix-bg hover:bg-sky-400 disabled:opacity-50"
       >
-        {submitting ? 'Starting…' : '▶ Run simulation'}
+        {submitting
+          ? 'Starting…'
+          : runType === 'ensemble'
+            // Names the multiplier on the button itself. Five conversations is five times the
+            // spend, and a button reading "Run simulation" would not say so at the one moment
+            // it matters.
+            ? `▶ Run ${replicates + (compareHybrid ? hybridReplicates : 0)} simulations`
+            : '▶ Run simulation'}
       </button>
     </div>
   )

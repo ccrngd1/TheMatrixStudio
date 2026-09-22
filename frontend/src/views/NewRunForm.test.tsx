@@ -49,7 +49,7 @@ describe('NewRunForm option hints', () => {
    * them. Expanding here mirrors what a user does before reading them.
    */
   const renderForm = () => {
-    const r = render(<NewRunForm onStarted={() => {}} onCancel={() => {}} />)
+    const r = render(<NewRunForm onStarted={() => {}} onEnsembleStarted={() => {}} onCancel={() => {}} />)
     fireEvent.click(screen.getByText(/Summary options/))
     fireEvent.click(screen.getByText(/Cognition \(introspectable engine\)/))
     return r
@@ -57,7 +57,7 @@ describe('NewRunForm option hints', () => {
 
   it('keeps the opt-in sections collapsed until asked', () => {
     // Worth locking: the default screen should not be a wall of switches.
-    render(<NewRunForm onStarted={() => {}} onCancel={() => {}} />)
+    render(<NewRunForm onStarted={() => {}} onEnsembleStarted={() => {}} onCancel={() => {}} />)
     expect(
       screen.queryByRole('button', { name: 'About reflection' }),
     ).not.toBeInTheDocument()

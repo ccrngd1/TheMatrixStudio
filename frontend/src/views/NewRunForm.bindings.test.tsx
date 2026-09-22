@@ -69,7 +69,7 @@ beforeEach(() => {
 })
 
 async function form() {
-  render(<NewRunForm onStarted={() => {}} onCancel={() => {}} />)
+  render(<NewRunForm onStarted={() => {}} onEnsembleStarted={() => {}} onCancel={() => {}} />)
   // Wait for the pickers to resolve, or a click lands on "Loading collections…".
   await waitFor(() => expect(screen.getAllByText('egress-policies').length).toBeGreaterThan(0))
 }
@@ -203,7 +203,7 @@ describe('when collections cannot be listed', () => {
   it('says so and still allows the run to start', async () => {
     mocked.listKnowledgeBases.mockRejectedValue(new Error('503: Service Unavailable'))
     mocked.createRun.mockResolvedValue({ run_id: 'r1', name: 'x', status: 'pending' })
-    render(<NewRunForm onStarted={() => {}} onCancel={() => {}} />)
+    render(<NewRunForm onStarted={() => {}} onEnsembleStarted={() => {}} onCancel={() => {}} />)
 
     await waitFor(() =>
       expect(screen.getAllByText(/could not load your collections/i).length).toBeGreaterThan(0),
@@ -220,7 +220,7 @@ describe('when collections cannot be listed', () => {
     mocked.listKnowledgeBases.mockImplementation(() => {
       throw new TypeError('api.listKnowledgeBases is not a function')
     })
-    render(<NewRunForm onStarted={() => {}} onCancel={() => {}} />)
+    render(<NewRunForm onStarted={() => {}} onEnsembleStarted={() => {}} onCancel={() => {}} />)
     await waitFor(() =>
       expect(screen.getByPlaceholderText('What should the cast discuss?')).toBeTruthy(),
     )
@@ -228,7 +228,7 @@ describe('when collections cannot be listed', () => {
 
   it('shows the empty state when there are no collections yet', async () => {
     mocked.listKnowledgeBases.mockResolvedValue({ knowledge_bases: [], count: 0 })
-    render(<NewRunForm onStarted={() => {}} onCancel={() => {}} />)
+    render(<NewRunForm onStarted={() => {}} onEnsembleStarted={() => {}} onCancel={() => {}} />)
     await waitFor(() =>
       expect(screen.getAllByText(/no knowledge bases yet/i).length).toBeGreaterThan(0),
     )

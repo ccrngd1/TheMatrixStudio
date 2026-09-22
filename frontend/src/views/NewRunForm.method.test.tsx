@@ -32,7 +32,7 @@ const convergeBox = () =>
     .querySelector('input[type="checkbox"]') as HTMLInputElement
 
 async function form() {
-  render(<NewRunForm onStarted={() => {}} onCancel={() => {}} />)
+  render(<NewRunForm onStarted={() => {}} onEnsembleStarted={() => {}} onCancel={() => {}} />)
   await waitFor(() => expect(methodBox()).toBeInTheDocument())
   fireEvent.click(screen.getByRole('button', { name: /Load example/i }))
 }

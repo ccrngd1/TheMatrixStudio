@@ -46,7 +46,7 @@ const file = (name: string, body = 'x') =>
 
 /** Opens the first persona's document section and returns its file input. */
 const openDocuments = async () => {
-  render(<NewRunForm onStarted={() => {}} onCancel={() => {}} />)
+  render(<NewRunForm onStarted={() => {}} onEnsembleStarted={() => {}} onCancel={() => {}} />)
   await waitFor(() => expect(api.getDocumentFormats).toHaveBeenCalled())
   fireEvent.click(screen.getAllByText(/Convictions, dismissals & documents|documents/i)[0])
   return screen.getAllByLabelText(/upload file/i)[0] as HTMLInputElement
