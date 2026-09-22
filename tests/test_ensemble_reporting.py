@@ -472,3 +472,93 @@ class TestTenancy:
         assert await db.claim_ensemble_report("ens", owner_sub=OTHER) is False
         # And the real owner's claim is still available.
         assert await db.claim_ensemble_report("ens", owner_sub=TEST_OWNER) is True
+
+
+# --------------------------------------------------------------------------- #
+# the lease
+# --------------------------------------------------------------------------- #
+
+
+class TestTheLeaseExpires:
+    """A claim that never expired would strand the report permanently.
+
+    The stranding is total, which is why this is not a nicety: on the automatic path there is
+    exactly ONE trigger — the last member to finish — so if that attempt dies without running
+    its failure handler (a Lambda timeout, an OOM, a deploy mid-build) nothing else ever tries.
+    The ensemble sits at "building the report" for ever with no error to act on.
+    """
+
+    async def _ens(self, db):
+        await _ensemble(db, [{"label": "base", "n": 2, "overrides": {}}],
+                        [{"run_id": "r1", "cell": "base", "index": 1}])
+
+    async def test_a_live_claim_is_not_overtaken(self, db):
+        await self._ens(db)
+        assert await db.claim_ensemble_report("ens") is True
+        assert await db.claim_ensemble_report("ens") is False
+
+    async def test_an_expired_claim_is_reclaimable(self, db):
+        await self._ens(db)
+        assert await db.claim_ensemble_report("ens") is True
+        # A zero lease makes every claim already expired, which is the same condition a
+        # timed-out claimant leaves behind.
+        assert await db.claim_ensemble_report("ens", lease_seconds=0) is True
+
+    async def test_the_lease_outlives_the_finalise_timeout(self, db):
+        # Otherwise a claimant still working could be overtaken and two callers would both pay
+        # for an extraction pass and a synthesis. 15 minutes is the Lambda's timeout.
+        from matrix_studio.storage.dynamo import REPORT_LEASE_SECONDS
+
+        assert REPORT_LEASE_SECONDS > 15 * 60
+
+    async def test_reclaiming_refreshes_the_lease(self, db):
+        await self._ens(db)
+        await db.claim_ensemble_report("ens")
+        await db.claim_ensemble_report("ens", lease_seconds=0)
+        # The second claimant now holds a fresh lease, so a third caller is refused.
+        assert await db.claim_ensemble_report("ens") is False
+
+
+# --------------------------------------------------------------------------- #
+# metering
+# --------------------------------------------------------------------------- #
+
+
+class TestTheReportIsMetered:
+    async def test_its_cost_counts_against_the_monthly_total(self, db):
+        # Every member run's spend is recorded by `execute_slice`, so the fan-out is metered.
+        # The report was not: one extraction per member plus a 20k-token synthesis, charged
+        # nowhere. A 12-member ensemble could spend real money the cap never saw.
+        before = await db.user_spend()
+        await _ensemble(db, [{"label": "base", "n": 2, "overrides": {}}],
+                        [{"run_id": "r1", "cell": "base", "index": 1},
+                         {"run_id": "r2", "cell": "base", "index": 2}])
+        await _member(db, "ens", "r1", "base", "m1", "alpha")
+        await _member(db, "ens", "r2", "base", "m2", "beta")
+        model = FakeModel({"alpha": _extraction(("Ada", ["x"], [])),
+                           "beta": _extraction(("Ada", ["x"], []))})
+
+        report = await ensemble_reporting.generate(db, "ens", call=model)
+        after = await db.user_spend()
+
+        assert report["cost_usd"] == pytest.approx(0.07)
+        assert after - before == pytest.approx(0.07)
+
+    async def test_a_metering_failure_does_not_lose_the_report(self, db, monkeypatch):
+        # The report is already paid for and stored by this point. Losing it because the
+        # accounting failed would throw away the expensive thing to protect the cheap one.
+        await _ensemble(db, [{"label": "base", "n": 2, "overrides": {}}],
+                        [{"run_id": "r1", "cell": "base", "index": 1},
+                         {"run_id": "r2", "cell": "base", "index": 2}])
+        await _member(db, "ens", "r1", "base", "m1", "alpha")
+        await _member(db, "ens", "r2", "base", "m2", "beta")
+
+        async def explode(*_a, **_k):
+            raise RuntimeError("spend table gone")
+
+        monkeypatch.setattr(db, "add_user_spend", explode)
+        model = FakeModel({"alpha": _extraction(("Ada", ["x"], [])),
+                           "beta": _extraction(("Ada", ["x"], []))})
+
+        assert await ensemble_reporting.generate(db, "ens", call=model) is not None
+        assert (await db.get_ensemble("ens"))["report_json"]

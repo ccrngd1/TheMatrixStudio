@@ -322,6 +322,43 @@ route meant to be used.
 yet" from "refused because a cell was still running" — only one of those is worth retrying.
 A run never fails because commentary on it did.
 
+### 8.0c What the deployed path needed that a single run did not
+
+Three defects found by reading the infrastructure before the first live fan-out, not by
+running one. All fixed; each would have produced a wrong or stuck state rather than an error.
+
+**The `finalise` Lambda's timeout was 5 minutes.** Its comment described one LLM call over the
+transcript, which was true before the ensemble report was added to it — the report is one
+extraction per member plus a synthesis asking up to 20k output tokens, so up to 13 calls for a
+full fan-out. At 5 minutes it timed out, the state machine retried, and the retry found the
+claim already taken and did nothing. The ensemble sat at "building the report" **for ever, with
+no error to act on.** Now 15 minutes. It costs nothing on an ordinary run: only the one
+`finalise` that owns a report uses the headroom, and it is the machine's last state, so a slow
+one holds no turn open.
+
+**A permanent claim stranded the report on any death that skips the failure handler** — a
+timeout, an OOM, a deploy mid-build. The stranding was total, because on the automatic path
+there is exactly ONE trigger (the last member to finish) and nothing else ever tries again. The
+claim is now a **20-minute lease**, deliberately longer than the Lambda's 15-minute timeout so
+a live claimant cannot be overtaken while a dead one frees it five minutes later. The UI's
+"Build it now" also **forces**, because an unforced call returns `claimed_by_another` for any
+held claim including a dead one, and a button that does nothing is the worse failure.
+
+**The report's cost was unmetered.** Member runs record spend through `execute_slice`, so the
+fan-out itself counts against the monthly cap; the report was charged nowhere. A 12-member
+ensemble could spend real money the cap never saw, and the cap's job is to refuse the NEXT
+thing. Now recorded, and a metering failure does not discard the already-paid-for report.
+
+Checked and needing no change: `dynamodb:LeadingKeys` on `USER#{sub}` already covers
+`USER#{sub}` / `ENSEMBLE#{id}`, so tenant isolation extends to ensembles for free; and the
+state machine's 1-day execution timeout comfortably contains a 15-minute `finalise`.
+
+**Avatars are off by default for an ensemble.** They are generated per run, so the same cast's
+faces would be drawn once per conversation — and image spend is not counted in a run's reported
+cost, only voice calls are, so it would be both multiplied and invisible. A default rather than
+a hardcode: the toggle still works, and turning it on applies to every member equally so the
+comparison is unaffected either way.
+
 ### 8.1 Before any fan-out launches
 
 - **Bedrock throughput.** 8 concurrent runs making per-turn calls may exceed account TPM on

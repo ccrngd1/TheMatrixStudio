@@ -49,6 +49,9 @@ const timesBox = () =>
   screen.getByText(/How many times/).closest('label')!
     .querySelector('input[type="number"]') as HTMLInputElement
 
+const avatarBox = () =>
+  screen.getByRole('checkbox', { name: /generate avatars/i }) as HTMLInputElement
+
 const hybridBox = () =>
   screen.getByText(/Also compare against hybrid/).closest('label')!
     .querySelector('input[type="checkbox"]') as HTMLInputElement
@@ -214,5 +217,58 @@ describe('NewRunForm run type', () => {
     chooseEnsemble()
     await submit()
     await waitFor(() => expect(screen.getByText(/censoring/)).toBeInTheDocument())
+  })
+
+  it('turns avatars off for an ensemble', async () => {
+    // They are generated per run, so the same cast's faces would be drawn once per
+    // conversation — and image spend is not in a run's reported cost, only voice calls are, so
+    // it would be multiplied AND invisible.
+    await form()
+    expect(avatarBox().checked).toBe(true)
+    chooseEnsemble()
+    expect(avatarBox().checked).toBe(false)
+
+    await submit()
+    await waitFor(() => expect(mocked.createEnsemble).toHaveBeenCalled())
+    expect(mocked.createEnsemble.mock.calls[0][0].config.generate_avatars).toBe(false)
+  })
+
+  it('says why avatars are off rather than leaving it a mystery', async () => {
+    await form()
+    chooseEnsemble()
+    expect(screen.getByText(/redrawn once per conversation/)).toBeInTheDocument()
+  })
+
+  it('is a default, not a hardcode', async () => {
+    // The rule the avatar toggle already follows: a default has to be refusable. Turning it
+    // back on applies to every member equally, so the comparison is unaffected.
+    await form()
+    chooseEnsemble()
+    fireEvent.click(avatarBox())
+    expect(avatarBox().checked).toBe(true)
+
+    await submit()
+    await waitFor(() => expect(mocked.createEnsemble).toHaveBeenCalled())
+    expect(mocked.createEnsemble.mock.calls[0][0].config.generate_avatars).toBe(true)
+  })
+
+  it('restores the operator choice when switching back to a single run', async () => {
+    // Switching away and back must not leave avatars off silently — the operator never asked
+    // for that, the ensemble default did.
+    await form()
+    expect(avatarBox().checked).toBe(true)
+    chooseEnsemble()
+    expect(avatarBox().checked).toBe(false)
+    fireEvent.change(runTypeBox(), { target: { value: 'single' } })
+    expect(avatarBox().checked).toBe(true)
+  })
+
+  it('does not resurrect avatars the operator had already declined', async () => {
+    await form()
+    fireEvent.click(avatarBox())
+    expect(avatarBox().checked).toBe(false)
+    chooseEnsemble()
+    fireEvent.change(runTypeBox(), { target: { value: 'single' } })
+    expect(avatarBox().checked).toBe(false)
   })
 })

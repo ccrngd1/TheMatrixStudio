@@ -1160,9 +1160,20 @@ function handler(event) {
         self.finalise_lambda = self._worker(
             "FinaliseFunction", "finalise",
             "matrix_studio.step_handlers.finalise",
-            # Writes the terminal status and generates the run summary, which is one
-            # LLM call over the whole transcript.
-            Duration.minutes(5),
+            # Writes the terminal status, generates the run summary (one LLM call over the
+            # transcript), and — when this run is the LAST member of an ensemble to finish —
+            # builds that ensemble's report.
+            #
+            # The report is why this is 15 minutes rather than the 5 the summary alone needed:
+            # it is one extraction call per member plus a synthesis asking for up to 20k
+            # output tokens, so up to 13 calls for a full 12-member fan-out. At 5 minutes that
+            # timed out, the state machine retried, and the retry found the claim already
+            # taken — leaving the ensemble at "building the report" with no error, for ever.
+            #
+            # Raising it costs nothing on an ordinary run. Only the one finalise that owns an
+            # ensemble report uses the headroom; every other invocation still returns in
+            # seconds, and this is the machine's LAST state, so a slow one holds no turn open.
+            Duration.minutes(15),
         )
 
         prepare = sfn_tasks.LambdaInvoke(

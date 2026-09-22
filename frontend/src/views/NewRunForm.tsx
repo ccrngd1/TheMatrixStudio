@@ -59,6 +59,10 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
   // varied cell answers a narrower one.
   const [compareHybrid, setCompareHybrid] = useState(false)
   const [hybridReplicates, setHybridReplicates] = useState(MIN_REPLICATES)
+  // What the avatar toggle was before the ensemble default turned it off, so switching back
+  // to a single run restores the operator's choice rather than leaving it off silently.
+  // Same idiom as `turnsBeforeCeiling`.
+  const [avatarsBeforeEnsemble, setAvatarsBeforeEnsemble] = useState<boolean | null>(null)
   const [cast, setCast] = useState<DraftPersona[]>([blankPersona()])
   // Phase 6: collections every persona in the run may search — the cast-wide case,
   // which generalises Phase 5's `persona_name IS NULL` exactly.
@@ -579,7 +583,24 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
           </Hint>
           <select
             value={runType}
-            onChange={(e) => setRunType(e.target.value as RunType)}
+            onChange={(e) => {
+              const next = e.target.value as RunType
+              setRunType(next)
+              // Avatars OFF by default for an ensemble. They are generated per run, so the
+              // same cast's faces would be drawn N times over — and image spend is not
+              // counted in a run's reported cost, only voice calls are, so it would be both
+              // multiplied and invisible. Nothing is confounded either way: every member
+              // still gets the same config as every other.
+              //
+              // A default, not a hardcode: the checkbox still shows and still works, which is
+              // the rule the avatar toggle already follows.
+              if (next === 'ensemble') {
+                setAvatarsBeforeEnsemble(avatars)
+                setAvatars(false)
+              } else if (avatarsBeforeEnsemble !== null) {
+                setAvatars(avatarsBeforeEnsemble)
+              }
+            }}
             className="rounded border border-matrix-border bg-matrix-bg p-1 text-sm"
           >
             <option value="single">Once — a single conversation</option>
@@ -797,11 +818,23 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
         <label className="flex items-center gap-2 text-sm text-slate-300">
           <input type="checkbox" checked={avatars} onChange={(e) => setAvatars(e.target.checked)} />
           Generate avatars
+          {runType === 'ensemble' && !avatars && (
+            <span className="text-[11px] text-slate-500">
+              (off for ensembles — they would be redrawn once per conversation)
+            </span>
+          )}
           <Hint label="generate avatars">
             Anime-style portraits for each persona, generated once before the run via
             Stability SD3.5 on Bedrock. Purely cosmetic and entirely optional: it adds an
             image call per persona, and if it fails or no image provider is configured the
             cards fall back to initials without affecting the run.
+            <br />
+            <br />
+            <strong>Off by default for an ensemble.</strong> Avatars are generated per run, so
+            the same cast's faces would be drawn once for every conversation — and image spend
+            is not counted in a run's reported cost, only voice calls are, so it would be both
+            multiplied and invisible. Still switchable: turning it on applies to every member
+            equally, so nothing about the comparison changes either way.
           </Hint>
         </label>
         {models.length > 0 && (
