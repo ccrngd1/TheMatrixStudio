@@ -38,6 +38,7 @@ rollout is worse than no report, because it looks like evidence.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -368,6 +369,298 @@ def agreements_and_dissents(views: Sequence[RunView]) -> Dict[str, Any]:
         ],
         "standing_refusals": standing,
     }
+
+
+# --------------------------------------------------------------------------- #
+# Canonical labels — making the counts mean something
+# --------------------------------------------------------------------------- #
+#
+# `_normalise` keys on sorted unique non-stopword tokens, so ANY wording difference is a
+# different claim. Measured on the first live 5-replicate ensemble: 128 of 128 claims counted
+# 1/5, every persona reported zero invariant demands, and all 24 unresolved groups had count 1.
+# The computed half of the report produced no signal at all, while the synthesis — reading the
+# same extractions — found four conclusions held in 5 of 5. Two halves of one report
+# contradicting each other, with the numeric half looking the more authoritative.
+#
+# So the counts need a model. The risk is exactly the one `_normalise` was crude to avoid:
+# **over-merging deletes a dissent**, and that failure is invisible in the output. Three things
+# hold it in check, and none of them is the prompt alone:
+#
+#   bias        the prompt's rule is "same REQUIREMENT, not same topic", and when in doubt
+#               keep separate. A cluster of one is an acceptable answer.
+#   audit       every cluster carries its member phrasings and the runs they came from, so a
+#               reader can see what was merged and disagree. A clustering nobody can inspect
+#               replaces one wrong number with a different wrong number.
+#   arithmetic  `apply_clusters` REFUSES a clustering that drops, duplicates or invents a
+#               claim, or that mixes a demand with a refusal. Those are checkable in code, and
+#               a model that silently drops claims would under-report exactly like the bug
+#               this replaces.
+
+_CLUSTER_PROMPT = """You are grouping claims extracted from several independent runs of the \
+SAME discussion, so they can be counted. Different participants in different runs often \
+express the same requirement in different words; the count is meaningless unless those are \
+recognised as one claim.
+
+Group the numbered claims below into clusters. Each cluster is ONE requirement.
+
+THE RULE, and it decides every hard case: group two claims only when satisfying one would \
+satisfy the other. Same TOPIC is not enough. Same requirement at a different threshold, \
+scope, or trigger is a DIFFERENT claim.
+
+Worked examples of what must stay apart:
+  "a state statute defining plans as regulated products" vs "a state practice act that \
+reaches treatment, not just drugs" — different legal triggers. Satisfying one does not \
+satisfy the other. SEPARATE.
+  "a 90-day purchase window" vs "a 45-day window" — same mechanism, different threshold. \
+SEPARATE.
+  "records pull before approval" vs "records pull before approval for net-new only" — \
+different scope. SEPARATE.
+
+Worked examples of what should group:
+  "verified weight or a ordering note" / "a confirmed weight or the original ordering \
+note" — same requirement, different words. GROUP.
+  "she will not sign off without a synchronous exam" / "refuses to approve absent a live \
+examination" — same requirement. GROUP.
+
+When you are unsure, DO NOT GROUP. A cluster containing one claim is a correct answer and \
+costs nothing. Merging two claims that differ deletes a disagreement from the report, and \
+nobody reading the report can tell that it happened.
+
+Never put a `demand` and a `refusal` in the same cluster: requiring something and refusing \
+something are different acts even when they concern the same subject.
+
+Give each cluster a `label`: the requirement in under 15 words, in the participants' own \
+vocabulary, neutral as to whether anyone agreed.
+
+Every claim number must appear in exactly one cluster. Do not omit any. Do not invent any.
+
+Reply with ONLY a JSON object, no prose:
+{{"clusters": [{{"label": "<under 15 words>", "members": [<claim numbers>]}}]}}
+
+The claims:
+{claims}
+"""
+
+
+def _cluster_input(claims: Sequence[Tuple[str, str]]) -> str:
+    """`[(kind, text)]` as a numbered list for the prompt."""
+    return "\n".join(
+        f"{i}. [{kind}] {text}" for i, (kind, text) in enumerate(claims)
+    )
+
+
+#: Output budget per clustering call.
+#:
+#: **Size this for the model's REASONING, not for the answer.** Measured on 65 refusal claims
+#: from the first live ensemble: the JSON reply was 4,332 characters — about 1,100 tokens — and
+#: `tokens_out` was **29,260**. Roughly 28,000 output tokens were reasoning, which is billed and
+#: counted against `max_tokens`. So the size of the answer tells you nothing about the budget
+#: needed, and inspecting the reply to estimate one is actively misleading.
+#:
+#: The failure is silent, which is what makes it expensive: a reply cut off by `max_tokens`
+#: comes back EMPTY rather than partial. 8000 and then 24000 both produced
+#: `finish_reason=length` with no content and a real bill ($0.09, then $0.25). 60000 returned
+#: `finish=stop` on the same input, so 64000 is that with headroom rather than another guess.
+#:
+#: Fourth occurrence of the empty-truncated-reply trap in this project (120-token speaker
+#: selection, the closing round, the 8000-token synthesis, and this). `finish_reason` is the
+#: only thing that distinguishes it from a refusal.
+CLUSTER_MAX_TOKENS = 64000
+
+
+async def _cluster_one_kind(
+    kind: str,
+    indexed: Sequence[Tuple[int, str]],
+    *,
+    model: Optional[Any],
+    call: Any,
+    max_tokens: int,
+) -> Optional[Tuple[List[Dict[str, Any]], float]]:
+    """Cluster one kind's claims. Returns `(clusters over GLOBAL indices, cost)` or None."""
+    local = [(kind, text) for _, text in indexed]
+    result = await call(
+        [{"role": "user", "content": _CLUSTER_PROMPT.format(claims=_cluster_input(local))}],
+        model=model,
+        # 0.0 is REQUESTED and, on the deployed path, silently DROPPED: this role resolves to
+        # Sonnet 5, which accepts only `temperature=1` (`models.py:11`), and litellm's
+        # `drop_params` discards the rest without erroring. So do not read this as a
+        # determinism guarantee — regenerating a report can legitimately produce different
+        # groupings, and the `variants` audit trail is what compensates for that rather than
+        # this argument.
+        #
+        # Asked for anyway, because the role is overridable: a caller who points clustering at
+        # a temperature-honouring model gets the reproducibility, and dropping the argument
+        # would silently deny it to them.
+        temperature=0.0,
+        max_tokens=max_tokens,
+    )
+    cost = float(result.get("cost_usd") or 0.0)
+    content = (result.get("content") or "").strip()
+    if not content:
+        logger.error(
+            "Clustering %d %s claim(s) returned no content: %d in, %d out, $%.4f, finish=%s. "
+            "A truncated reply comes back EMPTY rather than partial, so check the output "
+            "budget (max_tokens=%d) before assuming a refusal.",
+            len(local), kind, result.get("tokens_in", 0), result.get("tokens_out", 0),
+            cost, result.get("finish_reason"), max_tokens,
+        )
+        return None
+
+    parsed = extract_json_object(content)
+    clusters = (parsed or {}).get("clusters")
+    if not isinstance(clusters, list):
+        logger.warning(
+            "Clustering %s claims did not return a `clusters` list; counts will fall back to "
+            "text matching and the report will say so.", kind,
+        )
+        return None
+
+    # Local indices back to global ones. The model is shown one kind at a time numbered from
+    # zero, so this mapping is the whole reason the split is safe.
+    out: List[Dict[str, Any]] = []
+    for c in clusters:
+        if not isinstance(c, dict):
+            continue
+        members = c.get("members")
+        if not isinstance(members, list):
+            # Passed through unmapped so `apply_clusters` refuses it by its own rules rather
+            # than this function inventing a repair.
+            out.append({"label": c.get("label"), "members": members})
+            continue
+        mapped = []
+        for raw in members:
+            try:
+                i = int(raw)
+            except (TypeError, ValueError):
+                mapped.append(raw)
+                continue
+            mapped.append(indexed[i][0] if 0 <= i < len(indexed) else -1)
+        out.append({"label": c.get("label"), "members": mapped})
+    return out, cost
+
+
+async def cluster_claims(
+    claims: Sequence[Tuple[str, str]],
+    *,
+    model: Optional[Any] = None,
+    call: Optional[Any] = None,
+    max_tokens: int = CLUSTER_MAX_TOKENS,
+) -> Optional[List[Dict[str, Any]]]:
+    """Group `[(kind, text)]` into canonical clusters. `None` if it could not be done.
+
+    **One call per kind.** Demands and refusals are clustered separately, which makes the
+    "never merge a demand with a refusal" rule structural instead of only a check afterwards —
+    the model is never shown a mixture, so it cannot propose one. It also halves each call's
+    output, which is what the 8000-token failure was really about.
+
+    A kind with a single claim is given its own cluster without a call: there is nothing to
+    group, and paying to be told so is waste.
+
+    `None` rather than a guess, and the caller falls back to `_normalise` and says so in the
+    report's caveats. If ANY kind fails, the whole clustering is abandoned: clustered demands
+    beside unclustered refusals would make half the table trustworthy with no way for a reader
+    to tell which half.
+    """
+    if len(claims) < 2:
+        return None
+    if call is None:
+        from matrix_studio.analysis import _acompletion as call  # type: ignore
+
+    by_kind: Dict[str, List[Tuple[int, str]]] = defaultdict(list)
+    for i, (kind, text) in enumerate(claims):
+        by_kind[kind].append((i, text))
+
+    combined: List[Dict[str, Any]] = []
+    cost = 0.0
+
+    # Kinds with one claim need no call at all; grouping a single item is nothing to ask for.
+    to_call = []
+    for kind in sorted(by_kind):
+        indexed = by_kind[kind]
+        if len(indexed) == 1:
+            i, text = indexed[0]
+            combined.append({"label": text, "members": [i]})
+        else:
+            to_call.append((kind, indexed))
+
+    # Concurrently. The kinds are independent by construction — that is the whole point of
+    # splitting them — and each call spends minutes on reasoning: measured at ~29,000 output
+    # tokens to produce a ~1,100-token answer. Running them in sequence doubled the report's
+    # wall-clock for nothing, and wall-clock is what has to fit inside a Lambda.
+    results = await asyncio.gather(*(
+        _cluster_one_kind(kind, indexed, model=model, call=call, max_tokens=max_tokens)
+        for kind, indexed in to_call
+    ))
+    for got in results:
+        # All or nothing: clustered demands beside unclustered refusals would leave half the
+        # table trustworthy with no way for a reader to tell which half.
+        if got is None:
+            return None
+        clusters, spent = got
+        combined.extend(clusters)
+        cost += spent
+
+    if not combined:
+        return None
+    combined[0]["_cost_usd"] = cost
+    return combined
+
+
+class ClusteringRejected(ValueError):
+    """A clustering that would change the counts rather than only group them."""
+
+
+def apply_clusters(
+    claims: Sequence[Tuple[str, str]], clusters: Sequence[Dict[str, Any]]
+) -> Dict[int, Tuple[str, str]]:
+    """`claim index -> (cluster key, label)`, or raise if the clustering is unsound.
+
+    The checks are arithmetic, not taste, and they are the reason this is safe to trust at all:
+    a model asked to group 128 claims can quietly drop twenty, and the result would under-count
+    exactly like the bug being fixed here — while looking like a fix.
+
+    Refuses when a claim is unassigned, assigned twice, or invented, and when a cluster mixes
+    a demand with a refusal. The caller treats a refusal as "no clustering available" and falls
+    back to text matching with a caveat, which is worse but honest.
+    """
+    seen: Dict[int, Tuple[str, str]] = {}
+    for n, cluster in enumerate(clusters):
+        members = cluster.get("members")
+        label = str(cluster.get("label") or "").strip()
+        if not isinstance(members, list) or not members:
+            raise ClusteringRejected(f"cluster {n} has no members")
+        if not label:
+            raise ClusteringRejected(f"cluster {n} has no label")
+
+        kinds = set()
+        for raw in members:
+            try:
+                i = int(raw)
+            except (TypeError, ValueError):
+                raise ClusteringRejected(f"cluster {n} has a non-numeric member {raw!r}")
+            if not 0 <= i < len(claims):
+                raise ClusteringRejected(
+                    f"cluster {n} cites claim {i}, which does not exist "
+                    f"(there are {len(claims)})"
+                )
+            if i in seen:
+                raise ClusteringRejected(f"claim {i} is in two clusters")
+            kinds.add(claims[i][0])
+            seen[i] = (f"c{n}", label)
+        if len(kinds) > 1:
+            raise ClusteringRejected(
+                f"cluster {n} mixes {sorted(kinds)} — requiring something and refusing "
+                "something are different acts"
+            )
+
+    missing = [i for i in range(len(claims)) if i not in seen]
+    if missing:
+        raise ClusteringRejected(
+            f"{len(missing)} claim(s) were not assigned to any cluster "
+            f"(first few: {missing[:5]}). Dropping claims under-counts exactly like the "
+            "text matching this replaces."
+        )
+    return seen
 
 
 # --------------------------------------------------------------------------- #

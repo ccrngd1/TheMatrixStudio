@@ -1164,15 +1164,23 @@ function handler(event) {
             # transcript), and — when this run is the LAST member of an ensemble to finish —
             # builds that ensemble's report.
             #
-            # The report is why this is 15 minutes rather than the 5 the summary alone needed:
-            # it is one extraction call per member plus a synthesis asking for up to 20k
-            # output tokens, so up to 13 calls for a full 12-member fan-out. At 5 minutes that
-            # timed out, the state machine retried, and the retry found the claim already
-            # taken — leaving the ensemble at "building the report" with no error, for ever.
+            # Back to a summary-sized budget. The ensemble report was briefly built here and
+            # outgrew it — measured 12–19 minutes against Lambda's 15-minute ceiling — so it
+            # moved to `ensemble_report_lambda` below and this state now only DISPATCHES it.
+            # Five minutes is the summary's own need plus room for a slow provider.
+            Duration.minutes(5),
+        )
+        self.ensemble_report_lambda = self._worker(
+            "EnsembleReportFunction", "ensemble-report",
+            "matrix_studio.step_handlers.ensemble_report",
+            # The longest-running thing in the system, and not because the work is large: the
+            # clustering reply is ~1,100 tokens, but Sonnet 5 spends ~29,000 output tokens
+            # reasoning to produce it, and that is minutes per call. One extraction per member,
+            # two clustering calls, one synthesis — the independent ones now run concurrently,
+            # which is what brings a 12–19 minute job inside this ceiling.
             #
-            # Raising it costs nothing on an ordinary run. Only the one finalise that owns an
-            # ensemble report uses the headroom; every other invocation still returns in
-            # seconds, and this is the machine's LAST state, so a slow one holds no turn open.
+            # 15 minutes is Lambda's hard maximum. If a report ever needs more than this the
+            # answer is a state machine with a state per phase, not a bigger number.
             Duration.minutes(15),
         )
 
@@ -1286,6 +1294,33 @@ function handler(event) {
         self.turn_loop.grant_start_execution(self.api_lambda)
         self.api_lambda.add_environment(
             "TURN_LOOP_ARN", self.turn_loop.state_machine_arn
+        )
+
+        # Two callers dispatch an ensemble report, and neither one waits for it.
+        #
+        #   finalise — the last member of an ensemble to reach a terminal status. A report is
+        #             minutes long, and this state writes a run's terminal status; it must not
+        #             be able to time out behind commentary on the run.
+        #   the API  — `POST /api/ensembles/{id}/report`, the retry path. Doing the work in the
+        #             request would exceed API Gateway's 29-second integration timeout every
+        #             time, so the route dispatches and answers 202.
+        for caller in (self.finalise_lambda, self.api_lambda):
+            self.ensemble_report_lambda.grant_invoke(caller)
+            caller.add_environment(
+                "ENSEMBLE_REPORT_FUNCTION", self.ensemble_report_lambda.function_name
+            )
+
+        # No automatic retries on the async invoke.
+        #
+        # Lambda retries an asynchronous invocation twice by default, and here that is harmful
+        # rather than helpful: `generate` does not raise — it records `report_error` — so the
+        # only thing a retry can follow is a TIMEOUT, and a timed-out build still holds its
+        # 20-minute claim. The retry would be refused by the lease, achieve nothing, and be
+        # invisible. Recovery is the explicit forced regenerate, which is a button.
+        lambda_.EventInvokeConfig(
+            self, "EnsembleReportNoRetries",
+            function=self.ensemble_report_lambda,
+            retry_attempts=0,
         )
 
     # ------------------------------------------------------------------ #

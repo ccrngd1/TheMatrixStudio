@@ -36,6 +36,14 @@ export function EnsembleView({ ensembleId, onBack, onOpenRun }: Props) {
   const [detail, setDetail] = useState<EnsembleDetail | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [generating, setGenerating] = useState(false)
+  // The `report_generated_at` that was on screen when a rebuild was asked for. While it has
+  // not changed, the report being displayed is the OLD one — so a forced regenerate must not
+  // look finished just because a report exists.
+  //
+  // A ref, not state: `load` is memoised on `ensembleId` so a state value read inside it would
+  // be the one captured at definition time. Re-rendering is driven by `setDetail` regardless.
+  const rebuildingRef = useRef<number | null>(null)
+  const [rebuilding, setRebuilding] = useState(false)
   // Held in a ref so the polling effect does not restart every time the body changes, which
   // would reset the interval on each tick and poll far faster than POLL_MS.
   const settled = useRef(false)
@@ -45,7 +53,15 @@ export function EnsembleView({ ensembleId, onBack, onOpenRun }: Props) {
       const body = await api.getEnsemble(ensembleId)
       setDetail(body)
       setError(null)
-      settled.current = body.has_report || Boolean(body.report_error)
+      // A rebuild is outstanding until the timestamp MOVES. `has_report` is true throughout,
+      // because the previous report is still stored and still served.
+      const rebuilt =
+        rebuildingRef.current === null || body.report_generated_at !== rebuildingRef.current
+      settled.current = rebuilt && (body.has_report || Boolean(body.report_error))
+      if (rebuilt) {
+        rebuildingRef.current = null
+        setRebuilding(false)
+      }
       return body
     } catch (e) {
       // Not swallowed into an empty view: "this ensemble has nothing" and "the request
@@ -70,17 +86,22 @@ export function EnsembleView({ ensembleId, onBack, onOpenRun }: Props) {
 
   const generate = async (force: boolean) => {
     setGenerating(true)
+    const wasGeneratedAt = detail?.report_generated_at ?? null
     try {
-      await api.generateEnsembleReport(ensembleId, force)
+      const res = await api.generateEnsembleReport(ensembleId, force)
+      if (res.accepted) {
+        // 202: the work is running elsewhere. Resume polling — `settled` may be true from an
+        // EARLIER report, and without clearing it a forced rebuild would sit on the old one
+        // for ever looking complete.
+        rebuildingRef.current = wasGeneratedAt
+        setRebuilding(true)
+        settled.current = false
+      }
       await load()
     } catch (e) {
-      // A timeout here is expected against the deployed stack — the extraction pass plus a
-      // 20k-token synthesis outlasts the gateway's limit while the work continues
-      // server-side. So this says "still building" rather than "failed", and the poll picks
-      // the report up when it lands.
       setError(
-        `${e instanceof Error ? e.message : String(e)} — if this was a timeout the report is ` +
-          'still being built server-side and will appear here.',
+        `${e instanceof Error ? e.message : String(e)} — if the report was already accepted it ` +
+          'is still being built and will appear here.',
       )
     } finally {
       setGenerating(false)
@@ -230,13 +251,24 @@ export function EnsembleView({ ensembleId, onBack, onOpenRun }: Props) {
 
         {error && detail && <p className="mb-3 text-sm text-rose-300">{error}</p>}
 
+        {rebuilding && (
+          <p className="mb-3 text-sm text-amber-200">
+            Rebuilding the report. What is shown below is the previous one until the new report
+            lands.
+          </p>
+        )}
+
         {detail.report && (
           <div className="space-y-6">
             <div>
               <h3 className="mb-2 text-sm text-slate-300">
                 What held, by group
               </h3>
-              <ClaimTable claims={detail.report.claims} cells={reportCells} />
+              <ClaimTable
+                claims={detail.report.claims}
+                cells={reportCells}
+                clustered={detail.report.clustered}
+              />
             </div>
 
             {detail.report.synthesis && (
@@ -262,9 +294,21 @@ export function EnsembleView({ ensembleId, onBack, onOpenRun }: Props) {
               </ul>
             )}
 
-            <p className="text-[11px] text-slate-500">
-              Report cost ${detail.report.cost_usd.toFixed(4)}.
-            </p>
+            <div className="flex items-center gap-3">
+              <p className="text-[11px] text-slate-500">
+                Report cost ${detail.report.cost_usd.toFixed(4)}.
+              </p>
+              {/* Worth offering because clustering is not reproducible: the grouping model is
+                  asked for temperature 0 and Sonnet 5 silently discards it, so a rebuild can
+                  legitimately group differently. It costs what the line above says. */}
+              <button
+                onClick={() => generate(true)}
+                disabled={generating || rebuilding}
+                className="rounded border border-matrix-border px-2 py-1 text-[11px] text-slate-400 hover:text-slate-200 disabled:opacity-50"
+              >
+                {generating || rebuilding ? 'Rebuilding…' : 'Rebuild report'}
+              </button>
+            </div>
           </div>
         )}
       </section>

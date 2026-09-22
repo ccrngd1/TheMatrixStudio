@@ -129,4 +129,68 @@ describe('ClaimTable', () => {
     render(<ClaimTable claims={[]} cells={['base']} />)
     expect(screen.getByText(/No demands or refusals were extracted/)).toBeInTheDocument()
   })
+
+  it('withholds the table when the counts came from text matching', () => {
+    // Measured: text matching put 128 of 128 claims in their own group, so every row read
+    // "1 run only" while the synthesis found four conclusions in 5 of 5. That is not a rough
+    // approximation of the truth, it is the opposite of it — and a warning ABOVE a table of
+    // numbers loses to the table.
+    render(<ClaimTable claims={METHOD_DEPENDENT} cells={['base', 'hybrid']} clustered={false} />)
+
+    expect(screen.queryByRole('table')).not.toBeInTheDocument()
+    expect(screen.getByText(/not available for this report/)).toBeInTheDocument()
+    expect(screen.getByText(/would read as total disagreement/)).toBeInTheDocument()
+  })
+
+  it('renders normally when clustered, and when the field is absent', () => {
+    // Absent means a report stored before the field existed; it still renders.
+    const { unmount } = render(
+      <ClaimTable claims={METHOD_DEPENDENT} cells={['base']} clustered={true} />,
+    )
+    expect(screen.getByRole('table')).toBeInTheDocument()
+    unmount()
+
+    render(<ClaimTable claims={METHOD_DEPENDENT} cells={['base']} />)
+    expect(screen.getByRole('table')).toBeInTheDocument()
+  })
+
+  it('shows what was grouped, so a merge can be disputed', () => {
+    render(
+      <ClaimTable
+        claims={[
+          {
+            claim: 'verified weight before approval',
+            kind: 'demand',
+            per_cell: { base: { held: 3, of: 3, tier: 'unanimous', runs: ['m1', 'm2', 'm3'] } },
+            variants: [
+              { text: 'a verified weight before approval', runs: ['m1'] },
+              { text: 'a confirmed weight is required first', runs: ['m2'] },
+              { text: 'weight must be verified before we approve', runs: ['m3'] },
+            ],
+          },
+        ]}
+        cells={['base']}
+      />,
+    )
+    expect(screen.getByText('3 phrasings grouped')).toBeInTheDocument()
+    expect(screen.getByText(/a confirmed weight is required first/)).toBeInTheDocument()
+  })
+
+  it('does not offer an audit trail when nothing was merged', () => {
+    // A cluster of one has nothing to dispute; a disclosure there is noise on every row.
+    render(
+      <ClaimTable
+        claims={[
+          {
+            claim: 'only this one',
+            kind: 'demand',
+            per_cell: { base: { held: 1, of: 3, tier: 'rare', runs: ['m1'] } },
+            variants: [{ text: 'only this one', runs: ['m1'] }],
+          },
+        ]}
+        cells={['base']}
+      />,
+    )
+    expect(screen.queryByText(/phrasings grouped/)).not.toBeInTheDocument()
+  })
 })

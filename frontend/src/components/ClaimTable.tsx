@@ -24,6 +24,17 @@ interface Props {
   claims: EnsembleClaim[]
   /** Group labels in the order the spec declared them, so `base` stays leftmost. */
   cells: string[]
+  /**
+   * False when the counts came from crude text matching rather than canonical labels.
+   *
+   * The table is then WITHHELD, not merely annotated. Measured on the first live ensemble:
+   * text matching put 128 of 128 claims in their own group, so every row read "1 run only"
+   * while the synthesis found four conclusions in 5 of 5. A table of numbers that all say
+   * "nobody agreed" is not a rough approximation of that — it is the opposite of it, and it
+   * looks authoritative because it has numbers. Undefined is treated as clustered, so a report
+   * stored before this field existed still renders.
+   */
+  clustered?: boolean
 }
 
 const TIER_STYLE: Record<string, string> = {
@@ -40,12 +51,30 @@ const TIER_LABEL: Record<string, string> = {
   absent: 'none',
 }
 
-export function ClaimTable({ claims, cells }: Props) {
+export function ClaimTable({ claims, cells, clustered }: Props) {
   if (claims.length === 0) {
     return (
       <p className="text-sm text-slate-500">
         No demands or refusals were extracted from these conversations.
       </p>
+    )
+  }
+
+  if (clustered === false) {
+    // Withheld rather than shown with a warning. A warning above a table of numbers loses to
+    // the table every time, and these numbers say "nothing was agreed" when the synthesis
+    // says four things were agreed unanimously.
+    return (
+      <div className="rounded border border-amber-700/50 bg-amber-900/20 p-3 text-sm text-amber-100">
+        <p className="font-medium">Per-claim counts are not available for this report.</p>
+        <p className="mt-1 text-[12px] text-amber-200/80">
+          Grouping equivalent claims needs a model pass, and it did not succeed here. Without
+          it every rewording counts as a separate claim, so the table would show {claims.length}{' '}
+          claims each held by one conversation — which would read as total disagreement and is
+          simply the matcher failing. Read the synthesis below instead; regenerating the report
+          will retry the grouping.
+        </p>
+      </div>
     )
   }
 
@@ -70,6 +99,24 @@ export function ClaimTable({ claims, cells }: Props) {
                 <span className="ml-2 text-[11px] uppercase tracking-wide text-slate-500">
                   {claim.kind}
                 </span>
+                {/* The audit trail. Shown only when more than one phrasing was combined,
+                    because that is the only case where a reader has something to dispute —
+                    and a `<details>` keeps 128 rows readable while still making the merge
+                    inspectable rather than taking it on trust. */}
+                {claim.variants && claim.variants.length > 1 && (
+                  <details className="mt-1">
+                    <summary className="cursor-pointer text-[11px] text-slate-500 hover:text-slate-300">
+                      {claim.variants.length} phrasings grouped
+                    </summary>
+                    <ul className="mt-1 space-y-1 border-l border-matrix-border pl-2">
+                      {claim.variants.map((v) => (
+                        <li key={v.text} className="text-[11px] text-slate-400">
+                          <span className="text-slate-500">{v.runs.join(', ')}:</span> {v.text}
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
               </td>
               {cells.map((cell) => {
                 const at = claim.per_cell[cell]
