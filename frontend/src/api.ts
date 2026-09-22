@@ -166,6 +166,124 @@ export interface CreateRunResponse {
 }
 
 /**
+ * One labelled group of replicates inside an ensemble.
+ *
+ * `overrides` is a flat map of dotted config paths. The server's allowlist is two keys
+ * (`selection.method`, `selection.hybrid_opening_rounds`) and it refuses anything else WITH
+ * the reason — see `docs/ENSEMBLE-CONVERSATIONS.md` §5. Deliberately not narrowed to those
+ * two here: the refusal message is the thing worth showing an operator, and a type that made
+ * the request unconstructible would replace it with a compile error nobody reads at runtime.
+ */
+export interface EnsembleCell {
+  label: string
+  n: number
+  overrides?: Record<string, unknown>
+}
+
+/**
+ * Run one brief several times.
+ *
+ * `cells` omitted → replicates with nothing varied, which is the default the whole design
+ * doc argues for: it measures whether a conclusion survives resampling, and it is the
+ * control any varied cell is compared against.
+ */
+export type CreateEnsembleBody = Omit<CreateRunBody, 'config'> & {
+  config: CreateRunBody['config']
+  cells?: EnsembleCell[]
+}
+
+/** Per-cell completion, from the detail route. `complete` ⊆ `settled`. */
+export interface EnsembleCellProgress {
+  cell: string
+  declared: number
+  complete: number
+  settled: number
+}
+
+export interface EnsembleMember {
+  run_id: string
+  cell: string | null
+  index: number | null
+  /** Null when the member run was never created — a cell that is short, reported not hidden. */
+  run: RunSummary | null
+}
+
+/** One claim, tiered inside each cell against THAT cell's denominator. */
+export interface EnsembleClaim {
+  claim: string
+  kind: 'demand' | 'refusal'
+  /**
+   * Null for a cell that produced no usable extraction. Null and `held: 0` are different
+   * states: an empty cell has no opinion, while 0-of-N means every run in it declined the
+   * claim.
+   */
+  per_cell: Record<
+    string,
+    { held: number; of: number; tier: 'unanimous' | 'split' | 'rare' | 'absent'; runs: string[] } | null
+  >
+}
+
+export interface EnsembleReport {
+  ensemble_id: string
+  generated_at: number
+  cells: {
+    cell: string
+    declared: number
+    usable: number
+    runs: { run_id: string; name: string; usable: boolean; metrics: Record<string, unknown> }[]
+  }[]
+  missing_members: { run_id: string; cell: string | null; index: number | null }[]
+  claims: EnsembleClaim[]
+  per_persona: Record<string, unknown>
+  agreements: Record<string, unknown>
+  synthesis: string
+  cost_usd: number
+  /** Carried in the report itself, because whoever reads "1 of 5" has no link to the doc. */
+  caveats: string[]
+}
+
+export interface EnsembleSummary {
+  ensemble_id: string
+  name: string | null
+  description: string | null
+  topic: string | null
+  status: string | null
+  created_at: number | null
+  completed_at: number | null
+  spec: EnsembleCell[]
+  base_config: Record<string, unknown>
+  has_report: boolean
+  report: EnsembleReport | null
+  report_generated_at: number | null
+  report_cost_usd: number | null
+  /** Why there is no report, when one was attempted and refused. Worth showing: it says
+   *  whether retrying is pointless (too few usable runs) or worth a wait (a cell running). */
+  report_error: string | null
+}
+
+export interface EnsembleDetail extends EnsembleSummary {
+  members: EnsembleMember[]
+  cells: EnsembleCellProgress[]
+  /**
+   * Whether the aggregator MAY run. Deliberately not "the report exists": the last member
+   * flips its own status and then generates, in that order, so there is a window where this
+   * is true and `has_report` is false. Poll `has_report` / `report_error`.
+   */
+  report_ready: boolean
+}
+
+export interface CreateEnsembleResponse {
+  ensemble_id: string
+  name: string
+  description: string
+  topic: string
+  status: string
+  spec: EnsembleCell[]
+  members: { run_id: string; cell: string; index: number; name?: string }[]
+  failed: { run_id: string; cell: string; index: number; error: string }[]
+}
+
+/**
  * URL for a persona's avatar image.
  *
  * `key` is content-addressed, so passing it as `v` makes the URL change whenever the
@@ -243,6 +361,35 @@ export const api = {
     jsonFetch<{ run_id: string; events: SimEvent[] }>(
       `/api/runs/${encodeURIComponent(ref)}/events?after_seq=${afterSeq}`,
     ).then((r) => r.events),
+
+  // ----------------------------- Ensembles ----------------------------- //
+
+  createEnsemble: (body: CreateEnsembleBody) =>
+    jsonFetch<CreateEnsembleResponse>('/api/ensembles', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  listEnsembles: () =>
+    jsonFetch<{ ensembles: EnsembleSummary[] }>('/api/ensembles').then((r) => r.ensembles),
+
+  getEnsemble: (id: string) =>
+    jsonFetch<EnsembleDetail>(`/api/ensembles/${encodeURIComponent(id)}`),
+
+  /**
+   * Build the report now. The retry path, not the normal one — the last member to finish
+   * generates it automatically.
+   *
+   * **Expect this to time out against the deployed stack.** The extraction pass is one call
+   * per member and the synthesis asks for up to 20k output tokens, so it exceeds API
+   * Gateway's 29 s limit. The work continues server-side, so a caller that sees a network
+   * error should poll `getEnsemble` rather than retry.
+   */
+  generateEnsembleReport: (id: string, force = false) =>
+    jsonFetch<EnsembleDetail & { claimed_by_another?: boolean; detail?: string }>(
+      `/api/ensembles/${encodeURIComponent(id)}/report${force ? '?force=true' : ''}`,
+      { method: 'POST' },
+    ),
 
   /** Which knowledge-base file types this server can read, and the size limits. */
   getDocumentFormats: () =>

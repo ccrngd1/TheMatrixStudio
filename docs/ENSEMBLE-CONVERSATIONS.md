@@ -9,8 +9,9 @@ afterwards.
 > `ensemble_spec` plans and proves the cells isolated; the parent row, member linkage and
 > `POST /api/ensembles` fan out; `ensemble_reporting` builds and stores the report, triggered
 > by the last member to finish and guarded by a durable claim. Per-claim tiers are computed
-> **within each cell against that cell's own denominator**, which is 2b's substance. Stage 3
-> (UI) is untouched. §8 carries the status per step.
+> **within each cell against that cell's own denominator**, which is 2b's substance. **Stage 3
+> (UI) is done too**: a run-type selector in the new-run form, an ensemble view, and the claim
+> table. §8 carries the status per step. Nothing has yet been run against live Bedrock.
 
 **The short version.** The default ensemble mode should be **N replicates with nothing
 varied**, not N runs with different settings. That is counter-intuitive and it is the whole
@@ -263,7 +264,19 @@ Replicates first, because every other axis is defined relative to them.
    this is a data choice rather than a code change. That was the point of building cells in
    step 1 even with only one of them.
 4. **Stage 3 — UI.** An ensemble is a **run type**, not a speaker method. It owns N, the
-   cells, and the report. Not started.
+   cells, and the report.
+   **DONE.** `NewRunForm` has a `Run` selector (*Once* / *Several times*) with the replicate
+   count and an opt-in hybrid comparison group; `EnsembleView` lists the groups, opens each
+   member as an ordinary run, and renders the report; `ClaimTable` is the §4 table.
+   Three UI decisions that are load-bearing rather than cosmetic:
+   - **`ClaimTable` has no total column, deliberately.** A pooled number is the one figure
+     that destroys the distinction the table exists for, so it is not renderable, and a test
+     asserts its absence.
+   - **An empty group renders `—`, never `0 of N`.** Same reason as the API's `null`.
+   - **The button names the multiplier** (`Run 5 simulations`). Five conversations is five
+     times the spend, and `Run simulation` would not say so at the moment it matters.
+   The default run type is `single`, pinned by a test: a default that fanned out would be the
+   kind of bug nobody reports because they assume they clicked it.
 5. Later, each as its own report section: brief paraphrase (§5.2), leave-one-out (§5.3).
 
 ### 8.0 What the planner refuses, and why that is code rather than prose

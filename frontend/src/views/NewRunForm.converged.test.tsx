@@ -43,7 +43,7 @@ const turns = () =>
     .querySelector('input[type="number"]') as HTMLInputElement
 
 function renderForm() {
-  return render(<NewRunForm onStarted={() => {}} onCancel={() => {}} />)
+  return render(<NewRunForm onStarted={() => {}} onEnsembleStarted={() => {}} onCancel={() => {}} />)
 }
 
 /** "Load example" fills a valid topic and cast; the form starts with one blank persona and

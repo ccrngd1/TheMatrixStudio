@@ -60,7 +60,7 @@ const avatarBox = () =>
 
 describe('avatar generation default', () => {
   it('asks for avatars on a run nobody configured', async () => {
-    render(<NewRunForm onStarted={() => {}} onCancel={() => {}} />)
+    render(<NewRunForm onStarted={() => {}} onEnsembleStarted={() => {}} onCancel={() => {}} />)
     fillMinimum()
     expect(avatarBox().checked).toBe(true)
 
@@ -72,7 +72,7 @@ describe('avatar generation default', () => {
 
   it('still lets the operator decline the image-model spend', async () => {
     // The other half of a default: it has to be refusable, or it is a hardcode.
-    render(<NewRunForm onStarted={() => {}} onCancel={() => {}} />)
+    render(<NewRunForm onStarted={() => {}} onEnsembleStarted={() => {}} onCancel={() => {}} />)
     fillMinimum()
     fireEvent.click(avatarBox())
 

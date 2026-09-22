@@ -65,3 +65,39 @@ export const CEILING_TURNS = 100
 
 /** How the next speaker is decided. Mirrors `SelectionConfig.method` in the engine. */
 export type Method = 'moderated' | 'rotation' | 'simultaneous' | 'hybrid'
+
+/**
+ * Whether the form starts one conversation or several.
+ *
+ * A RUN TYPE rather than another speaker method, which is `docs/ENSEMBLE-CONVERSATIONS.md`
+ * §8's wording and is not a cosmetic distinction: a speaker method decides who talks inside
+ * one conversation, while this decides how many conversations exist and produces a different
+ * kind of artefact — a report over N of them, with per-cell counts.
+ */
+export type RunType = 'single' | 'ensemble'
+
+/**
+ * Replicates per cell the form offers by default.
+ *
+ * Matches `ensemble_spec.DEFAULT_REPLICATES`. Five is what supports the coarse tiers
+ * (unanimous / split / rare) the report is built on, and nothing finer — §8.2.
+ */
+export const DEFAULT_REPLICATES = 5
+
+/**
+ * Fewest replicates a cell may have.
+ *
+ * Mirrors `ensemble_spec.MIN_REPLICATES`, and the server refuses anything lower. Two is not
+ * arbitrary: with one run a cell has no within-cell variance, and that variance is the only
+ * thing that distinguishes a real finding from a coin flip.
+ */
+export const MIN_REPLICATES = 2
+
+/**
+ * Most members the form will offer across all cells.
+ *
+ * Mirrors `ensemble_spec.MAX_MEMBERS`. Not a cost control — the monthly cap is — but a guard
+ * against a slip fanning out a dozen conversations. The form also shows the member count so
+ * the multiplier is never a surprise.
+ */
+export const MAX_MEMBERS = 12
