@@ -263,13 +263,38 @@ def _normalise(claim: str) -> str:
     return " ".join(sorted(set(words)))
 
 
-def per_persona(views: Sequence[RunView]) -> Dict[str, Dict[str, Any]]:
+#: `(kind, text) -> (cluster key, canonical label)`, from `apply_clusters`.
+#:
+#: Threaded into every section that COUNTS, so the claim table, the per-persona view and the
+#: unresolved tally all group claims the same way. They did not, briefly, and the result was a
+#: table reporting a unanimous finding beside a persona section reporting zero invariant
+#: demands — from the same extractions.
+Canonical = Dict[Tuple[str, str], Tuple[str, str]]
+
+
+def _keyed(canonical: Optional[Canonical], kind: str, text: str) -> Tuple[str, str]:
+    """The key and label for one claim: clustered where available, text-matched otherwise."""
+    if canonical is not None:
+        got = canonical.get((kind, text))
+        if got is not None:
+            return got
+    return _normalise(text), text
+
+
+def per_persona(
+    views: Sequence[RunView], canonical: Optional[Canonical] = None
+) -> Dict[str, Dict[str, Any]]:
     """Each persona across every run: what they always demanded, and what varied.
 
     This is the artefact a persona AUTHOR needs. A conviction that appears in 9 of 9 runs is
     load-bearing; one that appears in 3 of 9 is either a persona that is genuinely persuadable
     or a persona whose position depends on who else got a turn — and the run list attached to
     each claim is what tells those two apart.
+
+    `canonical` is what makes `invariant_demands` mean anything. Without it this keyed on
+    `_normalise`, and on the first live ensemble EVERY persona reported zero invariant demands
+    across five runs of an identical brief — a persona who demanded the same thing five times in
+    five different sentences looked like one who had changed their mind five times.
     """
     out: Dict[str, Dict[str, Any]] = {}
     runs_with = defaultdict(lambda: defaultdict(list))   # persona -> key -> [run names]
@@ -287,20 +312,20 @@ def per_persona(views: Sequence[RunView]) -> Dict[str, Dict[str, Any]]:
             spoke[name] += 1
             positions[name].append((view.name, str(p.get("final_position") or "")))
             for d in p.get("demands") or []:
-                key = _normalise(str(d))
+                key, label = _keyed(canonical, "demand", str(d))
                 if key:
                     runs_with[name][key].append(view.name)
-                    text_of.setdefault((name, key), str(d))
+                    text_of.setdefault((name, key), label)
             for c in p.get("concessions") or []:
                 if isinstance(c, dict) and c.get("gave_up"):
                     concessions[name].append(
                         (view.name, str(c.get("gave_up")), str(c.get("because") or ""))
                     )
             for r in p.get("refusals") or []:
-                key = _normalise(str(r))
+                key, label = _keyed(canonical, "refusal", str(r))
                 if key:
                     refusals[name][key].append(view.name)
-                    text_of.setdefault((name, key), str(r))
+                    text_of.setdefault((name, key), label)
 
     total = len(views)
     for name in sorted(spoke, key=lambda n: -spoke[n]):
@@ -333,19 +358,27 @@ def per_persona(views: Sequence[RunView]) -> Dict[str, Dict[str, Any]]:
     return out
 
 
-def agreements_and_dissents(views: Sequence[RunView]) -> Dict[str, Any]:
+def agreements_and_dissents(
+    views: Sequence[RunView], canonical: Optional[Canonical] = None
+) -> Dict[str, Any]:
     """What every run's outcome shared, and what was left standing.
 
     A dissent here is defined mechanically: a demand or refusal that its holder carried into
     their final position while the run's `outcome` did not adopt it. That is deliberately
     narrower than "somebody disagreed" — a disagreement that got resolved is not a dissent,
     and the interesting artefact is the objection that survived being answered.
+
+    `canonical` groups the unresolved questions. Without it every one of them counted 1 on the
+    first live ensemble, so "the same question was left open in all five runs" — the single most
+    useful thing this section can say — was unsayable.
     """
     outcomes = [(v.name, str(v.positions.get("outcome") or "")) for v in views]
     unresolved = defaultdict(list)
     for v in views:
         for u in v.positions.get("unresolved") or []:
-            unresolved[_normalise(str(u))].append((v.name, str(u)))
+            key, label = _keyed(canonical, "unresolved", str(u))
+            if key:
+                unresolved[key].append((v.name, label))
 
     standing = []
     for v in views:
