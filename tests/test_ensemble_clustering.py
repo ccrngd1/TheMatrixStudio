@@ -114,6 +114,29 @@ class TestThePromptIsBiasedAgainstMerging:
         assert rendered.startswith("0. [demand] A state statute")
         assert "3. [demand] A state practice act that reaches treatment" in rendered
 
+    def test_the_speaker_is_shown_when_known(self):
+        # Over-merging showed up repeatedly as two claims from DIFFERENT participants in the SAME
+        # run being combined — two people, two requirements, one row. Two claims in one run cannot
+        # be one person restating themselves across runs, which is what clustering is for, and a
+        # name is the cheapest signal of that.
+        rendered = ensemble._cluster_input([
+            ("refusal", "will not accept a checkbox", "Dr. Riley"),
+            ("refusal", "will not extend his data that far", "Dr. Jordan"),
+        ])
+        assert rendered.splitlines()[0] == "0. [refusal / Dr. Riley] will not accept a checkbox"
+        assert "1. [refusal / Dr. Jordan]" in rendered
+
+    def test_an_absent_speaker_leaves_the_tag_alone(self):
+        # `unresolved` belongs to the run, not to a participant, so there is no name to show and
+        # an empty one must not render as `[unresolved / ]`.
+        rendered = ensemble._cluster_input([("unresolved", "who pays", "")])
+        assert rendered == "0. [unresolved] who pays"
+
+    def test_the_prompt_says_different_speakers_are_usually_different_requirements(self):
+        text = ensemble._CLUSTER_PROMPT.replace("\n", " ")
+        assert "DIFFERENT participants are usually different requirements" in text
+        assert "with the names hidden" in text
+
 
 # --------------------------------------------------------------------------- #
 # the call
@@ -288,8 +311,8 @@ class KindAwareCall:
 
     async def __call__(self, messages, model=None, temperature=0.4, max_tokens=None):
         prompt = messages[0]["content"]
-        kinds = {"demand" if "[demand]" in prompt else None,
-                 "refusal" if "[refusal]" in prompt else None} - {None}
+        kinds = {"demand" if "[demand" in prompt else None,
+                 "refusal" if "[refusal" in prompt else None} - {None}
         self.shown.append(sorted(kinds))
         if self.fail_kind and self.fail_kind in kinds:
             return {"content": "", "cost_usd": self.cost, "tokens_in": 1,
@@ -404,7 +427,7 @@ class TestTheMergePass:
                         "cost_usd": 0.01, "tokens_in": 1, "tokens_out": 1,
                         "finish_reason": "stop", "_prompt": prompt}
             n = sum(1 for line in prompt.splitlines() if line[:1].isdigit())
-            kind = "demand" if "[demand]" in prompt else "refusal"
+            kind = "demand" if "[demand" in prompt else "refusal"
             return {"content": json.dumps({"clusters": first_clusters[kind](n)}),
                     "cost_usd": 0.02, "tokens_in": 1, "tokens_out": 1, "finish_reason": "stop"}
 

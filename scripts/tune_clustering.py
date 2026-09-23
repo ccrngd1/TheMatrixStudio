@@ -237,6 +237,10 @@ async def main() -> int:
                          "(Sonnet 5). `low` selects LOW_VARIANCE_MODEL (Haiku 4.5), which "
                          "HONOURS temperature=0 and is therefore reproducible — measured "
                          "identical on two runs of the same input, where Sonnet is not.")
+    ap.add_argument("--batch", type=int, default=None,
+                    help="claims per clustering call within a kind. A batched call groups only "
+                         "WITHIN its batch, so use with two-pass — the merge pass is what joins "
+                         "across batches.")
     ap.add_argument("--repeat", type=int, default=1,
                     help="run each variant N times. Worth >1 only on a model that drops "
                          "temperature: with one sample of a non-deterministic clustering, a "
@@ -256,7 +260,7 @@ async def main() -> int:
     )
     runs = body["runs"]
     claims = _harvest(runs)
-    pairs = [(c["kind"], c["text"]) for c in claims]
+    pairs = [(c["kind"], c["text"], c["persona"] or "") for c in claims]
     total_runs = len(runs)
     print(f"\n{len(claims)} claims across {total_runs} runs: "
           f"{dict(Counter(c['kind'] for c in claims))}")
@@ -271,7 +275,9 @@ async def main() -> int:
     for attempt in range(1, args.repeat + 1):
         suffix = f" #{attempt}" if args.repeat > 1 else ""
         if "one-pass" in variants:
-            clusters = await ensemble.cluster_claims(pairs, model=model)
+            clusters = await ensemble.cluster_claims(
+                pairs, model=model, batch_size=args.batch,
+            )
             if not clusters:
                 print(f"\none-pass{suffix}: clustering returned nothing usable")
             else:
@@ -282,7 +288,9 @@ async def main() -> int:
                 _print(f"{name} (${cost:.4f})", results[name], total_runs)
 
         if "two-pass" in variants:
-            got = await ensemble.cluster_claims_twice(pairs, model=model)
+            got = await ensemble.cluster_claims_twice(
+                pairs, model=model, batch_size=args.batch,
+            )
             if not got:
                 print(f"\ntwo-pass{suffix}: clustering returned nothing usable")
             else:

@@ -281,7 +281,10 @@ async def build(
     canonical: Optional[ensemble.Canonical] = None
     cluster_note: Optional[str] = None
     if cluster and len(harvested) >= 2:
-        pairs = [(c["kind"], c["text"]) for c in harvested]
+        # The persona goes to the model too: over-merging showed up as two participants' distinct
+        # claims in one run being combined, and a name is the cheapest signal that they are two
+        # requirements rather than one person restating themselves across runs.
+        pairs = [(c["kind"], c["text"], c["persona"] or "") for c in harvested]
         clusters = await ensemble.cluster_claims(pairs, call=call)
         if clusters:
             cost += float(clusters[0].get("_cost_usd") or 0.0)
@@ -292,8 +295,8 @@ async def build(
                 # same sentence appears twice — `apply_clusters` guarantees each POSITION is
                 # assigned once, not that identical texts land in the same cluster.
                 canonical = {}
-                for i, (kind, text) in enumerate(pairs):
-                    canonical.setdefault((kind, text), keys[i])
+                for i, claim in enumerate(pairs):
+                    canonical.setdefault((claim[0], claim[1]), keys[i])
             except ensemble.ClusteringRejected as exc:
                 # Rejected rather than partially trusted. A clustering that dropped claims
                 # would under-count exactly like the bug it replaces, while looking fixed.

@@ -893,8 +893,8 @@ class TestEverySectionSharesTheLabels:
                 prompt = messages[0]["content"]
                 if "Group the numbered claims" in prompt:
                     n = sum(1 for line in prompt.splitlines() if line[:1].isdigit())
-                    kind = ("demand" if "[demand]" in prompt
-                            else "refusal" if "[refusal]" in prompt else "unresolved")
+                    kind = ("demand" if "[demand" in prompt
+                            else "refusal" if "[refusal" in prompt else "unresolved")
                     return {"content": json.dumps({"clusters": [
                         {"label": f"the {kind}", "members": list(range(n))},
                     ]}), "cost_usd": 0.0, "tokens_in": 1, "tokens_out": 1,
