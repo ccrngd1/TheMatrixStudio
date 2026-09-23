@@ -426,6 +426,30 @@ This is a real cost of the choice and worth carrying openly rather than discover
 implementation. It is not a reason to reverse the decision — the authority ranking Brave gave in
 §12.1 is worth a fetcher — but step 1 of §11 is now larger than it looked.
 
+### 12.4 Measured while building the fetcher
+
+Three things came out of fetching real pages, and each changed the code:
+
+**A bot block wears a success code.** The ASSOC model practice act PDF — a primary source this feature
+exists to find — returns HTTP 200 with 954 bytes of `text/html` reading "Request unsuccessful.
+Incapsula incident ID: …". It extracted to 83 characters and passed an emptiness check, so it would
+have entered a corpus as a found source: retrieval could rank it, a persona could cite it, and the run
+would have counted a citation it never had. Hence `MIN_TEXT_CHARS = 200`, with the rejected text
+logged, because that text is how the next kind of block gets recognised.
+
+**Some primary sources refuse us outright.** `vetboard.az.gov/statutes-and-rules` answers 403 to a
+non-browser user agent. That is the site's right and the fetcher identifies itself rather than
+impersonating a browser, so this is a permanent limitation rather than a bug: **a state licensed
+board's own statute page can be unreachable.** It argues for §4's documented negative recording *what
+could not be read*, not only what was not found.
+
+**What does work, works well.** `azleg.gov/ars/32/02201.htm` — Arizona Revised Statutes §32-2201 —
+extracts to 6,795 characters containing the PCR definition verbatim: "the provider has
+sufficient knowledge of the member to initiate at least a general or preliminary diagnosis" and "has
+arranged for either continuation of treatment or emergency coverage". That is the operative language
+for Riley's "is a technician form enough" objection and Casey's classification question, retrieved
+by one query. Three of four results fetched cleanly at 6.8–10.8k characters each.
+
 ### 12.3 The key
 
 `BRAVE_API_KEY`, following the `openai_api_key` / `anthropic_api_key` pattern in `settings.py`.
