@@ -391,12 +391,19 @@ snippet names "Article 4. Requirements for Regulated items".
 That is a **controlling authority for the exact question five replicate runs could not answer**.
 Recorded because it is the strongest evidence so far that §9's primary criterion is reachable.
 
+A second live query, through the provider abstraction rather than curl, returned three more primary
+sources: the ASSOC Model Licensed Practice Act, and the Arizona and Pennsylvania practice acts. The
+Arizona snippet contains the operative language verbatim — *"the provider has arranged for either
+of the following: … (ii) Continu[ation]"* — which is the continuation-of-treatment question the
+conversations kept asking about. Search is finding the right KIND of thing, not merely something.
+
 ### 12.2 Brave returns snippets, so we DO own a fetcher
 
 Correcting §10 as it was first written. Tavily and Exa return extracted page text, which is why they
-were described as avoiding a fetcher; **Brave returns titles, URLs and short descriptions**. The
-snippet above is about 100 characters — enough to rank a result, nowhere near enough to cite a
-statute.
+were described as avoiding a fetcher; **Brave returns titles, URLs and short descriptions**.
+Measured across two live queries, those descriptions run **roughly 100–500 characters** — the first
+query's were about 100, a later one's were 214–495. Enough to rank a result and to see that a page is
+promising; nowhere near enough to cite a statute.
 
 So choosing Brave means writing the fetch-and-extract step, and re-accepting the surface §10 said it
 avoided: egress from a Lambda, per-site terms of service, and SSRF if a URL ever reaches the fetcher
@@ -407,6 +414,13 @@ from anywhere but a search response. Those are now requirements rather than avoi
   resolution rather than on the hostname
 - a byte ceiling and a timeout per page, because a statute site can serve a 40 MB PDF
 - extraction that fails to text rather than raising, so one unreadable page does not lose a corpus
+
+**PDFs are not an edge case here, they are the primary sources.** A live query for "state licensed
+practice act continuation of treatment" returned the ASSOC Model Licensed Practice Act as a PDF in
+the top results, alongside Arizona and Pennsylvania statutes as HTML. So the fetcher must handle
+PDF, and it does not need a new extractor: `documents.py` already extracts PDFs for the knowledge-base
+upload flow, and `/api/documents/formats` already reports what this deployment can read. The fetcher
+hands bytes to the extractor that exists.
 
 This is a real cost of the choice and worth carrying openly rather than discovering during
 implementation. It is not a reason to reverse the decision — the authority ranking Brave gave in
