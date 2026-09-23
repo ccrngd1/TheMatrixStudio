@@ -158,24 +158,23 @@ def measure(
     }
 
     # `invariant_demands`, computed exactly as `per_persona` does: a demand is invariant for a
-    # persona when it appears in every run that persona was extracted in.
-    appeared = Counter()
-    for claim in claims:
-        if claim["persona"]:
-            appeared[claim["persona"]] = appeared[claim["persona"]]
-    persona_runs: Dict[str, set] = defaultdict(set)
-    for claim in claims:
-        if claim["persona"]:
-            persona_runs[claim["persona"]].add(claim["run"])
+    # persona when it appears in every run in which that persona named ANY demand.
+    #
+    # The denominator is runs-that-named-a-demand, not runs-appeared-in. Against the latter the
+    # metric was unreachable for real personas — one was extracted in all five runs of the live
+    # ensemble with demands recorded in only two, so nothing of his could ever be invariant.
+    # Silence is not a retraction.
+    demanded_in: Dict[str, set] = defaultdict(set)
     per_persona_key_runs: Dict[Tuple[str, Any], set] = defaultdict(set)
     for i, claim in enumerate(claims):
         if claim["kind"] != "demand" or not claim["persona"]:
             continue
         key = keys[i][0] if keys is not None else ensemble._normalise(claim["text"])
         per_persona_key_runs[(claim["persona"], key)].add(claim["run"])
+        demanded_in[claim["persona"]].add(claim["run"])
     invariant = Counter()
     for (persona, _key), runs in per_persona_key_runs.items():
-        if len(runs) == len(persona_runs[persona]):
+        if demanded_in[persona] and len(runs) == len(demanded_in[persona]):
             invariant[persona] += 1
 
     review = sorted(
@@ -201,6 +200,7 @@ def measure(
             1 for k in demand_groups if spans[k] == total_runs
         ),
         "invariant_demands": dict(invariant),
+        "demanded_in": {k: len(v) for k, v in sorted(demanded_in.items())},
         "unresolved_top": max(
             (spans[k] for k, v in groups.items() if claims[v[0]]["kind"] == "unresolved"),
             default=0,
@@ -218,6 +218,7 @@ def _print(name: str, m: Dict[str, Any], total_runs: int) -> None:
     print(f"  top unresolved group: {m['unresolved_top']}/{total_runs} runs")
     inv = m["invariant_demands"]
     print(f"  invariant demands: {inv or 'NONE for any persona'}")
+    print(f"  demand denominators: {m['demanded_in']}")
 
 
 async def main() -> int:

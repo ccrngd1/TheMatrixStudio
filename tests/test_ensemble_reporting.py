@@ -976,3 +976,132 @@ class TestEverySectionSharesTheLabels:
         assert report["clustered"] is False
         assert report["per_persona"]["Ada"]["invariant_demands"] == []
         assert len(report["claims"]) == 6, "three demands and three refusals, ungrouped"
+
+
+# --------------------------------------------------------------------------- #
+# the invariant denominator
+# --------------------------------------------------------------------------- #
+
+
+class TestInvariantIsJudgedAgainstRunsThatNamedADemand:
+    """Silence is not a retraction.
+
+    Measured on the first live 5-replicate ensemble: Jordan was extracted in all five runs and had
+    demands recorded in only two, so against a runs-appeared-in denominator no demand of his
+    could EVER be invariant — however well the clustering worked. Three attempts at clustering
+    recall could not have fixed that, because it is arithmetic, not recall.
+    """
+
+    async def _ensemble_where_one_persona_is_often_silent(self, db):
+        await _ensemble(db, [{"label": "base", "n": 3, "overrides": {}}],
+                        [{"run_id": "r1", "cell": "base", "index": 1},
+                         {"run_id": "r2", "cell": "base", "index": 2},
+                         {"run_id": "r3", "cell": "base", "index": 3}])
+        await _member(db, "ens", "r1", "base", "m1", "alpha")
+        await _member(db, "ens", "r2", "base", "m2", "beta")
+        await _member(db, "ens", "r3", "base", "m3", "gamma")
+
+        def run(dave_demands):
+            return {
+                "personas": [
+                    {"name": "Ada", "final_position": "p", "demands": ["labwork first"],
+                     "refusals": [], "concessions": []},
+                    # Present in every run, but with demands recorded in only one of them.
+                    {"name": "Jordan", "final_position": "p", "demands": dave_demands,
+                     "refusals": [], "concessions": []},
+                ],
+                "outcome": "shipped", "unresolved": [],
+            }
+
+        return {
+            "alpha": run(["a board case before he moves"]),
+            "beta": run([]),
+            "gamma": run([]),
+        }
+
+    def _identity_clustering(self, by_marker):
+        """Groups each kind's claims by exact text, so clustering is not the variable here."""
+
+        class C(FakeModel):
+            async def __call__(self, messages, **kwargs):
+                prompt = messages[0]["content"]
+                if "Group the numbered claims" in prompt:
+                    lines = [ln for ln in prompt.splitlines() if ln[:1].isdigit()]
+                    by_text = {}
+                    for ln in lines:
+                        n, _, rest = ln.partition(".")
+                        text = rest.split("] ", 1)[-1]
+                        by_text.setdefault(text, []).append(int(n))
+                    return {"content": json.dumps({"clusters": [
+                        {"label": t, "members": m} for t, m in by_text.items()
+                    ]}), "cost_usd": 0.0, "tokens_in": 1, "tokens_out": 1,
+                        "finish_reason": "stop"}
+                return await super().__call__(messages, **kwargs)
+
+        return C(by_marker)
+
+    async def test_a_persona_silent_in_most_runs_can_still_have_an_invariant_demand(self, db):
+        by_marker = await self._ensemble_where_one_persona_is_often_silent(db)
+        report = await ensemble_reporting.build(
+            db, "ens", call=self._identity_clustering(by_marker),
+        )
+
+        jordan = report["per_persona"]["Jordan"]
+        assert jordan["appears_in_runs"] == 3, "he was in every run"
+        assert jordan["demanded_in_runs"] == 1, "but named a demand in only one"
+        assert [d["claim"] for d in jordan["invariant_demands"]] == [
+            "a board case before he moves"
+        ], "his one demand held in every run he made one in"
+
+    async def test_the_denominator_is_reported_so_the_claim_can_be_read(self, db):
+        # "Invariant across 1 run" and "invariant across 3" are very different claims, and a
+        # reader cannot tell them apart from the word `invariant` alone.
+        by_marker = await self._ensemble_where_one_persona_is_often_silent(db)
+        report = await ensemble_reporting.build(
+            db, "ens", call=self._identity_clustering(by_marker),
+        )
+
+        ada = report["per_persona"]["Ada"]
+        assert (ada["appears_in_runs"], ada["demanded_in_runs"]) == (3, 3)
+        assert [d["claim"] for d in ada["invariant_demands"]] == ["labwork first"]
+
+    async def test_a_demand_missing_from_a_run_that_had_others_is_still_situational(self, db):
+        # The distinction the denominator must preserve: naming demand X in run 1 and demand Y in
+        # run 2 is a persona whose demands VARY, and neither is invariant. Only silence is
+        # excused, not substitution.
+        await _ensemble(db, [{"label": "base", "n": 2, "overrides": {}}],
+                        [{"run_id": "r1", "cell": "base", "index": 1},
+                         {"run_id": "r2", "cell": "base", "index": 2}])
+        await _member(db, "ens", "r1", "base", "m1", "alpha")
+        await _member(db, "ens", "r2", "base", "m2", "beta")
+        by_marker = {
+            "alpha": _extraction(("Ada", ["demand X"], [])),
+            "beta": _extraction(("Ada", ["demand Y"], [])),
+        }
+        report = await ensemble_reporting.build(
+            db, "ens", call=self._identity_clustering(by_marker),
+        )
+
+        ada = report["per_persona"]["Ada"]
+        assert ada["demanded_in_runs"] == 2
+        assert ada["invariant_demands"] == []
+        assert {d["claim"] for d in ada["situational_demands"]} == {"demand X", "demand Y"}
+
+    async def test_a_persona_who_never_demanded_anything_has_no_invariant_demands(self, db):
+        await _ensemble(db, [{"label": "base", "n": 2, "overrides": {}}],
+                        [{"run_id": "r1", "cell": "base", "index": 1},
+                         {"run_id": "r2", "cell": "base", "index": 2}])
+        await _member(db, "ens", "r1", "base", "m1", "alpha")
+        await _member(db, "ens", "r2", "base", "m2", "beta")
+        quiet = {
+            "personas": [{"name": "Quiet", "final_position": "p", "demands": [],
+                          "refusals": ["will not sign"], "concessions": []}],
+            "outcome": "o", "unresolved": [],
+        }
+        report = await ensemble_reporting.build(
+            db, "ens", call=self._identity_clustering({"alpha": quiet, "beta": quiet}),
+        )
+
+        q = report["per_persona"]["Quiet"]
+        assert q["demanded_in_runs"] == 0
+        assert q["invariant_demands"] == [], "an empty denominator is not a vacuous truth"
