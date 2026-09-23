@@ -67,6 +67,7 @@ function detail(over: Record<string, unknown> = {}) {
     report_generated_at: null,
     report_cost_usd: null,
     report_error: null,
+    report_claimed_at: null,
     members: [member('r1', 'base', 1), member('r2', 'base', 2)],
     cells: [{ cell: 'base', declared: 2, complete: 2, settled: 2 }],
     report_ready: true,
@@ -150,27 +151,60 @@ describe('EnsembleView', () => {
     expect(screen.getByText(/this group is short/)).toBeInTheDocument()
   })
 
-  it('calls a settled ensemble with no report "building", not finished', async () => {
-    mocked.getEnsemble.mockResolvedValue(detail({ report_ready: true, has_report: false }))
+  it('says a claimed report is being built, and offers no button', async () => {
+    // A report takes ~8 minutes. That is long enough for an operator to conclude it failed, and
+    // the only thing distinguishing "building now" from "nobody is working on it" is the claim —
+    // `has_report` is false in both. Offering a FORCED rebuild here means paying for a second
+    // report while the first is still running, which is what the button used to do.
+    mocked.getEnsemble.mockResolvedValue(
+      detail({
+        report_ready: true,
+        has_report: false,
+        report_claimed_at: Math.floor(Date.now() / 1000) - 120,
+      }),
+    )
     render(<EnsembleView ensembleId="e1" onBack={() => {}} onOpenRun={() => {}} />)
 
     await waitFor(() => expect(screen.getByText(/Building the report/)).toBeInTheDocument())
+    expect(screen.getByText(/2 minutes ago/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Build the report/ })).not.toBeInTheDocument()
   })
 
-  it('forces when the operator asks for the report', async () => {
-    // Not politeness. An unforced call returns `claimed_by_another` whenever a claim is held,
-    // including one held by a build that already died — and on the automatic path there is
-    // exactly ONE trigger, so nothing else will ever retry. A polite button here is a button
-    // that does nothing, which is the worse failure.
-    mocked.getEnsemble.mockResolvedValue(detail({ report_ready: true, has_report: false }))
+  it('offers the button when nothing has claimed the report', async () => {
+    // The other half: the automatic path has exactly ONE trigger — the last member to finish — so
+    // if that never claimed, nothing will ever retry and a button is the only way anything
+    // happens.
+    mocked.getEnsemble.mockResolvedValue(
+      detail({ report_ready: true, has_report: false, report_claimed_at: null }),
+    )
     mocked.generateEnsembleReport.mockResolvedValue({ accepted: true })
     render(<EnsembleView ensembleId="e1" onBack={() => {}} onOpenRun={() => {}} />)
 
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: /Build it now/ })).toBeInTheDocument(),
+      expect(screen.getByText(/no report is being built/)).toBeInTheDocument(),
     )
-    fireEvent.click(screen.getByRole('button', { name: /Build it now/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Build the report/ }))
+    // Still forced: an unforced call is refused whenever ANY claim is held, including a dead one.
     await waitFor(() => expect(mocked.generateEnsembleReport).toHaveBeenCalledWith('e1', true))
+  })
+
+  it('stops trusting a claim once the lease has expired', async () => {
+    // Matching the server's 20-minute lease. Past it the claimant is presumed dead and the server
+    // lets another caller take over, so a build killed by a timeout must not leave the page
+    // claiming progress for ever.
+    mocked.getEnsemble.mockResolvedValue(
+      detail({
+        report_ready: true,
+        has_report: false,
+        report_claimed_at: Math.floor(Date.now() / 1000) - 25 * 60,
+      }),
+    )
+    render(<EnsembleView ensembleId="e1" onBack={() => {}} onOpenRun={() => {}} />)
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Build the report/ })).toBeInTheDocument(),
+    )
+    expect(screen.queryByText(/Building the report/)).not.toBeInTheDocument()
   })
 
   it('explains the wait while conversations are still running', async () => {

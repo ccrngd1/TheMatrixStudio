@@ -1601,6 +1601,13 @@ class DynamoStorage:
         for entry in declared:
             run_id = str(entry.get("run_id") or "")
             run = await self.get_run(run_id, owner_sub=owner_sub) if run_id else None
+            if run is not None:
+                # `get_run` returns the ROW, and turn count and cost are not on it — they are
+                # derived from the event log by `get_run_stats`, which `list_runs` calls for
+                # exactly this reason. Without it every member reported "complete · 0 turns ·
+                # $0.000": the status was right, so the zeros read as a broken view rather than
+                # as a missing join.
+                run.update(await self.get_run_stats(run_id, owner_sub=owner_sub))
             out.append(
                 {
                     "run_id": run_id,

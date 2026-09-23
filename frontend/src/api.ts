@@ -274,6 +274,14 @@ export interface EnsembleSummary {
   /** Why there is no report, when one was attempted and refused. Worth showing: it says
    *  whether retrying is pointless (too few usable runs) or worth a wait (a cell running). */
   report_error: string | null
+  /**
+   * When a build took ownership, or null if none has.
+   *
+   * The only way to distinguish "being built right now" from "finished and nobody is working on
+   * it": `has_report` is false in both. A report takes ~8 minutes, so that window is long enough
+   * for an operator to conclude it failed and force a second one.
+   */
+  report_claimed_at?: number | null
 }
 
 export interface EnsembleDetail extends EnsembleSummary {

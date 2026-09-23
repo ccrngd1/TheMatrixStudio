@@ -32,6 +32,16 @@ interface Props {
 /** How often to re-read an ensemble that is still working. */
 const POLL_MS = 4000
 
+/**
+ * How long a report claim is trusted, matching the server's lease in
+ * `storage/dynamo.REPORT_LEASE_SECONDS`.
+ *
+ * Past it the claimant is presumed dead and the server will let another caller take over, so the
+ * view has to stop saying "building" and offer the button again — otherwise a build killed by a
+ * timeout leaves the page claiming progress for ever.
+ */
+const STALE_CLAIM_MS = 20 * 60 * 1000
+
 export function EnsembleView({ ensembleId, onBack, onOpenRun }: Props) {
   const [detail, setDetail] = useState<EnsembleDetail | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -125,6 +135,21 @@ export function EnsembleView({ ensembleId, onBack, onOpenRun }: Props) {
 
   const declared = detail.cells.reduce((n, c) => n + c.declared, 0)
   const settledCount = detail.cells.reduce((n, c) => n + c.settled, 0)
+
+  // A build owns this if it claimed recently. `STALE_CLAIM_MS` matches the server's 20-minute
+  // lease: past it the claimant is presumed dead and the claim is reclaimable, so the view must
+  // offer the button again rather than saying "building" for ever.
+  const claimedAt = detail.report_claimed_at ?? null
+  const claimedMsAgo = claimedAt ? Date.now() - claimedAt * 1000 : null
+  const buildInFlight = claimedMsAgo !== null && claimedMsAgo < STALE_CLAIM_MS
+  const claimedAgo =
+    claimedMsAgo === null
+      ? 'just now'
+      : claimedMsAgo < 60_000
+        ? 'less than a minute ago'
+        : `${Math.round(claimedMsAgo / 60_000)} minute${
+            Math.round(claimedMsAgo / 60_000) === 1 ? '' : 's'
+          } ago`
   const cellOrder = detail.spec.map((c) => c.label)
   // Any group present in the report but missing from the spec still has to render — a
   // hand-made ensemble or an older row could have one, and dropping it would silently hide
@@ -218,21 +243,36 @@ export function EnsembleView({ ensembleId, onBack, onOpenRun }: Props) {
 
         {detail.report_ready && !detail.has_report && !detail.report_error && (
           <div className="space-y-2">
-            <p className="text-sm text-slate-400">Building the report…</p>
-            {/* Forced, deliberately. An operator looking at "no report" and pressing a
-                button must get a report, and an unforced call returns
-                `claimed_by_another` whenever a claim is held — including one held by a
-                build that already died. On the automatic path there is exactly ONE
-                trigger (the last member to finish), so nothing else will ever retry; a
-                polite button here is a button that does nothing. Paying twice needs a
-                deliberate click and is the lesser problem. */}
-            <button
-              onClick={() => generate(true)}
-              disabled={generating}
-              className="rounded border border-matrix-border px-2 py-1 text-xs text-slate-300 disabled:opacity-50"
-            >
-              {generating ? 'Working…' : 'Build it now'}
-            </button>
+            {/* Two states that `has_report: false` cannot tell apart, and they call for opposite
+                controls. A claim means a build owns this right now — a report takes about eight
+                minutes, which is long enough for an operator to conclude it failed — so offering
+                a FORCED rebuild there invites paying for a second one. No claim means nothing is
+                working on it, and then a button is the only way anything happens, because the
+                automatic path has exactly one trigger: the last member to finish. */}
+            {buildInFlight ? (
+              <>
+                <p className="text-sm text-slate-400">
+                  Building the report — started {claimedAgo}. This takes about eight minutes: one
+                  pass per conversation, then the grouping and the synthesis.
+                </p>
+                <p className="text-[11px] text-slate-500">
+                  It will appear here on its own. Nothing needs to stay open.
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="text-sm text-slate-400">
+                  Every conversation has finished and no report is being built.
+                </p>
+                <button
+                  onClick={() => generate(true)}
+                  disabled={generating}
+                  className="rounded border border-matrix-border px-2 py-1 text-xs text-slate-300 disabled:opacity-50"
+                >
+                  {generating ? 'Working…' : 'Build the report'}
+                </button>
+              </>
+            )}
           </div>
         )}
 
