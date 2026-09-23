@@ -198,12 +198,44 @@ class TestApplyClustersRefusesUnsoundness:
         with pytest.raises(ensemble.ClusteringRejected, match="not assigned"):
             ensemble.apply_clusters(REWORDED, [{"label": "x", "members": [0, 1]}])
 
-    def test_a_duplicated_claim_is_refused(self):
-        # Would inflate a count: one claim contributing to two clusters.
-        with pytest.raises(ensemble.ClusteringRejected, match="two clusters"):
+    def test_a_duplicated_claim_is_repaired_not_refused(self):
+        # A duplicate is safe in the only direction that matters: first assignment wins, so the
+        # losing cluster is one member short and the worst case is a merge that does not happen.
+        # Nothing is deleted and no count is inflated. Rejecting the whole clustering over a
+        # bookkeeping slip threw away Haiku's entire otherwise-reproducible grouping.
+        keys = ensemble.apply_clusters(REWORDED, [
+            {"label": "a", "members": [0, 1, 2, 3]},
+            {"label": "b", "members": [2]},
+        ])
+        assert keys[2][1] == "a", "the first assignment won"
+        assert len(keys) == 4, "every claim still has exactly one cluster"
+
+    def test_bulk_duplication_is_refused(self):
+        # Past the repair limit the model is not doing the task, and repairing most of its
+        # answer would be pretending otherwise.
+        with pytest.raises(ensemble.ClusteringRejected, match="repair limit"):
             ensemble.apply_clusters(REWORDED, [
                 {"label": "a", "members": [0, 1, 2, 3]},
-                {"label": "b", "members": [2]},
+                {"label": "b", "members": [0, 1, 2, 3]},
+            ])
+
+    def test_one_duplicate_is_repairable_however_small_the_set(self):
+        # A proportion alone would make a single slip fatal on a small ensemble and tolerable on
+        # a large one. It is the same slip and it costs at most one merge either way.
+        two = [("demand", "a"), ("demand", "b")]
+        keys = ensemble.apply_clusters(two, [
+            {"label": "first", "members": [0, 1]},
+            {"label": "second", "members": [1]},
+        ])
+        assert keys[1][1] == "first"
+
+    def test_a_dropped_claim_stays_fatal_even_alongside_a_duplicate(self):
+        # The two faults are not equivalent: a duplicate costs recall, a drop under-counts
+        # exactly like the bug being replaced. Repairing one must not excuse the other.
+        with pytest.raises(ensemble.ClusteringRejected, match="not assigned"):
+            ensemble.apply_clusters(REWORDED, [
+                {"label": "a", "members": [0, 1]},
+                {"label": "b", "members": [1]},
             ])
 
     def test_an_invented_claim_is_refused(self):

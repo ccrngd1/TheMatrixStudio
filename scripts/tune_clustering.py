@@ -231,7 +231,24 @@ async def main() -> int:
                     help="repeatable; default: none and one-pass")
     ap.add_argument("--review", type=int, default=0,
                     help="print the N most suspicious merges for a human to check")
+    ap.add_argument("--model", default=None,
+                    help="model for the clustering calls. Default: the summary role's "
+                         "(Sonnet 5). `low` selects LOW_VARIANCE_MODEL (Haiku 4.5), which "
+                         "HONOURS temperature=0 and is therefore reproducible — measured "
+                         "identical on two runs of the same input, where Sonnet is not.")
+    ap.add_argument("--repeat", type=int, default=1,
+                    help="run each variant N times. Worth >1 only on a model that drops "
+                         "temperature: with one sample of a non-deterministic clustering, a "
+                         "difference between variants is indistinguishable from noise.")
     args = ap.parse_args()
+
+    model = args.model
+    if model == "low":
+        from matrix_studio.models import LOW_VARIANCE_MODEL
+
+        model = LOW_VARIANCE_MODEL
+    if model:
+        print(f"clustering model: {model}")
 
     body = await _extractions(
         args.owner, args.ensemble, Path(args.cache), args.refresh
@@ -250,25 +267,29 @@ async def main() -> int:
         results["none (text matching)"] = measure(claims, None, total_runs)
         _print("none (text matching)", results["none (text matching)"], total_runs)
 
-    if "one-pass" in variants:
-        clusters = await ensemble.cluster_claims(pairs)
-        if not clusters:
-            print("\none-pass: clustering returned nothing usable")
-        else:
-            keys = ensemble.apply_clusters(pairs, clusters)
-            cost = float(clusters[0].get("_cost_usd") or 0.0)
-            results["one-pass"] = measure(claims, keys, total_runs)
-            _print(f"one-pass (${cost:.4f})", results["one-pass"], total_runs)
+    for attempt in range(1, args.repeat + 1):
+        suffix = f" #{attempt}" if args.repeat > 1 else ""
+        if "one-pass" in variants:
+            clusters = await ensemble.cluster_claims(pairs, model=model)
+            if not clusters:
+                print(f"\none-pass{suffix}: clustering returned nothing usable")
+            else:
+                keys = ensemble.apply_clusters(pairs, clusters)
+                cost = float(clusters[0].get("_cost_usd") or 0.0)
+                name = f"one-pass{suffix}"
+                results[name] = measure(claims, keys, total_runs)
+                _print(f"{name} (${cost:.4f})", results[name], total_runs)
 
-    if "two-pass" in variants:
-        got = await ensemble.cluster_claims_twice(pairs)
-        if not got:
-            print("\ntwo-pass: clustering returned nothing usable")
-        else:
-            clusters, cost = got
-            keys = ensemble.apply_clusters(pairs, clusters)
-            results["two-pass"] = measure(claims, keys, total_runs)
-            _print(f"two-pass (${cost:.4f})", results["two-pass"], total_runs)
+        if "two-pass" in variants:
+            got = await ensemble.cluster_claims_twice(pairs, model=model)
+            if not got:
+                print(f"\ntwo-pass{suffix}: clustering returned nothing usable")
+            else:
+                clusters, cost = got
+                keys = ensemble.apply_clusters(pairs, clusters)
+                name = f"two-pass{suffix}"
+                results[name] = measure(claims, keys, total_runs)
+                _print(f"{name} (${cost:.4f})", results[name], total_runs)
 
     if args.review:
         for name, m in results.items():

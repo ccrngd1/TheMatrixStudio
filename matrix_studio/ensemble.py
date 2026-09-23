@@ -816,6 +816,13 @@ class ClusteringRejected(ValueError):
     """A clustering that would change the counts rather than only group them."""
 
 
+#: Share of claims that may be assigned twice before the clustering is refused outright.
+#:
+#: A duplicate is repaired rather than fatal (see `apply_clusters`), but a model producing them
+#: in bulk is not doing the task, and repairing 40% of its answer would be pretending otherwise.
+MAX_DUPLICATE_SHARE = 0.1
+
+
 def apply_clusters(
     claims: Sequence[Tuple[str, str]], clusters: Sequence[Dict[str, Any]]
 ) -> Dict[int, Tuple[str, str]]:
@@ -825,10 +832,23 @@ def apply_clusters(
     a model asked to group 128 claims can quietly drop twenty, and the result would under-count
     exactly like the bug being fixed here — while looking like a fix.
 
-    Refuses when a claim is unassigned, assigned twice, or invented, and when a cluster mixes
-    a demand with a refusal. The caller treats a refusal as "no clustering available" and falls
-    back to text matching with a caveat, which is worse but honest.
+    **Two classes of fault, and they are not equivalent.**
+
+    *Fatal* — a claim unassigned, invented, or a cluster mixing a demand with a refusal. Each
+    changes the counts in the direction that misleads: a dropped claim under-counts exactly like
+    the text matching this replaces, and a mixed cluster asserts that requiring something and
+    refusing it are one act.
+
+    *Repaired* — a claim assigned to TWO clusters. First assignment wins. This is safe in the
+    only direction that matters here: the losing cluster ends up one member short, so the worst
+    case is a merge that does not happen. Nothing is deleted and no count is inflated. Rejecting
+    the whole clustering for it would throw away a good grouping over a bookkeeping slip, and it
+    is a slip small models actually make — Haiku 4.5 duplicated one claim of 153 while being
+    otherwise reproducible, where a rejection cost the entire result.
+
+    Beyond `MAX_DUPLICATE_SHARE` the repair stops being a repair and the clustering is refused.
     """
+    duplicates: List[int] = []
     seen: Dict[int, Tuple[str, str]] = {}
     for n, cluster in enumerate(clusters):
         members = cluster.get("members")
@@ -850,7 +870,10 @@ def apply_clusters(
                     f"(there are {len(claims)})"
                 )
             if i in seen:
-                raise ClusteringRejected(f"claim {i} is in two clusters")
+                # First assignment wins. Recorded rather than silently tolerated, because a
+                # rising count is how a model drifting off-task would show itself.
+                duplicates.append(i)
+                continue
             kinds.add(claims[i][0])
             seen[i] = (f"c{n}", label)
         if len(kinds) > 1:
@@ -858,6 +881,23 @@ def apply_clusters(
                 f"cluster {n} mixes {sorted(kinds)} — requiring something and refusing "
                 "something are different acts"
             )
+
+    # `max(1, ...)`, so ONE duplicate is always repairable however few claims there are. A
+    # proportion alone would make a single slip fatal on a small ensemble and tolerable on a
+    # large one, which is backwards: the slip is the same slip, and it costs at most one merge.
+    allowed = max(1, int(MAX_DUPLICATE_SHARE * len(claims)))
+    if len(duplicates) > allowed:
+        raise ClusteringRejected(
+            f"{len(duplicates)} of {len(claims)} claim(s) were assigned to more than one "
+            f"cluster, over the repair limit of {allowed}. At this rate the grouping is not "
+            "being done, and repairing it would be pretending otherwise."
+        )
+    if duplicates:
+        logger.info(
+            "Repaired %d duplicate assignment(s) in the clustering (first wins): claims %s. "
+            "The effect is at most a merge that does not happen.",
+            len(duplicates), sorted(set(duplicates))[:8],
+        )
 
     missing = [i for i in range(len(claims)) if i not in seen]
     if missing:
