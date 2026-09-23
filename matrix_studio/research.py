@@ -56,6 +56,16 @@ SHARED_QUERIES = 6
 RESULTS_PER_QUERY = 5
 FETCH_PER_QUERY = 3
 
+#: Characters a source must yield to enter a corpus, whoever supplied the text.
+#:
+#: Mirrors `webfetch.MIN_TEXT_CHARS` and exists for the same reason arrived at from the other
+#: direction. `webfetch` floors pages it reads itself; this floors text a PROVIDER supplied, which
+#: was unguarded. Measured: Tavily returns its own ~150-character summary when its extraction fails,
+#: so `assoc.org/KB/.../PCR.aspx` came back as 156 characters — and `TavilySearch` deliberately falls
+#: back to the summary, so that entered the corpus as a document. Same failure as an Incapsula block
+#: page: a source that could not be read, counted as one that was.
+MIN_DOCUMENT_CHARS = 200
+
 #: Authority tiers, strongest first. `unknown` exists because a tiering call that fails must not
 #: silently promote everything to `commentary` — that would be a judgement nobody made.
 TIERS = ("controlling", "persuasive", "commentary", "unknown")
@@ -520,11 +530,18 @@ async def gather(
                     corpus.unreadable.append((url, "could not be read"))
                     continue
                 text = page.text
-            if not str(text).strip():
+            body = str(text).strip()
+            if len(body) < MIN_DOCUMENT_CHARS:
+                # Too thin to be the source it claims to be. Recorded as unreadable rather than
+                # dropped, so the negative can say a source was seen and not obtained — which for a
+                # provider-supplied summary is exactly what happened.
+                corpus.unreadable.append(
+                    (url, f"only {len(body)} chars returned; a summary, not the source")
+                )
                 continue
             by_url[url] = ResearchedDocument(
                 title=getattr(r, "title", "") or url,
-                text=str(text),
+                text=body,
                 url=url,
                 found_by=[query.text],
             )
