@@ -476,6 +476,13 @@ nobody reading the report can tell that it happened.
 Never put a `demand` and a `refusal` in the same cluster: requiring something and refusing \
 something are different acts even when they concern the same subject.
 
+Each claim is tagged with the participant who made it, where that is known. **Claims from \
+DIFFERENT participants are usually different requirements even when they sound alike**, because \
+each person wants a thing for their own reasons and would be satisfied by different evidence. \
+You are looking for one person restating themselves across runs. Two claims made by different \
+people are strong evidence of two requirements — group them only if you would still group them \
+with the names hidden.
+
 Give each cluster a `label`: the requirement in under 15 words, in the participants' own \
 vocabulary, neutral as to whether anyone agreed.
 
@@ -489,11 +496,23 @@ The claims:
 """
 
 
-def _cluster_input(claims: Sequence[Tuple[str, str]]) -> str:
-    """`[(kind, text)]` as a numbered list for the prompt."""
-    return "\n".join(
-        f"{i}. [{kind}] {text}" for i, (kind, text) in enumerate(claims)
-    )
+def _cluster_input(claims: Sequence[Sequence[str]]) -> str:
+    """Claims as a numbered list for the prompt, with the speaker when it is known.
+
+    The speaker matters more than it looks. Over-merging showed up repeatedly as two claims
+    from DIFFERENT participants in the SAME run being combined — "will not accept 'no complaint
+    history' as an answer to HER mechanism question" merged with "will not extend HIS
+    absence-of-complaints data to a broader model". Two people, two requirements, one row.
+
+    Two claims in one run cannot be one participant restating themselves across runs, which is
+    what the clustering is for; and a name is the cheapest possible signal of that.
+    """
+    lines = []
+    for i, claim in enumerate(claims):
+        kind, text = claim[0], claim[1]
+        who = claim[2] if len(claim) > 2 else None
+        lines.append(f"{i}. [{kind}{f' / {who}' if who else ''}] {text}")
+    return "\n".join(lines)
 
 
 #: Output budget per clustering call.
@@ -514,17 +533,33 @@ def _cluster_input(claims: Sequence[Tuple[str, str]]) -> str:
 #: only thing that distinguishes it from a refusal.
 CLUSTER_MAX_TOKENS = 64000
 
+#: Claims per clustering call, within one kind. `None` would mean one call per kind.
+#:
+#: Measured: Haiku 4.5 left 5 of 72 refusal claims UNASSIGNED in a single call — the fatal
+#: class — and completed cleanly at 24 per call, three times out of three. So the limit is how
+#: many items it carries through one reply, not capability. Sonnet 5 completes 72 but spends
+#: ~29,000 output tokens of reasoning doing it, which is minutes of wall-clock inside a Lambda.
+#:
+#: A batched call can only group WITHIN its batch, so batching makes the label-merge pass
+#: load-bearing rather than optional — `cluster_claims_twice` is the complete operation.
+CLUSTER_BATCH_SIZE = 24
+
 
 async def _cluster_one_kind(
     kind: str,
-    indexed: Sequence[Tuple[int, str]],
+    indexed: Sequence[Tuple[int, str, str]],
     *,
     model: Optional[Any],
     call: Any,
     max_tokens: int,
 ) -> Optional[Tuple[List[Dict[str, Any]], float]]:
-    """Cluster one kind's claims. Returns `(clusters over GLOBAL indices, cost)` or None."""
-    local = [(kind, text) for _, text in indexed]
+    """Cluster one kind's claims. Returns `(clusters over GLOBAL indices, cost)` or None.
+
+    `indexed` is `[(global index, text, speaker)]`. The speaker is passed through to the prompt
+    rather than dropped here — it is the signal that two similar-sounding claims belong to two
+    people and are therefore two requirements.
+    """
+    local = [(kind, text, who) for _, text, who in indexed]
     result = await call(
         [{"role": "user", "content": _CLUSTER_PROMPT.format(claims=_cluster_input(local))}],
         model=model,
@@ -592,6 +627,7 @@ async def cluster_claims(
     model: Optional[Any] = None,
     call: Optional[Any] = None,
     max_tokens: int = CLUSTER_MAX_TOKENS,
+    batch_size: Optional[int] = None,
 ) -> Optional[List[Dict[str, Any]]]:
     """Group `[(kind, text)]` into canonical clusters. `None` if it could not be done.
 
@@ -599,6 +635,13 @@ async def cluster_claims(
     "never merge a demand with a refusal" rule structural instead of only a check afterwards —
     the model is never shown a mixture, so it cannot propose one. It also halves each call's
     output, which is what the 8000-token failure was really about.
+
+    **`batch_size` splits a kind further**, and a batched call can only group claims WITHIN its
+    batch — joining across batches is the merge pass's job, so `cluster_claims_twice` is the
+    complete operation when batching. Measured reason to batch: Haiku 4.5 left 5 of 72 refusal
+    claims unassigned in one call and completed cleanly at 24 per call, so the limit is task size
+    rather than capability. Sonnet 5 completes 72 but spends ~29,000 output tokens of reasoning
+    doing it, which is minutes of wall-clock.
 
     A kind with a single claim is given its own cluster without a call: there is nothing to
     group, and paying to be told so is waste.
@@ -613,34 +656,41 @@ async def cluster_claims(
     if call is None:
         from matrix_studio.analysis import _acompletion as call  # type: ignore
 
-    by_kind: Dict[str, List[Tuple[int, str]]] = defaultdict(list)
-    for i, (kind, text) in enumerate(claims):
-        by_kind[kind].append((i, text))
+    by_kind: Dict[str, List[Tuple[int, str, str]]] = defaultdict(list)
+    for i, claim in enumerate(claims):
+        kind, text = claim[0], claim[1]
+        who = claim[2] if len(claim) > 2 else ""
+        by_kind[kind].append((i, text, who))
 
     combined: List[Dict[str, Any]] = []
     cost = 0.0
 
     # Kinds with one claim need no call at all; grouping a single item is nothing to ask for.
-    to_call = []
+    # Everything else is split into batches — see `CLUSTER_BATCH_SIZE`.
+    to_call: List[Tuple[str, List[Tuple[int, str]]]] = []
     for kind in sorted(by_kind):
         indexed = by_kind[kind]
         if len(indexed) == 1:
-            i, text = indexed[0]
+            i, text, _who = indexed[0]
             combined.append({"label": text, "members": [i]})
-        else:
-            to_call.append((kind, indexed))
+            continue
+        size = batch_size or len(indexed)
+        for start in range(0, len(indexed), size):
+            to_call.append((kind, indexed[start:start + size]))
 
-    # Concurrently. The kinds are independent by construction — that is the whole point of
-    # splitting them — and each call spends minutes on reasoning: measured at ~29,000 output
-    # tokens to produce a ~1,100-token answer. Running them in sequence doubled the report's
-    # wall-clock for nothing, and wall-clock is what has to fit inside a Lambda.
+    # Concurrently, across kinds AND batches. Every call is independent, and each one spends
+    # minutes on reasoning: measured at ~29,000 output tokens to produce a ~1,100-token answer.
+    # Running them in sequence doubled the report's wall-clock for nothing, and wall-clock is
+    # what has to fit inside a Lambda.
     results = await asyncio.gather(*(
         _cluster_one_kind(kind, indexed, model=model, call=call, max_tokens=max_tokens)
         for kind, indexed in to_call
     ))
     for got in results:
         # All or nothing: clustered demands beside unclustered refusals would leave half the
-        # table trustworthy with no way for a reader to tell which half.
+        # table trustworthy with no way for a reader to tell which half. The same applies across
+        # batches of one kind — a batch that failed would leave its claims ungrouped while its
+        # neighbours were grouped, and nothing in the output would say which was which.
         if got is None:
             return None
         clusters, spent = got
@@ -775,14 +825,21 @@ async def cluster_claims_twice(
     *,
     model: Optional[Any] = None,
     call: Optional[Any] = None,
+    batch_size: Optional[int] = CLUSTER_BATCH_SIZE,
 ) -> Optional[Tuple[List[Dict[str, Any]], float]]:
     """`cluster_claims` followed by a merge pass over the labels. `(clusters, cost)` or None.
 
-    The merge pass failing is not fatal — pass one's result is returned unchanged, because it is
-    strictly better than text matching and the point of the second pass is extra recall rather
-    than correctness.
+    With `batch_size` set — the default — pass one can only group within a batch, so the merge
+    pass is what joins equivalent claims across batches. It is therefore load-bearing here in a
+    way it is not for a single unbatched call, and its failure costs real recall rather than a
+    little extra.
+
+    The merge pass failing is still not FATAL: pass one's result is returned unchanged, because
+    even a batch-local grouping is far better than text matching, which grouped nothing at all.
     """
-    first = await cluster_claims(claims, model=model, call=call)
+    first = await cluster_claims(
+        claims, model=model, call=call, batch_size=batch_size,
+    )
     if not first:
         return None
     cost = float(first[0].get("_cost_usd") or 0.0)
