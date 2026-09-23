@@ -303,6 +303,9 @@ def per_persona(
     concessions: Dict[str, List[Tuple[str, str, str]]] = defaultdict(list)
     refusals = defaultdict(lambda: defaultdict(list))
     spoke = Counter()
+    # Runs in which this persona named at least one demand. The DENOMINATOR for `invariant`,
+    # and not the same thing as the runs they appeared in — see the split below.
+    demanded_in: Dict[str, set] = defaultdict(set)
 
     for view in views:
         for p in (view.positions.get("personas") or []):
@@ -316,6 +319,7 @@ def per_persona(
                 if key:
                     runs_with[name][key].append(view.name)
                     text_of.setdefault((name, key), label)
+                    demanded_in[name].add(view.name)
             for c in p.get("concessions") or []:
                 if isinstance(c, dict) and c.get("gave_up"):
                     concessions[name].append(
@@ -333,18 +337,28 @@ def per_persona(
         out[name] = {
             "appears_in_runs": spoke[name],
             "of_runs": total,
-            # Split at "every run in which this persona was extracted at all", not at the
-            # ensemble size: a persona who never spoke in a run cannot be said to have
-            # dropped a demand there.
+            # The denominator `invariant` is judged against, reported so a reader can see it.
+            # "Invariant across 2 runs" and "invariant across 5" are different claims.
+            "demanded_in_runs": len(demanded_in[name]),
+            # Split at "every run in which this persona named ANY demand", not at the runs they
+            # appeared in and not at the ensemble size.
+            #
+            # The earlier denominator was runs-appeared-in, and it made the metric unreachable
+            # for real personas: measured on a 5-run ensemble, Jordan was extracted in all five and
+            # had demands recorded in only two, so no demand of his could ever be invariant
+            # however well the clustering worked. That is not a persona who changed his mind —
+            # the extractor recorded no demand for him in three runs, and silence is not a
+            # retraction. The old comment reasoned about a persona who never spoke and stopped
+            # one step short of this case.
             "invariant_demands": [
                 {"claim": text_of[(name, k)], "runs": v}
                 for k, v in sorted(demands.items(), key=lambda kv: -len(kv[1]))
-                if len(v) == spoke[name]
+                if demanded_in[name] and len(v) == len(demanded_in[name])
             ],
             "situational_demands": [
                 {"claim": text_of[(name, k)], "runs": v}
                 for k, v in sorted(demands.items(), key=lambda kv: -len(kv[1]))
-                if len(v) < spoke[name]
+                if not demanded_in[name] or len(v) < len(demanded_in[name])
             ],
             "refusals": [
                 {"claim": text_of[(name, k)], "runs": v}
