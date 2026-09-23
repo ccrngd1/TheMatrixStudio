@@ -10,7 +10,8 @@
 // refused" are different, and only the second is worth opening to retry.
 
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor, fireEvent } from '@testing-library/react'
+import { act, render, screen, waitFor, fireEvent } from '@testing-library/react'
+import { useState } from 'react'
 import { History } from './History'
 
 vi.mock('../api', () => ({ api: { listRuns: vi.fn(), listEnsembles: vi.fn() } }))
@@ -122,5 +123,32 @@ describe('History ensembles', () => {
 
     await waitFor(() => expect(mocked.listEnsembles).toHaveBeenCalled())
     expect(screen.queryByText('Ensembles')).not.toBeInTheDocument()
+  })
+
+  it('fetches once even when the parent re-renders with a new callback', async () => {
+    // The bug this is for: `onOpenEnsemble` is an inline arrow in App.tsx, so it is a new
+    // reference on every render. With it in the effect's dependency array, each re-render tore
+    // down the effect — setting `live = false` on the in-flight request — and started another.
+    // The runs list loading is itself a re-render, so the first ensembles response was discarded,
+    // and against a cold Lambda the section could simply never appear.
+    let bump = () => {}
+    function Wrapper() {
+      const [, setN] = useState(0)
+      bump = () => setN((n) => n + 1)
+      // A NEW closure each render, exactly as App.tsx passes.
+      return (
+        <History onOpen={() => {}} onNew={() => {}} onOpenEnsemble={(id) => void id} />
+      )
+    }
+
+    mocked.listEnsembles.mockResolvedValue([ens()])
+    render(<Wrapper />)
+    await waitFor(() => expect(screen.getByText('renewal')).toBeInTheDocument())
+
+    act(() => bump())
+    act(() => bump())
+    await waitFor(() => expect(screen.getByText('renewal')).toBeInTheDocument())
+
+    expect(mocked.listEnsembles).toHaveBeenCalledTimes(1)
   })
 })
