@@ -450,6 +450,42 @@ arranged for either continuation of treatment or emergency coverage". That is th
 for Riley's "is a technician form enough" objection and Casey's classification question, retrieved
 by one query. Three of four results fetched cleanly at 6.8–10.8k characters each.
 
+### 12.5 The sources this feature most needs are the ones that block fetching
+
+Measured on the first full pipeline run over the shared corpus: **8 of 12 fetches failed, and they
+were the authoritative ones** — `fda.gov` three times, `assoc.org` three times, plus `cacvt.org` and
+`vetcation.com`. Diagnosed individually, and **none was a bug**. Three distinct mechanisms:
+
+| site | what it does | handled by |
+|---|---|---|
+| `assoc.org` | HTTP 200 with 961 bytes of Incapsula block page | `MIN_TEXT_CHARS` |
+| `cacvt.org`, `vetboard.az.gov` | plain HTTP 403 | status check |
+| `fda.gov` | 302 to `/apology_objects/abuse-detection-apology.html`, then 404 | redirect following |
+
+**This is the most important finding about the feature so far, and it is uncomfortable.** The corpus
+that came back was 1 controlling and 3 commentary — not because commentary is what exists, but
+because the FDA, the ASSOC and a state technician association all refuse automated readers while
+vendor sites, association summaries and policy trackers do not. The authority distribution is partly
+an artifact of the web's defences.
+
+Three consequences:
+
+**The tier distribution must not be read as a survey of what exists.** A corpus carrying "1
+controlling, 3 commentary" invites exactly that reading. The unreadable list has to travel with it.
+
+**The documented negative becomes MORE valuable, not less.** "We could not read fda.gov, assoc.org or
+cacvt.org" tells a human precisely where to look by hand. That is a better artefact than a silent
+corpus of whatever happened to be scrapeable.
+
+**It is a concrete argument for Tavily or Exa** that §12 did not have. Their value was framed as
+avoiding a fetcher; the stronger reason is that they operate fetching infrastructure at a scale that
+negotiates with these defences, and we do not and should not. Choosing Brave means accepting a corpus
+systematically biased away from primary sources. That is worth re-examining before step 3 — with one
+of those keys set, the same run is a direct comparison, and `websearch.select` already prefers them.
+
+The fetcher stays either way: it identifies itself rather than impersonating a browser, and a site
+entitled to refuse it should be able to. Working around these blocks is not on the table.
+
 ### 12.3 The key
 
 `BRAVE_API_KEY`, following the `openai_api_key` / `anthropic_api_key` pattern in `settings.py`.
