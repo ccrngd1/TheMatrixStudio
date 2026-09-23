@@ -81,8 +81,16 @@ export function History({ onOpen, onNew, onKnowledgeBases, onOpenEnsemble }: Pro
   // must not depend on this request succeeding, because an older deployment has no
   // `/api/ensembles` route and folding the two together would make a 404 there empty the run
   // list. A failure here leaves the section absent, which is the honest degradation.
+  //
+  // The dependency is a BOOLEAN, not the callback. `onOpenEnsemble` is an inline arrow in
+  // `App.tsx`, so it is a new reference on every render — with it in this array the effect tore
+  // itself down on each one, setting `live = false` on the in-flight request and starting
+  // another. The runs list arriving is itself a re-render, so the first ensembles response was
+  // discarded, and against a cold Lambda the section could never appear at all. Measured: three
+  // fetches for two re-renders, and a list that did not render.
+  const canOpenEnsembles = Boolean(onOpenEnsemble)
   useEffect(() => {
-    if (!onOpenEnsemble) return
+    if (!canOpenEnsembles) return
     let live = true
     api
       .listEnsembles()
@@ -95,7 +103,7 @@ export function History({ onOpen, onNew, onKnowledgeBases, onOpenEnsemble }: Pro
     return () => {
       live = false
     }
-  }, [onOpenEnsemble])
+  }, [canOpenEnsembles])
 
   return (
     <div className="mx-auto max-w-4xl p-6">

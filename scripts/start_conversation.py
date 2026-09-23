@@ -74,6 +74,110 @@ def _require_env() -> None:
         )
 
 
+async def check_owner(db: Database, owner: str, *, allow_unknown: bool) -> None:
+    """Refuse an `--owner` that is nobody, before a single turn is paid for.
+
+    **This exists because of a real, expensive mistake.** A sub was read from a scan whose output
+    had been truncated to 14 characters and the remaining 22 were invented. The result was a
+    valid-looking partition that no user owns: five conversations, a report and several
+    regenerations — about $8 — went to a tenant the operator could never see, because the SPA
+    resolves the owner from a verified token and correctly shows only that partition. Recovering
+    it meant rewriting the partition key on 1,821 items.
+
+    Nothing caught it because this script bypasses the API's tenancy boundary ON PURPOSE (see the
+    module docstring), so `--owner` was taken at face value all the way through.
+
+    **The user pool is authoritative when there is one.** The first version of this guard treated
+    "this owner already has runs" as an equally good signal, and it let the same bad sub straight
+    through on the very next attempt — because the sub owned five runs *created by the original
+    mistake*. A guard whose evidence is produced by the fault it guards against is not a guard. It
+    cost another five turns before being stopped.
+
+    So existing runs are a FALLBACK, used only when no pool is configured, for a local or imported
+    tenant that legitimately has no Cognito user. When a pool is reachable, its answer decides.
+
+    Failing CLOSED on neither signal. A typo here is invisible afterwards, so "I could not verify"
+    must not read as "fine". `--allow-unknown-owner` is the deliberate override.
+    """
+    existing = 0
+    try:
+        existing = len(await db.for_owner(owner).list_runs(limit=1))
+    except Exception as exc:  # noqa: BLE001
+        print(f"  note: could not list runs for this owner ({exc})")
+
+    pool = os.environ.get("USER_POOL_ID")
+    in_pool: Optional[bool] = None
+    if pool:
+        try:
+            import boto3
+            from botocore.exceptions import ClientError
+
+            client = boto3.client("cognito-idp", region_name=os.environ["AWS_REGION"])
+            try:
+                client.admin_get_user(UserPoolId=pool, Username=owner)
+                in_pool = True
+            except ClientError as exc:
+                if exc.response.get("Error", {}).get("Code") == "UserNotFoundException":
+                    # `admin_get_user` takes a username, which is the sub only when the pool was
+                    # built that way. Fall back to a filtered list, which queries the attribute.
+                    found = client.list_users(
+                        UserPoolId=pool, Filter=f'sub = "{owner}"', Limit=1,
+                    )
+                    in_pool = bool(found.get("Users"))
+                else:
+                    raise
+        except Exception as exc:  # noqa: BLE001
+            print(f"  note: could not check the user pool ({exc})")
+
+    if in_pool:
+        print(f"  owner      {owner}  (a user with this sub exists)")
+        return
+
+    if in_pool is None and existing:
+        # No pool to ask, so the weaker signal has to do — and says so, because "this partition
+        # already has data" is exactly what a previous mistake leaves behind.
+        print(
+            f"  owner      {owner}  (owns runs; NO user pool checked — set USER_POOL_ID to "
+            "verify this is a real user)"
+        )
+        return
+
+    if in_pool is False and existing:
+        raise SystemExit(
+            f"\nRefusing to start: --owner {owner} owns {existing} run(s) but matches NO user in "
+            "the pool.\n"
+            "\n"
+            "That combination is the signature of an earlier mistake rather than a reason to\n"
+            "proceed: a mistyped sub creates runs, and those runs then make the sub look\n"
+            "established. The pool is authoritative — a partition with data in it is not a user.\n"
+            "\n"
+            "If this tenant is genuinely poolless, pass --allow-unknown-owner."
+        )
+
+    if allow_unknown:
+        print(
+            f"  owner      {owner}  *** UNVERIFIED, proceeding because "
+            "--allow-unknown-owner was passed ***"
+        )
+        return
+
+    raise SystemExit(
+        f"\nRefusing to start: --owner {owner} matches no Cognito user and owns no runs.\n"
+        "\n"
+        "A wrong sub is not visible afterwards — the conversations run, cost real money, and\n"
+        "never appear in the UI, because the SPA only ever shows the partition belonging to the\n"
+        "signed-in token. That has happened: ~$8 of conversations under a sub whose last 22\n"
+        "characters had been invented from a truncated log line.\n"
+        "\n"
+        "Check the sub with:\n"
+        "  aws cognito-idp list-users --user-pool-id \"$USER_POOL_ID\" \\\n"
+        "    --query \"Users[].Attributes[?Name=='sub'].Value\" --output text\n"
+        "\n"
+        "Set USER_POOL_ID so this check can be conclusive, or pass --allow-unknown-owner if the\n"
+        "tenant really is new."
+    )
+
+
 def load_definition(path: str) -> Dict[str, Any]:
     """Read the file and validate it exactly as the API route would.
 
@@ -171,6 +275,10 @@ async def main() -> int:
                         help="with --ensemble, add a second group of N runs differing ONLY "
                              "in speaker method (hybrid). Anything else would confound the "
                              "comparison and the planner refuses it.")
+    parser.add_argument("--allow-unknown-owner", action="store_true",
+                        help="start even when --owner matches no Cognito user and owns no runs. "
+                             "For a genuinely new tenant; see `check_owner` for the mistake this "
+                             "guard exists to prevent.")
     parser.add_argument("--dry-run", action="store_true",
                         help="validate and print the plan; create nothing")
     parser.add_argument("--watch", metavar="RUN_ID", default=None,
@@ -229,6 +337,12 @@ async def main() -> int:
         # Bound for every READ. `RunManager.create_run` binds its own store internally,
         # so it gets the unbound one — but a run row and its events live in the owner's
         # partition, and an unbound store refuses the call rather than scanning for it.
+        # BEFORE anything is created or any turn is paid for. Not for `--watch`, which only
+        # reads, and which is the one case where an unknown owner is self-evident: there is
+        # nothing there.
+        if not args.watch:
+            await check_owner(db, args.owner, allow_unknown=args.allow_unknown_owner)
+
         owned = db.for_owner(args.owner)
         if args.watch:
             return await watch(owned, args.watch, timeout_s=args.timeout)
