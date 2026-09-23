@@ -324,7 +324,7 @@ class TestGather:
             call=model({"Classify": {"verdicts": [{"n": 0, "tier": "controlling", "reason": "r"}]}}),
         )
         assert fetched == [], "a provider with text must not trigger a fetch"
-        assert corpus.documents[0].text == STATUTE
+        assert corpus.documents[0].text == STATUTE.strip()  # stored stripped
 
     async def test_a_snippet_provider_is_fetched(self):
         corpus = rs.Corpus(persona=None, queries=[rs.Query("q")])
@@ -334,7 +334,7 @@ class TestGather:
             fetch=self._fetch({"https://a": Page(STATUTE)}),
             call=model({"Classify": {"verdicts": [{"n": 0, "tier": "controlling", "reason": "r"}]}}),
         )
-        assert corpus.documents[0].text == STATUTE
+        assert corpus.documents[0].text == STATUTE.strip()  # stored stripped
 
     async def test_an_unfetchable_result_becomes_an_unreadable_record(self):
         # So the negative can say a source refused us, rather than implying it held nothing.
@@ -606,3 +606,50 @@ class TestRetryPatience:
         # backoff was not patient enough, and the cost of giving up is a whole corpus missing.
         total = sum(rs.ASK_BACKOFF_S * i for i in range(1, rs.ASK_ATTEMPTS))
         assert total >= 15, f"only {total}s of total backoff"
+
+
+@pytest.mark.asyncio
+class TestAThinSourceIsNotADocument:
+    """From real Tavily results, and the same failure `webfetch` already floors from the other side.
+
+    Tavily returns its own ~150-character summary when its extraction fails, and `TavilySearch`
+    deliberately falls back to that summary because `supplies_text` promises the caller no fetcher is
+    needed. So `assoc.org/KB/.../PCR.aspx` came back as 156 characters and entered the corpus as a
+    document — a source that could not be read, counted as one that was. Exactly the Incapsula
+    block-page problem, unguarded on the provider path.
+    """
+
+    async def _gathered(self, hit):
+        corpus = rs.Corpus(persona=None, queries=[rs.Query("q")])
+
+        async def search(q, c):
+            return [hit]
+
+        async def fetch(u):
+            return None
+
+        await rs.gather(corpus, search=search, fetch=fetch, call=model({}))
+        return corpus
+
+    async def test_a_summary_sized_result_is_refused(self):
+        corpus = await self._gathered(Hit("https://assoc.org/pcr", text="x" * 156))
+        assert corpus.documents == []
+        assert any("a summary, not the source" in why for _, why in corpus.unreadable)
+
+    async def test_it_is_recorded_as_unreadable_not_silently_dropped(self):
+        # So the negative can say a source was SEEN and not obtained. Dropping it would make the
+        # search look like it never surfaced the ASSOC at all.
+        corpus = await self._gathered(Hit("https://assoc.org/pcr", text="x" * 156))
+        assert corpus.unreadable[0][0] == "https://assoc.org/pcr"
+        assert "assoc.org" in corpus.negative
+
+    async def test_a_full_page_is_kept(self):
+        corpus = await self._gathered(Hit("https://azleg.gov/ars", text=STATUTE))
+        assert len(corpus.documents) == 1
+
+    async def test_the_floor_matches_the_fetcher_s(self):
+        # Two floors for the same reason in two modules; if they drift, one path admits what the
+        # other refuses and the corpus depends on which provider was configured.
+        from matrix_studio import webfetch
+
+        assert rs.MIN_DOCUMENT_CHARS == webfetch.MIN_TEXT_CHARS

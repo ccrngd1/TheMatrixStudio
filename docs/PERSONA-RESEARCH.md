@@ -486,6 +486,58 @@ of those keys set, the same run is a direct comparison, and `websearch.select` a
 The fetcher stays either way: it identifies itself rather than impersonating a browser, and a site
 entitled to refuse it should be able to. Working around these blocks is not on the table.
 
+### 12.6 Tavily settles it, against the judgement in §12
+
+Same definition, same shared corpus, same six queries, run twice — once through Brave with our
+fetcher, once through Tavily.
+
+| | Brave + our fetcher | Tavily |
+|---|---|---|
+| documents | 4 | **20** |
+| controlling | 1 | **3** |
+| persuasive | 0 | **7** |
+| commentary | 3 | 10 |
+| model cost | $0.0103 | $0.0435 |
+
+Five times the documents and three times the controlling authorities. And they are the real thing:
+**eCFR 21 CFR Part 514**, **Texas Occupations Code Chapter 801**, AMDUCA, and the **ASSOC model
+licensed practice act PDF** — the last of which Brave-plus-fetcher could not read at all, because
+`assoc.org` answers an Incapsula block page with HTTP 200.
+
+Checked source by source, Tavily gets past two of the three block mechanisms of §12.5:
+
+| source | our fetcher | Tavily |
+|---|---|---|
+| `fda.gov/media/83998/download` | 302 to an abuse-detection page | 18,146 chars |
+| `vetboard.az.gov/statutes-and-rules` | HTTP 403 | 13,354 chars |
+| `assoc.org/KB/…/PCR.aspx` | Incapsula block | 156 chars — still blocked |
+
+**§12's reasoning was sound and its conclusion was wrong.** "Already on AWS argues for keeping state
+on AWS, and this adds none" still holds; so does the note that swapping providers touches one
+adapter. What that reasoning missed is that a search provider is not only a ranking service — it is
+fetching infrastructure, and the difference between *its* fetching and ours is the difference between
+a corpus of primary law and a corpus of law-firm blogs. §12.2 framed owning a fetcher as an
+acceptable cost. On measurement it is not: it costs the feature its point.
+
+`websearch.select` already prefers a text-supplying provider, so setting `TAVILY_API_KEY` is the
+whole change. The Brave adapter stays — it is verified, it is the fallback, and having two providers
+is what made this comparison possible at all.
+
+The fetcher also stays, and is still needed: Brave remains a valid configuration, and a
+text-supplying provider can return a summary instead of a page (below).
+
+#### The bug this comparison exposed
+
+Tavily returns its own ~150-character summary when its extraction fails, and `TavilySearch`
+deliberately falls back to that summary because `supplies_text` promises the caller no fetcher is
+needed. So a blocked page arrived as a 156-character "document" and entered the corpus — the same
+failure as an Incapsula block page, on the path `webfetch.MIN_TEXT_CHARS` does not cover.
+
+`research.MIN_DOCUMENT_CHARS` now floors provider-supplied text at the same 200, and a thin result is
+recorded as **unreadable** rather than dropped, so the negative can say a source was seen and not
+obtained. On the Tavily run it caught nine, including `assoc.org`, `law.cornell.edu` and
+`texas.public.law` — all sources whose absence would otherwise have looked like absence of law.
+
 ### 12.3 The key
 
 `BRAVE_API_KEY`, following the `openai_api_key` / `anthropic_api_key` pattern in `settings.py`.
