@@ -230,3 +230,48 @@ class TestListing:
         for i in range(4):
             await _make(db, ensemble_id=f"e{i}", name=f"n{i}")
         assert len(await db.list_ensembles(limit=2)) == 2
+
+
+class TestMembersCarryTheirDerivedStats:
+    """`get_run` returns the ROW; turn count and cost are derived from the event log.
+
+    Reported from the UI: every member read "complete · 0 turns · $0.000". The status was right,
+    which is what made it read as a broken view rather than as a missing join — `list_runs` calls
+    `get_run_stats` for exactly this reason and `list_ensemble_members` did not.
+    """
+
+    async def test_turn_count_and_cost_are_present(self, db):
+        await _make(db)
+        await db.create_run(
+            run_id="run-1", topic="t", cast=[], name="m1",
+            ensemble_id="ens-1", ensemble_cell="base",
+        )
+        for seq in range(3):
+            await db.append_event(
+                run_id="run-1", turn=seq + 1, seq=seq, event_type="agent.response",
+                agent_name="Ada", payload={"message": "x", "cost_usd": 0.25},
+            )
+        await db.update_run_status("run-1", "complete")
+
+        members = await db.list_ensemble_members("ens-1")
+        run = members[0]["run"]
+        assert run["status"] == "complete"
+        assert run["turn_count"] == 3
+        assert run["total_cost_usd"] == pytest.approx(0.75)
+
+    async def test_a_member_with_no_events_reports_zero_rather_than_missing(self, db):
+        # Zero is the honest answer for a run that has not started; the bug was zero for a run
+        # that had finished forty turns.
+        await _make(db)
+        await db.create_run(
+            run_id="run-1", topic="t", cast=[], name="m1",
+            ensemble_id="ens-1", ensemble_cell="base",
+        )
+        members = await db.list_ensemble_members("ens-1")
+        assert members[0]["run"]["turn_count"] == 0
+
+    async def test_a_missing_member_is_still_none(self, db):
+        # The stats join must not resurrect a member that was never created.
+        await _make(db)
+        members = await db.list_ensemble_members("ens-1")
+        assert all(m["run"] is None for m in members)

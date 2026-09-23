@@ -532,6 +532,11 @@ def _ensemble_summary(row: Dict[str, Any]) -> Dict[str, Any]:
         # and "refused because a cell was still running" are different states and only one
         # is worth retrying, so the reason is served rather than inferred from absence.
         "report_error": row.get("report_error"),
+        # When a build took ownership. The only way to tell "a report is being built right now"
+        # from "every conversation finished and nothing is working on it" — `has_report` is false
+        # in both, and the view previously offered a FORCED rebuild in both, which would make an
+        # operator pay for a second report while the first was still running.
+        "report_claimed_at": row.get("report_claimed_at"),
     }
 
 
