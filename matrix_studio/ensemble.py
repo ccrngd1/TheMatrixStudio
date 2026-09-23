@@ -639,6 +639,179 @@ async def cluster_claims(
     return combined
 
 
+_MERGE_PROMPT = """These are groups of claims from several independent runs of the same \
+discussion. Each group is already meant to be ONE requirement, but the same requirement may \
+have been split across several groups because the runs worded it differently.
+
+Find only the groups that are the SAME requirement and should be one.
+
+THE RULE is unchanged and still decides every hard case: merge two groups only when satisfying \
+one would satisfy the other. Same topic is not enough. A different threshold, scope or trigger \
+is a DIFFERENT requirement and must stay separate.
+
+  "verified weight before approval" + "confirmed weight required first" — same. MERGE.
+  "90-day purchase window" + "45-day window" — different threshold. SEPARATE.
+  "statute defining plans as regulated" + "practice act reaching treatment" — different \
+legal triggers. SEPARATE.
+
+Most groups will merge with nothing. That is the expected answer, not a failure — leave them \
+out of your reply entirely rather than listing them alone.
+
+Reply with ONLY a JSON object, no prose. `merge` lists sets of group numbers that are one \
+requirement, and `label` is that requirement in under 15 words:
+{{"merge": [{{"label": "<under 15 words>", "groups": [<group numbers>]}}]}}
+
+If nothing should merge, reply {{"merge": []}}.
+
+The groups:
+{groups}
+"""
+
+
+async def _merge_clusters(
+    clusters: Sequence[Dict[str, Any]],
+    *,
+    model: Optional[Any] = None,
+    call: Optional[Any] = None,
+    max_tokens: int = CLUSTER_MAX_TOKENS,
+) -> Optional[Tuple[List[Dict[str, Any]], float]]:
+    """A second pass over cluster LABELS. Returns `(merged clusters, cost)` or None.
+
+    The first pass compares long sentences and is deliberately reluctant, which leaves one
+    requirement spread over several groups: measured on the live ensemble at zero demand
+    clusters spanning all five runs, so no persona had a single invariant demand across five
+    runs of an identical brief.
+
+    Comparing the LABELS is a different and much easier task — 86 short phrases rather than 150
+    long sentences — so the same reluctance costs less recall. The rule is identical, because
+    loosening it is the one change that would delete a dissent invisibly.
+
+    Merging is done here in code from the model's group numbers; the model never restates a
+    claim, so it cannot drop or invent one. Anything it fails to mention stays exactly as the
+    first pass left it, which makes "no merges" a safe answer rather than a lost result.
+    """
+    if len(clusters) < 2:
+        return None
+    if call is None:
+        from matrix_studio.analysis import _acompletion as call  # type: ignore
+
+    listing = "\n".join(
+        f"{i}. {c.get('label')}" for i, c in enumerate(clusters)
+    )
+    result = await call(
+        [{"role": "user", "content": _MERGE_PROMPT.format(groups=listing)}],
+        model=model,
+        temperature=0.0,
+        max_tokens=max_tokens,
+    )
+    cost = float(result.get("cost_usd") or 0.0)
+    content = (result.get("content") or "").strip()
+    if not content:
+        logger.error(
+            "The cluster merge pass returned no content: %d in, %d out, $%.4f, finish=%s. "
+            "A truncated reply comes back EMPTY rather than partial — check the output budget "
+            "(max_tokens=%d).",
+            result.get("tokens_in", 0), result.get("tokens_out", 0), cost,
+            result.get("finish_reason"), max_tokens,
+        )
+        return None
+
+    parsed = extract_json_object(content)
+    merges = (parsed or {}).get("merge")
+    if not isinstance(merges, list):
+        logger.warning("The cluster merge pass did not return a `merge` list; keeping pass one.")
+        return None
+
+    # Apply in code. A group named twice is dropped from the second set rather than merging two
+    # sets transitively: transitive merging is how "A is like B, B is like C" quietly unites A
+    # and C, which nobody asserted and which is the over-merge this whole design resists.
+    taken: set = set()
+    out: List[Dict[str, Any]] = []
+    for m in merges:
+        if not isinstance(m, dict):
+            continue
+        group_ids = m.get("groups")
+        label = str(m.get("label") or "").strip()
+        if not isinstance(group_ids, list) or len(group_ids) < 2 or not label:
+            continue
+        members: List[Any] = []
+        used: List[int] = []
+        for raw in group_ids:
+            try:
+                g = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if not 0 <= g < len(clusters) or g in taken:
+                continue
+            used.append(g)
+            members.extend(clusters[g].get("members") or [])
+        if len(used) < 2 or not members:
+            continue
+        taken.update(used)
+        out.append({"label": label, "members": members})
+
+    for i, c in enumerate(clusters):
+        if i not in taken:
+            out.append({"label": c.get("label"), "members": c.get("members")})
+    return out, cost
+
+
+async def cluster_claims_twice(
+    claims: Sequence[Tuple[str, str]],
+    *,
+    model: Optional[Any] = None,
+    call: Optional[Any] = None,
+) -> Optional[Tuple[List[Dict[str, Any]], float]]:
+    """`cluster_claims` followed by a merge pass over the labels. `(clusters, cost)` or None.
+
+    The merge pass failing is not fatal — pass one's result is returned unchanged, because it is
+    strictly better than text matching and the point of the second pass is extra recall rather
+    than correctness.
+    """
+    first = await cluster_claims(claims, model=model, call=call)
+    if not first:
+        return None
+    cost = float(first[0].get("_cost_usd") or 0.0)
+
+    # Partitioned by kind, and merged one kind at a time. The first pass gets the no-mixing rule
+    # structurally by never showing the model a mixture; the merge pass sees only LABELS, from
+    # which the kind is invisible — so shown all of them together it merged a demand group with a
+    # refusal group on the first live attempt. `apply_clusters` caught it and refused the whole
+    # clustering, which is the arithmetic net doing its job, but the right fix is to make the
+    # rule structural here too rather than to ask the model to respect a distinction it cannot
+    # see.
+    by_kind: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for cluster in first:
+        members = cluster.get("members") or []
+        kinds = {claims[i][0] for i in members if isinstance(i, int) and 0 <= i < len(claims)}
+        # A cluster whose kind is ambiguous is left out of the merge pass entirely rather than
+        # assigned a guess; it survives as the first pass produced it.
+        by_kind[next(iter(kinds)) if len(kinds) == 1 else ""].append(cluster)
+
+    merged_all: List[Dict[str, Any]] = list(by_kind.pop("", []))
+    spent_all = 0.0
+    kinds_to_merge = sorted(by_kind)
+    results = await asyncio.gather(*(
+        _merge_clusters(by_kind[k], model=model, call=call) for k in kinds_to_merge
+    ))
+    for kind, got in zip(kinds_to_merge, results):
+        if got is None:
+            # Not fatal for this kind or any other: the point of the second pass is extra
+            # recall, so its failure returns pass one's grouping rather than nothing.
+            logger.info(
+                "The merge pass produced nothing usable for %s claims; keeping pass one.", kind,
+            )
+            merged_all.extend(by_kind[kind])
+            continue
+        merged, spent = got
+        merged_all.extend(merged)
+        spent_all += spent
+
+    if merged_all:
+        merged_all[0]["_cost_usd"] = cost + spent_all
+    return merged_all, cost + spent_all
+
+
 class ClusteringRejected(ValueError):
     """A clustering that would change the counts rather than only group them."""
 

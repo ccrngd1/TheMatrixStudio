@@ -335,3 +335,179 @@ class TestOneCallPerKind:
 
         await ensemble.cluster_claims(REWORDED, call=call)
         assert seen["max"] == ensemble.CLUSTER_MAX_TOKENS
+
+
+# --------------------------------------------------------------------------- #
+# the merge pass
+# --------------------------------------------------------------------------- #
+
+
+MIXED_KINDS = [
+    ("demand", "a verified weight before approval"),
+    ("demand", "a confirmed weight is required first"),
+    ("refusal", "will not accept a checkbox"),
+    ("refusal", "refuses to take a checkbox as evidence"),
+]
+
+
+@pytest.mark.asyncio
+class TestTheMergePass:
+    """A second pass over cluster LABELS, for the recall the first pass deliberately gives up.
+
+    The first pass compares long sentences and is reluctant by design, which leaves one
+    requirement spread across several groups — measured on the live ensemble at zero demand
+    clusters spanning all five runs, so no persona had a single invariant demand across five
+    runs of an identical brief.
+    """
+
+    def _call(self, first_clusters, merges):
+        """Answers the first pass per kind, then the merge pass."""
+        state = {"merge_prompts": 0}
+
+        async def call(messages, model=None, temperature=0.0, max_tokens=None):
+            prompt = messages[0]["content"]
+            if "should be one" in prompt:
+                state["merge_prompts"] += 1
+                return {"content": json.dumps(merges.pop(0) if merges else {"merge": []}),
+                        "cost_usd": 0.01, "tokens_in": 1, "tokens_out": 1,
+                        "finish_reason": "stop", "_prompt": prompt}
+            n = sum(1 for line in prompt.splitlines() if line[:1].isdigit())
+            kind = "demand" if "[demand]" in prompt else "refusal"
+            return {"content": json.dumps({"clusters": first_clusters[kind](n)}),
+                    "cost_usd": 0.02, "tokens_in": 1, "tokens_out": 1, "finish_reason": "stop"}
+
+        call.state = state  # type: ignore[attr-defined]
+        return call
+
+    async def test_it_merges_two_groups_the_first_pass_left_apart(self):
+        # Each kind's first pass splits its two claims; the merge pass rejoins the demands.
+        call = self._call(
+            {"demand": lambda n: [{"label": "verified weight", "members": [0]},
+                                  {"label": "confirmed weight", "members": [1]}],
+             "refusal": lambda n: [{"label": "no checkbox", "members": [0, 1]}]},
+            [{"merge": [{"label": "weight verified before approval", "groups": [0, 1]}]},
+             {"merge": []}],
+        )
+        got = await ensemble.cluster_claims_twice(MIXED_KINDS, call=call)
+        assert got is not None
+        clusters, cost = got
+        keys = ensemble.apply_clusters(MIXED_KINDS, clusters)
+
+        assert keys[0] == keys[1], "the two demands were merged"
+        assert keys[0][1] == "weight verified before approval"
+        assert keys[2] == keys[3], "the refusals stayed grouped"
+        # Two first-pass calls at 0.02, and ONE merge call at 0.01: the refusal kind came back
+        # from pass one as a single cluster, and there is nothing to merge a lone group with, so
+        # no call is made for it.
+        assert cost == pytest.approx(0.05)
+
+    async def test_a_kind_with_one_cluster_needs_no_merge_call(self):
+        call = self._call(
+            {"demand": lambda n: [{"label": "weight", "members": list(range(n))}],
+             "refusal": lambda n: [{"label": "checkbox", "members": list(range(n))}]},
+            [],
+        )
+        await ensemble.cluster_claims_twice(MIXED_KINDS, call=call)
+        assert call.state["merge_prompts"] == 0, (
+            "both kinds came back as one cluster each; there was nothing to merge"
+        )
+
+    async def test_each_kind_is_merged_separately(self):
+        # The first pass gets the no-mixing rule structurally by never showing a mixture. The
+        # merge pass sees only LABELS, from which the kind is invisible — shown all of them
+        # together it merged a demand group with a refusal group on the first live attempt.
+        prompts = []
+
+        async def call(messages, model=None, temperature=0.0, max_tokens=None):
+            prompt = messages[0]["content"]
+            if "should be one" in prompt:
+                prompts.append(prompt)
+                return {"content": json.dumps({"merge": []}), "cost_usd": 0.0,
+                        "tokens_in": 1, "tokens_out": 1}
+            n = sum(1 for line in prompt.splitlines() if line[:1].isdigit())
+            return {"content": json.dumps({"clusters": [
+                {"label": f"g{i}", "members": [i]} for i in range(n)
+            ]}), "cost_usd": 0.0, "tokens_in": 1, "tokens_out": 1}
+
+        await ensemble.cluster_claims_twice(MIXED_KINDS, call=call)
+        assert len(prompts) == 2, "one merge call per kind, not one over everything"
+
+    async def test_a_cross_kind_merge_cannot_be_constructed(self):
+        # The end-to-end guarantee: whatever the merge model says, the result never mixes kinds,
+        # so `apply_clusters` cannot reject the clustering for it. That rejection is how the bug
+        # was found — the whole clustering was thrown away and the report fell back.
+        call = self._call(
+            {"demand": lambda n: [{"label": "weight", "members": list(range(n))}],
+             "refusal": lambda n: [{"label": "checkbox", "members": list(range(n))}]},
+            # Tries to merge group 0 with group 1 in each per-kind call; within a kind that is
+            # harmless, and it can never reach across kinds because the calls are separate.
+            [{"merge": [{"label": "everything", "groups": [0, 1]}]},
+             {"merge": [{"label": "everything", "groups": [0, 1]}]}],
+        )
+        got = await ensemble.cluster_claims_twice(MIXED_KINDS, call=call)
+        clusters, _ = got
+        # Does not raise, which is the assertion.
+        keys = ensemble.apply_clusters(MIXED_KINDS, clusters)
+        assert keys[0][0] != keys[2][0], "a demand and a refusal never share a cluster"
+
+    async def test_a_group_named_twice_is_not_merged_transitively(self):
+        # "A is like B, B is like C" must not quietly unite A and C: nobody asserted that, and
+        # it is the over-merge this design resists everywhere else.
+        claims = [("demand", "a"), ("demand", "b"), ("demand", "c")]
+        call = self._call(
+            {"demand": lambda n: [{"label": "A", "members": [0]},
+                                  {"label": "B", "members": [1]},
+                                  {"label": "C", "members": [2]}]},
+            [{"merge": [{"label": "AB", "groups": [0, 1]},
+                        {"label": "BC", "groups": [1, 2]}]}],
+        )
+        got = await ensemble.cluster_claims_twice(claims, call=call)
+        clusters, _ = got
+        keys = ensemble.apply_clusters(claims, clusters)
+
+        assert keys[0][0] == keys[1][0], "the first merge applied"
+        assert keys[2][0] != keys[0][0], "C was not dragged in through B"
+
+    async def test_no_merges_keeps_the_first_pass_intact(self):
+        # The expected answer most of the time, and it must not cost the first pass's result.
+        call = self._call(
+            {"demand": lambda n: [{"label": "weight", "members": list(range(n))}],
+             "refusal": lambda n: [{"label": "checkbox", "members": list(range(n))}]},
+            [{"merge": []}, {"merge": []}],
+        )
+        clusters, _ = await ensemble.cluster_claims_twice(MIXED_KINDS, call=call)
+        keys = ensemble.apply_clusters(MIXED_KINDS, clusters)
+        assert keys[0][0] == keys[1][0]
+        assert keys[2][0] == keys[3][0]
+
+    async def test_a_failed_merge_pass_returns_the_first_pass(self):
+        # Extra recall is the point of pass two; correctness is pass one's. Losing pass one
+        # because pass two failed would trade a good result for nothing.
+        async def call(messages, model=None, temperature=0.0, max_tokens=None):
+            prompt = messages[0]["content"]
+            if "should be one" in prompt:
+                return {"content": "", "cost_usd": 0.0, "tokens_in": 1, "tokens_out": 1,
+                        "finish_reason": "length"}
+            n = sum(1 for line in prompt.splitlines() if line[:1].isdigit())
+            return {"content": json.dumps({"clusters": [
+                {"label": "all of them", "members": list(range(n))}
+            ]}), "cost_usd": 0.0, "tokens_in": 1, "tokens_out": 1}
+
+        clusters, _ = await ensemble.cluster_claims_twice(MIXED_KINDS, call=call)
+        keys = ensemble.apply_clusters(MIXED_KINDS, clusters)
+        assert keys[0][0] == keys[1][0], "pass one's grouping survived"
+
+    async def test_a_failed_first_pass_gives_up(self):
+        async def call(messages, model=None, temperature=0.0, max_tokens=None):
+            return {"content": "", "cost_usd": 0.0, "tokens_in": 1, "tokens_out": 1,
+                    "finish_reason": "length"}
+
+        assert await ensemble.cluster_claims_twice(MIXED_KINDS, call=call) is None
+
+    async def test_the_merge_prompt_keeps_the_same_rule(self):
+        # Loosening it here would be the same deletion of a dissent, one indirection away.
+        text = ensemble._MERGE_PROMPT.replace("\n", " ")
+        assert "satisfying one would satisfy the other" in text
+        assert "Same topic is not enough" in text
+        assert "different threshold" in text
+        assert "Most groups will merge with nothing" in text
