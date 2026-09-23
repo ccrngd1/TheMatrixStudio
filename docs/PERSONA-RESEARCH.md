@@ -325,8 +325,7 @@ right, but it means a research pass mutates hand-assembled data. Ownership is ch
 is recorded so curation and research stay separable, and a re-run replaces rather than accumulates
 — three guardrails for one convenience, and all three are load-bearing.
 
-**No provider exists in the repo.** `httpx` is present as a test dependency. Choosing a provider is
-a prerequisite, not a detail.
+**No provider existed in the repo.** Decided 2026-09-23 — see §12.
 
 ---
 
@@ -348,6 +347,83 @@ a prerequisite, not a detail.
 
 Step 1 is deliberately separable and deliberately first: if the researcher's output does not look
 useful when a human reads it, none of the wiring is worth building.
+
+---
+
+## 12. The provider: Brave Search, decided 2026-09-23
+
+Chosen over the AWS-native options after checking what they actually offer in this account.
+
+**AgentCore has no web-search primitive.** `bedrock-agentcore-control` offers
+`create-browser`, `create-code-interpreter`, `create-gateway`, `create-memory` — a managed headless
+browser, not a search engine. Using it would mean writing the search-and-read loop ourselves:
+driving a browser at a search engine, scraping its results page, navigating, extracting. That is
+page-structure brittleness, a session lifecycle per query, and the terms-of-service question of
+scraping a search engine, in exchange for staying inside one vendor. It is built for agents that
+*operate* a web app, not for bulk retrieval. `list-browsers` is empty; nothing is provisioned.
+
+**Bedrock Knowledge Bases' `WEB` data source is a closer fit and still not enough.**
+`create-data-source` accepts `S3 | WEB | CONFLUENCE | SALESFORCE | SHAREPOINT`, and
+`webConfiguration` crawls URLs into a KB with chunking and embedding managed. That matches this
+design's *output* well — the artefact we want is a knowledge base. But **it crawls seeds; it does
+not search.** It cannot answer "what do state practice acts say about continuation of treatment",
+so it solves the ingest half and leaves discovery open. Its help text also says "Crawling web URLs
+as your data source is in preview release", which is not where a feature's ingest path belongs
+without deciding that deliberately.
+
+**A model naming URLs is not an option for this.** The discovery step could be a model call, using
+only AWS. But a model naming sources from training data produces URLs that do not exist or do not
+say what it claims — and for legal authorities specifically that is the worst available failure
+mode. It is precisely what §4's documented-negative requirement exists to prevent.
+
+**"We are already on AWS" cuts the other way.** That is an argument for keeping *state* on AWS, and
+this adds none: the search call is stateless, its output lands in a KB we already own, and swapping
+provider later touches one adapter. Avoiding one API key by building a crawler or trusting a
+model's URLs costs more than it saves.
+
+### 12.1 Verified
+
+`GET api.search.brave.com/res/v1/web/search` with `X-Subscription-Token`, HTTP 200. The first result
+for *"california licensed practice act specialty plan"* was
+`vmb.ca.gov/applicants/practice_act.shtml` — the California Licensed Medicine Practice Act, whose
+snippet names "Article 4. Requirements for Regulated items".
+
+That is a **controlling authority for the exact question five replicate runs could not answer**.
+Recorded because it is the strongest evidence so far that §9's primary criterion is reachable.
+
+### 12.2 Brave returns snippets, so we DO own a fetcher
+
+Correcting §10 as it was first written. Tavily and Exa return extracted page text, which is why they
+were described as avoiding a fetcher; **Brave returns titles, URLs and short descriptions**. The
+snippet above is about 100 characters — enough to rank a result, nowhere near enough to cite a
+statute.
+
+So choosing Brave means writing the fetch-and-extract step, and re-accepting the surface §10 said it
+avoided: egress from a Lambda, per-site terms of service, and SSRF if a URL ever reaches the fetcher
+from anywhere but a search response. Those are now requirements rather than avoided risks:
+
+- fetch only URLs that came from a search response, never from user input
+- an allowlist of schemes (`https` only) and a denylist of private address ranges, checked after DNS
+  resolution rather than on the hostname
+- a byte ceiling and a timeout per page, because a statute site can serve a 40 MB PDF
+- extraction that fails to text rather than raising, so one unreadable page does not lose a corpus
+
+This is a real cost of the choice and worth carrying openly rather than discovering during
+implementation. It is not a reason to reverse the decision — the authority ranking Brave gave in
+§12.1 is worth a fetcher — but step 1 of §11 is now larger than it looked.
+
+### 12.3 The key
+
+`BRAVE_API_KEY`, following the `openai_api_key` / `anthropic_api_key` pattern in `settings.py`.
+
+Locally it lives in `.env`, which is gitignored (`.gitignore:36`).
+
+**Deployed it must go to Secrets Manager, not a Lambda environment variable.** There is no
+Secrets Manager usage in the stack today, so this is a new pattern and worth stating why: a Lambda
+env var is readable by anyone holding `lambda:GetFunctionConfiguration`, which is a much wider set
+than the people who should hold a search key, and this project's posture is that the API's own role
+holds no ambient rights. The Research function gets `secretsmanager:GetSecretValue` on one secret
+ARN and nothing else.
 
 ---
 
