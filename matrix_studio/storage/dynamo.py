@@ -3037,6 +3037,15 @@ class DynamoStorage:
                     # `title` rides along. A per-turn lookup would work for the owner and
                     # silently return nothing for everyone a collection is shared with.
                     "authority": doc.get("authority"),
+                    # `origin` rides along for the same reason, and answers a different
+                    # question: `authority` says what KIND of source this is, `origin` says
+                    # whether a human chose it. A turn that retrieved three found sources and
+                    # none of the operator's own uploads is a fact worth being able to state,
+                    # and PERSONA-RESEARCH.md §5.1 records the measurement that made it worth
+                    # stating — the per-collection floor reserves one slot for a COLLECTION,
+                    # so once research writes into a curated one they compete, and curated
+                    # material can be displaced silently.
+                    "origin": doc.get("origin"),
                 })
                 if limit is not None and len(out) >= limit:
                     return out
@@ -3591,6 +3600,10 @@ class DynamoStorage:
                     # and found to be nothing in particular".
                     **({"authority": str(meta["authority"])}
                        if meta.get("authority") else {}),
+                    # Omitted when absent for the same reason, and absent is the COMMON case:
+                    # every document written before `origin` existed has none, and that reads
+                    # correctly as "not research" everywhere it is used.
+                    **({"origin": str(meta["origin"])} if meta.get("origin") else {}),
                 },
             })
 
@@ -3749,6 +3762,11 @@ class DynamoStorage:
                     # researched documents behaves exactly as it did.
                     **({"authority": str(meta["authority"])}
                        if meta.get("authority") else {}),
+                    # Whether a human chose this passage or a searcher found it. Nothing in
+                    # retrieval RANKS on it — it is carried so a turn can record what it was
+                    # shown, which is what makes the displacement in PERSONA-RESEARCH.md §5.1
+                    # visible instead of a thing an operator has to notice.
+                    **({"origin": str(meta["origin"])} if meta.get("origin") else {}),
                 })
         # Smaller distance is better, matching `vector_search` and what
         # `apply_similarity_floor` expects. The floor reserves one slot per collection

@@ -1887,7 +1887,14 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
                 "turn": row["turn"],
                 "query": payload.get("query"),
                 "total_chars": payload.get("total_chars"),
+                # Passed through whole, so `authority` and `origin` on each passage arrive
+                # without this dict needing to know about them.
                 "passages": payload.get("passages", []),
+                # PERSONA-RESEARCH.md §5.1: how many of the turn's passages a searcher found
+                # rather than a human chose. Absent when none did, so a run without research
+                # returns exactly what it returned before.
+                **({"researched_passages": payload["researched_passages"]}
+                   if payload.get("researched_passages") is not None else {}),
             })
         return {
             "run_id": run["id"],

@@ -180,6 +180,10 @@ async def test_document_text_reaches_the_speakers_prompt(db, tmp_path):
     assert first["query"], "audit event did not record the query"
     assert first["passages"] and "title" in first["passages"][0]
     assert first["total_chars"] <= 900
+    # A run with no research records nothing about research. PERSONA-RESEARCH.md's whole
+    # additive claim rests on this: the payload for an ordinary run is what it always was.
+    assert "researched_passages" not in first
+    assert all("origin" not in p and "authority" not in p for p in first["passages"])
 
     responses = await _events(db, "on", "agent.response")
     assert any("document_refs" in r["payload"] for r in responses)

@@ -321,7 +321,19 @@ export interface DossierRetrieval {
     ordinal: number
     score: number
     chars: number
+    // What KIND of source, and whether a human chose it. Both absent unless the passage
+    // came from a knowledge base that has been researched into — see below.
+    authority?: string
+    origin?: string
   }[]
+  // How many of this turn's passages a searcher found rather than a human chose. Absent
+  // when none did, which is every run without research.
+  //
+  // Recorded per turn because the problem it exposes is invisible otherwise
+  // (PERSONA-RESEARCH.md §5.1): the retrieval floor reserves a slot for a COLLECTION, not
+  // for a kind of thing in one, so once research writes into a curated collection the
+  // operator's own document competes with the searcher's finds and can lose every slot.
+  researched_passages?: number
 }
 
 // Phase 6 structured persona, as the dossier returns it. Mirrors
