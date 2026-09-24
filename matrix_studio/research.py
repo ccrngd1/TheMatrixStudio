@@ -617,3 +617,85 @@ def summarise(corpora: Sequence[Corpus]) -> str:
         total += c.cost_usd
     lines.append(f"\nmodel cost ${total:.4f} (search and fetch are not model calls)")
     return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
+# Ingesting a corpus
+# --------------------------------------------------------------------------- #
+
+
+async def ingest(
+    db,
+    corpus: Corpus,
+    kb_id: str,
+    *,
+    batch: str,
+    owner_sub: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Write one corpus into an existing knowledge base. Returns what happened.
+
+    **Write-then-replace, in that order.** The current batch's documents are written first and the
+    previous batch's are removed afterwards, so an interruption leaves duplicates — which re-running
+    fixes — rather than a collection emptied of research that never got rewritten. The same ordering
+    argument as the ensemble parent row, and the same reason: the recoverable failure is the one to
+    prefer.
+
+    Every document is written with `origin="researched"`, so a curated collection and a researched one
+    stay separable and a research pass can be undone without touching somebody's hand-assembled work
+    (§5.1). **This function never creates a KB and never checks ownership** — the caller does both,
+    because a read grant is not a write grant and `_owned_kb` is where that is decided.
+
+    The documented negative is ingested too, and deliberately: a conversation that cannot find a
+    statute should be able to retrieve the record of the search that looked for one, rather than
+    re-litigating the gap every run.
+    """
+    written: List[str] = []
+    for doc in corpus.documents:
+        try:
+            doc_id = await db.add_kb_document(
+                kb_id,
+                title=doc.title[:200],
+                text=doc.text,
+                source_path=doc.url,
+                media_type="txt",
+                char_count=len(doc.text),
+                origin="researched",
+                authority=doc.authority,
+                research_batch=batch,
+                owner_sub=owner_sub,
+            )
+            written.append(doc_id)
+        except Exception as exc:  # noqa: BLE001
+            # One document failing to store loses that document. §5.2 again: the corpus is additive
+            # and the conversation runs either way.
+            logger.warning("Could not store %s in KB %s: %s", doc.url, kb_id, exc)
+
+    if corpus.negative:
+        try:
+            written.append(await db.add_kb_document(
+                kb_id,
+                title=(f"No controlling authority found — {corpus.persona}"
+                       if corpus.persona else "No controlling authority found"),
+                text=corpus.negative,
+                media_type="md",
+                char_count=len(corpus.negative),
+                origin="researched",
+                # Not an authority at all. Tiering it `commentary` would let the retrieval floor
+                # treat it as a source ABOUT the law, which it is not — it is a record of a search.
+                authority="unknown",
+                research_batch=batch,
+                owner_sub=owner_sub,
+            ))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not store the documented negative in KB %s: %s", kb_id, exc)
+
+    replaced = await db.replace_research_documents(
+        kb_id, batch=batch, keep=batch, owner_sub=owner_sub,
+    )
+    return {
+        "kb_id": kb_id,
+        "written": written,
+        "replaced": replaced,
+        "controlling": len(corpus.controlling),
+        "negative": bool(corpus.negative),
+    }

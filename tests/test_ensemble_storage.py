@@ -275,3 +275,88 @@ class TestMembersCarryTheirDerivedStats:
         await _make(db)
         members = await db.list_ensemble_members("ens-1")
         assert all(m["run"] is None for m in members)
+
+
+class TestResearchProvenanceOnDocuments:
+    """`origin`, `authority` and `research_batch` — docs/PERSONA-RESEARCH.md §5.1.
+
+    These exist because research ingests into the collection ALREADY BOUND at a scope. Without them
+    a curated collection and a researched one are indistinguishable, and two things become
+    impossible: telling a reader what they are looking at, and undoing a research pass without
+    rebuilding somebody's hand-assembled work.
+    """
+
+    async def _kb(self, db):
+        return (await db.create_knowledge_base(name="provider law", description="d"))["id"]
+
+    async def test_an_ordinary_upload_carries_no_research_fields(self, db):
+        # An upload must not look like research. Absent, not empty-string: every document written
+        # before these fields existed reads the same way.
+        kb_id = await self._kb(db)
+        await db.add_kb_document(kb_id, title="hand written", text="x" * 300)
+        doc = (await db.list_kb_documents(kb_id))[0]
+        assert doc["origin"] is None
+        assert doc["authority"] is None
+        assert doc["research_batch"] is None
+
+    async def test_a_researched_document_records_all_three(self, db):
+        kb_id = await self._kb(db)
+        await db.add_kb_document(
+            kb_id, title="ARS 32-2201", text="x" * 300,
+            source_path="https://azleg.gov/ars/32/02201.htm",
+            origin="researched", authority="controlling", research_batch="b1",
+        )
+        doc = (await db.list_kb_documents(kb_id))[0]
+        assert doc["origin"] == "researched"
+        assert doc["authority"] == "controlling"
+        assert doc["research_batch"] == "b1"
+        assert doc["source_path"] == "https://azleg.gov/ars/32/02201.htm"
+
+
+class TestAReRunReplacesRatherThanAccumulates:
+    async def _seeded(self, db):
+        kb_id = (await db.create_knowledge_base(name="provider law", description="d"))["id"]
+        await db.add_kb_document(kb_id, title="curated by hand", text="c" * 300)
+        await db.add_kb_document(kb_id, title="old research", text="o" * 300,
+                                 origin="researched", authority="commentary",
+                                 research_batch="batch-1")
+        await db.add_kb_document(kb_id, title="new research", text="n" * 300,
+                                 origin="researched", authority="controlling",
+                                 research_batch="batch-2")
+        return kb_id
+
+    async def test_it_removes_only_earlier_researched_documents(self, db):
+        kb_id = await self._seeded(db)
+        removed = await db.replace_research_documents(kb_id, batch="batch-2", keep="batch-2")
+
+        assert len(removed) == 1
+        titles = {d["title"] for d in await db.list_kb_documents(kb_id)}
+        assert titles == {"curated by hand", "new research"}
+
+    async def test_curated_documents_are_never_touched(self, db):
+        # THE property. An operator who assembled a collection by hand and then enabled research
+        # must be able to undo the research without rebuilding their own work.
+        kb_id = await self._seeded(db)
+        await db.replace_research_documents(kb_id, batch="batch-3")
+        titles = {d["title"] for d in await db.list_kb_documents(kb_id)}
+        assert "curated by hand" in titles
+
+    async def test_with_nothing_earlier_it_removes_nothing(self, db):
+        kb_id = (await db.create_knowledge_base(name="k", description="d"))["id"]
+        await db.add_kb_document(kb_id, title="only research", text="x" * 300,
+                                 origin="researched", research_batch="batch-1")
+        assert await db.replace_research_documents(kb_id, batch="batch-1") == []
+
+    async def test_the_batch_is_the_key_not_the_url(self, db):
+        # The same page can legitimately be re-fetched with different content, and the newer fetch
+        # should win. A URL-keyed dedupe would keep whichever arrived first.
+        kb_id = (await db.create_knowledge_base(name="k", description="d"))["id"]
+        url = "https://azleg.gov/ars/32/02201.htm"
+        await db.add_kb_document(kb_id, title="old text", text="o" * 300, source_path=url,
+                                 origin="researched", research_batch="batch-1")
+        await db.add_kb_document(kb_id, title="newer text", text="n" * 300, source_path=url,
+                                 origin="researched", research_batch="batch-2")
+
+        await db.replace_research_documents(kb_id, batch="batch-2", keep="batch-2")
+        docs = await db.list_kb_documents(kb_id)
+        assert [d["title"] for d in docs] == ["newer text"]

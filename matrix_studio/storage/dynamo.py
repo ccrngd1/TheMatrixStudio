@@ -219,6 +219,28 @@ _DOCUMENT_FIELDS = (
     # (§8b) — and which one it is decides its partition key, so this is never a
     # second membership alongside `run_id`.
     "kb_id",
+    # Where this document came from: `uploaded` (a person put it here) or `researched`
+    # (a search found it). Absent reads as None, which every document written before
+    # this existed is — and None means uploaded, since research did not exist then.
+    #
+    # Load-bearing rather than descriptive. Research ingests into the collection
+    # ALREADY BOUND at a scope (PERSONA-RESEARCH.md §5.1), so without this a curated
+    # collection and a researched one become indistinguishable, and two things become
+    # impossible: telling a reader what they are looking at, and undoing a research
+    # pass without rebuilding curation by hand.
+    "origin",
+    # The authority tier a researched document was judged to be: controlling,
+    # persuasive, commentary or unknown. §3 — the retrieval floor reads this, so a
+    # controlling authority cannot be crowded out by thirty commentary chunks.
+    #
+    # A model's judgement, and therefore recorded rather than trusted silently: shown
+    # beside the document so a wrong call is arguable.
+    "authority",
+    # Which research pass wrote this. A later pass over the same scope REPLACES its
+    # predecessor rather than accumulating, and this is what makes "its predecessor"
+    # identifiable — deduplicating by URL is not enough, because the same page can be
+    # re-fetched with different content and the newer fetch should win.
+    "research_batch",
 )
 _THREAD_FIELDS = (
     "id", "thread_id", "run_id", "target", "persona_name", "mode", "created_at",
@@ -2649,6 +2671,9 @@ class DynamoStorage:
         media_type: Optional[str],
         char_count: int,
         extra: Dict[str, Any],
+        origin: Optional[str] = None,
+        authority: Optional[str] = None,
+        research_batch: Optional[str] = None,
     ) -> str:
         """Write one document's text and metadata. Shared by the run and KB paths.
 
@@ -2697,6 +2722,11 @@ class DynamoStorage:
             "s3_key": key,
             "owner_sub": owner_sub,
             "created_at": int(time.time()),
+            # Omitted rather than stored as None when absent, because `_to_ddb` drops None
+            # anyway and an ordinary upload should not carry research fields at all.
+            **({"origin": origin} if origin else {}),
+            **({"authority": authority} if authority else {}),
+            **({"research_batch": research_batch} if research_batch else {}),
             **extra,
         }
         await self._call(self._table("documents").put_item, Item=_to_ddb(item))
@@ -2760,6 +2790,9 @@ class DynamoStorage:
         document_id: Optional[str] = None,
         text: Optional[str] = None,
         *,
+        origin: Optional[str] = None,
+        authority: Optional[str] = None,
+        research_batch: Optional[str] = None,
         owner_sub: Optional[str] = None,
     ) -> str:
         """Add a document to a knowledge base. Returns its id.
@@ -2786,8 +2819,59 @@ class DynamoStorage:
             source_path=source_path,
             media_type=media_type,
             char_count=char_count,
+            origin=origin,
+            authority=authority,
+            research_batch=research_batch,
             extra={"kb_id": kb_id},
         )
+
+    async def replace_research_documents(
+        self,
+        kb_id: str,
+        *,
+        batch: str,
+        keep: Optional[str] = None,
+        owner_sub: Optional[str] = None,
+    ) -> List[str]:
+        """Delete this KB's researched documents from EARLIER batches. Returns their ids.
+
+        The other half of "a re-run replaces its predecessor rather than accumulating"
+        (PERSONA-RESEARCH.md §5.1). Run the same definition twice with research on and the
+        collection would otherwise hold two copies of everything.
+
+        **Only `origin == "researched"` is ever removed.** A curated document has no origin, or
+        `uploaded`, and must survive untouched — that is the entire reason the field exists. An
+        operator who assembled a collection by hand and then enabled research must be able to undo
+        the research without rebuilding their own work.
+
+        Deletes by BATCH rather than by URL. The same page can legitimately be re-fetched with
+        different content, and the newer fetch is the one that should win; a URL-keyed dedupe would
+        keep whichever arrived first.
+
+        `keep` names the current batch so a caller can write first and clean up after, which is the
+        safe order: an interrupted pass then leaves duplicates, which re-running fixes, rather than
+        a collection emptied of research that never got rewritten.
+        """
+        removed: List[str] = []
+        for doc in await self.list_kb_documents(kb_id):
+            if str(doc.get("origin") or "") != "researched":
+                continue
+            found_in = str(doc.get("research_batch") or "")
+            if keep and found_in == keep:
+                continue
+            if found_in == batch:
+                continue
+            # `delete_kb_document` takes no owner: a KB document is attributed to the KB's owner,
+            # not the caller, and `add_kb_document` says why. `owner_sub` here is accepted for
+            # signature symmetry with the rest of this layer and is deliberately unused.
+            if await self.delete_kb_document(kb_id, str(doc["id"])):
+                removed.append(str(doc["id"]))
+        if removed:
+            logger.info(
+                "Replaced %d researched document(s) in KB %s from an earlier pass; curated "
+                "documents were untouched.", len(removed), kb_id,
+            )
+        return removed
 
     async def list_kb_documents(self, kb_id: str) -> List[Dict[str, Any]]:
         """A KB's documents, newest first. No authorisation check — see `get_run`."""

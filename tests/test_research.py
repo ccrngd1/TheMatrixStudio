@@ -653,3 +653,91 @@ class TestAThinSourceIsNotADocument:
         from matrix_studio import webfetch
 
         assert rs.MIN_DOCUMENT_CHARS == webfetch.MIN_TEXT_CHARS
+
+
+@pytest.mark.asyncio
+class TestIngest:
+    """Writing a corpus into a knowledge base that already exists."""
+
+    async def _kb(self, db):
+        return (await db.create_knowledge_base(name="provider law", description="d"))["id"]
+
+    def _corpus(self):
+        c = rs.Corpus(persona="Casey", queries=[rs.Query("q")])
+        c.documents = [
+            rs.ResearchedDocument(title="ARS 32-2201", text=STATUTE,
+                                  url="https://azleg.gov/ars/32/02201.htm",
+                                  authority="controlling"),
+            rs.ResearchedDocument(title="A blog", text=STATUTE,
+                                  url="https://firm.example/x", authority="commentary"),
+        ]
+        return c
+
+    async def test_documents_are_marked_researched_with_their_tier_and_url(self, db):
+        kb_id = await self._kb(db)
+        out = await rs.ingest(db, self._corpus(), kb_id, batch="b1")
+
+        assert len(out["written"]) == 2
+        docs = {d["title"]: d for d in await db.list_kb_documents(kb_id)}
+        assert docs["ARS 32-2201"]["origin"] == "researched"
+        assert docs["ARS 32-2201"]["authority"] == "controlling"
+        assert docs["ARS 32-2201"]["source_path"] == "https://azleg.gov/ars/32/02201.htm"
+        assert docs["ARS 32-2201"]["research_batch"] == "b1"
+
+    async def test_the_negative_is_ingested_so_the_room_can_retrieve_it(self, db):
+        # A conversation that cannot find a statute should be able to retrieve the RECORD of the
+        # search that looked for one, rather than re-litigating the gap every run — which is exactly
+        # what five replicate runs did.
+        kb_id = await self._kb(db)
+        c = self._corpus()
+        c.documents = [c.documents[1]]          # commentary only, so a negative exists
+        c.negative = rs.documented_negative(c)
+        out = await rs.ingest(db, c, kb_id, batch="b1")
+
+        assert out["negative"] is True
+        titles = [d["title"] for d in await db.list_kb_documents(kb_id)]
+        assert "No controlling authority found — Casey" in titles
+
+    async def test_the_negative_is_not_tiered_as_commentary(self, db):
+        # It is not a source ABOUT the law; it is a record of a search. Tiering it `commentary` would
+        # let the retrieval floor treat it as one.
+        kb_id = await self._kb(db)
+        c = self._corpus()
+        c.documents = []
+        c.negative = rs.documented_negative(c)
+        await rs.ingest(db, c, kb_id, batch="b1")
+        doc = (await db.list_kb_documents(kb_id))[0]
+        assert doc["authority"] == "unknown"
+
+    async def test_a_second_pass_replaces_the_first_and_spares_curation(self, db):
+        kb_id = await self._kb(db)
+        await db.add_kb_document(kb_id, title="curated by hand", text="c" * 300)
+        await rs.ingest(db, self._corpus(), kb_id, batch="b1")
+
+        out = await rs.ingest(db, self._corpus(), kb_id, batch="b2")
+        assert len(out["replaced"]) == 2
+
+        docs = await db.list_kb_documents(kb_id)
+        assert sum(1 for d in docs if d["title"] == "curated by hand") == 1
+        assert {d["research_batch"] for d in docs if d["origin"] == "researched"} == {"b2"}
+
+    async def test_one_document_failing_does_not_lose_the_others(self, db, monkeypatch):
+        kb_id = await self._kb(db)
+        real = db.add_kb_document
+        calls = {"n": 0}
+
+        async def flaky(*a, **k):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("s3 hiccup")
+            return await real(*a, **k)
+
+        monkeypatch.setattr(db, "add_kb_document", flaky)
+        out = await rs.ingest(db, self._corpus(), kb_id, batch="b1")
+        assert len(out["written"]) == 1
+
+    async def test_it_never_creates_a_knowledge_base(self, db):
+        # The caller owns that decision, because a read grant is not a write grant and `_owned_kb` is
+        # where ownership is settled. Ingesting into a missing KB must fail, not conjure one.
+        out = await rs.ingest(db, self._corpus(), "does-not-exist", batch="b1")
+        assert out["written"] == []
