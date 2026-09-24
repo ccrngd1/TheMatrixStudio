@@ -244,6 +244,18 @@ one. A turn's `document.retrieved` event records `origin` and `authority` per pa
 badges. A run with no research emits none of these fields and renders no badges, so nothing changes
 for a conversation that never asked.
 
+**Corpora embedded before this change carry `authority` but not `origin`**, because a vector's
+metadata is written once at embed time. Measured against `renewal-jordan`: every row comes back with
+its tier and `origin` absent. The consequence is bounded and in the safe direction — the badges are
+gated on the per-turn `researched_passages` count, which is itself derived from `origin`, so an old
+corpus produces **no badges** rather than labelling found material as the operator's own. The
+retrieval floor is unaffected, since it reads `authority`.
+
+No backfill. Re-embedding would mean deleting vectors to make the chunks eligible again, which is
+destructive and costs money to redo, and every pass from now on carries the field. There is
+deliberately no "has an authority tier, therefore researched" fallback either: the clone script
+copies `authority` through to a curated document, so that inference would be wrong by construction.
+
 That converts the failure from *invisible* to *legible*: an operator sees "3 of 3 researched" on a
 turn where their own upload should have appeared. It does not prevent the displacement, and the
 honest version of that is a per-run "keep research in its own collection" option if it turns out to
