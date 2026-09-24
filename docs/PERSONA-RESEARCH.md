@@ -281,11 +281,41 @@ bindings already live, so research is a KB-*authoring* step and the form merely 
 | **Research before starting** | off | it spends money and time on every run; opt in |
 | Shared research (the researcher) | on, with research | the corpus everyone sees |
 | Per-persona research | on, with research | and its opposition half is not separately switchable — §2.2 |
-| Queries per viewpoint | 2 | one for the position, one for `evidence_that_shifts` |
+| Sources per query | 5 | how wide each search goes |
+| Queries per viewpoint | 2, **fixed** | one for the position, one for `evidence_that_shifts` |
 | Recency limit | none | a settled case from 2011 is not stale; a blog from 2011 is. Tiering handles it better than a date filter |
 
 The button should name the multiplier, as the ensemble one does: research is 1 + N corpora, and an
 operator should see "researching 7 collections" before agreeing to it.
+
+### 7.1 Built, step 5 — and one control in the table above is wrong
+
+**"Queries per viewpoint" is displayed, not editable**, and the table as first written contradicted
+§2.2. The two queries are *one for the position and one for the evidence the persona said would
+change their mind*; exposing the count as a dial invites setting it to 1, which silently drops the
+opposition query — the single thing §2.2 says must not be separately switchable. A persona who only
+ever sees support for what they already think cannot be moved by evidence, and measuring whether
+they would be is the entire point of the tool. So the form explains the 2 and offers **sources per
+query** instead, which is a real dial: it decides how wide each search goes and nothing about whose
+case gets made.
+
+Three further things the build settled:
+
+- **Research forces `retrieval.enabled` on.** `retrieve_for_turn` is never called with retrieval
+  disabled, so an operator who enabled research and attached nothing else would have paid for a
+  full pass and then held a conversation that queried none of it. A complete, invisible corpus,
+  with no symptom but a conversation that seemed no better informed. The form also sends
+  `authority_floor: 1` with it — a run that went looking for statutes should not then let them
+  lose every slot.
+- **The ensemble warning is in the form, not only in the 422.** §6 means the route refuses
+  research on an ensemble until step 6; saying so at the toggle means an operator does not fill in
+  a whole form to discover it.
+- **§5.3 needed a panel.** "Do not make me watch" left no way to see what a pass did, so
+  `GET /api/runs/{ref}` now returns the record and `ResearchPanel` renders it. It keeps
+  `found-nothing`, `unavailable` and `failed` visually distinct, because those are three different
+  facts and only one is worth retrying — and it says **"not retrievable"** rather than a count of
+  zero when documents were stored and could not be embedded, since every other symptom of that
+  looks like a researcher who found nothing useful.
 
 ---
 
@@ -431,7 +461,34 @@ is recorded so curation and research stay separable, and a re-run replaces rathe
    `search_secret_arn` names a secret the operator created; the stack creates none, because a
    CDK-generated placeholder would look like a configured key while every search failed
    authentication. Unset means research reports itself `unavailable` and the conversation runs.
-5. **The UI toggle** (§7).
+5. **The UI toggle** (§7). **DONE** — see §7.1, which also corrects §7's own table. The toggle,
+   both tiers, sources per query, the collection count on the button, and a `ResearchPanel` on the
+   run view so a pass nobody watched can still be reviewed (§5.3).
+
+   **First live end-to-end run: `602ddffe`, and the chain holds.** Tavily, 94 sources, $0.2581,
+   313s against the 900s ceiling. All seven scopes ingested AND embedded — 3,951 passages, 18
+   controlling authorities, and the two personas who found none got a documented negative.
+   Researched passages reached all 8 turns.
+
+   Two things the doc had listed as open are closed by it. **Tavily retrieved the ASSOC Model
+   Licensed Practice Act**, which §12.5 said would have to be curated by hand because ASSOC
+   blocks both the fetcher and Tavily's extractor — it reached turns 1–5. And Quinn's turn
+   retrieved *"No controlling authority found — Quinn"*, so §4's negative is readable by the
+   conversation rather than merely filed.
+
+   The floor was then A/B'd on those live vectors, because the run alone could not distinguish it
+   from the source floor: on Casey it was correctly a **no-op** (her selection already held a
+   controlling passage), and on Jordan and Riley it **promoted** one that global rank had placed
+   6th. At k=6 the controlling row arrives naturally, so at k=3 the floor is doing real work.
+
+   **One open question from that run.** On Jordan the promoted slot was paid for by his own
+   run-scoped passage rather than by one of three surplus `persuasive` chunks from the same
+   collection. `apply_floors` should let only a *surplus* row pay, and a lone `kb_id: None` row is
+   not surplus — so either the eviction happened at the earlier merge trim, where the pool is
+   larger, or the implementation does not match its docstring. Live probes cannot show the
+   intermediate selections; this needs a unit test reproducing that exact shape (one run-scoped
+   row, three same-collection persuasive rows, one controlling at rank 6). It is the same class as
+   the bug already fixed once here, so it is worth pinning rather than leaving.
 6. **The ensemble path** — research once, bind to all members (§6).
 7. **The §9 comparison**, 5 replicates each way.
 

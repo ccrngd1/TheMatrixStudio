@@ -67,6 +67,15 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
   // Phase 6: collections every persona in the run may search — the cast-wide case,
   // which generalises Phase 5's `persona_name IS NULL` exactly.
   const [runKbs, setRunKbs] = useState<string[]>([])
+  // Pre-conversation research (docs/PERSONA-RESEARCH.md §7). OFF by default and that is
+  // deliberate rather than cautious: it searches the open web and costs a few minutes and
+  // a quarter of a dollar per run, so it is a decision the operator makes each time.
+  const [research, setResearch] = useState(false)
+  const [researchShared, setResearchShared] = useState(true)
+  const [researchPersonas, setResearchPersonas] = useState(true)
+  // Sources taken per query. The one genuine dial: it decides how wide the search goes.
+  // `queries per viewpoint` is deliberately NOT exposed — see the note by the toggle.
+  const [researchResults, setResearchResults] = useState(5)
   const [maxMessages, setMaxMessages] = useState(10)
   // Let the moderator end the run when nobody has anything left to add. When it is on the
   // turn count stops being a plan and becomes a ceiling, so the number is raised and
@@ -326,6 +335,20 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
   const anyKnowledgeBases =
     runKbs.length > 0 || cast.some((c) => c.knowledgeBases.length > 0)
 
+  // How many collections a research pass would build: the shared one, plus one per persona
+  // who actually has a viewpoint to research. §7 asks for this on the button — research is
+  // "1 + N corpora" and an operator should see "researching 7 collections" BEFORE agreeing
+  // to it, for the same reason the ensemble button names the run count. A number that
+  // appears only in the bill is a number nobody consented to.
+  const researchCollections =
+    (researchShared ? 1 : 0) +
+    (researchPersonas
+      ? cast.filter((c) => {
+          const s = buildStructured(c)
+          return c.name.trim() && s !== undefined && (s.viewpoints?.length ?? 0) > 0
+        }).length
+      : 0)
+
   const submit = async () => {
     setError(null)
     const validCast = cast
@@ -397,7 +420,28 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
           // Retrieval has to be ON for a binding to do anything: `retrieve_for_turn` is
           // never called with it disabled, so a run that bound three collections and
           // pasted no documents would search none of them and say nothing about why.
-          retrieval: anyDocuments || anyKnowledgeBases ? { enabled: true } : undefined,
+          //
+          // `research` is included in that condition for exactly the same reason, and it is
+          // the more dangerous case: research creates collections and binds them itself, so
+          // an operator who enabled research and attached nothing else would pay for a full
+          // search pass and then run a conversation that never queried it. The corpus would
+          // be there, complete, and invisible — which is the failure this project keeps
+          // finding. `authority_floor` rides along because a floor of 0 is off, and a run
+          // that went looking for statutes should not then let them lose every slot.
+          retrieval:
+            anyDocuments || anyKnowledgeBases || research
+              ? { enabled: true, ...(research ? { authority_floor: 1 } : {}) }
+              : undefined,
+          // Sent only when asked for. `targets` is never sent: the server resolves it and
+          // overwrites whatever arrives, because it names collections to WRITE into.
+          research: research
+            ? {
+                enabled: true,
+                shared: researchShared,
+                personas: researchPersonas,
+                results_per_query: researchResults,
+              }
+            : undefined,
           ...(runKbs.length ? { knowledge_bases: runKbs } : {}),
         },
         model: model || undefined,
@@ -1376,6 +1420,118 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
         </div>
       </div>
 
+      {/* Research sits next to the KB pickers on purpose: it is a knowledge-base AUTHORING
+          step, and the bindings it produces are the same bindings chosen above. */}
+      <div className="mt-6 rounded-lg border border-matrix-border bg-matrix-panel p-4">
+        <label className="flex items-center gap-2 text-sm font-semibold text-slate-300">
+          <input
+            type="checkbox"
+            checked={research}
+            onChange={(e) => setResearch(e.target.checked)}
+          />
+          Research the subject before starting
+          <Hint label="pre-conversation research">
+            Before turn 1, a researcher searches the open web for the AUTHORITIES on your
+            topic — statutes, regulations, board opinions, decided cases — and each persona
+            researches their own position <em>and the evidence they said would change their
+            mind</em>. What it finds is ingested into knowledge bases and bound here, so the
+            conversation reads it like any other collection.
+            <br />
+            <br />
+            This exists because of a measured gap: across five replicate runs of one brief,
+            the room asked for the same missing citation every time and never got it. A
+            conversation cannot answer that from inside itself.
+            <br />
+            <br />
+            Sources are tiered — <strong>controlling</strong> (a statute, a regulation, a
+            board ruling), persuasive, commentary — and a controlling one is given a
+            reserved slot in every prompt, so it cannot be crowded out by a blog post that
+            happens to match your topic's wording more closely.
+            <br />
+            <br />
+            When nothing controlling is found, that is recorded <em>as a finding</em> and
+            ingested too. "Nobody looked" and "we looked and there is nothing" are different
+            facts, and only the second one is reusable.
+            <br />
+            <br />
+            It costs a few minutes and roughly $0.25 for a six-persona cast, before the
+            conversation itself. You are not made to wait on a screen: the run is created
+            immediately and researches before it talks.
+          </Hint>
+        </label>
+
+        {research && (
+          <div className="mt-3 space-y-2 border-l-2 border-matrix-border pl-3">
+            <label className="flex items-center gap-2 text-sm text-slate-300">
+              <input
+                type="checkbox"
+                aria-label="Shared research"
+                checked={researchShared}
+                onChange={(e) => setResearchShared(e.target.checked)}
+              />
+              Shared research — one corpus every persona can search
+            </label>
+            <label className="flex items-center gap-2 text-sm text-slate-300">
+              <input
+                type="checkbox"
+                aria-label="Per-persona research"
+                checked={researchPersonas}
+                onChange={(e) => setResearchPersonas(e.target.checked)}
+              />
+              Per-persona research — their case, and the case against it
+              <Hint label="per-persona research">
+                Two queries per viewpoint: one for the position, one for whatever the persona
+                declared would change their mind. The second is not separately switchable,
+                and that is the point — a persona who only ever sees support for what they
+                already think cannot be moved by evidence, and measuring whether they would
+                be is what this tool is for.
+                <br />
+                <br />
+                A persona with no viewpoints is skipped rather than given an empty
+                collection.
+              </Hint>
+            </label>
+            <label className="flex items-center gap-2 text-sm text-slate-300">
+              Sources per query
+              <input
+                type="number"
+                aria-label="Sources per query"
+                min={1}
+                max={20}
+                value={researchResults}
+                onChange={(e) =>
+                  setResearchResults(Math.max(1, Math.min(20, Number(e.target.value) || 1)))
+                }
+                className="w-16 rounded border border-matrix-border bg-matrix-bg px-2 py-1 text-sm"
+              />
+              <Hint label="sources per query">
+                How wide each search goes. Higher finds more and costs more, in both search
+                calls and the reading that follows.
+                <br />
+                <br />
+                There is deliberately no date filter. A case decided in 2011 is not stale and
+                a blog from 2011 usually is — which is a question about what a source IS, not
+                when it was written, and the authority tiers answer it better than a cutoff
+                would.
+              </Hint>
+            </label>
+            {!researchShared && !researchPersonas && (
+              <p className="text-xs text-amber-400">
+                Both tiers are off, so nothing would be researched.
+              </p>
+            )}
+            {runType === 'ensemble' && (
+              <p className="text-xs text-amber-400">
+                Research is not yet available for ensembles. An ensemble has to research once,
+                before its members exist, so every replicate reads the same corpus — otherwise
+                differences between members stop being evidence about the brief. Starting this
+                will be refused.
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+
       <button
         onClick={submit}
         disabled={submitting}
@@ -1388,7 +1544,14 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
             // spend, and a button reading "Run simulation" would not say so at the one moment
             // it matters.
             ? `▶ Run ${replicates + (compareHybrid ? hybridReplicates : 0)} simulations`
-            : '▶ Run simulation'}
+            // Same principle for research, per §7: it is 1 + N corpora, and the count is the
+            // thing that scales with the cast. "Research 7 collections, then run" is a
+            // sentence an operator can decline; "Run simulation" is not.
+            : research && researchCollections > 0
+              ? `▶ Research ${researchCollections} collection${
+                  researchCollections === 1 ? '' : 's'
+                }, then run simulation`
+              : '▶ Run simulation'}
       </button>
     </div>
   )

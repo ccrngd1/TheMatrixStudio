@@ -73,6 +73,50 @@ export interface RunDetail extends RunSummary {
   // Phase 2a: branch lineage — this run's parent (if it is a branch) and any
   // child branches forked from it.
   lineage?: RunLineage
+  // PERSONA-RESEARCH.md §5.3: the account of a research pass nobody watched.
+  // Null or absent for every run that did not ask for research.
+  research?: ResearchRecord | null
+}
+
+// -------- Pre-conversation research (docs/PERSONA-RESEARCH.md) --------- //
+
+export interface ResearchScope {
+  // The persona's name, or the literal 'shared' for the researcher's own corpus.
+  scope: string
+  queries?: number
+  documents?: number
+  // Sources tiered as a statute, regulation, board ruling or decided case. Broken out
+  // because this is the tier the retrieval floor reserves a prompt slot for: a pass that
+  // found ninety sources and no controlling authority did not answer the question the
+  // personas were asking.
+  controlling?: number
+  // URLs a search returned that could not be read, with the count only. Not a bug count —
+  // a state board's own statute page answering 403 is a fact about the search, and it is
+  // reported so an absence is never mistaken for "there is nothing there".
+  unreadable?: number
+  negative?: boolean
+  written?: number
+  replaced?: number
+  embedded?: number
+  kb_id?: string
+  // Set when a scope could not be stored: not owned, no target allocated, or the
+  // collection is gone. The reason travels because each one implies a different fix.
+  refused?: string
+  // Set when documents were stored and could NOT be embedded, which means they exist and
+  // no turn can retrieve them. The one failure here worth shouting about.
+  embed_error?: string
+}
+
+export interface ResearchRecord {
+  // researched | found-nothing | unavailable | failed | skipped. "Researched and found
+  // nothing" and "research failed" are different facts and only one is worth retrying.
+  status: string
+  finished_at?: number
+  cost_usd?: number
+  batch?: string
+  provider?: string
+  scopes?: ResearchScope[]
+  error?: string
 }
 
 // -------- Phase 2a: branch lineage + checkpoints --------- //

@@ -255,6 +255,48 @@ def test_get_run_404(client):
     assert r.status_code == 404
 
 
+def test_the_run_detail_carries_the_research_record(client):
+    """PERSONA-RESEARCH.md §5.3: "do not make me watch" is not "give me no visibility".
+
+    Nobody sees a research pass happen, so the route has to expose its account or the UI panel
+    renders nothing for ever — which would look exactly like a feature that never ran.
+    """
+    with patch("matrix_studio.api.manager.run_simulation", make_fake_run(turns=1)):
+        run_id = client.post("/api/runs", json=REQUEST).json()["run_id"]
+        _wait_complete(client, run_id)
+
+    # A run that did not research carries no record, so the panel adds nothing to the
+    # conversations that never asked.
+    assert client.get(f"/api/runs/{run_id}").json()["research"] is None
+
+    from matrix_studio.storage import Database
+    from matrix_studio.tenancy import LOCAL_USER_SUB
+
+    async def record():
+        # `LOCAL_USER_SUB`, not `TEST_OWNER`: with no AUTH_MODE the app resolves every request
+        # to the local single user, so that is the partition the run above was written to.
+        # Writing under the wrong owner would leave `set_run_research` refusing the update —
+        # correctly, since it is conditional on the row existing — and this test would be
+        # asserting against a record that was never stored.
+        store = Database(); await store.connect()
+        try:
+            await store.for_owner(LOCAL_USER_SUB).set_run_research(run_id, {
+                "status": "found-nothing",
+                "provider": "tavily",
+                "cost_usd": 0.25,
+                "scopes": [{"scope": "shared", "documents": 0, "negative": True}],
+            })
+        finally:
+            await store.close()
+
+    asyncio.get_event_loop_policy().new_event_loop().run_until_complete(record())
+
+    got = client.get(f"/api/runs/{run_id}").json()["research"]
+    assert got["status"] == "found-nothing"
+    assert got["provider"] == "tavily"
+    assert got["scopes"][0]["negative"] is True
+
+
 def test_events_endpoint_and_after_seq(client):
     with patch("matrix_studio.api.manager.run_simulation", make_fake_run(turns=2)):
         run_id = client.post("/api/runs", json=REQUEST).json()["run_id"]
