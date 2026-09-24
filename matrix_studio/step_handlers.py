@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Phase 5: Lambda entry points for the Step Functions states.
 
-Three handlers — `prepare`, `turn`, `finalise` — each a thin adapter over
+Handlers — `research`, `prepare`, `turn`, `finalise` — each a thin adapter over
 `matrix_studio.orchestration`. Thin on purpose: everything they do is testable
 in-process against `moto`, and a handler that held logic would be the one part of the
 turn loop only a deployment could exercise.
@@ -112,6 +112,38 @@ async def _prepare(event: Dict[str, Any]) -> Dict[str, Any]:
     )
 
 
+async def _research(event: Dict[str, Any]) -> Dict[str, Any]:
+    """The Research state: search the open web before turn 1. `PERSONA-RESEARCH.md` §5.
+
+    A state rather than a background task, for the reason this file's header already gives about
+    `prepare`: Lambda freezes the sandbox when the handler returns, so an `asyncio` task started
+    from the API dies. That mistake is on the record three times in this project.
+
+    **Returns the event it was given, with a small `research` record added.** The next state is
+    `Prepare`, which needs `run_id`, `owner_sub`, `mode` and `extra` — so this passes its input
+    through rather than returning a result of its own. Anything else would make the Research state
+    a translation layer between two states that already agree on a shape.
+
+    Invoked for EVERY run and returns in milliseconds when research is off. Deciding it here rather
+    than in a `Choice` over the execution input keeps the run row authoritative; see
+    `research_state`'s module docstring for why a second copy of that decision is the dangerous
+    kind of duplication.
+    """
+    from matrix_studio import research_state
+
+    owner = _owner(event)
+    db = await _bound(owner)
+    record = await research_state.run_research(
+        db, str(event["run_id"]), owner_sub=owner, mode=str(event.get("mode") or "fresh"),
+    )
+    return {**event, "research": {
+        # Deliberately not the whole record. A state's I/O is capped at 256 KB and everything
+        # downstream reads the run row anyway; what travels here is for the execution history.
+        "status": record.get("status"),
+        "cost_usd": record.get("cost_usd"),
+    }}
+
+
 async def _turn(event: Dict[str, Any]) -> Dict[str, Any]:
     from matrix_studio import orchestration
 
@@ -178,6 +210,7 @@ async def _ensemble_report(event: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+research = _handler(_research)
 prepare = _handler(_prepare)
 turn = _handler(_turn)
 finalise = _handler(_finalise)

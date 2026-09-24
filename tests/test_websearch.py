@@ -276,3 +276,105 @@ class TestSelection:
         monkeypatch.setenv("BRAVE_API_KEY", "k")
         monkeypatch.setenv("EXA_API_KEY", "k")
         assert ws.available() == ["exa", "brave"]
+
+
+class TestKeysComeFromSecretsManagerNotTheEnvironment:
+    """A key in a Lambda environment variable is readable by anyone with
+    `lambda:GetFunctionConfiguration`, and it appears in `cdk diff` output and in
+    CloudFormation events — so a deployment would write it into the account's change history.
+    Fetched at cold start, it is readable only by the function's role.
+
+    Every failure here must be silent-but-logged rather than raised: an unreadable secret means
+    research is UNAVAILABLE, which `select` already reports as a configuration state (§5.2), and
+    raising would turn a missing key into a failed conversation.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean(self, monkeypatch):
+        for var in ("BRAVE_API_KEY", "TAVILY_API_KEY", "EXA_API_KEY", ws.SECRET_ENV):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr(ws, "_secret_loaded", False)
+
+    def _secret(self, monkeypatch, payload, *, raises=None):
+        import json as _json
+
+        monkeypatch.setenv(ws.SECRET_ENV, "arn:aws:secretsmanager:us-east-1:1:secret:k")
+
+        class Client:
+            def get_secret_value(self, SecretId):  # noqa: N803 - boto3's own casing
+                if raises:
+                    raise raises
+                return {"SecretString": payload if isinstance(payload, str)
+                        else _json.dumps(payload)}
+
+        import boto3
+
+        monkeypatch.setattr(boto3, "client", lambda *a, **k: Client())
+
+    def test_a_key_in_the_secret_reaches_the_environment(self, monkeypatch):
+        self._secret(monkeypatch, {"TAVILY_API_KEY": "tvly-x"})
+        assert ws.load_keys_from_secret() == ["TAVILY_API_KEY"]
+        assert ws.select().name == "tavily"
+
+    def test_an_exported_key_wins_over_the_secret(self, monkeypatch):
+        # A developer who exported one locally has said which to use. Overriding that would
+        # make a local override look ignored, and `scripts/research_definition.py` relies on it.
+        monkeypatch.setenv("TAVILY_API_KEY", "mine")
+        self._secret(monkeypatch, {"TAVILY_API_KEY": "theirs"})
+        assert ws.load_keys_from_secret() == []
+        import os
+
+        assert os.environ["TAVILY_API_KEY"] == "mine"
+
+    def test_an_unknown_name_in_the_secret_is_not_exported(self, monkeypatch):
+        # Otherwise the secret would be a way to set arbitrary environment variables in the
+        # runtime, which is a much larger thing than configuring a search provider.
+        self._secret(monkeypatch, {"AWS_SECRET_ACCESS_KEY": "no", "BRAVE_API_KEY": "yes"})
+        assert ws.load_keys_from_secret() == ["BRAVE_API_KEY"]
+        import os
+
+        assert os.environ.get("AWS_SECRET_ACCESS_KEY") != "no"
+
+    def test_no_secret_configured_does_nothing_at_all(self, monkeypatch):
+        assert ws.load_keys_from_secret() == []
+
+    def test_an_unreadable_secret_is_logged_and_not_raised(self, monkeypatch, caplog):
+        self._secret(monkeypatch, {}, raises=RuntimeError("AccessDenied"))
+        with caplog.at_level("WARNING"):
+            assert ws.load_keys_from_secret() == []
+        assert "unavailable" in caplog.text
+
+    def test_a_secret_that_is_not_an_object_is_reported_with_the_expected_shape(
+        self, monkeypatch, caplog,
+    ):
+        self._secret(monkeypatch, '"just a string"')
+        with caplog.at_level("WARNING"):
+            assert ws.load_keys_from_secret() == []
+        assert "TAVILY_API_KEY" in caplog.text
+
+    def test_the_key_itself_is_never_logged(self, monkeypatch, caplog):
+        # Not its length and not a prefix either: a fingerprint in CloudWatch is the thing the
+        # secret exists to avoid.
+        self._secret(monkeypatch, {"BRAVE_API_KEY": "BSA-supersecret-value"})
+        with caplog.at_level("INFO"):
+            ws.load_keys_from_secret()
+        assert "supersecret" not in caplog.text
+        assert "BRAVE_API_KEY" in caplog.text
+
+    def test_the_secret_is_read_once_per_sandbox(self, monkeypatch):
+        calls = []
+        self._secret(monkeypatch, {"BRAVE_API_KEY": "k"})
+        real = ws.load_keys_from_secret
+
+        monkeypatch.setattr(ws, "load_keys_from_secret",
+                            lambda **kw: (calls.append(1), real(**kw))[1])
+        ws.load_keys_from_secret()
+        ws.load_keys_from_secret()
+        assert ws._secret_loaded is True
+
+    def test_passing_an_env_skips_the_secret_entirely(self, monkeypatch):
+        # A caller supplying an environment is testing this function's decision, not the
+        # deployment's configuration.
+        self._secret(monkeypatch, {"BRAVE_API_KEY": "k"}, raises=RuntimeError("must not call"))
+        with pytest.raises(ws.SearchUnavailable):
+            ws.select(env={})

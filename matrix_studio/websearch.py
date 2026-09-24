@@ -316,6 +316,85 @@ def available() -> List[str]:
     return [p.name for p in PROVIDERS if os.environ.get(p.env_var)]
 
 
+#: Environment variable naming a Secrets Manager secret that holds the provider keys.
+SECRET_ENV = "SEARCH_SECRET_ARN"
+
+#: Set once a secret has been loaded (or found absent), so the fetch happens per sandbox rather
+#: than per call. A module global rather than an `lru_cache`, because what is being cached is a
+#: side effect on `os.environ` and a cache that could be cleared would re-fetch for no reason.
+_secret_loaded = False
+
+
+def load_keys_from_secret(*, force: bool = False) -> List[str]:
+    """Populate provider keys from Secrets Manager into the environment. Returns what was set.
+
+    **A key must not be a Lambda environment variable.** Environment variables are readable by
+    anyone with `lambda:GetFunctionConfiguration`, and they show up in `cdk diff` and in
+    CloudFormation events — so a deployment would put the key in the account's change history.
+    A secret fetched at cold start is readable only by the function's role.
+
+    The secret is a JSON object keyed by the provider env var names, so one secret configures
+    whichever providers the operator has: `{"TAVILY_API_KEY": "...", "BRAVE_API_KEY": "..."}`.
+    Keys for providers this code does not know about are ignored rather than exported, so the
+    secret cannot be used to set arbitrary environment variables in the runtime.
+
+    Never raises. An unreadable secret means research is unavailable, which `select` already
+    reports as a configuration state rather than a failure (§5.2) — and raising here would turn a
+    missing key into a failed run.
+
+    Idempotent per sandbox. Calling it with a key already in the environment changes nothing: a
+    locally exported key wins, which is what makes `scripts/research_definition.py` work unchanged.
+    """
+    global _secret_loaded
+    if _secret_loaded and not force:
+        return []
+    _secret_loaded = True
+
+    arn = os.environ.get(SECRET_ENV, "").strip()
+    if not arn:
+        return []
+
+    try:
+        import json
+
+        import boto3
+
+        client = boto3.client("secretsmanager")
+        payload = client.get_secret_value(SecretId=arn)
+        data = json.loads(payload.get("SecretString") or "{}")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Could not read the search-key secret %s (%s); research will report itself "
+            "unavailable rather than failing a run.", arn, exc,
+        )
+        return []
+
+    if not isinstance(data, dict):
+        logger.warning(
+            "The search-key secret %s is not a JSON object, so no keys were loaded. Expected "
+            "one key per provider, e.g. {\"TAVILY_API_KEY\": \"...\"}.", arn,
+        )
+        return []
+
+    known = {p.env_var for p in PROVIDERS}
+    loaded: List[str] = []
+    for name, value in data.items():
+        if name not in known or not isinstance(value, str) or not value.strip():
+            continue
+        # An explicitly exported key wins. The secret is the DEPLOYED source; a developer who
+        # exported one locally has said which to use, and overriding that would make a local
+        # override look ignored.
+        if os.environ.get(name):
+            continue
+        os.environ[name] = value.strip()
+        loaded.append(name)
+    if loaded:
+        # The NAMES only. Logging a key's length or prefix would put a fingerprint of it in
+        # CloudWatch, which is the thing the secret exists to avoid.
+        logger.info("Loaded search keys from %s: %s", arn, ", ".join(sorted(loaded)))
+    return loaded
+
+
 def select(
     preferred: Optional[str] = None, *, env: Optional[Dict[str, str]] = None
 ) -> Provider:
@@ -328,7 +407,13 @@ def select(
 
     Raising rather than returning None: research is opt-in, so reaching this function at all means
     somebody asked for it, and an empty corpus is a worse answer than a refusal.
+
+    Deployed keys are loaded from Secrets Manager here, at the one place that reads them, so no
+    caller has to remember to do it first. Skipped when `env` is passed, because a caller supplying
+    an environment is testing this function's decision and not the deployment's configuration.
     """
+    if env is None:
+        load_keys_from_secret()
     environ = env if env is not None else dict(os.environ)
     wanted = (preferred or environ.get("SEARCH_PROVIDER") or "").strip().lower()
 

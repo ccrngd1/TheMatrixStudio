@@ -1766,6 +1766,11 @@ async def _run_turns(
                     embedding_model=retrieval.embedding_model,
                     rrf_k=retrieval.rrf_k,
                     min_similarity=retrieval.min_similarity,
+                    # PERSONA-RESEARCH.md §3. Passed from the config rather than defaulted
+                    # in the engine: a floor the run asked for and the engine did not pass
+                    # would be a setting that looks enabled and does nothing, which is how
+                    # three earlier features in this project shipped inert.
+                    authority_floor=retrieval.authority_floor,
                 )
                 if passages:
                     await emit(

@@ -280,6 +280,35 @@ class TestRefusals:
     def test_an_unknown_ensemble_is_404(self, client):
         assert client.get("/api/ensembles/nope").status_code == 404
 
+    def test_research_on_an_ensemble_is_refused_rather_than_ignored(self, client):
+        """PERSONA-RESEARCH.md §6: an ensemble must research ONCE, before its members exist.
+
+        That pass is §11 step 6 and is not built. Both alternatives to refusing are worse:
+        researching per member gives replicates different inputs, which makes divergence
+        unattributable and is exactly what ENSEMBLE-CONVERSATIONS.md §2 rests on not
+        happening; and accepting the flag while ignoring it hands the operator five
+        conversations they believe are researched.
+
+        Delete this test with the refusal, when step 6 lands.
+        """
+        res = _create(client, config={"research": {"enabled": True}})
+        assert res.status_code == 422
+        assert "research once" in res.json()["detail"]
+        # And nothing was created — no parent, no members, no collections.
+        assert client.get("/api/ensembles").json()["ensembles"] == []
+        assert client.get("/api/knowledge-bases").json()["knowledge_bases"] == []
+
+    def test_research_on_a_SINGLE_run_is_accepted(self, client):
+        """The positive half. Without it the refusal above could be passing because the
+        research config is rejected everywhere, which would be a different bug."""
+        with patch("matrix_studio.api.manager.run_simulation", make_fake_run(turns=1)):
+            res = client.post(
+                "/api/runs",
+                json={**REQUEST, "config": {"max_messages": 2,
+                                            "research": {"enabled": True}}},
+            )
+        assert res.status_code == 201, res.text
+
 
 # --------------------------------------------------------------------------- #
 # report readiness

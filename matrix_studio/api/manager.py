@@ -220,6 +220,43 @@ class RunManager:
             # Phase 0 feature, so we only record it for now (kept additive).
             engine_request["model"] = model
 
+        # PERSONA-RESEARCH.md §5.1: resolve where each corpus may be stored, BEFORE the run
+        # row is written. A run's bindings live in `config_json`, which is written once, so
+        # "research, then associate the KB" would mean a read-modify-write of a JSON blob
+        # from a state the machine can retry.
+        #
+        # Here rather than in `_preflight` because this MUTATES the request — it appends a
+        # pre-allocated KB id to a binding — and `_preflight` is shared with the ensemble
+        # route, where §6 says research happens once for the parent rather than per member.
+        # A no-op unless `config.research.enabled` is set.
+        #
+        # Not wrapped in a try: a run created with research enabled and no target would run
+        # to completion having searched nothing, silently. Failing the create is the honest
+        # outcome, and it is the one case in this feature where failing is right — nothing
+        # has been created for the operator to lose yet.
+        #
+        # An ensemble MEMBER never allocates, and that guard is permanent rather than a
+        # placeholder for §11 step 6. §6: an ensemble researches ONCE, before its members
+        # exist, and they all bind the same KBs. Allocating per member would create a fresh
+        # set of collections for each — a ten-member fan-out would leave thirty empty ones
+        # bound for ever, because every member's Research state then skips the search.
+        from matrix_studio import research_state
+
+        if not ensemble_id:
+            engine_request = await research_state.allocate_targets(
+                owned, engine_request, owner_sub=owner_sub, label=name,
+                # The UNSCOPED store, for creating a KB's vector index and nothing else. The
+                # tenant role holds `GetIndex` and deliberately not `CreateIndex`, so this is
+                # the last moment privileged credentials are in reach — the Research state
+                # runs in a worker that cannot do it.
+                privileged=self.db,
+            )
+            # Re-read the cast from the request that was actually mutated. `cast` was bound at
+            # the top of this function from the ORIGINAL request, and it is what the run row is
+            # written from — so without this a persona's pre-allocated KB would reach the engine
+            # and not the row, which is the half every turn resolves its bindings against.
+            cast = engine_request.get("cast") or cast
+
         # Phase 5: when there is an orchestrator, the run row is written HERE and the
         # state machine generates the turns.
         #
@@ -279,6 +316,35 @@ class RunManager:
 
         async def _runner() -> None:
             try:
+                # PERSONA-RESEARCH.md §5: research runs before turn 1. On the deployed path
+                # that is a state machine state; here it is simply awaited first, because a
+                # long-lived uvicorn process really can run a background task to completion —
+                # the one thing Lambda cannot do, and the whole reason the state exists.
+                #
+                # Inside the task rather than before it, so the POST still returns at once:
+                # "do not make me sit and watch" is the requirement, and a pass is minutes.
+                #
+                # `research_definition` rather than `run_research`, because on this path the
+                # run ROW does not exist yet — `run_simulation` writes it. So the record is
+                # kept and written after the conversation, below, where there is a row to
+                # write it to. The corpus itself is in the knowledge base either way, which
+                # is what the turns actually read.
+                from matrix_studio import research_state
+
+                research_settings = research_state.settings_from(
+                    engine_request.get("config")
+                )
+                research_record = None
+                if research_settings.enabled:
+                    research_record = await research_state.research_definition(
+                        owned,
+                        topic=topic,
+                        cast=engine_request.get("cast") or [],
+                        settings=research_settings,
+                        owner_sub=owner_sub,
+                        label=run_id,
+                    )
+
                 result = await run_simulation(
                     engine_request,
                     db=owned,
@@ -286,6 +352,10 @@ class RunManager:
                     on_event=_on_event,
                     should_stop=lambda: run_id in self._stop_requested,
                 )
+                if research_record is not None:
+                    # Now there is a row. `set_run_research` tolerates a missing one, so this
+                    # is safe for a run that failed before writing itself.
+                    await owned.set_run_research(run_id, research_record)
                 # Phase 1.5: after a run completes, auto-generate the structured
                 # summary (unless disabled in the run's summary config). This is
                 # read-only — it writes only to the additive `summaries` table,

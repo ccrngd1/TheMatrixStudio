@@ -193,6 +193,37 @@ class RetrievalConfigModel(BaseModel):
     term_limit: int = Field(default=0, ge=0)
     max_df_ratio: float = Field(default=0.5, gt=0.0, le=1.0)
     score_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
+    # PERSONA-RESEARCH.md §3: reserved slots for controlling authority. 0 = off, which is
+    # exactly the pre-research behaviour — see `RetrievalConfig.authority_floor` for why the
+    # default stays off even though it would be harmless on a run with no research.
+    authority_floor: int = Field(default=0, ge=0)
+
+
+class ResearchConfigModel(BaseModel):
+    """`docs/PERSONA-RESEARCH.md` §7: the pre-conversation research toggle and its options.
+
+    Omitted or ``enabled: false`` means no research, which is the default: this searches the open
+    web and costs money per persona, so it is opt-in per run.
+
+    ``targets`` is deliberately **absent from this model**. It is resolved server-side by
+    `research_state.allocate_targets` and overwritten there, because it names knowledge bases to
+    WRITE into — and a declared field would let a request nominate somebody else's collection. An
+    undeclared field is dropped by this model, which is the same contract `document_texts` relies
+    on, and the Research state re-checks ownership regardless.
+    """
+
+    enabled: bool = False
+    # The researcher's corpus, searchable by every persona (§2).
+    shared: bool = True
+    # A private corpus per persona: their stance AND what they said would change their mind (§2.2).
+    personas: bool = True
+    # Per query. Higher costs more search and more fetching; the defaults live in `research.py`
+    # next to the measurements that chose them, and `None` means "use those".
+    results_per_query: Optional[int] = Field(default=None, ge=1, le=20)
+    fetch_per_query: Optional[int] = Field(default=None, ge=0, le=10)
+    # brave | tavily | exa. Omitted picks whichever key the deployment has — see
+    # `websearch.select`, and §12.6 for why Tavily is preferred when both are present.
+    provider: Optional[str] = None
 
 
 class PersonaConfigModel(BaseModel):
@@ -222,6 +253,9 @@ class RunConfigModel(BaseModel):
     # Phase 6: optional structured personas. Omitted -> disabled, and any
     # `structured` block on a cast member is ignored (pre-Phase-6 prompts).
     personas: Optional[PersonaConfigModel] = None
+    # Pre-conversation research (PERSONA-RESEARCH.md). Omitted -> off, and the run is
+    # byte-identical to one created before the feature existed.
+    research: Optional[ResearchConfigModel] = None
     # Phase 6: knowledge bases every persona in the run may search — the cast-wide
     # binding, which generalises the old `persona_name IS NULL` case exactly.
     #
@@ -992,6 +1026,28 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         cells_body = request.pop("cells", None)
         await _preflight(request, user, groups)
 
+        # PERSONA-RESEARCH.md §6 and §11 step 6: an ensemble must research ONCE, before its
+        # members exist, so every replicate searches the same corpus. That pass is not built
+        # yet, and the alternatives are both worse than a refusal: researching per member would
+        # give replicates different inputs and make divergence unattributable (which is what
+        # ENSEMBLE-CONVERSATIONS.md §2 rests on NOT happening), while accepting the flag and
+        # ignoring it would produce five conversations the operator believes are researched.
+        #
+        # Delete this when step 6 lands.
+        from matrix_studio import research_state
+
+        if research_state.settings_from(request.get("config")).enabled:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Research is not yet available for ensembles. An ensemble has to research "
+                    "once, before its members are created, so that every replicate reads the "
+                    "same corpus — otherwise differences between members stop being evidence "
+                    "about the brief. Run a single conversation with research on, or run the "
+                    "ensemble without it."
+                ),
+            )
+
         # `cells` omitted → replicates, nothing varied. §8: the default mode, and the
         # control every other axis is defined against.
         try:
@@ -1206,19 +1262,15 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
 
         Unscoped `db` on purpose — `db.for_owner(...)` assumes the tenant role, which is
         granted `s3vectors:GetIndex` and deliberately not `CreateIndex`.
+
+        A thin wrapper now that research also needs to create an index: the rule about which
+        credentials do it lives in `vectors.ensure_index_for_kb`, once. No vector bucket is a
+        no-op, and the upload path reports that as a failure rather than storing a document
+        that can never be embedded.
         """
-        import os
+        from matrix_studio.storage.vectors import ensure_index_for_kb
 
-        from matrix_studio.storage.vectors import ensure_kb_index, kb_index_name
-
-        bucket = os.environ.get("VECTOR_BUCKET", "")
-        if not bucket:
-            # Nothing to create against. The upload path reports this as a failure rather
-            # than storing a document that can never be embedded.
-            return
-        await ensure_kb_index(
-            db._vectors_client(), bucket, kb_index_name(kb_id, db.table_prefix)
-        )
+        await ensure_index_for_kb(db, kb_id)
 
     async def _readable_kb(kb_id: str, user: str, groups: List[str]) -> Dict[str, Any]:
         """A KB the caller may READ, or a 404. The chokepoint for read routes."""

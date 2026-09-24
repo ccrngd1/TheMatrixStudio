@@ -150,6 +150,15 @@ _RUN_FIELDS = (
     # so the label is unrecoverable if it is not stored.
     "ensemble_id",
     "ensemble_cell",
+    # What the pre-conversation research pass managed, as counts — see
+    # `research_state._record`. Absent means no research was attempted, which is every run
+    # created before the feature existed and every run with it switched off.
+    #
+    # A dedicated attribute rather than a key inside `config_json`, for the same reason
+    # `budget` is one: this is written from a state the machine can retry, and folding it
+    # into the config would make that a read-modify-write on a JSON blob. It is also a
+    # different KIND of fact — the config is what was ASKED for, and this is what happened.
+    "research_json",
 )
 _ENSEMBLE_FIELDS = (
     "id", "owner_sub", "topic", "name", "description", "slug", "status", "created_at",
@@ -1006,6 +1015,47 @@ class DynamoStorage:
             logger.warning(
                 "Ignored a stop request for run %s, which does not exist under owner "
                 "%s. Nothing was written.", run_id, owner_sub,
+            )
+            return False
+
+    async def set_run_research(
+        self,
+        run_id: str,
+        record: Dict[str, Any],
+        *,
+        owner_sub: Optional[str] = None,
+    ) -> bool:
+        """Record what the pre-conversation research pass managed. Returns whether it stuck.
+
+        PERSONA-RESEARCH.md §5.2: a run whose research found nothing is an honest run, and the
+        record is what lets an operator tell that apart from research that failed. The corpus
+        itself lives in the knowledge base; this is the account of the pass, in counts.
+
+        Conditional on the run existing, for the reason `update_run_status` spells out at length:
+        `UpdateItem` UPSERTS, so an unconditional write to a missing run manufactures a phantom
+        one that then appears in the caller's history with no topic and no cast.
+
+        Returns False rather than raising when the row is gone. The caller has already ingested
+        the corpus by the time it gets here, so failing would lose the account of a pass that
+        actually happened — and research is additive by design (§5.2).
+        """
+        owner_sub = self._owner(owner_sub)
+        try:
+            await self._call(
+                self._table("runs").update_item,
+                Key={"pk": _user_pk(owner_sub), "sk": _run_sk(run_id)},
+                UpdateExpression="SET research_json = :v",
+                ExpressionAttributeValues={":v": json.dumps(record)},
+                ConditionExpression="attribute_exists(sk)",
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001
+            if "ConditionalCheckFailed" not in str(exc):
+                raise
+            logger.warning(
+                "Ignored a research record for run %s, which does not exist under owner %s. "
+                "Nothing was written — the corpus, if any, is still in the knowledge base.",
+                run_id, owner_sub,
             )
             return False
 
