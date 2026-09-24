@@ -2980,6 +2980,13 @@ class DynamoStorage:
                     "document_id": str(doc["id"]),
                     "ordinal": chunk.ordinal,
                     "title": doc.get("title"),
+                    # The authority tier travels with the chunk so the retrieval floor can
+                    # read it (PERSONA-RESEARCH.md §3). Carried here rather than looked up at
+                    # query time: a KB document row lives under the KB OWNER's partition, and
+                    # a grantee's credentials physically cannot read it — the same reason
+                    # `title` rides along. A per-turn lookup would work for the owner and
+                    # silently return nothing for everyone a collection is shared with.
+                    "authority": doc.get("authority"),
                 })
                 if limit is not None and len(out) >= limit:
                     return out
@@ -3519,6 +3526,21 @@ class DynamoStorage:
                     # is tens of bytes. The non-filterable list stays `["text"]`, which
                     # matters because it is immutable after index creation.
                     "title": str(meta.get("title") or ""),
+                    # Same reasoning, and VERIFIED rather than assumed. A probe against the
+                    # live index put a vector carrying `authority` — a key the index was not
+                    # created with — and a k-NN query returned it: metadata keys returned
+                    # were ['authority', 'document_id', 'ordinal', 'owner_sub', 'text'].
+                    #
+                    # Worth verifying rather than reasoning about, because a floor reading a
+                    # field that never arrives fails SILENTLY while displaying an authority
+                    # no turn ever saw, and three features in this project have shipped inert
+                    # for exactly that reason.
+                    #
+                    # Omitted when absent: an ordinary upload has no tier, and writing an
+                    # empty string would make "not researched" indistinguishable from "judged
+                    # and found to be nothing in particular".
+                    **({"authority": str(meta["authority"])}
+                       if meta.get("authority") else {}),
                 },
             })
 
@@ -3548,6 +3570,10 @@ class DynamoStorage:
         k: int = 3,
         titles: Optional[Dict[str, str]] = None,
         per_kb_floor: int = 1,
+        #: Slots reserved for a controlling authority, if the per-collection selection contains
+        #: none. 0 — the default — is exactly the previous behaviour, which is what a run with no
+        #: researched documents should get.
+        authority_floor: int = 0,
         prefer: Optional[Sequence[str]] = None,
     ) -> tuple[List[Dict[str, Any]], List[str]]:
         """k-NN across several per-KB indexes, merged. Returns ``(rows, failed_kb_ids)``.
@@ -3667,6 +3693,12 @@ class DynamoStorage:
                     # and an operator can tell a shared corpus's contribution from a
                     # private one.
                     "kb_id": kb_id,
+                    # The authority tier, for `merge_with_authority_floor`. Absent on every
+                    # vector written before research existed and on every ordinary upload,
+                    # which the floor treats as "competes on rank" — so a collection with no
+                    # researched documents behaves exactly as it did.
+                    **({"authority": str(meta["authority"])}
+                       if meta.get("authority") else {}),
                 })
         # Smaller distance is better, matching `vector_search` and what
         # `apply_similarity_floor` expects. The floor reserves one slot per collection
@@ -3674,9 +3706,26 @@ class DynamoStorage:
         # `sorted(rows)[:k]`.
         from matrix_studio.storage.vectors import merge_with_source_floor
 
+        # Two floors, in this order, because they answer different questions and the order
+        # decides which wins when they disagree.
+        #
+        # The source floor runs first on the FULL row set, so every bound collection can still
+        # contribute — that is the `2d2ac45b` bug and it stays fixed. The authority floor then
+        # runs on its output, so it spends a slot only if the source floor's selection contains
+        # no controlling authority.
+        #
+        # Reversing them would let a statute displace the last collection's only passage, and a
+        # collection contributing NOTHING EVER is the more damaging failure: it is invisible,
+        # whereas a missing statute is visible in the corpus as an authority no turn cited.
+        #
+        # `authority_floor=0` is exactly the previous behaviour, and is the default, because a
+        # run without research has nothing to reserve for and this must cost it nothing.
+        from matrix_studio.storage.vectors import apply_floors
+
         return (
-            merge_with_source_floor(
-                rows, k, key="kb_id", floor=per_kb_floor, prefer=prefer,
+            apply_floors(
+                rows, k, kb_floor=per_kb_floor, authority_floor=authority_floor,
+                prefer=prefer,
             ),
             failed,
         )
