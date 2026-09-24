@@ -193,6 +193,63 @@ def load_definition(path: str) -> Dict[str, Any]:
     return CreateRunModel(**raw).model_dump(exclude_none=True)
 
 
+def _research_on(request: Dict[str, Any]) -> bool:
+    from matrix_studio import research_state as rs
+
+    return rs.settings_from(request.get("config")).enabled
+
+
+async def describe_research(db: Database, request: Dict[str, Any], owner: str) -> None:
+    """Where a research pass would WRITE, before a penny is spent. Reads nothing into it.
+
+    This exists because of a specific mistake, on 2026-09-24. A verify definition was prepared with
+    the run-level `knowledge_bases` removed, and reported as "research will create its collections,
+    so nothing curated is touched". **The personas had their own bindings and nobody looked.** Six
+    hand-curated collections each gained a dozen searched documents — which is §5.1's designed
+    reuse working correctly, and was not what the operator was told would happen.
+
+    An ingest target is the one thing about this feature that cannot be undone by reading a log
+    afterwards: by then the documents are in somebody's collection. So it is printed as a plan,
+    REUSE or CREATE per scope, and `--dry-run` shows it without writing anything.
+
+    Deliberately resolved the same way the real path resolves it — `_first_owned` over the same
+    bindings — rather than by a second implementation that could disagree with it.
+    """
+    from matrix_studio import research_state as rs
+
+    settings = rs.settings_from(request.get("config"))
+    if not settings.enabled:
+        return
+
+    print(f"  research    ON — shared={settings.shared} personas={settings.personas}")
+    scopes: list = []
+    if settings.shared:
+        from matrix_studio.bindings import _clean
+
+        scopes.append(("shared (whole cast)", _clean((request.get("config") or {}).get(
+            "knowledge_bases"))))
+    if settings.personas:
+        for member in request.get("cast") or []:
+            viewpoints = ((member.get("structured") or {}).get("viewpoints")) or []
+            if str(member.get("name") or "").strip() and viewpoints:
+                scopes.append((str(member["name"]), rs._persona_kbs(member)))
+
+    for who, bound in scopes:
+        target = await rs._first_owned(db, bound, owner)
+        if target:
+            kb = await db.get_knowledge_base(target)
+            docs = await db.list_kb_documents(target)
+            curated = [d for d in docs if str(d.get("origin") or "") != "researched"]
+            # The curated count is the number that matters. Reuse is correct and asked for; what
+            # an operator needs to see is whether they are about to add found material to a
+            # collection they assembled by hand.
+            print(f"    REUSE   {who:<22} {target}  {str(kb.get('name'))[:28]:<30}"
+                  f"  {len(curated)} curated doc(s) already there")
+        else:
+            why = "nothing bound" if not bound else "bound, but not owned by this caller"
+            print(f"    CREATE  {who:<22} (new collection — {why})")
+
+
 def describe(request: Dict[str, Any]) -> None:
     from matrix_studio.models import ModelSet
 
@@ -291,7 +348,8 @@ async def main() -> int:
         # `--owner` is required even for `--watch`: every read below is
         # partition-scoped, and an unbound store raises rather than scanning.
         raise SystemExit("Pass --owner SUB, plus a definition or --watch RUN_ID.")
-    if not args.dry_run:
+    # A research dry run reads the account, so it needs the environment a real run needs.
+    if not args.dry_run or (args.definition and _research_on(load_definition(args.definition))):
         _require_env()
 
     if args.definition:
@@ -323,9 +381,13 @@ async def main() -> int:
             for cell in cells:
                 varied = ", ".join(f"{k}={v}" for k, v in cell.overrides.items())
                 print(f"  {cell.label:<8} {cell.n} run(s)  {varied or 'nothing varied'}")
-        if args.dry_run:
+        if args.dry_run and not _research_on(request):
             print("\nDry run: nothing was created.")
             return 0
+        # A dry run WITH research falls through to connect, because the ingest-target plan can
+        # only be produced by reading the account: which collections are bound, and who owns
+        # them. That is the one thing about this feature worth seeing before spending — an
+        # ingested document cannot be un-ingested by reading a log afterwards.
 
     db = Database(
         table_prefix=os.environ.get("TABLE_PREFIX", "matrix-studio"),
@@ -346,6 +408,13 @@ async def main() -> int:
         owned = db.for_owner(args.owner)
         if args.watch:
             return await watch(owned, args.watch, timeout_s=args.timeout)
+
+        # The ingest-target plan, printed BEFORE anything is created. See
+        # `describe_research` for the mistake that put it here.
+        await describe_research(owned, request, args.owner)
+        if args.dry_run:
+            print("\nDry run: nothing was created.")
+            return 0
 
         from matrix_studio.api.manager import RunManager
 

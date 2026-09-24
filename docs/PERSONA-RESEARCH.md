@@ -208,6 +208,32 @@ not write into it: that is a side effect on data another user curated, arriving 
 knowledge from a run they cannot see. When the bound KB is not owned by the caller, research
 creates its own and binds that **in addition**, leaving the shared one read-only as intended.
 
+#### Measured 2026-09-24: sharing a collection makes curation compete with research
+
+Reuse has a cost the design did not anticipate, and run `602ddffe` showed it. The source floor
+reserves one slot per **collection**, not one per kind of thing in a collection — so once research
+writes into a curated collection, the operator's own document competes with the searcher's finds
+for that one reservation. On Dr. Jordan's turn:
+
+```
+authority_floor=0   commentary (researched) · Source material (CURATED) · persuasive (researched)
+authority_floor=1   commentary (researched) · persuasive (researched)  · controlling (researched)
+```
+
+His hand-picked source material was displaced entirely, and his collection still "contributed" —
+three passages, all of them found by a searcher rather than chosen by him.
+
+This is §3's argument one level down. §3 says a statute and thirty commentary chunks in the same
+collection compete for the same slot, which is why controlling authority needs its own floor; the
+same reasoning applies to curated versus found material the moment they share a collection. The
+difference is that **curation is the thing a human chose**, which makes its silent displacement the
+more surprising failure of the two.
+
+Not resolved here. The options are a third floor keyed on `origin` (floors that multiply are how a
+prompt fills up with reservations), always giving research its own collection (which contradicts the
+reuse this section exists to describe), or accepting it and making it visible. Tracked in
+`docs/BACKLOG.md`.
+
 #### Research documents must be distinguishable from curated ones
 
 Once research writes into a collection somebody assembled by hand, "the document I uploaded" and
