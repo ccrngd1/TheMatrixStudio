@@ -1224,6 +1224,23 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
                 }
         branches = await db.for_owner(user).list_branches(run["id"])
 
+        # PERSONA-RESEARCH.md §5.3: "do not make me watch" is not "give me no visibility".
+        # Nobody sees the research happen, so the account of it has to be readable afterwards
+        # — and in particular the UI must be able to say which of "found nothing", "failed"
+        # and "no search provider configured" occurred. Those are three different facts and
+        # only one of them is worth retrying.
+        #
+        # Absent for every run that did not ask, which is every run created before the
+        # feature existed. A malformed value reads as absent rather than failing the route:
+        # this is commentary on a conversation, and losing the conversation's detail page
+        # over it would be the wrong trade.
+        research: Optional[Dict[str, Any]] = None
+        if run.get("research_json"):
+            try:
+                research = json.loads(run["research_json"])
+            except (TypeError, json.JSONDecodeError):
+                logger.warning("Run %s has an unreadable research record", run["id"])
+
         return {
             **summary,
             "cast": cast,
@@ -1231,6 +1248,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             "result": result,
             "summary": {"generated": generated, "imported": imported},
             "lineage": {"parent": parent, "branches": branches},
+            "research": research,
         }
 
     # ---------------- Knowledge-base file upload (run-agnostic) ---------------- #

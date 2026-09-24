@@ -10,6 +10,7 @@ import { CostMeter } from '../components/CostMeter'
 import { ParticipationPanel } from '../components/ParticipationPanel'
 import { PlaybackControls } from '../components/PlaybackControls'
 import { Dossier } from '../components/Dossier'
+import { ResearchPanel } from '../components/ResearchPanel'
 import { SummaryPanel } from '../components/SummaryPanel'
 import { AsidesDrawer } from '../components/AsidesDrawer'
 import { BranchTree } from '../components/BranchTree'
@@ -346,6 +347,10 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh }: Props) {
                 model={analysisModel || undefined}
                 onUpdated={setGenerated}
               />
+              {/* Renders nothing unless this run researched, so it adds no section to the
+                  conversations that did not. §5.3: nobody watches the pass, so this is
+                  where an operator finds out what it did. */}
+              <ResearchPanel research={detail?.research ?? null} />
               <BranchTree runId={runId} onOpenRun={onOpenRun} />
             </>
           )}
