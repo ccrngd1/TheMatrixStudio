@@ -275,3 +275,74 @@ describe('Dossier', () => {
     expect(screen.queryByText(/Convictions/i)).not.toBeInTheDocument()
   })
 })
+// PERSONA-RESEARCH.md §5.1. The floor reserves a slot per COLLECTION, not per kind of thing in
+// one — so once research writes into a curated collection, the operator's own document competes
+// with the searcher's finds. On run 602ddffe a persona's hand-picked source material lost all
+// three slots to researched passages, and by the floor's accounting nothing went wrong.
+//
+// The decision was to accept that and make it VISIBLE rather than add a third floor, so these
+// assert the visibility — including that a run WITHOUT research looks exactly as it did.
+describe('Dossier — researched vs curated passages', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  function withRetrievals(retrievals: unknown[]) {
+    ;(api.getDossier as ReturnType<typeof vi.fn>).mockResolvedValue({
+      run_id: 'r1', agent: 'Ada', persona: 'A cautious ethicist', goals: ['Raise risks'],
+      memory_stream: [], beliefs: [], relationships: {},
+      tokens_in: 10, tokens_out: 5, cost_usd: 0.001, portrait_b64: null,
+      document_retrievals: retrievals,
+    })
+    render(<Dossier agent={agent} runId="r1" feed={feed} onClose={vi.fn()} />)
+  }
+
+  const passage = (over: Record<string, unknown> = {}) => ({
+    chunk_id: 1, document_id: 'd1', title: 'Iowa Admin Code', ordinal: 0,
+    score: 0.42, chars: 100, ...over,
+  })
+
+  it('says how many passages research supplied when it supplied any', async () => {
+    withRetrievals([{
+      turn: 1, query: 'q', total_chars: 300, researched_passages: 3,
+      passages: [
+        passage({ chunk_id: 1, origin: 'researched', authority: 'commentary' }),
+        passage({ chunk_id: 2, origin: 'researched', authority: 'persuasive' }),
+        passage({ chunk_id: 3, origin: 'researched', authority: 'controlling' }),
+      ],
+    }])
+    // "3 of 3" is the whole finding: the persona's own material reached this prompt not at all.
+    expect(await screen.findByText(/3 of 3 researched/)).toBeInTheDocument()
+  })
+
+  it('marks controlling authority, because that is the tier the floor reserves for', async () => {
+    withRetrievals([{
+      turn: 1, query: 'q', total_chars: 100, researched_passages: 1,
+      passages: [passage({ origin: 'researched', authority: 'controlling' })],
+    }])
+    expect(await screen.findByText(/\[controlling\]/)).toBeInTheDocument()
+  })
+
+  it('distinguishes a found passage from one the operator provided', async () => {
+    withRetrievals([{
+      turn: 1, query: 'q', total_chars: 200, researched_passages: 1,
+      passages: [
+        passage({ chunk_id: 1, origin: 'researched' }),
+        passage({ chunk_id: 2, title: 'Source material — Ada' }),
+      ],
+    }])
+    expect(await screen.findByText(/\[found\]/)).toBeInTheDocument()
+    expect(screen.getByText(/\[yours\]/)).toBeInTheDocument()
+  })
+
+  it('adds NO badges at all to a run without research', async () => {
+    // Otherwise every conversation in the system gains a `[yours]` tag on every passage to
+    // say nothing. The point is to make a DIFFERENCE visible, and here there is none.
+    withRetrievals([{
+      turn: 1, query: 'q', total_chars: 100,
+      passages: [passage({ title: 'spec.pdf' })],
+    }])
+    expect(await screen.findByText(/spec.pdf/)).toBeInTheDocument()
+    expect(screen.queryByText(/\[yours\]/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/\[found\]/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/researched/)).not.toBeInTheDocument()
+  })
+})

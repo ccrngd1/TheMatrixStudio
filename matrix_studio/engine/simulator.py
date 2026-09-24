@@ -1789,10 +1789,29 @@ async def _run_turns(
                                     "ordinal": p.ordinal,
                                     "score": round(p.score, 4),
                                     "chars": len(p.content),
+                                    # What KIND of source, and whether a human chose it.
+                                    # Omitted when absent so a run with no research produces
+                                    # a byte-identical payload to one recorded before these
+                                    # existed.
+                                    **({"authority": p.authority} if p.authority else {}),
+                                    **({"origin": p.origin} if p.origin else {}),
                                 }
                                 for p in passages
                             ],
                             "total_chars": sum(len(p.content) for p in passages),
+                            # PERSONA-RESEARCH.md §5.1. The per-collection floor reserves a
+                            # slot for a COLLECTION, not for a kind of thing in one — so once
+                            # research writes into a curated collection, the operator's own
+                            # document competes with the searcher's finds and can be pushed
+                            # out entirely. Measured on run 602ddffe: a persona's hand-picked
+                            # source material lost all three slots to researched passages.
+                            #
+                            # Recorded per turn rather than left for a reader to count,
+                            # because the whole problem is that it is invisible. Emitted only
+                            # when research contributed, so nothing changes for runs without.
+                            **({"researched_passages": sum(
+                                1 for p in passages if p.is_researched)}
+                               if any(p.is_researched for p in passages) else {}),
                             **({"floor_rejected": floor_rejected} if floor_rejected else {}),
                             # Phase 6: a knowledge base whose index could not be queried.
                             # In the event log rather than only the Lambda's logs, because

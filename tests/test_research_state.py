@@ -737,3 +737,54 @@ async def test_a_single_run_DOES_allocate(db, monkeypatch):
         owner_sub=OWNER, run_id="s1",
     )
     assert allocated == [1]
+
+
+# --------------------------------------------------------------------------- #
+# Making displacement visible (§5.1)
+# --------------------------------------------------------------------------- #
+#
+# The floor reserves a slot per COLLECTION, not per kind of thing in one. So once research
+# writes into a curated collection, the operator's own document competes with the searcher's
+# finds — and on run 602ddffe a persona's hand-picked source material lost all three slots to
+# researched passages. By the floor's own accounting nothing went wrong: the collection
+# contributed.
+#
+# The decision (docs/BACKLOG.md) was to accept the behaviour and make it VISIBLE rather than
+# add a third floor — floors that multiply leave every slot reserved and stop ranking deciding
+# anything. So `origin` has to survive from the document row to the turn's record, and these
+# assert the two hops that carry it.
+
+
+async def test_origin_travels_with_the_vector_like_authority(db):
+    """A grantee cannot read the KB owner's document rows, so a query-time lookup would work
+    for the owner and silently return nothing for everyone a collection is shared with —
+    which is the same reason `title` and `authority` ride along."""
+    kb = await db.create_knowledge_base("mixed", owner_sub=OWNER)
+    await db.add_kb_document(kb["id"], title="found", text="x" * 400, char_count=400,
+                             origin="researched", authority="controlling")
+    await db.add_kb_document(kb["id"], title="mine", text="y" * 400, char_count=400)
+
+    pending = await db.kb_chunks_missing_vectors(kb["id"])
+    by_title = {c["title"]: c for c in pending}
+    assert by_title["found"]["origin"] == "researched"
+    assert by_title["found"]["authority"] == "controlling"
+    # Absent rather than "" on a curated document: "not researched" and "judged to be nothing
+    # in particular" are different, and only one of them is true here.
+    assert not by_title["mine"]["origin"]
+
+
+def test_a_passage_reports_whether_a_human_chose_it():
+    from matrix_studio.retrieval import RetrievedPassage
+
+    found = RetrievedPassage(
+        chunk_id=1, document_id="d", title="t", ordinal=0, content="x", score=0.1,
+        origin="researched", authority="controlling",
+    )
+    mine = RetrievedPassage(
+        chunk_id=2, document_id="d2", title="t2", ordinal=0, content="y", score=0.2,
+    )
+    assert found.is_researched is True
+    # The default matters: every lexical row and every run-scoped passage arrives without
+    # these fields, and this function serves every retrieval mode.
+    assert mine.is_researched is False
+    assert mine.origin == "" and mine.authority == ""

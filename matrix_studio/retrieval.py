@@ -83,6 +83,21 @@ class RetrievedPassage:
     ordinal: int
     content: str
     score: float
+    #: `controlling` | `persuasive` | `commentary` | `unknown`, or "" for a passage with no
+    #: tier — every ordinary upload, and everything written before research existed.
+    authority: str = ""
+    #: `researched` for a passage a searcher found, `uploaded` or "" for one a human chose.
+    #:
+    #: Neither of these affects what is retrieved. They are carried so the turn's own record
+    #: can say WHAT it was shown, which is the whole of PERSONA-RESEARCH.md §5.1's remedy: the
+    #: per-collection floor reserves a slot for a collection rather than for a kind of thing,
+    #: so once research writes into a curated collection the operator's own document can be
+    #: displaced — correctly, by the floor's accounting, and invisibly without this.
+    origin: str = ""
+
+    @property
+    def is_researched(self) -> bool:
+        return self.origin == "researched"
 
     @property
     def citation(self) -> str:
@@ -400,6 +415,11 @@ def apply_budget(
                 ordinal=int(row["ordinal"]),
                 content=content,
                 score=float(row["score"]),
+                # Both absent on a lexical row and on every run-scoped passage, which is why
+                # they default to "" rather than being required: this function serves every
+                # retrieval mode and must not need a field only the KB fan-out supplies.
+                authority=str(row.get("authority") or ""),
+                origin=str(row.get("origin") or ""),
             )
         )
         used += len(content)

@@ -193,11 +193,67 @@ export function Dossier({ agent, feed, runId, onClose }: Props) {
                 >
                   <div className="text-[11px] text-slate-500">
                     turn {r.turn} · {r.total_chars?.toLocaleString() ?? 0} chars
+                    {/* PERSONA-RESEARCH.md §5.1, and the reason this line exists at all: the
+                        retrieval floor guarantees a slot per COLLECTION, not per kind of
+                        thing in one. Once research writes into a collection somebody curated,
+                        their own document competes with the searcher's finds — and on run
+                        602ddffe a persona's hand-picked source material lost all three slots.
+                        By the floor's accounting nothing went wrong, which is exactly why it
+                        has to be said out loud rather than counted by a reader. */}
+                    {r.researched_passages !== undefined && (
+                      <>
+                        {' · '}
+                        <span
+                          className={
+                            r.researched_passages === r.passages.length
+                              ? 'text-amber-400'
+                              : 'text-slate-500'
+                          }
+                          title={
+                            r.researched_passages === r.passages.length
+                              ? 'Every passage this turn was found by research. Nothing you ' +
+                                'uploaded reached this prompt — a collection is guaranteed one ' +
+                                'slot, but not one slot per kind of document in it.'
+                              : 'Some passages were found by research, some chosen by you.'
+                          }
+                        >
+                          {r.researched_passages} of {r.passages.length} researched
+                        </span>
+                      </>
+                    )}
                   </div>
                   <ul className="mt-1 list-inside list-disc text-xs text-slate-400">
                     {r.passages.map((p) => (
                       <li key={p.chunk_id}>
                         {p.title} #{p.ordinal}{' '}
+                        {/* Controlling authority is called out because it is the tier the
+                            floor reserves a slot for: seeing it here is how an operator knows
+                            the reservation did something. */}
+                        {p.authority === 'controlling' && (
+                          <span
+                            className="text-emerald-400"
+                            title="A statute, regulation, board ruling or decided case."
+                          >
+                            [controlling]{' '}
+                          </span>
+                        )}
+                        {/* Only when this turn actually mixed the two. A run with no research
+                            has nothing to distinguish, so tagging every passage `[yours]`
+                            would add a badge to every conversation in the system to say
+                            nothing — and the point is to make a DIFFERENCE visible. */}
+                        {r.researched_passages !== undefined &&
+                          (p.origin === 'researched' ? (
+                            <span
+                              className="text-slate-600"
+                              title="Found by pre-conversation research."
+                            >
+                              [found]{' '}
+                            </span>
+                          ) : (
+                            <span className="text-sky-400" title="A document you provided.">
+                              [yours]{' '}
+                            </span>
+                          ))}
                         <span className="text-slate-600">score {p.score.toFixed(2)}</span>
                       </li>
                     ))}

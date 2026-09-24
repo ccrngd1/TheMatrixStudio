@@ -229,10 +229,25 @@ same reasoning applies to curated versus found material the moment they share a 
 difference is that **curation is the thing a human chose**, which makes its silent displacement the
 more surprising failure of the two.
 
-Not resolved here. The options are a third floor keyed on `origin` (floors that multiply are how a
-prompt fills up with reservations), always giving research its own collection (which contradicts the
-reuse this section exists to describe), or accepting it and making it visible. Tracked in
-`docs/BACKLOG.md`.
+**Decided: accept the behaviour and make it visible.** A third floor keyed on `origin` was
+rejected — at `k=3`, three floors leave every slot reserved and ranking stops deciding anything, and
+an irrelevant reserved passage in every prompt is worse than a missing one because it reads as the
+room citing at random. Always giving research its own collection was rejected too: it reverses the
+reuse this section exists to describe, and it splits the retrieval budget, since a persona with two
+collections spends two of three slots on floors before rank gets a say.
+
+So `origin` now travels with the vector exactly as `authority` does — **verified by live probe, not
+reasoned about**: a fresh ingest into a new index returned
+`authority=controlling origin=researched` for the found document and both absent for the curated
+one. A turn's `document.retrieved` event records `origin` and `authority` per passage plus a
+`researched_passages` count, and the dossier renders `3 of 3 researched` with `[found]` / `[yours]`
+badges. A run with no research emits none of these fields and renders no badges, so nothing changes
+for a conversation that never asked.
+
+That converts the failure from *invisible* to *legible*: an operator sees "3 of 3 researched" on a
+turn where their own upload should have appeared. It does not prevent the displacement, and the
+honest version of that is a per-run "keep research in its own collection" option if it turns out to
+matter — a cleaner lever than a floor. Tracked in `docs/BACKLOG.md`.
 
 #### Research documents must be distinguishable from curated ones
 
