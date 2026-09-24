@@ -258,3 +258,79 @@ def merge_with_source_floor(
             chosen.add(id(row))
     reserved.sort(key=lambda r: float(r.get("score") or 0.0))
     return reserved
+
+
+#: The authority tier that gets a reserved slot. See `merge_with_authority_floor`.
+CONTROLLING = "controlling"
+
+
+def merge_with_authority_floor(
+    rows: List[dict],
+    k: int,
+    *,
+    floor: int = 1,
+    key: str = "authority",
+) -> List[dict]:
+    """Best ``k`` rows overall, but reserving ``floor`` slots for controlling authority.
+
+    ## Why this is not `merge_with_source_floor`
+
+    That one reserves per COLLECTION, so every bound collection can contribute. This reserves
+    per AUTHORITY, and the two do not substitute for each other: research ingests into the
+    collection already bound at a scope, so a statute and thirty commentary chunks live in the
+    *same* collection and compete for the *same* reserved slot. A source floor is satisfied the
+    moment any one of them wins it, and the one that wins is whichever matches the query — which
+    for a term bag drawn from conversation text is the commentary, because commentary is written
+    in the conversation's vocabulary and a statute is not.
+
+    That is the measured shape of the original source-floor bug (`2d2ac45b`: all 24 turns from the
+    shared collection, none from a persona's own) reappearing one level down. The wording that
+    mirrors the topic wins, permanently, and being right about relevance is exactly how it hides.
+
+    ## What it buys, in the terms the feature is for
+
+    Personas state what would change their mind — "a state statute defining specialty plans as
+    regulated-only". Across five replicate runs none ever got it. If research finds that statute
+    and it then loses every slot to a law-firm article discussing it, **the feature found the answer
+    and hid it**, which is worse than not having searched: the corpus would show a controlling
+    authority that no turn ever saw.
+
+    ## What it gives up
+
+    The same trade `merge_with_source_floor` makes, and stated the same way: global top-k is exact,
+    and this breaks that on purpose. A controlling passage can be promoted past a commentary passage
+    that ranked higher. Defensible only because the alternative is a controlling authority that can
+    never win a slot, which is indistinguishable from not having found it.
+
+    It cannot promote a passage past a threshold. `retrieve_for_turn` applies ``min_similarity`` and
+    ``score_ratio`` first, so a statute with nothing relevant to say contributes nothing rather than
+    filling its slot with noise — an irrelevant statute in every prompt would be a worse failure
+    than a missing one, because it would read as the room ignoring the law.
+
+    Rows with no ``authority`` — every passage written before the field existed, and every ordinary
+    upload — are neither reserved nor penalised. They compete for unreserved slots exactly as now,
+    so enabling this changes nothing for a run without research.
+    """
+    if k <= 0 or not rows:
+        return []
+    # Ascending distance: lower is nearer, matching `merge_with_source_floor`.
+    ordered = sorted(rows, key=lambda r: float(r.get("score") or 0.0))
+    if floor <= 0:
+        return ordered[:k]
+
+    reserved: List[dict] = []
+    for row in ordered:
+        if len(reserved) >= min(floor, k):
+            break
+        if str(row.get(key) or "") == CONTROLLING:
+            reserved.append(row)
+
+    chosen = {id(row) for row in reserved}
+    for row in ordered:
+        if len(reserved) >= k:
+            break
+        if id(row) not in chosen:
+            reserved.append(row)
+            chosen.add(id(row))
+    reserved.sort(key=lambda r: float(r.get("score") or 0.0))
+    return reserved

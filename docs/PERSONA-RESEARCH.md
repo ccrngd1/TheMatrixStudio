@@ -339,6 +339,18 @@ is recorded so curation and research stay separable, and a re-run replaces rathe
    collection, because undoing a research pass depends on `origin`.
 3. **The authority tier and the retrieval floor**, measured against an existing renewal run — does
    a controlling authority actually survive into the prompt?
+   **The POLICY is written and tested** (`vectors.merge_with_authority_floor`, 15 tests). **The
+   PLUMBING is not**, and it is the remaining unknown: `authority` does not currently reach
+   retrieval. Vector metadata is an arbitrary dict at `put_vectors`, so the field CAN travel, but
+   two things are unverified — whether a metadata key added after index creation round-trips
+   through a k-NN query (the index's filterable/non-filterable split is fixed at create time),
+   and what happens to vectors written before the field existed.
+
+   Deliberately not built on the assumption. Three features in this project have shipped inert
+   because a value never arrived where it was read — cognition v0.2, the decline streak, the
+   closing round — and a floor reading an absent field is the same bug with a more expensive
+   symptom: it would silently do nothing while the corpus showed a controlling authority no turn
+   ever saw. The metadata round-trip needs verifying against the live index FIRST.
 4. **The Research state** in the machine, reusing a bound KB where there is one, pre-allocating an
    id where there is not, and failing additively (§5.1, §5.2).
 5. **The UI toggle** (§7).
