@@ -640,6 +640,11 @@ def test_the_tenant_role_is_assumable_only_by_this_stack_s_functions(template: T
         # transcripts and writes a report into one owner's partition, so §3 applies to it
         # exactly as it does to a turn.
         "EnsembleReportFunctionServiceRole",
+        # Research writes documents into a knowledge base the run's owner owns, and reads
+        # the run row to know what to research. Both are one tenant's data, so it assumes
+        # the tenant role for the same reason every other worker does — and notably it does
+        # NOT get ambient table rights in exchange for talking to the open web.
+        "ResearchFunctionServiceRole",
     }
     matched = {
         name for name in expected
@@ -991,6 +996,72 @@ def test_the_states_pass_the_handler_payload_not_the_lambda_envelope(template: T
         assert state.get("OutputPath") != "$.Payload", f"{name} unwraps via OutputPath"
 
 
+def test_research_is_the_first_state_and_leads_to_prepare(template: Template):
+    """PERSONA-RESEARCH.md §5: research runs BEFORE turn 1, in the machine.
+
+    Not a background task started from the API: Lambda freezes the sandbox when the handler
+    returns, and this project has lost three features to that. Asserting the machine's entry
+    point is what makes the state real rather than defined-and-unreachable.
+    """
+    definition = _definition(template)
+    assert definition["StartAt"] == "Research", definition["StartAt"]
+    assert definition["States"]["Research"]["Next"] == "Prepare"
+
+
+def test_a_failed_research_pass_continues_to_prepare_rather_than_failing_the_run(
+    template: Template,
+):
+    """§5.2, and the single most important line of this state's wiring.
+
+    Research is ADDITIVE. A search outage, a fetch timeout, a provider rate limit — none is a
+    reason to lose a conversation the operator asked for. A catch pointing at MarkFailed would
+    mean a Brave rate limit killed a run that would have held itself perfectly well with no
+    research at all.
+
+    `ResultPath: null` is what makes the recovery work rather than merely not fail: it passes
+    the state's INPUT to Prepare untouched, so Prepare still receives `run_id` and `owner_sub`.
+    Merging the error instead would hand it an object with an `Error` key and no run to prepare.
+    """
+    catches = _definition(template)["States"]["Research"]["Catch"]
+    assert len(catches) == 1, catches
+    assert catches[0]["ErrorEquals"] == ["States.ALL"]
+    assert catches[0]["Next"] == "Prepare", (
+        "a research failure must continue into the conversation, not end the run"
+    )
+    assert catches[0]["ResultPath"] is None, (
+        "the error must be discarded so Prepare receives the original input"
+    )
+
+
+def test_research_does_not_retry_a_task_failure(template: Template):
+    """A timed-out pass has already searched, already paid, and may already have ingested.
+
+    `run_research` never raises — every failure is recorded on the run row and returned — so
+    the only thing a `States.TaskFailed` retry could follow is a timeout, and retrying that
+    pays for the search twice on a run somebody is waiting for. Lambda's own transient
+    failures are different and ARE retried: a throttle means the pass never started.
+    """
+    retries = _definition(template)["States"]["Research"].get("Retry") or []
+    errors = [e for r in retries for e in r["ErrorEquals"]]
+    assert "States.TaskFailed" not in errors, retries
+    assert "States.Timeout" not in errors, retries
+    assert "Lambda.TooManyRequestsException" in errors, retries
+
+
+def test_no_search_key_is_an_environment_variable(template: Template):
+    """A key in a Lambda environment variable is readable by anyone with
+    `lambda:GetFunctionConfiguration`, and it appears in `cdk diff` and CloudFormation events.
+
+    The secret ARN may be an environment variable — an ARN is not a credential. The key itself
+    is fetched at cold start by `websearch.load_keys_from_secret`, so it is readable only by the
+    function's role. This test is the guard against somebody "simplifying" that later.
+    """
+    for logical_id, fn in template.find_resources("AWS::Lambda::Function").items():
+        env = (fn["Properties"].get("Environment") or {}).get("Variables") or {}
+        for name in ("BRAVE_API_KEY", "TAVILY_API_KEY", "EXA_API_KEY"):
+            assert name not in env, f"{logical_id} carries {name} in its environment"
+
+
 def test_the_state_machine_has_an_execution_timeout(template: Template):
     """An execution that never ends keeps a run listed as `running` for ever.
 
@@ -1064,7 +1135,7 @@ def test_the_api_knows_the_state_machine_arn(template: Template):
 
 
 def test_the_workers_share_the_api_s_image(template: Template):
-    """One image, three entry points, so the engine cannot drift between them.
+    """One image, several entry points, so the engine cannot drift between them.
 
     A separate image would let a run execute against a different engine than the one
     the API validated its request with.
@@ -1075,7 +1146,8 @@ def test_the_workers_share_the_api_s_image(template: Template):
         code = f["Properties"].get("Code", {})
         if "ImageUri" in code:
             images[lid] = str(code["ImageUri"])
-    assert len(images) == 5, f"expected 5 image functions, got {sorted(images)}"
+    # API, research, prepare, turn, finalise, ensemble report.
+    assert len(images) == 6, f"expected 6 image functions, got {sorted(images)}"
     assert len(set(images.values())) == 1, (
         f"the functions do not share one image: {images}"
     )

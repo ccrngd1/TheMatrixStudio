@@ -79,6 +79,24 @@ class StackConfig:
     #: everyone.
     user_spend_caps_json: Optional[str] = None
 
+    #: ARN of a Secrets Manager secret holding the web-search API keys, for
+    #: pre-conversation research (`docs/PERSONA-RESEARCH.md`). A JSON object whose keys are
+    #: the provider env var names: `{"TAVILY_API_KEY": "...", "BRAVE_API_KEY": "..."}`.
+    #:
+    #: **An existing secret, referenced — not one this stack creates.** A key belongs to the
+    #: operator's account and not to a template: a stack-created secret would have to be
+    #: populated by hand anyway, and a CDK-generated placeholder would sit there looking like
+    #: a configured key while every search failed authentication.
+    #:
+    #: Unset means research is UNAVAILABLE in this deployment, which is a state the feature
+    #: reports rather than a failure: a run that asks for research records
+    #: `status: "unavailable"` and holds the conversation anyway (§5.2).
+    #:
+    #: Never a Lambda environment variable. Environment variables are visible to anyone with
+    #: `lambda:GetFunctionConfiguration` and appear in `cdk diff` output and CloudFormation
+    #: events; a secret fetched at cold start is readable only by the function's role.
+    search_secret_arn: Optional[str] = None
+
     @staticmethod
     def from_context(node: Any) -> "StackConfig":
         """Build from `cdk.json` context and `-c key=value` overrides."""
@@ -111,4 +129,5 @@ class StackConfig:
             extra_callback_urls=list(extra),
             admin_email=get("admin_email"),
             verify_principal_arn=get("verify_principal_arn"),
+            search_secret_arn=get("search_secret_arn"),
         )

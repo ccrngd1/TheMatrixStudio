@@ -145,6 +145,33 @@ async def ensure_kb_index(
     return created
 
 
+async def ensure_index_for_kb(store: Any, kb_id: str) -> bool:
+    """Create a KB's vector index if absent, using **this store's** credentials.
+
+    The credentials are the whole point, and getting them wrong is not a permissions error
+    you can read off a traceback — it is a collection that exists and can never be written
+    to. The tenant role is granted `s3vectors:GetIndex` and deliberately **not**
+    `CreateIndex`, so this must be called with an UNSCOPED store (the API's or the CLI's own
+    client), never one returned by `for_owner`.
+
+    One implementation, because there are now two callers — the knowledge-base routes and
+    research target allocation — and a second copy of "which credentials create an index"
+    is the kind of duplication that gets one of them wrong silently.
+
+    Returns False when there is no vector bucket configured, which is the local
+    non-vector deployment rather than a failure: the caller reports it if it matters.
+    """
+    import os
+
+    bucket = os.environ.get("VECTOR_BUCKET", "")
+    if not bucket:
+        return False
+    await ensure_kb_index(
+        store._vectors_client(), bucket, kb_index_name(kb_id, store.table_prefix)
+    )
+    return True
+
+
 def index_parameters() -> dict:
     """The immutable three, for tests and for logging what an index was built with."""
     return {

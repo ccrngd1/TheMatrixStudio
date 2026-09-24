@@ -339,6 +339,23 @@ class RetrievalConfig(BaseModel):
         default=False,
         description="Ask the persona to flag in-voice when it has no retrieved source",
     )
+    # Reserved slots for a CONTROLLING authority — a statute, a regulation, a board opinion,
+    # a decided case. `docs/PERSONA-RESEARCH.md` §3, and `vectors.apply_floors` composes it
+    # with the per-collection floor.
+    #
+    # **Default 0, meaning off, and that is byte-identical to the previous behaviour.** A run
+    # without research has nothing tiered as controlling, so this could have defaulted to 1
+    # harmlessly — and defaulting it on would still be wrong, because it changes what reaches
+    # a prompt and every change of that kind in this project is supposed to arrive with a
+    # measurement behind it. The one that decides this value is §9's comparison.
+    #
+    # 1 rather than a larger number when it is on: the floor buys the room ONE slot for the
+    # law, and the rest of the prompt is still decided by relevance. A floor of 2 or 3 would
+    # start crowding out the conversation's own material with authorities nobody asked about.
+    authority_floor: int = Field(
+        default=0, ge=0,
+        description="Reserved retrieval slots for controlling authority (0 = off)",
+    )
 
     @field_validator("mode")
     @classmethod

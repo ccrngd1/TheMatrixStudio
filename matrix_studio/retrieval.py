@@ -26,7 +26,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
 
-from matrix_studio.storage.vectors import merge_with_source_floor
+from matrix_studio.storage.vectors import apply_floors
 
 logger = logging.getLogger(__name__)
 
@@ -415,6 +415,7 @@ async def _search_bound_kbs(
     query_vector: List[float],
     fetch_k: int,
     kb_ids: Optional[Sequence[str]],
+    authority_floor: int = 0,
 ) -> tuple[List[Dict[str, Any]], List[str], List[str]]:
     """k-NN across the knowledge bases this turn may search.
 
@@ -483,8 +484,13 @@ async def _search_bound_kbs(
     if not resolved:
         return [], [], []
     try:
+        # `authority_floor` is passed only when it is ON. A fake store in the test suite
+        # implements this method with the signature it was written against, and adding an
+        # argument unconditionally would break every one of them — for a value that, at 0,
+        # means "behave exactly as before".
+        extra = {"authority_floor": authority_floor} if authority_floor > 0 else {}
         rows, failed = await db.vector_search_kbs(
-            query_vector, resolved, k=fetch_k, prefer=personal,
+            query_vector, resolved, k=fetch_k, prefer=personal, **extra,
         )
         return rows, failed, personal
     except Exception as exc:  # noqa: BLE001
@@ -535,6 +541,9 @@ async def retrieve_for_turn(
     rrf_k: int = 60,
     min_similarity: float = 0.0,
     kb_ids: Optional[Sequence[str]] = None,
+    # PERSONA-RESEARCH.md §3. 0 = off and is byte-identical to the pre-research behaviour,
+    # which is why it is safe to have threaded this through three trims at once.
+    authority_floor: int = 0,
 ) -> tuple[List[RetrievedPassage], str, int, List[str]]:
     """Retrieve a persona's supporting passages for one turn.
 
@@ -662,6 +671,7 @@ async def retrieve_for_turn(
             # argument `vector_search_kbs` makes for merging two KBs.
             kb_rows, kb_failures, personal_kbs = await _search_bound_kbs(  # noqa: PLW2901
                 db, run_id, persona_name, query_vector, fetch_k, kb_ids,
+                authority_floor=authority_floor,
             )
             if kb_rows:
                 # Sorted ascending because smaller cosine distance is better, matching
@@ -682,15 +692,22 @@ async def retrieve_for_turn(
                     semantic + kb_rows, key=lambda r: float(r.get("score") or 0.0)
                 ):
                     merged.setdefault(row.get("chunk_id"), row)
-                # The per-source floor is applied AGAIN here, and not redundantly: this
-                # trim is a second global top-k, so without it the outer merge would
-                # discard the very rows `vector_search_kbs` reserved. Keyed on `kb_id`,
-                # which a run-scoped row does not carry — so `None` is itself a source and
-                # the run's own attached documents get a reserved slot too, which is the
-                # mirror image of the bug the floor exists for.
-                semantic = merge_with_source_floor(
-                    list(merged.values()), fetch_k, key="kb_id", floor=1,
-                    prefer=personal_kbs,
+                # BOTH floors are applied again here, and not redundantly: this trim is a
+                # second global top-k, so without them the outer merge would discard the very
+                # rows `vector_search_kbs` reserved. Keyed on `kb_id`, which a run-scoped row
+                # does not carry — so `None` is itself a source and the run's own attached
+                # documents get a reserved slot too, which is the mirror image of the bug the
+                # floor exists for.
+                #
+                # The authority floor has to be re-applied for exactly the same reason, and
+                # forgetting it here would have been the subtler failure of the two: the KB
+                # fan-out would reserve the statute, this merge would rank it out, and the
+                # corpus would show a controlling authority that no turn ever saw. Both
+                # reservations are made against the same `fetch_k`, so composing them twice
+                # cannot cost more slots than composing them once.
+                semantic = apply_floors(
+                    list(merged.values()), fetch_k, kb_floor=1,
+                    authority_floor=authority_floor, prefer=personal_kbs,
                 )
 
             if not semantic:
@@ -763,16 +780,24 @@ async def retrieve_for_turn(
     # floor_rejected rides along so the emitted event can distinguish "retrieval
     # found nothing" from "retrieval found only things below the floor".
     #
-    # THE trim that decides what reaches the prompt, and therefore where the
-    # per-collection floor has to be. The merge above trims to `fetch_k` (= 2k), so a
-    # floor applied only there is undone here by a second global top-k — which is how
-    # run 2d2ac45b gave a cast-wide collection all 24 turns while six private ones,
-    # correctly bound and queried, contributed nothing. Both trims need it: the first
-    # keeps a starved collection's candidate alive, this one keeps it in the answer.
+    # THE trim that decides what reaches the prompt, and therefore where BOTH floors have
+    # to be. The merge above trims to `fetch_k` (= 2k), so a floor applied only there is
+    # undone here by a second global top-k — which is how run 2d2ac45b gave a cast-wide
+    # collection all 24 turns while six private ones, correctly bound and queried,
+    # contributed nothing. Every trim needs them: the earlier ones keep a starved
+    # collection's candidate alive, this one keeps it in the answer.
     #
-    # A no-op for lexical modes, where no row carries a `kb_id` and there is one source.
+    # Three places, which is a smell and is nonetheless correct: `vector_search_kbs`
+    # trims per fan-out, the merge trims the union with the run slice, and this trims to
+    # `k`. A floor is a property of a SELECTION, so it belongs at each point one is made.
+    # `apply_floors` is the single implementation, so they cannot disagree about policy.
+    #
+    # A no-op for lexical modes, where no row carries a `kb_id` and there is one source —
+    # and `authority` likewise, since a lexical row has no metadata from the vector index.
     passages = apply_budget(
-        merge_with_source_floor(rows, k, key="kb_id", floor=1, prefer=personal_kbs),
+        apply_floors(
+            rows, k, kb_floor=1, authority_floor=authority_floor, prefer=personal_kbs,
+        ),
         max_chars,
     )
     return passages, query, floor_rejected, kb_failures

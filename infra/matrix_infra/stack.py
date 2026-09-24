@@ -1142,6 +1142,39 @@ function handler(event) {
         at-least-once execution would be wrong for a loop whose states append to an
         event log.
         """
+        self.research_lambda = self._worker(
+            "ResearchFunction", "research",
+            "matrix_studio.step_handlers.research",
+            # The open web, and it is slower than anything else here by a wide margin: one
+            # search plus up to three page fetches per query, a dozen queries per persona,
+            # and a tiering call per corpus. Corpora run concurrently, which is what keeps a
+            # six-persona cast to the cost of the slowest one rather than the sum.
+            #
+            # 15 minutes is Lambda's hard maximum. A pass that needs more than this wants a
+            # state per corpus, not a bigger number — and it must never be reached in
+            # practice, because a timeout here is the one research failure the handler cannot
+            # record on the run row itself. The state machine's catch is what covers it.
+            Duration.minutes(15),
+        )
+        # The search keys, from Secrets Manager rather than the environment.
+        #
+        # `search_secret_arn` names a secret the OPERATOR created; nothing here creates one.
+        # Unset means research reports itself unavailable, which is a state the feature
+        # handles (§5.2) rather than a broken deployment — every other kind of run is
+        # unaffected.
+        if self.config.search_secret_arn:
+            self.research_lambda.add_environment(
+                "SEARCH_SECRET_ARN", self.config.search_secret_arn
+            )
+            self.research_lambda.add_to_role_policy(
+                iam.PolicyStatement(
+                    actions=["secretsmanager:GetSecretValue"],
+                    # This secret alone. A wildcard would let the research worker read every
+                    # secret in the account, and it needs exactly one.
+                    resources=[self.config.search_secret_arn],
+                )
+            )
+
         self.prepare_lambda = self._worker(
             "PrepareFunction", "prepare",
             "matrix_studio.step_handlers.prepare",
@@ -1184,6 +1217,11 @@ function handler(event) {
             Duration.minutes(15),
         )
 
+        research = sfn_tasks.LambdaInvoke(
+            self, "Research",
+            lambda_function=self.research_lambda,
+            payload_response_only=True,
+        )
         prepare = sfn_tasks.LambdaInvoke(
             self, "Prepare",
             lambda_function=self.prepare_lambda,
@@ -1220,8 +1258,20 @@ function handler(event) {
                 backoff_rate=2.0,
                 max_delay=Duration.minutes(2),
             )
-            # Lambda's own transient failures get a separate, faster policy: a
-            # throttle or a service exception is not a turn that went wrong.
+
+        # Research gets NO task-failure retry, and that is deliberate rather than an omission.
+        #
+        # `run_research` does not raise: every failure is recorded on the run row and returned,
+        # so the only thing a retry could follow is a TIMEOUT — and a timed-out pass has already
+        # searched, already paid, and may already have ingested some of what it found. Retrying
+        # would pay again for a pass whose predecessor is still holding its batch, and it would
+        # do so with a fresh 15-minute clock on a run the operator is waiting for.
+        #
+        # Lambda's own transient failures ARE worth retrying: a throttle means the pass never
+        # started, so nothing has been paid for and nothing was written.
+        for task in (research, prepare, turn, finalise):
+            # A separate, faster policy: a throttle or a service exception is not a turn
+            # that went wrong.
             task.add_retry(
                 errors=[
                     "Lambda.TooManyRequestsException",
@@ -1259,6 +1309,20 @@ function handler(event) {
                 result_path=sfn.JsonPath.DISCARD,
             )
 
+        # **Research failing goes to Prepare, not to MarkFailed**, and this is the single most
+        # important line of this state's wiring. PERSONA-RESEARCH.md §5.2: research is additive,
+        # and a search outage is not a reason to lose a conversation the operator asked for.
+        # Sending it to MarkFailed would mean a Brave rate limit killed a run that could have
+        # held itself perfectly well without any research at all.
+        #
+        # `result_path=DISCARD` is what makes it work rather than merely not fail: the catch
+        # passes the Research state's INPUT to Prepare untouched, so Prepare receives the same
+        # `run_id` / `owner_sub` / `mode` it would have received on the success path. Merging the
+        # error instead would hand Prepare an object with an `Error` key and no `run_id`.
+        research.add_catch(
+            prepare, errors=["States.ALL"], result_path=sfn.JsonPath.DISCARD,
+        )
+
         # CheckContinue is a pure Choice over the turn's own output — no DynamoDB read.
         #
         # Step Functions can read DynamoDB natively, and §6 originally described the
@@ -1275,7 +1339,13 @@ function handler(event) {
         )
 
         turn.next(check)
-        definition = prepare.next(turn)
+        prepare.next(turn)
+        # Research is the machine's FIRST state, ahead of Prepare, and unconditionally — there is
+        # no Choice in front of it. The handler returns in milliseconds when research is off, and
+        # putting the decision in the execution input as well as the run row would be two copies
+        # of it; `research_state`'s module docstring has the argument in full. One warm invocation
+        # per run is the price of the run row being the only place that decides.
+        definition = research.next(prepare)
 
         self.turn_loop = sfn.StateMachine(
             self,

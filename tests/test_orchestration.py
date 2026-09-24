@@ -474,10 +474,34 @@ async def test_handlers_refuse_an_event_with_no_owner(db):
     """A default owner here would attribute a conversation to a shared partition."""
     from matrix_studio import step_handlers
 
-    for name in ("_prepare", "_turn", "_finalise"):
+    for name in ("_research", "_prepare", "_turn", "_finalise"):
         fn = getattr(step_handlers, name)
         with pytest.raises(ValueError, match="no owner_sub"):
             await fn({"run_id": "x"})
+
+
+async def test_the_research_handler_passes_its_input_through_to_prepare(db, monkeypatch):
+    """The next state is `Prepare`, which needs `run_id`, `owner_sub`, `mode` and `extra`.
+
+    So Research returns its input with a small record added rather than a result of its own —
+    anything else would make it a translation layer between two states that already agree on a
+    shape, and `Prepare` would receive an event with no run in it.
+    """
+    from matrix_studio import step_handlers
+    from tests.support import TEST_OWNER
+
+    await _make_run(db, "h-research", max_messages=2)
+    monkeypatch.setattr(step_handlers, "_bound", lambda _owner: _identity(db))
+
+    event = {"run_id": "h-research", "owner_sub": TEST_OWNER, "mode": "fresh",
+             "max_messages": 2}
+    out = await step_handlers._research(event)
+
+    for key, value in event.items():
+        assert out[key] == value, f"{key} did not survive the Research state"
+    # Research is off for this run, so it skipped — and said so rather than silently
+    # returning as though it had worked.
+    assert out["research"]["status"] == "skipped"
 
 
 async def test_the_turn_handler_returns_only_machine_sized_keys(db, monkeypatch):

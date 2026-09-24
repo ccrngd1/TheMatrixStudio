@@ -50,19 +50,6 @@ def load(path: str) -> Dict[str, Any]:
     return CreateRunModel(**raw).model_dump(exclude_none=True)
 
 
-def brief_of(request: Dict[str, Any]) -> str:
-    """The subject to research: the topic, plus any cast-wide document text.
-
-    Cast-wide documents are included because the topic alone is often a sentence, and the vocabulary
-    the authorities use lives in the attached plan rather than in the summary of it.
-    """
-    parts = [str(request.get("topic") or "")]
-    for member in request.get("cast") or []:
-        for doc in member.get("document_texts") or []:
-            parts.append(str(doc.get("text") or "")[:4000])
-    return "\n\n".join(p for p in parts if p.strip())
-
-
 async def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("definition")
@@ -81,7 +68,9 @@ async def main() -> int:
     args = ap.parse_args()
 
     request = load(args.definition)
-    brief = brief_of(request)
+    # The same brief the Research state builds, deliberately — this script's whole job is to let a
+    # human judge what the researcher produces, and it cannot if it briefs it differently.
+    brief = rs.brief_for(str(request.get("topic") or ""), request.get("cast") or [])
     print(f"{args.definition}\n  topic    {str(request.get('topic'))[:90]}")
     print(f"  brief    {len(brief)} chars")
     print(f"  cast     {len(request.get('cast') or [])}")

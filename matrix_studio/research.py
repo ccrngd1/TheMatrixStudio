@@ -560,16 +560,26 @@ async def plan_and_gather(
     fetch: Any,
     call: Any,
     model: Optional[str] = None,
+    results_per_query: int = RESULTS_PER_QUERY,
+    fetch_per_query: int = FETCH_PER_QUERY,
+    shared: bool = True,
 ) -> List[Corpus]:
     """Every corpus for one run: the shared one, then one per persona with a viewpoint.
 
     Corpora are gathered CONCURRENTLY. They are independent by construction, each is minutes of
     search and fetch, and a run's start waits on all of them — the same reasoning that took the
     ensemble report from 12–19 minutes to 8.
+
+    ``shared=False`` omits the researcher's corpus rather than building it and discarding it. Search
+    and fetch cost money and the shared corpus is the most expensive one; a caller that has turned
+    the shared tier off must not pay for it. Pass an empty ``cast`` to omit the private tier the same
+    way.
     """
-    shared = Corpus(persona=None)
-    shared.queries, cost = await shared_queries(brief, call=call, model=model)
-    shared.cost_usd = cost
+    shared_corpus: Optional[Corpus] = None
+    if shared:
+        shared_corpus = Corpus(persona=None)
+        shared_corpus.queries, cost = await shared_queries(brief, call=call, model=model)
+        shared_corpus.cost_usd = cost
 
     persona_corpora: List[Corpus] = []
     for member in cast:
@@ -592,11 +602,41 @@ async def plan_and_gather(
             )
         persona_corpora.append(corpus)
 
-    everything = [shared] + persona_corpora
+    everything = ([shared_corpus] if shared_corpus else []) + persona_corpora
     await asyncio.gather(*(
-        gather(c, search=search, fetch=fetch, call=call, model=model) for c in everything
+        gather(c, search=search, fetch=fetch, call=call, model=model,
+               results_per_query=results_per_query, fetch_per_query=fetch_per_query)
+        for c in everything
     ))
     return everything
+
+
+#: Per cast-wide document, how much of its text joins the brief. The brief is prompt input for
+#: query generation, not a corpus, and a 40-page attachment would crowd out the topic itself.
+BRIEF_DOCUMENT_CHARS = 4000
+
+
+def brief_for(topic: str, cast: Sequence[Dict[str, Any]]) -> str:
+    """The subject to research: the topic, plus the text of any documents attached to the cast.
+
+    The attachments are included because **a topic is usually one sentence and the vocabulary the
+    authorities use lives in the attached plan rather than in the summary of it.** Measured: without
+    them, a persona's queries drifted off the subject entirely — a licensed-plan brief produced
+    "CMS guidance on…", which is human healthcare, because the persona's viewpoint alone never said
+    what industry this was.
+
+    One function, used by both `scripts/research_definition.py` and the Research state, because the
+    script exists to judge the researcher's output and it can only do that if it is briefing the
+    researcher the same way the real path does.
+    """
+    parts = [str(topic or "")]
+    for member in cast or []:
+        if not isinstance(member, dict):
+            continue
+        for doc in member.get("document_texts") or []:
+            if isinstance(doc, dict):
+                parts.append(str(doc.get("text") or "")[:BRIEF_DOCUMENT_CHARS])
+    return "\n\n".join(p for p in parts if p.strip())
 
 
 def summarise(corpora: Sequence[Corpus]) -> str:

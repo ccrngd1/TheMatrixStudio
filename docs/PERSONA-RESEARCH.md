@@ -183,6 +183,11 @@ collection and a research collection would have two places to look for the same 
 So the ordinary case needs no new identity at all: the binding exists, `ingest_text` takes a
 `kb_id`, and the Research state has somewhere to put things before it starts.
 
+A **persona's** target is resolved against **their own** bindings only, never the run-level ones.
+`bindings.bound_kbs` returns the union, which is the right answer for a *turn* — a persona may
+search the cast-wide collection — and the wrong one here: it would put one persona's private
+research, including the case against them, into the collection every other persona reads.
+
 **A new KB is created only when nothing is bound at that scope**, and then its id is
 **pre-allocated at create time** — written into `config.knowledge_bases` or
 `cast[].knowledge_bases` before anything is searched. A run's bindings live in `config_json`,
@@ -379,7 +384,53 @@ is recorded so curation and research stay separable, and a re-run replaces rathe
 
    `vectors.apply_floors` composes the two floors, and the composition is the whole difficulty.
 4. **The Research state** in the machine, reusing a bound KB where there is one, pre-allocating an
-   id where there is not, and failing additively (§5.1, §5.2).
+   id where there is not, and failing additively (§5.1, §5.2). **DONE.**
+
+   `research_state.py` holds the three decisions the searcher must not make for itself:
+   `allocate_targets` (creation time, in the API), `run_research` / `research_definition` (state
+   time), and the record. The state machine gains a `Research` state ahead of `Prepare`, and
+   **its catch points at `Prepare`, not at `MarkFailed`** — §5.2 as one line of wiring, asserted
+   by a template test, because a Brave rate limit must not kill a run that would have held itself
+   perfectly well with no research at all.
+
+   Four things turned out to be load-bearing and none was in the design:
+
+   - **The corpus has to be EMBEDDED, and nothing else would have done it.** `add_kb_document`
+     chunks and stores; a chunk with no vector is invisible to a k-NN query; and the only other
+     caller of `embed_pending_kb_chunks` is the upload ROUTE. So a research pass would have
+     stored twenty documents that no turn could ever retrieve — and the symptom would have read
+     as "the researcher found nothing useful", a judgement about quality, rather than as a
+     missing step. The fourth instance of this project's signature failure, caught before it
+     shipped rather than after.
+   - **The vector index must be created by the API, not by the state.** The tenant role holds
+     `s3vectors:GetIndex` and deliberately not `CreateIndex`, so the worker running the Research
+     state physically cannot create one. `allocate_targets` takes the unscoped store for exactly
+     this, and does it for a REUSED target too — a KB created before indexes were made eagerly
+     would otherwise be permanently unwritable.
+   - **Ownership is checked twice.** `allocate_targets` resolves targets at creation, but they
+     live in `config_json`, which is built from a request body — so between the two there is a
+     blob the caller controls. Without the second check, naming another user's KB in
+     `config.research.targets` would write research into their collection.
+   - **The status cannot be derived from rows written.** Every pass writes at least one row,
+     because the documented negative is itself a document. Counting writes would report
+     `researched` for a pass that found no source at all, and the one distinction §5.2 asks for
+     — "we looked and there is nothing" versus "research failed" — would be the one the status
+     could not make. It is counted from sources found.
+
+   Also found and fixed: **the authority floor from step 3 was inert.** `vector_search_kbs`
+   accepted `authority_floor` and no caller passed it, and `retrieve_for_turn` applied the source
+   floor at two later trims that would each have discarded the reservation. There are **three**
+   trims between a k-NN query and a prompt, and a floor missing from any one is undone by the
+   next. All three now call `apply_floors`, `RetrievalConfig.authority_floor` reaches the engine,
+   and `tests/test_kb_retrieval_switch.py` asserts end to end that the statute reaches the prompt
+   *and* that the persona's only passage is not what pays for it.
+
+   The search keys are in **Secrets Manager**, fetched at cold start by
+   `websearch.load_keys_from_secret` and never a Lambda environment variable — those are readable
+   with `lambda:GetFunctionConfiguration` and appear in `cdk diff` and CloudFormation events.
+   `search_secret_arn` names a secret the operator created; the stack creates none, because a
+   CDK-generated placeholder would look like a configured key while every search failed
+   authentication. Unset means research reports itself `unavailable` and the conversation runs.
 5. **The UI toggle** (§7).
 6. **The ensemble path** — research once, bind to all members (§6).
 7. **The §9 comparison**, 5 replicates each way.
@@ -589,6 +640,26 @@ env var is readable by anyone holding `lambda:GetFunctionConfiguration`, which i
 than the people who should hold a search key, and this project's posture is that the API's own role
 holds no ambient rights. The Research function gets `secretsmanager:GetSecretValue` on one secret
 ARN and nothing else.
+
+**Built, step 4.** `websearch.load_keys_from_secret` reads `SEARCH_SECRET_ARN` at cold start and
+populates the provider variables in-process. Four decisions in it are deliberate:
+
+- **The secret is a JSON object keyed by the provider variable names**, so one secret configures
+  whichever provider the deployment has: `{"TAVILY_API_KEY": "…", "BRAVE_API_KEY": "…"}`.
+- **A name this code does not know is ignored rather than exported.** Otherwise the secret would be
+  a way to set arbitrary environment variables in the runtime, which is a much larger thing than
+  configuring a search provider.
+- **An exported key wins over the secret**, so a developer who set one locally has said which to
+  use and `scripts/research_definition.py` works unchanged.
+- **Only the variable NAMES are ever logged.** Not a length and not a prefix: a fingerprint in
+  CloudWatch is the thing the secret exists to avoid.
+
+It never raises. An unreadable secret means research reports itself `unavailable`, which §5.2
+already handles, and raising would turn a missing key into a failed conversation.
+
+The stack creates **no** secret — `search_secret_arn` names one the operator made. A CDK-generated
+placeholder would sit there looking like a configured key while every search failed authentication.
+An infra test asserts no provider key is an environment variable on any function.
 
 ---
 

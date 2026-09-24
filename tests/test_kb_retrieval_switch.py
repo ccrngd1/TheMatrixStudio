@@ -390,12 +390,14 @@ async def test_and_without_the_floor_it_would_not(db, fake):
     )
     await _run(db, config={"knowledge_bases": [shared["id"], private["id"]]})
 
-    with patch.object(
-        vmod, "merge_with_source_floor",
-        lambda rows, k, **kw: sorted(rows, key=lambda r: float(r.get("score") or 0.0))[:k],
-    ), patch(
-        "matrix_studio.retrieval.merge_with_source_floor",
-        lambda rows, k, **kw: sorted(rows, key=lambda r: float(r.get("score") or 0.0))[:k],
+    plain = lambda rows, k, **kw: sorted(  # noqa: E731
+        rows, key=lambda r: float(r.get("score") or 0.0)
+    )[:k]
+    # Both names: `retrieval` calls `apply_floors` (which composes the source floor with the
+    # authority floor), and `vector_search_kbs` calls it inside the storage layer. Replacing
+    # each with a plain global top-k is what makes this the premise test it claims to be.
+    with patch.object(vmod, "apply_floors", plain), patch(
+        "matrix_studio.retrieval.apply_floors", plain
     ):
         passages, _q, _f, _fail = await _retrieve(db, axis=(1.0, 0.0, 0.0), k=3)
 
@@ -615,3 +617,114 @@ async def test_de_duplication_keeps_the_better_ranked_copy(db, fake):
 
     assert len(passages) == 1
     assert passages[0].score == pytest.approx(0.0, abs=1e-6)
+
+
+# --------------------------------------------------------------------------- #
+# The authority floor, through the whole retrieval path
+# --------------------------------------------------------------------------- #
+#
+# PERSONA-RESEARCH.md §3. The unit tests in `test_authority_floor.py` prove the policy; these
+# prove it is REACHED. There are three trims between a k-NN query and a prompt — the KB
+# fan-out, the merge with the run slice, and the final trim to `k` — and a floor missing from
+# any one of them is undone by the next. That failure is silent in the worst way: the corpus
+# would list a controlling authority that no turn ever saw, and the symptom would read as the
+# researcher having found something useless.
+
+
+async def _statute_and_commentary(db, fake):
+    """One collection holding a statute and commentary, which is the shape research produces.
+
+    The commentary is NEARER the query on purpose. That is not a contrived ranking — it is the
+    measured one: a turn's query is a term bag drawn from conversation text, and commentary is
+    written in the conversation's vocabulary while a statute is not.
+    """
+    kb = await db.create_knowledge_base("researched", owner_sub=TEST_OWNER)
+    index = vecmod.kb_index_name(kb["id"], db.table_prefix)
+    for doc_id, ordinal, text, axis, title, authority in (
+        ("d-blog", 0, "what the rule means for your clinic", (1.0, 0.0), "blog.md", "commentary"),
+        ("d-blog", 1, "more of the same commentary", (0.99, 0.14), "blog.md", "commentary"),
+        ("d-blog", 2, "still commentary", (0.98, 0.20), "blog.md", "commentary"),
+        ("d-act", 0, "Occupations Code Ch. 801", (0.0, 1.0), "act.md", "controlling"),
+    ):
+        fake.add(
+            index, doc_id, ordinal, text, unit_vector(*axis),
+            kb_id=kb["id"], owner_sub=TEST_OWNER, title=title, authority=authority,
+        )
+    return kb
+
+
+async def _retrieve_with_floor(db, floor, *, k=3):
+    with patch("litellm.aembedding", side_effect=_embedding(1.0, 0.0)), \
+         patch("litellm.completion_cost", return_value=0.0):
+        return await retrieve_for_turn(
+            db, "run-1", "Ada",
+            topic="specialty plan renewal",
+            conversation=[{"content": "what does the rule mean for the clinic"}],
+            k=k, max_chars=4000, mode="vector", embedding_model=MODEL,
+            min_similarity=0.0, authority_floor=floor,
+        )
+
+
+async def test_without_the_floor_the_statute_loses_every_slot(db, fake):
+    """The premise, asserted rather than assumed. If this ever stops failing to find the
+    statute, the test below proves nothing."""
+    kb = await _statute_and_commentary(db, fake)
+    await _run(db, config={"knowledge_bases": [kb["id"]]})
+
+    passages, _q, _f, _fail = await _retrieve_with_floor(db, 0, k=3)
+
+    assert [p.document_id for p in passages] == ["d-blog"] * 3
+
+
+async def test_with_the_floor_the_statute_reaches_the_prompt(db, fake):
+    """End to end: `RetrievalConfig` → `retrieve_for_turn` → `vector_search_kbs` → every trim.
+
+    `authority` has to survive from the document row into vector metadata and back out of the
+    k-NN query for this to pass, so this is also the test that the metadata round-trip is wired
+    — the thing verified against the live index by probe and asserted here by fixture.
+    """
+    kb = await _statute_and_commentary(db, fake)
+    await _run(db, config={"knowledge_bases": [kb["id"]]})
+
+    passages, _q, _f, _fail = await _retrieve_with_floor(db, 1, k=3)
+
+    docs = [p.document_id for p in passages]
+    assert "d-act" in docs, docs
+    assert len(passages) == 3, "the floor must not change how many passages a turn gets"
+
+
+async def test_the_floor_is_read_from_the_run_config_not_a_default(db, fake):
+    """A floor the run asked for and the engine did not pass would be a setting that looks
+    enabled and does nothing — how three earlier features in this project shipped inert."""
+    from matrix_studio.state import RetrievalConfig
+
+    assert RetrievalConfig.from_config(
+        {"retrieval": {"enabled": True, "authority_floor": 2}}
+    ).authority_floor == 2
+    # And the default is OFF, which is byte-identical to the pre-research behaviour.
+    assert RetrievalConfig().authority_floor == 0
+
+
+async def test_the_floor_never_evicts_a_collections_only_passage(db, fake):
+    """The `2d2ac45b` bug, which the composition exists not to reintroduce.
+
+    An earlier version of `apply_floors` dropped the worst-RANKED row, which on this shape is
+    the persona's only passage — trading an invisible failure for a visible one in the wrong
+    direction. Only a surplus row may pay.
+    """
+    researched = await _statute_and_commentary(db, fake)
+    private = await _kb(
+        db, fake, "adas-own",
+        [("d-ada", 0, "Ada's own note, far from the query", (0.0, 0.0, 1.0), "ada.md")],
+    )
+    await _run(
+        db,
+        config={"knowledge_bases": [researched["id"]]},
+        cast=[{"name": "Ada", "knowledge_bases": [private["id"]]}, {"name": "Dan"}],
+    )
+
+    passages, _q, _f, _fail = await _retrieve_with_floor(db, 1, k=3)
+
+    docs = [p.document_id for p in passages]
+    assert "d-ada" in docs, f"the persona's only passage was evicted: {docs}"
+    assert "d-act" in docs, f"the statute did not get its slot: {docs}"
