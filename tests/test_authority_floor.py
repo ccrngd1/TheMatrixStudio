@@ -19,6 +19,7 @@ reappearing one level down.
 import pytest
 
 from matrix_studio.storage.vectors import (
+    apply_floors,
     merge_with_authority_floor,
     merge_with_source_floor,
 )
@@ -134,3 +135,116 @@ class TestEdges:
         # And the statute is still missing, which is the point of this class.
         assert "STATUTE" not in labels(after_source)
         assert "STATUTE" in labels(merge_with_authority_floor(rows, 3))
+
+
+class TestApplyFloorsComposesThem:
+    """The one place the two floors' interaction is decided, and where a wrong choice reintroduces a
+    bug the other floor exists to fix."""
+
+    def _rows(self):
+        return [
+            row(0.10, "commentary", kb="shared", label="shared-blog"),
+            row(0.11, "commentary", kb="shared", label="shared-blog-2"),
+            row(0.30, None, kb="casey", label="casey-own"),
+            row(0.40, "controlling", kb="shared", label="STATUTE"),
+        ]
+
+    def test_off_by_default_it_is_exactly_the_source_floor(self):
+        # A run with no researched documents must be unaffected. This is the assertion that makes the
+        # feature safe to ship dark.
+        rows = self._rows()
+        assert labels(apply_floors(rows, 3)) == labels(
+            merge_with_source_floor(rows, 3, key="kb_id", floor=1)
+        )
+
+    def test_with_the_floor_on_both_properties_hold(self):
+        got = labels(apply_floors(self._rows(), 3, authority_floor=1))
+        assert "STATUTE" in got, "the controlling authority reached the prompt"
+        assert "casey-own" in got, "and the collection that could never win a slot still contributes"
+        assert len(got) == 3
+
+    def test_the_worst_ranked_row_pays_for_the_slot(self):
+        # It costs one slot, spent on the row global rank valued least.
+        got = labels(apply_floors(self._rows(), 3, authority_floor=1))
+        assert "shared-blog" in got, "the best commentary is kept"
+        assert "shared-blog-2" not in got, "the worst-ranked selected row paid"
+
+    def test_nothing_is_bought_when_a_statute_already_won(self):
+        rows = [
+            row(0.10, "controlling", kb="shared", label="STATUTE"),
+            row(0.20, "commentary", kb="shared", label="blog"),
+            row(0.30, None, kb="casey", label="casey-own"),
+        ]
+        got = labels(apply_floors(rows, 3, authority_floor=1))
+        assert sorted(got) == sorted(["STATUTE", "blog", "casey-own"])
+
+    def test_a_controlling_row_is_never_the_one_dropped(self):
+        rows = [
+            row(0.10, "controlling", kb="a", label="S1"),
+            row(0.20, "commentary", kb="a", label="c"),
+            row(0.90, "controlling", kb="b", label="S2"),
+        ]
+        got = labels(apply_floors(rows, 2, authority_floor=1))
+        assert "S1" in got, "the statute already selected was not sacrificed for another"
+
+    def test_no_controlling_row_anywhere_changes_nothing(self):
+        # Nothing controlling survived the similarity threshold, which is the CORRECT outcome: an
+        # irrelevant statute in every prompt would read as the room ignoring the law.
+        rows = [row(0.1, "commentary", label="a"), row(0.2, "commentary", label="b")]
+        assert labels(apply_floors(rows, 1, authority_floor=1)) == ["a"]
+
+    def test_it_never_returns_more_than_k(self):
+        rows = self._rows() + [row(0.5, "controlling", kb="x", label="S2")]
+        assert len(apply_floors(rows, 2, authority_floor=2)) == 2
+
+    def test_the_result_stays_in_distance_order(self):
+        got = apply_floors(self._rows(), 3, authority_floor=1)
+        assert [r["score"] for r in got] == sorted(r["score"] for r in got)
+
+    def test_an_empty_selection_is_left_alone(self):
+        assert apply_floors([], 3, authority_floor=1) == []
+
+
+class TestOnlySurplusPaysForTheSlot:
+    """The error an earlier version made, and the reason `apply_floors` exists as one function.
+
+    Dropping the worst-RANKED row reads as fair and is not: the worst-ranked row is usually the one
+    the source floor RESERVED, because a collection wins its slot on its own best passage rather than
+    on global rank. On the measured shape it evicted a persona's only passage to make room for a
+    statute from the shared collection — trading an invisible failure for a visible one, in the wrong
+    direction.
+    """
+
+    def test_a_collection_s_only_passage_is_never_evicted(self):
+        rows = [
+            row(0.10, "commentary", kb="shared", label="shared-blog"),
+            row(0.11, "commentary", kb="shared", label="shared-blog-2"),
+            row(0.30, None, kb="casey", label="casey-own"),
+            row(0.40, "controlling", kb="shared", label="STATUTE"),
+        ]
+        got = labels(apply_floors(rows, 3, authority_floor=1))
+        assert "casey-own" in got, "the reserved passage survived"
+        assert "shared-blog-2" not in got, "the surplus passage paid"
+        assert "STATUTE" in got
+
+    def test_with_no_surplus_the_statute_does_not_get_a_slot(self):
+        # Every slot is somebody's only contribution, so none can be bought. A collection
+        # contributing nothing is invisible; a missing authority is visible in the corpus.
+        rows = [
+            row(0.10, None, kb="a", label="a-only"),
+            row(0.20, None, kb="b", label="b-only"),
+            row(0.90, "controlling", kb="c", label="STATUTE"),
+        ]
+        got = labels(apply_floors(rows, 2, authority_floor=1))
+        assert got == ["a-only", "b-only"]
+        assert "STATUTE" not in got
+
+    def test_the_surplus_that_pays_is_the_worst_of_the_surplus(self):
+        rows = [
+            row(0.10, "commentary", kb="shared", label="s1"),
+            row(0.20, "commentary", kb="shared", label="s2"),
+            row(0.30, "commentary", kb="shared", label="s3"),
+            row(0.90, "controlling", kb="other", label="STATUTE"),
+        ]
+        got = labels(apply_floors(rows, 3, authority_floor=1))
+        assert "s1" in got and "s2" in got and "s3" not in got

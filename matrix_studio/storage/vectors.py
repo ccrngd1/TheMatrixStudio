@@ -334,3 +334,85 @@ def merge_with_authority_floor(
             chosen.add(id(row))
     reserved.sort(key=lambda r: float(r.get("score") or 0.0))
     return reserved
+
+
+def apply_floors(
+    rows: List[dict],
+    k: int,
+    *,
+    kb_floor: int = 1,
+    authority_floor: int = 0,
+    prefer: Optional[Sequence[Any]] = None,
+) -> List[dict]:
+    """Both floors, composed. The one place their interaction is decided.
+
+    ## Why not simply run them in sequence
+
+    Running the authority floor over the full row set would discard the source floor's reservations
+    and could leave a collection contributing nothing — the `2d2ac45b` bug, reintroduced by the fix
+    for a different one. Running it over the source floor's OUTPUT would do nothing, because if a
+    controlling passage were in that output there would be nothing to fix.
+
+    So: the source floor selects, and **only if its selection contains no controlling authority** is
+    one slot bought — by dropping the worst-ranked row and inserting the best controlling row. Every
+    other reservation survives.
+
+    ## Why the source floor wins the tie
+
+    It costs at most one slot, and it spends it on the row global rank valued least. A collection that
+    can never contribute is INVISIBLE — the original bug's symptom was personas saying "I don't have a
+    citation in front of me", which read as caution — whereas a missing statute is visible in the
+    corpus as an authority no turn cited. Given a choice of failures, take the one somebody notices.
+
+    `authority_floor=0` is the default and is exactly the previous behaviour, because a run without
+    research has nothing to reserve for and this must cost it nothing.
+    """
+    selected = merge_with_source_floor(rows, k, key="kb_id", floor=kb_floor, prefer=prefer)
+    if authority_floor <= 0 or not selected:
+        return selected
+
+    def is_controlling(row: dict) -> bool:
+        return str(row.get("authority") or "") == CONTROLLING
+
+    if any(is_controlling(r) for r in selected):
+        return selected
+
+    chosen = {id(r) for r in selected}
+    candidates = [
+        r for r in sorted(rows, key=lambda r: float(r.get("score") or 0.0))
+        if is_controlling(r) and id(r) not in chosen
+    ]
+    if not candidates:
+        # Nothing controlling survived the similarity and score thresholds, which is the correct
+        # outcome rather than a failure: an irrelevant statute in every prompt would read as the
+        # room ignoring the law.
+        return selected
+
+    for _ in range(min(authority_floor, k, len(candidates))):
+        # Only a SURPLUS row may pay — one whose collection has more than one passage in the
+        # selection. Anything else is a per-collection reservation, and taking it is precisely the
+        # `2d2ac45b` failure this composition exists to avoid.
+        #
+        # An earlier version dropped the worst-ranked row instead, which reads as fair and is not:
+        # the worst-ranked row is usually the RESERVED one, because a collection wins its slot on
+        # its own best passage rather than on global rank. On the measured shape it evicted a
+        # persona's only passage to make room for a statute from the shared collection — trading an
+        # invisible failure for a visible one, in the wrong direction. A test caught it.
+        per_kb: Dict[Any, int] = {}
+        for r in selected:
+            per_kb[r.get("kb_id")] = per_kb.get(r.get("kb_id"), 0) + 1
+        droppable = [
+            r for r in selected
+            if not is_controlling(r) and per_kb.get(r.get("kb_id"), 0) > 1
+        ]
+        if not droppable:
+            # Every remaining slot is somebody's only contribution. The statute does not get one:
+            # a collection contributing nothing at all is invisible, while a missing authority is
+            # visible in the corpus as one no turn cited.
+            break
+        worst = max(droppable, key=lambda r: float(r.get("score") or 0.0))
+        selected.remove(worst)
+        selected.append(candidates.pop(0))
+
+    selected.sort(key=lambda r: float(r.get("score") or 0.0))
+    return selected

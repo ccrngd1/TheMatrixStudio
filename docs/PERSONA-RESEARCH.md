@@ -100,8 +100,29 @@ the brief.
 **The floor is the mechanism that matters.** The personas' own `evidence_that_shifts` fields name
 what would move them — "a statute or board case". If the researcher finds one and it is then left
 to compete for 1,200 characters against thirty commentary chunks, the feature has found the answer
-and hidden it. `tests/test_kb_source_floor.py` is the existing hook; extending it to an authority
-tier is part of this feature, not a follow-up.
+and hidden it.
+
+Implemented as `vectors.apply_floors`, and the composition with the existing per-collection floor is
+where the difficulty lives. `merge_with_source_floor` reserves per COLLECTION; research ingests into
+the collection already bound at a scope, so a statute and thirty commentary chunks sit in the SAME
+collection competing for the SAME reserved slot — and the winner is whichever matches a query drawn
+from conversation text, which is the commentary. The `2d2ac45b` bug one level down.
+
+So the source floor selects first, and only if its selection holds no controlling authority is one
+slot bought. **Only a SURPLUS row may pay** — one whose collection has more than one passage in the
+selection. An earlier version dropped the worst-RANKED row, which reads as fair and is not: the
+worst-ranked row is usually the RESERVED one, because a collection wins its slot on its own best
+passage rather than on global rank. On the measured shape it evicted a persona's only passage to make
+room for a statute from the shared collection, trading an invisible failure for a visible one in the
+wrong direction. A test caught it.
+
+With no surplus, the statute gets no slot. A collection contributing nothing at all is invisible —
+the original bug's symptom was personas saying "I don't have a citation in front of me", which read
+as caution — while a missing authority is visible in the corpus as one no turn cited. Given a choice
+of failures, take the one somebody notices.
+
+`authority_floor=0` is the default and is exactly the previous behaviour, asserted by test, because a
+run with no researched documents must pay nothing for this.
 
 Tiering is a model judgement and will sometimes be wrong. It is therefore **recorded per chunk and
 visible in the KB view**, so a wrong tier is arguable rather than invisible — the same discipline as
@@ -339,18 +360,24 @@ is recorded so curation and research stay separable, and a re-run replaces rathe
    collection, because undoing a research pass depends on `origin`.
 3. **The authority tier and the retrieval floor**, measured against an existing renewal run — does
    a controlling authority actually survive into the prompt?
-   **The POLICY is written and tested** (`vectors.merge_with_authority_floor`, 15 tests). **The
-   PLUMBING is not**, and it is the remaining unknown: `authority` does not currently reach
-   retrieval. Vector metadata is an arbitrary dict at `put_vectors`, so the field CAN travel, but
-   two things are unverified — whether a metadata key added after index creation round-trips
-   through a k-NN query (the index's filterable/non-filterable split is fixed at create time),
-   and what happens to vectors written before the field existed.
+   **DONE, and the metadata path is verified rather than assumed.** A probe against the live index
+   put a vector carrying `authority` — a key the index was not created with — and a k-NN query
+   returned it: `['authority', 'document_id', 'ordinal', 'owner_sub', 'text']`. No index recreation
+   needed, and there was already precedent in the codebase: `title` was added the same way, with a
+   comment explaining that only the filterable/non-filterable split is immutable.
 
-   Deliberately not built on the assumption. Three features in this project have shipped inert
-   because a value never arrived where it was read — cognition v0.2, the decline streak, the
-   closing round — and a floor reading an absent field is the same bug with a more expensive
-   symptom: it would silently do nothing while the corpus showed a controlling authority no turn
-   ever saw. The metadata round-trip needs verifying against the live index FIRST.
+   Verified first on purpose. Three features in this project have shipped inert because a value
+   never arrived where it was read — cognition v0.2, the decline streak, the closing round — and a
+   floor reading an absent field fails SILENTLY while the corpus displays an authority no turn ever
+   saw.
+
+   `authority` now travels from the document row through `kb_chunks_missing_vectors` into vector
+   metadata and back out of the k-NN query. Carried with the vector rather than looked up at query
+   time for the same reason `title` is: a KB document row lives under the KB OWNER's partition and a
+   grantee physically cannot read it, so a lookup would work for the owner and silently return
+   nothing for everyone a collection is shared with.
+
+   `vectors.apply_floors` composes the two floors, and the composition is the whole difficulty.
 4. **The Research state** in the machine, reusing a bound KB where there is one, pre-allocating an
    id where there is not, and failing additively (§5.1, §5.2).
 5. **The UI toggle** (§7).
