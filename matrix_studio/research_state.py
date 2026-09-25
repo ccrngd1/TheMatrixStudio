@@ -613,6 +613,10 @@ async def research_definition(
             "controlling": len(corpus.controlling),
             "unreadable": len(corpus.unreadable),
             "negative": bool(corpus.negative),
+            # §9.3: negatives per QUERY, written when the corpus found some controlling authority
+            # but a particular search did not. Counted separately from `negative`, which stays the
+            # corpus-level record, so a reader can tell which mechanism fired.
+            "query_negatives": len(corpus.query_negatives),
         }
         try:
             kb_id = await _verified_target(db, settings, corpus.persona, owner_sub)

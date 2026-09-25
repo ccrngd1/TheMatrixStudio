@@ -69,7 +69,12 @@ export function ResearchPanel({ research }: Props) {
   const controlling = scopes.reduce((n, s) => n + (s.controlling ?? 0), 0)
   const documents = scopes.reduce((n, s) => n + (s.documents ?? 0), 0)
   const embedded = scopes.reduce((n, s) => n + (s.embedded ?? 0), 0)
-  const negatives = scopes.filter((s) => s.negative).length
+  // Both kinds: a corpus that found no controlling authority at all, and — §9.3 — each search that
+  // found none inside a corpus that found some. Counted as documents, which is what reaches a prompt.
+  const negatives = scopes.reduce(
+    (n, s) => n + (s.negative ? 1 : 0) + (s.query_negatives ?? 0),
+    0,
+  )
 
   return (
     <div className="rounded-lg border border-matrix-border bg-matrix-panel p-4">
@@ -142,7 +147,7 @@ export function ResearchPanel({ research }: Props) {
                     ) : (
                       s.scope
                     )}
-                    {s.negative && (
+                    {(s.negative || (s.query_negatives ?? 0) > 0) && (
                       <span
                         className="ml-1 text-amber-400"
                         title="No controlling authority was found, and that absence was recorded as a finding the conversation can retrieve."
