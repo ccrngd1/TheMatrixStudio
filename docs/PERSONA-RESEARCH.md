@@ -559,6 +559,49 @@ returns no controlling authority should produce its own negative, even when the 
 statute answering a different query. That is a specific, testable change, and the obvious candidate
 for a second run.
 
+
+### 9.3 Run 2 — pre-registered 2026-09-25, BEFORE the per-query negative is written
+
+§9.2's lead hypothesis: the documented negative never fired (0 of 159 turns) because it is computed
+per CORPUS — written only when a whole corpus finds no controlling authority — while the room's
+recurring question is per QUERY: *has any board acted on plan renewal?* Every scope found
+some statute, so nothing ever said "we searched for an enforcement action and there is none".
+
+**The change under test.** When a corpus found SOME controlling authority, each query that found
+none gets its own short negative document, titled `No controlling authority found — {the query}`,
+so a turn asking the question in those words can retrieve it. A corpus that found no controlling
+authority at all keeps the existing corpus-level negative, unchanged. Nothing else changes.
+
+**Both arms run fresh.** Run 1's control output was read in full in §9.2, so reusing it would score a
+rule designed after seeing it. Same two definitions as run 1; the research arm binds a NEW clone of
+the seven curated documents, because run 1's research-arm clones now hold run 1's batch.
+
+| # | measured as | verdict |
+|---|---|---|
+| **R1** mechanism | a per-query negative is produced, AND some turn's `document.retrieved` carries a passage titled `No controlling authority found…` | ≥ 3 of 5 research runs, or the run is **VOID** — the fix was inert, and nothing is concluded about whether it works |
+| **R2** primary | runs with ≥ 1 open EXISTENCE question (rule below) | **PASS** if research ≤ control − 2 · **no detectable difference** if within 1 · **FAIL** if research > control |
+| **2 · 3 · 4** | exactly as §9.1 | guardrails, same thresholds |
+| *secondary* | the original 1b | reported, not judged — §9.2 already showed it cannot separate "does it exist" from "what does it mean" |
+
+**The existence rule.** An open question counts when it matches the amended 1b rule AND, word-bounded,
+contains one of `any`, `exist(s)`, `existence`, `unsurveyed`, `other states`, `sourced`. Calibrated on
+`renewal-cells` and `renewal-ens` ONLY — not on §9 run 1, whose texts I have read. There it separates
+*"Whether any state defines a specialty plan as a regulated product"* (existence) from *"Whether
+the PCR positions would survive a board test"* (interpretation). Known borderline:
+*"…has been interpreted to reach plan renewal"* counts, via "other states" in its wording;
+*"Whether a specialty plan carries a federal legend trigger"* does not.
+
+**A difference of 2 runs, because n = 5.** One run's difference is within what §3.3 says replicates
+of this brief produce on their own.
+
+**What each outcome means, decided now.** R1 void: fix the mechanism and re-run; nothing learned. R1
+passes and R2 fails: the negative reached the room and did not settle the existence question, so
+§4's claim that it is "the single most reusable artefact the feature can produce" is unsupported for
+this brief, and research is recorded as not useful here. R2 passes with guardrails intact: the
+feature does its job on the question it can answer, and stays.
+
+**Criterion 4 is at more risk than in run 1.** Up to one negative per query now competes for prompt
+slots alongside everything else.
 ---
 
 ## 10. Risks
