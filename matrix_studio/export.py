@@ -303,7 +303,14 @@ def conclusions_view(report: Dict[str, Any], cells: Sequence[str]) -> Dict[str, 
         state = "diverged"
     else:
         state = "recurring"
-    return {"state": state, "conclusions": conclusions or [], "agreed": agreed}
+    # Split by replication, the boundary `ensemble_spec.tier` uses: a conclusion reached in ONE run
+    # of every group is `rare` — not a finding — and measured on renewal-cells it was 35 of 41, so
+    # listing them together buried the six that recurred.
+    recurring = [c for c in conclusions or []
+                 if any((cell or {}).get("held", 0) >= 2 for cell in (c.get("per_cell") or {}).values())]
+    single = [c for c in conclusions or [] if c not in recurring]
+    return {"state": state, "conclusions": conclusions or [], "recurring": recurring,
+            "single": single, "agreed": agreed}
 
 
 _CONCLUSION_NOTES = {
@@ -431,14 +438,22 @@ def _ensemble_markdown(m: Dict[str, Any]) -> str:
     out += ["## What the runs concluded", "", f"> *{ANALYSIS_LABEL}*", ""]
     if cv["state"] in _CONCLUSION_NOTES:
         out += [_CONCLUSION_NOTES[cv["state"]], ""]
-    if cv["conclusions"]:
-        out.append("| conclusion | " + " | ".join(_md_cell(c) for c in cells) + " |")
-        out.append("|---|" + "---|" * len(cells))
-        for cl in cv["conclusions"]:
+    def _md_table(rows):
+        t = ["| conclusion | " + " | ".join(_md_cell(c) for c in cells) + " |",
+             "|---|" + "---|" * len(cells)]
+        for cl in rows:
             per = cl.get("per_cell") or {}
-            out.append(f"| {_md_cell(cl.get('claim'))} | "
-                       + " | ".join(_cell_count(per.get(c)) for c in cells) + " |")
-        out.append("")
+            t.append(f"| {_md_cell(cl.get('claim'))} | "
+                     + " | ".join(_cell_count(per.get(c)) for c in cells) + " |")
+        return t + [""]
+
+    if cv["recurring"]:
+        out += ["### Reached in two or more runs of a group", ""] + _md_table(cv["recurring"])
+    if cv["single"]:
+        out += [f"### Reached in a single run only ({len(cv['single'])})", "",
+                "Each of these was concluded by ONE conversation — rare, not a finding. Listed so "
+                "nothing is hidden, not because any of them is what the ensemble concluded.", ""]
+        out += _md_table(cv["single"])
     out += ["## What every run in a group agreed on", ""]
     if cv["agreed"]:
         for a in cv["agreed"]:
@@ -612,13 +627,21 @@ def _ensemble_html(m: Dict[str, Any]) -> str:
           f"<div class=\"label\">{_e(ANALYSIS_LABEL)}</div>"]
     if cv["state"] in _CONCLUSION_NOTES:
         b.append(f"<p>{_e(_CONCLUSION_NOTES[cv['state']])}</p>")
-    if cv["conclusions"]:
-        b.append("<table><tr><th>conclusion</th>" + "".join(f"<th>{_e(c)}</th>" for c in cells) + "</tr>")
-        for cl in cv["conclusions"]:
+    def _html_table(rows):
+        t = ["<table><tr><th>conclusion</th>" + "".join(f"<th>{_e(c)}</th>" for c in cells) + "</tr>"]
+        for cl in rows:
             per = cl.get("per_cell") or {}
-            b.append(f"<tr><td>{_e(cl.get('claim'))}</td>"
+            t.append(f"<tr><td>{_e(cl.get('claim'))}</td>"
                      + "".join(f"<td>{_e(_cell_count(per.get(c)))}</td>" for c in cells) + "</tr>")
-        b.append("</table>")
+        return "".join(t) + "</table>"
+
+    if cv["recurring"]:
+        b += ["<h3>Reached in two or more runs of a group</h3>", _html_table(cv["recurring"])]
+    if cv["single"]:
+        b += [f"<h3>Reached in a single run only ({len(cv['single'])})</h3>",
+              "<p class=\"meta\">Each of these was concluded by ONE conversation — rare, not a finding. "
+              "Listed so nothing is hidden, not because any of them is what the ensemble concluded.</p>",
+              _html_table(cv["single"])]
     b.append("</div><h2>What every run in a group agreed on</h2>")
     if cv["agreed"]:
         b.append(_html_list([

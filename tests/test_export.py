@@ -294,3 +294,17 @@ def test_conclusions_are_labelled_as_model_analysis(fmt):
     out = ex.render(_with([_concl("exclude CA", base=(3, 5))]), fmt)
     start = out.index("What the runs concluded")
     assert "Model-generated analysis" in out[start:start + 600]
+
+
+def test_single_run_conclusions_are_separated_from_recurring_ones():
+    """Measured on renewal-cells: 35 of 41 conclusions came from one run, and listed together they
+    buried the six that recurred. A one-run conclusion is `rare` — not a finding — and says so."""
+    out = ex.render_markdown(_with([
+        _concl("exclude net-new", base=(2, 5), hybrid=(2, 3)),
+        _concl("file Ohio certification today", base=(1, 5)),
+    ]))
+    rec = out.index("Reached in two or more runs")
+    one = out.index("Reached in a single run only (1)")
+    assert rec < one
+    assert out.index("exclude net-new") < one < out.index("file Ohio certification today")
+    assert "rare, not a finding" in out

@@ -33,6 +33,7 @@ export function ConclusionsPanel({ report, cells }: Props) {
   const recurring = report.conclusions.filter((c) =>
     Object.values(c.per_cell).some((cell) => (cell?.held ?? 0) >= 2),
   )
+  const single = report.conclusions.filter((c) => !recurring.includes(c))
   // Agreements: claims every usable run in some group held. Derived from the claim table rather
   // than stored, so the two cannot disagree.
   const agreed: { claim: EnsembleClaim; cells: string[] }[] = []
@@ -64,7 +65,25 @@ export function ConclusionsPanel({ report, cells }: Props) {
                 "the" conclusion.
               </p>
             )}
-            <ClaimTable claims={report.conclusions} cells={cells} clustered={report.clustered} />
+            {recurring.length > 0 && (
+              <>
+                <p className="mb-1 text-xs text-slate-500">Reached in two or more runs of a group</p>
+                <ClaimTable claims={recurring} cells={cells} clustered={report.clustered} />
+              </>
+            )}
+            {/* Collapsed by default. Measured on renewal-cells, 35 of 41 conclusions came from a
+                single run, and shown in full they buried the six that recurred. A one-run
+                conclusion is `rare` — not a finding — but it is still listed, so nothing is hidden. */}
+            {single.length > 0 && (
+              <details className="mt-3">
+                <summary className="cursor-pointer text-xs text-slate-500">
+                  Reached in a single run only ({single.length}) — rare, not a finding
+                </summary>
+                <div className="mt-2">
+                  <ClaimTable claims={single} cells={cells} clustered={report.clustered} />
+                </div>
+              </details>
+            )}
           </>
         )}
       </div>

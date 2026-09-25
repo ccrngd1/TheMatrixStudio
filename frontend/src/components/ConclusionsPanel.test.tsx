@@ -71,3 +71,15 @@ describe('ConclusionsPanel', () => {
     expect(screen.getByText(/Model-generated analysis/)).toBeInTheDocument()
   })
 })
+
+describe('ConclusionsPanel — recurring vs single-run', () => {
+  it('shows recurring conclusions first and collapses the single-run ones, labelled rare', () => {
+    render(<ConclusionsPanel cells={['base', 'hybrid']} report={report({ conclusions: [
+      concl('exclude net-new', { base: [2, 5], hybrid: [2, 3] }),
+      concl('file Ohio certification today', { base: [1, 5] })] })} />)
+    expect(screen.getByText('Reached in two or more runs of a group')).toBeInTheDocument()
+    const summary = screen.getByText(/Reached in a single run only \(1\) — rare, not a finding/)
+    expect(summary.closest('details')).not.toHaveAttribute('open')
+  })
+})
+
