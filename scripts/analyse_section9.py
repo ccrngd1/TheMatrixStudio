@@ -77,6 +77,20 @@ C4_MIN_SHARE = 0.5
 
 NEGATIVE_TITLE = "No controlling authority found"
 
+#: §9.3 R2's existence rule, verbatim from the pre-registration (dfa0249): a legal question (the
+#: amended 1b rule) that asks whether an authority EXISTS. Calibrated on renewal-cells and
+#: renewal-ens only — not on §9 run 1, whose texts were read in §9.2.
+EXISTENCE_PATTERNS = tuple(re.compile(p) for p in (
+    r"\bany\b", r"\bexists?\b", r"\bexistence\b", r"\bunsurveyed\b", r"\bother states\b",
+    r"\bsourced\b",
+))
+
+#: §9.3 R1: research runs in which a per-query negative reached a prompt, or the run is VOID.
+R1_MIN_RUNS = 3
+
+#: §9.3 R2: a PASS needs research to be at least this many runs better than control.
+R2_MARGIN = 2
+
 
 def _payload(event: Dict[str, Any]) -> Dict[str, Any]:
     p = event.get("payload")
@@ -93,6 +107,11 @@ def matches_1b(text: str) -> bool:
     return any(p.search(t) for p in C1B_PATTERNS)
 
 
+def is_existence(text: str) -> bool:
+    t = text.lower()
+    return matches_1b(text) and any(p.search(t) for p in EXISTENCE_PATTERNS)
+
+
 async def score_arm(db: Any, ensemble_id: str) -> Dict[str, Any]:
     parent = await db.get_ensemble(ensemble_id)
     if parent is None:
@@ -100,6 +119,7 @@ async def score_arm(db: Any, ensemble_id: str) -> Dict[str, Any]:
     members = json.loads(parent.get("members_json") or "[]")
     report = json.loads(parent["report_json"]) if parent.get("report_json") else None
 
+    cast_names = {str(c.get("name") or "") for c in json.loads(parent.get("cast_json") or "[]")}
     runs: List[Dict[str, Any]] = []
     for m in members:
         run_id = str(m["run_id"])
@@ -114,6 +134,7 @@ async def score_arm(db: Any, ensemble_id: str) -> Dict[str, Any]:
         # Criterion 4 and 1a are per TURN, from what the prompt was actually given.
         curated_per_turn: List[int] = []
         saw_authority = False
+        saw_query_negative = False
         for e in events:
             if e["event_type"] != "document.retrieved":
                 continue
@@ -124,6 +145,11 @@ async def score_arm(db: Any, ensemble_id: str) -> Dict[str, Any]:
                     NEGATIVE_TITLE
                 ):
                     saw_authority = True
+                title = str(p.get("title") or "")
+                # A query negative's title carries the query, which is never a cast member's name.
+                if title.startswith(f"{NEGATIVE_TITLE} — ") and title[len(NEGATIVE_TITLE) + 3:] \
+                        not in cast_names:
+                    saw_query_negative = True
 
         runs.append({
             "run_id": run_id,
@@ -141,6 +167,7 @@ async def score_arm(db: Any, ensemble_id: str) -> Dict[str, Any]:
             ),
             "retrieval_turns": len(curated_per_turn),
             "saw_authority": saw_authority,
+            "saw_query_negative": saw_query_negative,
             "cost_usd": float(stats.get("total_cost_usd") or 0.0),
         })
 
@@ -152,6 +179,7 @@ async def score_arm(db: Any, ensemble_id: str) -> Dict[str, Any]:
     for r in runs:
         r["concessions"] = 0
         r["unresolved_1b"] = []
+        r["unresolved_existence"] = []
 
     if report:
         # Concessions: every participant's, per run. From `per_persona`, which lists them
@@ -174,6 +202,10 @@ async def score_arm(db: Any, ensemble_id: str) -> Dict[str, Any]:
                 for run in item.get("runs") or []:
                     if run in by_id:
                         by_id[run]["unresolved_1b"].append(text)
+            if is_existence(text):
+                for run in item.get("runs") or []:
+                    if run in by_id:
+                        by_id[run]["unresolved_existence"].append(text)
 
     return {
         "ensemble_id": ensemble_id,
@@ -262,6 +294,44 @@ def verdict(control: Dict[str, Any], research: Dict[str, Any]) -> List[str]:
     return out
 
 
+def verdict_run2(control: Dict[str, Any], research: Dict[str, Any]) -> List[str]:
+    """§9.3, as pre-registered in dfa0249. R1 gates: if it fails the run is VOID, not failed."""
+    cr, rr = control["runs"], research["runs"]
+    out: List[str] = []
+    produced = sum(
+        int(s.get("query_negatives") or 0)
+        for s in ((research.get("research") or {}).get("scopes") or [])
+    )
+    n1 = sum(1 for r in rr if r["saw_query_negative"])
+    r1 = produced > 0 and n1 >= R1_MIN_RUNS
+    out.append(
+        f"R1  mechanism                   {produced} per-query negative(s) produced; reached a prompt "
+        f"in {n1} of {len(rr)} research runs  (needs >= {R1_MIN_RUNS})  "
+        + ("PASS" if r1 else "VOID — the fix was inert; nothing is concluded")
+    )
+    if not r1:
+        return out
+    ce = sum(1 for r in cr if r["unresolved_existence"])
+    re_ = sum(1 for r in rr if r["unresolved_existence"])
+    if re_ <= ce - R2_MARGIN:
+        v = "PASS"
+    elif re_ > ce:
+        v = "FAIL"
+    else:
+        v = "NO DETECTABLE DIFFERENCE"
+    out.append(
+        f"R2  existence question settled  runs leaving one open: control {ce}/{len(cr)}, research "
+        f"{re_}/{len(rr)}  (PASS needs research <= control - {R2_MARGIN})  {v}"
+    )
+    # Guardrails 2-4 exactly as §9.1; 1a/1b reported as secondary.
+    for line in verdict(control, research):
+        if line.startswith(("2 ", "3 ", "4 ")):
+            out.append(line)
+        else:
+            out.append("(secondary) " + line)
+    return out
+
+
 def table(arm: str, scored: Dict[str, Any]) -> None:
     print(f"\n=== {arm}  ensemble {scored['ensemble_id']}  status={scored['status']}  "
           f"report={'yes' if scored['has_report'] else 'NO'}"
@@ -287,6 +357,8 @@ async def main() -> int:
     ap.add_argument("--owner", required=True)
     ap.add_argument("--control", required=True)
     ap.add_argument("--research", required=True)
+    ap.add_argument("--run", type=int, choices=(1, 2), default=1,
+                    help="which pre-registration to score against: 1 = §9.1, 2 = §9.3")
     ap.add_argument("--show-1b", action="store_true",
                     help="print every unresolved item the 1b rule matched, for the hand reading "
                          "§9.1 asks to be reported alongside the rule")
@@ -321,8 +393,9 @@ async def main() -> int:
             print(f"    the {a} report does not exist yet")
         return 2
 
-    print("\n=== §9.1 verdict ===")
-    for line in verdict(control, research):
+    title = "§9.1" if args.run == 1 else "§9.3 (run 2)"
+    print(f"\n=== {title} verdict ===")
+    for line in (verdict if args.run == 1 else verdict_run2)(control, research):
         print("  " + line)
 
     if args.show_1b:
@@ -330,7 +403,8 @@ async def main() -> int:
         for arm, scored in (("control", control), ("research", research)):
             for r in scored["runs"]:
                 for t in r["unresolved_1b"]:
-                    print(f"  [{arm} {r['name']}] {t}")
+                    tag = "EXIST" if t in r["unresolved_existence"] else "  -  "
+                    print(f"  {tag} [{arm} {r['name']}] {t}")
     total = sum(r["cost_usd"] for a in (control, research) for r in a["runs"])
     print(f"\nconversation spend ${total:.2f}")
     return 0

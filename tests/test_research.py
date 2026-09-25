@@ -741,3 +741,125 @@ class TestIngest:
         # where ownership is settled. Ingesting into a missing KB must fail, not conjure one.
         out = await rs.ingest(db, self._corpus(), "does-not-exist", batch="b1")
         assert out["written"] == []
+
+
+# --------------------------------------------------------------------------- #
+# Per-query negatives — PERSONA-RESEARCH.md §9.3
+# --------------------------------------------------------------------------- #
+#
+# §9 run 1 measured the corpus-level negative firing 0 times in 159 retrieval turns: every scope
+# found SOME controlling authority, and the corpus negative is written only when a corpus finds
+# none. The room's recurring question was narrower — "has any board acted on plan renewal?"
+# — and nothing ever said "we searched for that and there is none". These pin the fix.
+
+
+def _corpus_with(found):
+    """A corpus whose documents were found by the given queries. `found`: [(title, tier, [query])]."""
+    c = rs.Corpus(persona="Dr. Jordan")
+    texts = sorted({q for _t, _a, qs in found for q in qs} | {"board enforcement plan renewal"})
+    c.queries = [rs.Query(text=t, intent="opposition") for t in texts]
+    c.documents = [
+        rs.ResearchedDocument(title=t, text="x" * 400, url=f"https://ex/{i}", authority=a,
+                              found_by=list(qs))
+        for i, (t, a, qs) in enumerate(found)
+    ]
+    return c
+
+
+def test_a_query_with_no_controlling_result_gets_its_own_negative():
+    c = _corpus_with([
+        ("Texas Occupations Code Ch. 801", "controlling", ["practice act continuation of treatment"]),
+        ("Law firm blog on plan rules", "commentary", ["board enforcement plan renewal"]),
+    ])
+    out = rs.query_negatives(c, on="2026-09-25")
+    assert [q.text for q, _t in out] == ["board enforcement plan renewal"]
+    text = out[0][1]
+    # The question's own words in the heading — what a turn asking it can be matched against.
+    assert text.startswith(f"# {rs.NEGATIVE_TITLE} — board enforcement plan renewal")
+    # And what the search DID find, with its tier, so the record is checkable.
+    assert "[commentary] Law firm blog on plan rules" in text
+
+
+def test_a_query_that_did_find_controlling_authority_gets_none():
+    c = _corpus_with([
+        ("Texas Occupations Code Ch. 801", "controlling", ["practice act continuation of treatment"]),
+        ("Board Policy 23-01", "controlling", ["board enforcement plan renewal"]),
+    ])
+    assert rs.query_negatives(c) == []
+
+
+def test_a_corpus_with_no_controlling_authority_is_left_to_the_corpus_negative():
+    # Emitting both would put the same absence in the prompt twice.
+    c = _corpus_with([("A blog", "commentary", ["board enforcement plan renewal"])])
+    assert rs.documented_negative(c) is not None
+    assert rs.query_negatives(c) == []
+
+
+def test_a_query_whose_SEARCH_FAILED_gets_no_negative():
+    """"Nobody looked" must never be written up as "we looked and there is nothing".
+
+    The rule `documented_negative`'s no-queries branch already enforces, for the same reason: a
+    negative's value is that it describes work actually done, and it enters a corpus as evidence.
+    """
+    c = _corpus_with([
+        ("Texas Occupations Code Ch. 801", "controlling", ["practice act continuation of treatment"]),
+    ])
+    c.unreadable.append(("(query: board enforcement plan renewal)", "search failed: 429"))
+    assert rs.query_negatives(c) == []
+
+
+def test_a_query_that_returned_nothing_readable_says_so():
+    c = _corpus_with([
+        ("Texas Occupations Code Ch. 801", "controlling", ["practice act continuation of treatment"]),
+    ])
+    out = rs.query_negatives(c)
+    assert len(out) == 1
+    assert "nothing that could be read" in out[0][1]
+
+
+def test_a_query_negative_never_claims_that_none_exists():
+    c = _corpus_with([
+        ("Texas Occupations Code Ch. 801", "controlling", ["practice act continuation of treatment"]),
+    ])
+    text = rs.query_negatives(c)[0][1]
+    assert "It does not support: *none exists.*" in text
+
+
+def test_a_query_negative_stays_one_chunk_even_with_many_sources():
+    """Short on purpose: a turn that retrieves it should get the whole record, not a slice of it."""
+    many = [(f"Blog {i}", "commentary", ["board enforcement plan renewal"]) for i in range(30)]
+    c = _corpus_with(many + [("Statute", "controlling", ["practice act continuation of treatment"])])
+    text = rs.query_negatives(c)[0][1]
+    assert "…and 24 more, none controlling" in text
+    assert len(text) < 1500, len(text)
+
+
+def test_no_model_is_consulted_for_a_query_negative():
+    # Computed from facts the module holds. The signature is the guard: there is no `call` to pass.
+    import inspect
+    assert "call" not in inspect.signature(rs.query_negatives).parameters
+
+
+async def test_ingest_writes_each_query_negative_as_its_own_document():
+    c = _corpus_with([
+        ("Texas Occupations Code Ch. 801", "controlling", ["practice act continuation of treatment"]),
+    ])
+    c.query_negatives = rs.query_negatives(c)
+    written = []
+
+    class Store:
+        async def add_kb_document(self, kb_id, **kw):
+            written.append(kw)
+            return f"d{len(written)}"
+
+        async def replace_research_documents(self, kb_id, **kw):
+            return []
+
+    await rs.ingest(Store(), c, "kb1", batch="b1")
+    negs = [w for w in written if w["title"].startswith(rs.NEGATIVE_TITLE)]
+    assert len(negs) == 1
+    assert negs[0]["title"] == f"{rs.NEGATIVE_TITLE} — board enforcement plan renewal"
+    # A record of a search, not a source about the law — the floor must not treat it as one.
+    assert negs[0]["authority"] == "unknown"
+    assert negs[0]["origin"] == "researched"
+    assert negs[0]["research_batch"] == "b1"

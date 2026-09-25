@@ -107,6 +107,9 @@ class Corpus:
     #: board's own statute page answering 403 is a fact about the search, not an absence of law.
     unreadable: List[Tuple[str, str]] = field(default_factory=list)
     negative: Optional[str] = None
+    #: One negative per QUERY that found no controlling authority, when the corpus as a whole found
+    #: some. See `query_negatives` — this is §9.3's change, and why it exists is recorded there.
+    query_negatives: List[Tuple["Query", str]] = field(default_factory=list)
     cost_usd: float = 0.0
 
     @property
@@ -476,6 +479,93 @@ def documented_negative(corpus: Corpus, *, on: Optional[str] = None) -> Optional
     return "\n".join(lines)
 
 
+#: Title prefix shared by every negative, corpus-level or per-query. Retrieval and the §9 analysis
+#: both recognise a negative by it, so it is one constant rather than two literals that can drift.
+NEGATIVE_TITLE = "No controlling authority found"
+
+#: Sources listed per query negative. Enough to show what the search DID find; few enough that the
+#: document stays one chunk, so a turn that retrieves it gets the whole record rather than a slice.
+QUERY_NEGATIVE_SOURCES = 6
+
+
+def query_negatives(corpus: Corpus, *, on: Optional[str] = None) -> List[Tuple[Query, str]]:
+    """One negative per query that found no controlling authority. `PERSONA-RESEARCH.md` §9.3.
+
+    ## Why the corpus-level negative was not enough
+
+    §9 run 1 measured it: the corpus negative fired **0 times in 159 retrieval turns**, because every
+    scope found SOME controlling authority — a practice act, a board policy — and
+    `documented_negative` writes only when a corpus finds none. The room's recurring question was
+    narrower: *"whether any board case or enforcement action exists on plan renewal"*. Research
+    found the statutes and no enforcement action, and nothing ever told the room "we searched for one
+    and there is none". §4 promised that artefact at the grain of the question; it was computed at the
+    grain of the corpus.
+
+    ## What this produces
+
+    For a corpus that found controlling authority, each query whose results held none gets a short
+    document titled `No controlling authority found — {query}`. The title carries the query's own
+    words, so a turn asking the question in similar words can retrieve it — which the corpus negative,
+    titled per persona, could not be matched against.
+
+    A corpus that found NO controlling authority returns nothing here: `documented_negative` already
+    covers every query in it, and emitting both would put the same absence in the prompt twice.
+
+    ## What it refuses to say
+
+    A query whose SEARCH FAILED gets no negative. The same rule as `documented_negative`'s no-queries
+    branch, arrived at the same way: a negative's whole value is that it describes work actually done,
+    and "the search errored" written up as "we looked and there is nothing" is the overstatement §4
+    exists to prevent. Computed, not generated — no model call, so it cannot describe a search that
+    did not happen.
+    """
+    if not corpus.controlling:
+        return []
+    when = on or date.today().isoformat()
+    failed = {
+        what[len("(query: "):-1]
+        for what, _why in corpus.unreadable
+        if what.startswith("(query: ") and what.endswith(")")
+    }
+    scope = f"for {corpus.persona}" if corpus.persona else "for the shared record"
+
+    out: List[Tuple[Query, str]] = []
+    for q in corpus.queries:
+        if q.text in failed:
+            continue
+        found = [d for d in corpus.documents if q.text in d.found_by]
+        if any(d.authority == "controlling" for d in found):
+            continue
+        intent = {"support": "for the position",
+                  "opposition": "for what would change their mind",
+                  "background": "background"}.get(q.intent, q.intent)
+        lines = [
+            f"# {NEGATIVE_TITLE} — {q.text}",
+            "",
+            f"Searched on {when}, {scope} ({intent}). This one search surfaced no statute, "
+            "regulation, board opinion or decided case. It is a record of what was looked for and "
+            "what came back — not a conclusion that none exists.",
+            "",
+            f"Query: `{q.text}`",
+            "",
+            "What it did return:",
+        ]
+        if found:
+            for d in found[:QUERY_NEGATIVE_SOURCES]:
+                lines.append(f"- [{d.authority}] {d.title or '(untitled)'}")
+            if len(found) > QUERY_NEGATIVE_SOURCES:
+                lines.append(f"- …and {len(found) - QUERY_NEGATIVE_SOURCES} more, none controlling")
+        else:
+            lines.append("- nothing that could be read")
+        lines += [
+            "",
+            "Other searches in this research DID find controlling authority on related questions; "
+            "this record is about this question only. It supports: *as of this date, this search "
+            "found no controlling authority on this.* It does not support: *none exists.*",
+        ]
+        out.append((q, "\n".join(lines)))
+    return out
+
 # --------------------------------------------------------------------------- #
 # Running one corpus
 # --------------------------------------------------------------------------- #
@@ -549,6 +639,7 @@ async def gather(
     corpus.documents = list(by_url.values())
     corpus.cost_usd += await tier_documents(corpus.documents, call=call, model=model)
     corpus.negative = documented_negative(corpus)
+    corpus.query_negatives = query_negatives(corpus)
     return corpus
 
 
@@ -714,8 +805,8 @@ async def ingest(
         try:
             written.append(await db.add_kb_document(
                 kb_id,
-                title=(f"No controlling authority found — {corpus.persona}"
-                       if corpus.persona else "No controlling authority found"),
+                title=(f"{NEGATIVE_TITLE} — {corpus.persona}"
+                       if corpus.persona else NEGATIVE_TITLE),
                 text=corpus.negative,
                 media_type="md",
                 char_count=len(corpus.negative),
@@ -729,6 +820,26 @@ async def ingest(
         except Exception as exc:  # noqa: BLE001
             logger.warning("Could not store the documented negative in KB %s: %s", kb_id, exc)
 
+    for query, text in corpus.query_negatives:
+        try:
+            written.append(await db.add_kb_document(
+                kb_id,
+                # The query's own words in the title, deliberately: it is what a turn asking the
+                # same question can be matched against.
+                title=f"{NEGATIVE_TITLE} — {query.text}"[:200],
+                text=text,
+                media_type="md",
+                char_count=len(text),
+                origin="researched",
+                # `unknown`, for the reason the corpus negative gives: it is a record of a search,
+                # not a source about the law, and tiering it would let the floor treat it as one.
+                authority="unknown",
+                research_batch=batch,
+                owner_sub=owner_sub,
+            ))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not store a query negative in KB %s: %s", kb_id, exc)
+
     replaced = await db.replace_research_documents(
         kb_id, batch=batch, keep=batch, owner_sub=owner_sub,
     )
@@ -738,4 +849,5 @@ async def ingest(
         "replaced": replaced,
         "controlling": len(corpus.controlling),
         "negative": bool(corpus.negative),
+        "query_negatives": len(corpus.query_negatives),
     }

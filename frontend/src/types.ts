@@ -95,6 +95,10 @@ export interface ResearchScope {
   // reported so an absence is never mistaken for "there is nothing there".
   unreadable?: number
   negative?: boolean
+  // §9.3: negatives per SEARCH — written when the corpus found some controlling authority but a
+  // particular query did not. Separate from `negative`, the corpus-level record, so a reader can
+  // tell which mechanism fired.
+  query_negatives?: number
   written?: number
   replaced?: number
   embedded?: number

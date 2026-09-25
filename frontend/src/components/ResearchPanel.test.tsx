@@ -175,3 +175,24 @@ describe('ResearchPanel', () => {
     expect(screen.getByText('Unavailable')).toBeInTheDocument()
   })
 })
+
+describe('ResearchPanel — per-search negatives (§9.3)', () => {
+  it('counts a negative per search, not only per collection', () => {
+    // §9 run 1: every collection found SOME controlling authority, so the corpus-level negative
+    // never fired — and a panel counting only that would have shown "no negatives" for a pass that
+    // now records six specific searches that found nothing.
+    render(
+      <ResearchPanel
+        research={{
+          status: 'researched',
+          scopes: [
+            { scope: 'shared', documents: 20, controlling: 4, negative: false, query_negatives: 2 },
+            { scope: 'Casey', documents: 9, controlling: 1, negative: false, query_negatives: 4 },
+          ],
+        }}
+      />,
+    )
+    expect(screen.getByText(/documented negatives/)).toBeInTheDocument()
+    expect(screen.getByText('6')).toBeInTheDocument()
+  })
+})
