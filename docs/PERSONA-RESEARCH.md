@@ -3,8 +3,12 @@
 Opened 2026-09-23 as a design written before any code, so the reasoning is on the record rather
 than reconstructed afterwards.
 
-**Status 2026-09-25: §11 steps 1–6 are BUILT, DEPLOYED and verified live.** Step 7 — §9's
-comparison, the only thing that can justify the feature — is not done. Where the build contradicted
+**Status 2026-09-25: §11 steps 1–7 are done, and §9's pre-registered comparison FAILED its primary
+criterion.** Research reached every conversation and the legal question was still left open in all
+five research runs, as in all five controls (§9.2). It also did no harm — convergence, concessions
+and the brief's share of the prompt all held — so the feature is harmless and not yet useful. §9.2
+records a specific design gap as the likely cause: the documented negative is computed per corpus,
+and the room's question is per query. Where the build contradicted
 this design, the design is corrected in place and says so rather than being quietly edited; §7.1 and
 §5.1 are the two places that matter, and §11 records what each step forced.
 
@@ -502,6 +506,58 @@ calls, stated so a reader can disagree with them rather than discover them:
 **Criterion 4 is expected to be at risk.** On run `602ddffe` a persona's curated source material lost
 every slot to research that shared its collection (§5.1), and that behaviour was accepted and made
 visible rather than fixed. If 4 fails, that decision is what it indicts.
+
+
+### 9.2 Result — 2026-09-25. **Criterion 1 FAILS as registered.**
+
+Control ensemble `8b71fedb`, research ensemble `cfce13ed`, scored by `scripts/analyse_section9.py`
+exactly as §9.1 and Amendment 1 specify. $9.50 in total: $7.10 conversations, $2.09 reports, $0.31
+research.
+
+| # | control | research | verdict |
+|---|---|---|---|
+| **1a** research reached the room | — | **5 of 5** runs saw a controlling authority | **PASS** |
+| **1b** the question got answered | 5 of 5 left it open | **5 of 5** left it open | **FAIL** |
+| **2** convergence | median 28 (range 16), 4/5 converged | median 33, 5/5 converged | no detectable difference |
+| **3** concessions | median 6 (range 4) | median 6 | PASS |
+| **4** brief not crowded out | 3.00 curated/turn | 2.41 = **80%** | PASS |
+
+**Per §9, failing (1) means the feature does not do its job.** 1 needs both halves and 1b fails: the
+authorities reached every research conversation and the legal question was still left open in every
+one. That is the registered verdict and it is not softened by anything below.
+
+What did NOT happen is also worth stating, because §9 names it as the reason to revert: research did
+not make positions harder or convergence rarer. Concessions held, the brief kept 80% of its share of
+the prompt, and every research run converged against four of five controls. The feature is, on this
+evidence, **harmless and not yet useful**.
+
+#### Exploratory — not part of the verdict
+
+Two observations from reading the output, recorded as hypotheses for a NEW pre-registered run rather
+than as a rescue of this one.
+
+**The open question changed shape.** Control runs leave open whether any authority *exists*:
+*"Whether any actual board action/case/complaint exists"*, *"Actual text of CA §4826(b)"*,
+*"Whether other states have similar statutory carve-out, unsurveyed"*. Research runs leave open what
+an authority they *have* means: *"Whether CA section 417 text matches Riley's paraphrase or the
+636(f)/(g) statute"*, *"Whether practice act's 'professional opinion rendered' language reaches this
+fact pattern"*, *"Legal disagreement: is plan renewal a continuation or a new treatment
+plan"*. That reads like moving from "nobody has the text" to "we have the text and disagree about
+it" — which may be the honest ceiling of what research can do for a question the law has not
+settled. The binary 1b rule cannot see that difference, and it was not designed to.
+
+**The documented negative never fired — not once in 159 retrieval turns — and this is a design
+gap, not bad luck.** Every scope found at least one controlling authority (a practice act, a board
+policy), and `documented_negative` writes only when a corpus finds NONE. But the room's recurring
+question is narrower: *"Whether any board case/enforcement action exists on plan renewal"*
+was still open in research runs 3 and 5. Research found the statutes and no enforcement action on
+this fact pattern, and nothing in the corpus ever said *"we searched for one and there is none"*.
+
+§4 promised exactly that artefact. It is computed at the wrong grain — per CORPUS, when the question
+is per QUERY. A persona's `evidence_that_shifts` query ("a board case on this fact pattern") that
+returns no controlling authority should produce its own negative, even when the same corpus found a
+statute answering a different query. That is a specific, testable change, and the obvious candidate
+for a second run.
 
 ---
 
