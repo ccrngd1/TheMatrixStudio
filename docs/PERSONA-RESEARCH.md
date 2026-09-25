@@ -1,7 +1,15 @@
 # Pre-conversation research: what the room could not find out for itself
 
-Opened 2026-09-23. **Nothing here is implemented.** A design, written before any code so the
-reasoning is on the record rather than reconstructed afterwards.
+Opened 2026-09-23 as a design written before any code, so the reasoning is on the record rather
+than reconstructed afterwards.
+
+**Status 2026-09-25: §11 steps 1–6 are BUILT, DEPLOYED and verified live.** Step 7 — §9's
+comparison, the only thing that can justify the feature — is not done. Where the build contradicted
+this design, the design is corrected in place and says so rather than being quietly edited; §7.1 and
+§5.1 are the two places that matter, and §11 records what each step forced.
+
+Verified on the deployed path: single run `602ddffe` (94 sources, 18 controlling, $0.2581) and
+ensemble `7c3448ee` (one pass for two members, identical bindings, $0.0935).
 
 **The short version.** Every renewal conversation asked for a citation nobody in the room could
 produce, and none of the nine ever got one. This feature answers that request: before turn 1, a
