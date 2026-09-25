@@ -578,6 +578,12 @@ is recorded so curation and research stay separable, and a re-run replaces rathe
    The fan-out happens **whatever the research did** (§5.2). An ensemble stuck at `researching`
    with no members is the worst available failure: the parent lists run ids that do not exist and
    nothing is working on them.
+
+   **Verified on the deployed path**, ensemble `7c3448ee`: one pass (28 sources, 13 controlling,
+   $0.0935, 174 s), `2 started, 0 failed`, both members bound identical collections and recorded
+   their own research as `skipped`, and every retrieved passage carried `origin` and `authority`
+   with `researched_passages=3 of 3`. The intermediate state was observed as designed — parent
+   `researching`, two member ids listed, zero runs existing.
 7. **The §9 comparison**, 5 replicates each way.
 
 Step 1 is deliberately separable and deliberately first: if the researcher's output does not look
