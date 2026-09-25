@@ -3,8 +3,10 @@
 Opened 2026-09-23 as a design written before any code, so the reasoning is on the record rather
 than reconstructed afterwards.
 
-**Status 2026-09-25: §11 steps 1–7 are done, and §9's pre-registered comparison FAILED its primary
-criterion.** Research reached every conversation and the legal question was still left open in all
+**Status 2026-09-25: §11 steps 1–7 are done, and §9 ran three times. Research is recorded as NOT
+USEFUL for the renewal brief (§9.6): it reached every conversation and did not settle the question
+the room kept asking. It does no harm, and every research conversation converged against 9 of 15
+controls — a post-hoc pattern recorded as a hypothesis, not a result (§9.6).** Earlier summary: Research reached every conversation and the legal question was still left open in all
 five research runs, as in all five controls (§9.2). It also did no harm — convergence, concessions
 and the brief's share of the prompt all held — so the feature is harmless and not yet useful. §9.2
 records a specific design gap as the likely cause: the documented negative is computed per corpus,
@@ -696,6 +698,56 @@ land near its line.** In the replay, curated passages per turn fall from 2.00–
 Against a control near 3.00 that is roughly 46–58% — straddling the 50% threshold. The threshold does
 not move. If 4 fails, it is the standing query pulling toward found material, which is exactly the
 cost §9.5 named in advance.
+
+### 9.6 Run 3 result — R1 passes, **R2 FAILS**. Research is recorded as not useful for this brief.
+
+Control `e0eb2147`, research `3d792e9b`, scored against §9.3's criteria unchanged. $9.73: $7.49
+conversations, $1.93 reports, $0.31 research.
+
+| # | control | research | verdict |
+|---|---|---|---|
+| **R1** mechanism | — | 12 per-query negatives; reached a prompt in **5 of 5** runs | PASS |
+| **R2** existence question settled | 0 of 5 left one open | **2 of 5** left one open | **FAIL** |
+| **2** convergence | median 40, 2/5 converged | median 27, **5/5** converged | PASS |
+| **3** concessions | median 6 (range 7) | median 5 | no detectable difference |
+| **4** brief not crowded out | 3.00 per turn | 1.58 = **53%** | PASS — the predicted 46–58% |
+
+**The verdict, as §9.3 decided it in advance:** R1 passes and R2 fails, so the negative reached the
+room and did not settle the existence question. §4's claim that the documented negative is "the
+single most reusable artefact the feature can produce" is **unsupported for this brief**, and research
+is recorded as **not useful here**. It still does no harm — every guardrail held — so it stays, off by
+default.
+
+The replay's prediction for guardrail 4 held: 53%, inside the 46–58% it forecast before launch.
+
+#### Exploratory — not part of any verdict
+
+**R1 passed on the least relevant negatives.** Of 12, only two reached prompts with any regularity,
+both about the PCR in general. The ones that match the existence questions the room left open —
+*"licensed board disciplinary action challenge…"*, *"practice act 'continuation of treatment'
+exemption"*, *"statute defining 'treatment plan'"* — reached **zero** prompts in all five runs. So the
+fail is not "the room saw the answer and ignored it"; it never saw the relevant record. The standing
+query is built from ALL of a persona's shift conditions joined together, which averages them — a
+per-condition query would be the next mechanism to try, and it would need its own pre-registration.
+
+**The most consistent signal in all three runs was never a criterion.** Every research conversation
+converged; controls did not reliably:
+
+| | control converged | research converged |
+|---|---|---|
+| run 1 | 4 / 5 | 5 / 5 |
+| run 2 | 3 / 5 | 5 / 5 |
+| run 3 | 2 / 5 | 5 / 5 |
+| **pooled** | **9 / 15** | **15 / 15** |
+
+One-sided Fisher exact p = 0.008 — **computed after seeing the data, pooled across three runs with
+different mechanisms, and therefore a hypothesis, not a finding.** It is plausible on its face: a room
+that can see what the authorities say, and what nobody could find, may run out of things to dispute
+sooner. It is equally consistent with research making the room stop arguing without having resolved
+anything, which would be a worse tool rather than a better one. Only a pre-registered run that
+measures WHAT was settled at convergence, not merely that it converged, can tell those apart.
+
+§9 in total: $29.15 across three runs.
 ---
 
 ## 10. Risks
