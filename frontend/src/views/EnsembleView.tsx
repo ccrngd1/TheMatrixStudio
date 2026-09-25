@@ -22,6 +22,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, type EnsembleDetail } from '../api'
 import { ClaimTable } from '../components/ClaimTable'
+import { ResearchPanel } from '../components/ResearchPanel'
 
 interface Props {
   ensembleId: string
@@ -191,10 +192,32 @@ export function EnsembleView({ ensembleId, onBack, onOpenRun }: Props) {
         </ul>
       </section>
 
+      {/* PERSONA-RESEARCH.md §6: ONE pass for the whole fan-out, so the panel belongs on the
+          parent. Renders nothing for an ensemble that did not research. */}
+      {detail.research && (
+        <section className="mb-6">
+          <ResearchPanel research={detail.research} />
+          <p className="mt-2 text-xs text-slate-500">
+            Researched once, before any conversation started — every one of them read this same
+            corpus. Searching per conversation would have given them different inputs, and a
+            difference between them would then say nothing about the brief.
+          </p>
+        </section>
+      )}
+
       <section className="mb-6">
         <h2 className="mb-2 text-xs uppercase tracking-wide text-slate-500">
           Conversations ({settledCount} of {declared} finished)
         </h2>
+        {/* The window between "parent written" and "members created": research runs first, so
+            for a few minutes the parent lists run ids that do not exist yet. Saying so beats an
+            empty list, which is what a dead fan-out also looks like. */}
+        {detail.status === 'researching' && detail.members.length === 0 && (
+          <p className="mb-2 text-xs text-amber-400">
+            Researching the subject first. The conversations start when the search finishes —
+            usually a few minutes — and nothing is lost if you navigate away.
+          </p>
+        )}
         <ul className="space-y-1 text-sm">
           {detail.members.map((m) => (
             <li key={m.run_id} className="flex items-center gap-2">

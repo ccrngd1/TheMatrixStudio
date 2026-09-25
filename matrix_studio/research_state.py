@@ -49,6 +49,7 @@ makes a persona say in-voice when retrieval found nothing. The state machine's c
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 import uuid
@@ -420,6 +421,120 @@ async def run_research(
         label=run_id,
     )
     return await _store(db, run_id, owner_sub, record)
+
+
+def research_function_name() -> str:
+    """The research worker's own name, or "" when there is none.
+
+    Empty is the LOCAL case rather than a misconfiguration: one long-lived process can await a
+    research pass in a background task, and `ensemble_reporting.report_function_name` carries the
+    same reasoning for the same reason. Its presence is what selects between dispatching and doing
+    the work inline, exactly as `TURN_LOOP_ARN` does for the turn loop.
+    """
+    import os
+
+    return os.environ.get("RESEARCH_FUNCTION", "").strip()
+
+
+async def dispatch_ensemble(db: Any, ensemble_id: str) -> bool:
+    """Ask the research worker to research this ensemble and then fan it out. True if dispatched.
+
+    Asynchronous (`InvocationType="Event"`), because the caller is `POST /api/ensembles` behind API
+    Gateway's 29-second integration timeout and a research pass is minutes. The same shape, and the
+    same reason, as `ensemble_reporting.dispatch`.
+
+    Only the ensemble id and the owner travel. Not the request: a cast with attached document text
+    is easily over Lambda's 256 KB payload limit, and the parent row already holds everything the
+    worker needs — which is why it carries `cast_json`.
+
+    Returns False when no research function is configured, telling the caller to do the work itself.
+    """
+    name = research_function_name()
+    if not name:
+        return False
+
+    import asyncio as _asyncio
+    import os
+
+    parent = await db.get_ensemble(ensemble_id)
+    owner = (parent or {}).get("owner_sub")
+    if not owner:
+        logger.warning(
+            "Ensemble %s has no owner on its row, so research cannot be dispatched — the worker "
+            "assumes the tenant role per invocation and there is no identity to assume it for.",
+            ensemble_id,
+        )
+        return False
+
+    def _invoke() -> None:
+        import boto3
+
+        boto3.client("lambda", region_name=os.environ.get("AWS_REGION")).invoke(
+            FunctionName=name,
+            InvocationType="Event",
+            Payload=json.dumps(
+                {"ensemble_id": ensemble_id, "owner_sub": str(owner)}
+            ).encode(),
+        )
+
+    try:
+        await _asyncio.to_thread(_invoke)
+    except Exception as exc:  # noqa: BLE001
+        # Reported as NOT dispatched so the caller falls back to doing it inline. Returning True
+        # here would leave an ensemble at `researching` for ever with nothing working on it.
+        logger.warning("Could not dispatch research for ensemble %s: %s", ensemble_id, exc)
+        return False
+    logger.info("Dispatched research for ensemble %s to %s", ensemble_id, name)
+    return True
+
+
+async def research_ensemble(db: Any, ensemble_id: str, *, owner_sub: str) -> Dict[str, Any]:
+    """Research an ensemble ONCE, before any member exists. Records on the parent; never raises.
+
+    §6, and the reason it is not simply "each member researches": live search per member would
+    give replicates different inputs, and `ENSEMBLE-CONVERSATIONS.md` §2 rests on the opposite —
+    same config, same brief, so divergence is evidence about the BRIEF. Independent searches make
+    divergence unattributable, which destroys the only thing an ensemble is for. One snapshot, N
+    conversations: cheaper, and it keeps replicates being replicates.
+
+    Reads everything from the parent row, which is why the row carries `cast_json`: this runs in a
+    worker that has an ensemble id and nothing else.
+
+    The record goes on the PARENT rather than on each member. A copy per member would say N passes
+    happened, which is the one thing that must not be true.
+    """
+    from matrix_studio.bindings import _config
+
+    parent = await db.get_ensemble(ensemble_id)
+    if parent is None:
+        return _record(SKIPPED, error=f"ensemble {ensemble_id} does not exist")
+
+    settings = settings_from(_config({"config_json": parent.get("base_config_json")}))
+    if not settings.enabled:
+        return _record(SKIPPED, error="research is not enabled for this ensemble")
+
+    try:
+        cast = json.loads(parent.get("cast_json") or "[]")
+    except (TypeError, json.JSONDecodeError):
+        cast = []
+    if not isinstance(cast, list):
+        cast = []
+
+    record = await research_definition(
+        db,
+        topic=str(parent.get("topic") or ""),
+        cast=cast,
+        settings=settings,
+        owner_sub=owner_sub,
+        label=f"ensemble {ensemble_id}",
+    )
+    try:
+        await db.update_ensemble(ensemble_id, research=record, owner_sub=owner_sub)
+    except Exception as exc:  # noqa: BLE001
+        # The corpus is already in the knowledge bases by now, so losing the record loses the
+        # account of the pass rather than the pass. The members must still be created.
+        logger.warning("Could not record research on ensemble %s: %s", ensemble_id, exc)
+    return record
 
 
 async def research_definition(

@@ -33,6 +33,7 @@ integration would use the machine's role, which is not per-tenant, so
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from typing import Any, Callable, Coroutine, Dict, Optional
@@ -133,6 +134,13 @@ async def _research(event: Dict[str, Any]) -> Dict[str, Any]:
 
     owner = _owner(event)
     db = await _bound(owner)
+
+    # Two callers, one worker. An ENSEMBLE is invoked asynchronously by `POST /api/ensembles`
+    # rather than being a state in a machine, because §6 has the pass happen BEFORE any member
+    # exists — so there is no member execution to host it. It researches once and then fans out.
+    if event.get("ensemble_id") and not event.get("run_id"):
+        return await _research_ensemble(db, str(event["ensemble_id"]), owner)
+
     record = await research_state.run_research(
         db, str(event["run_id"]), owner_sub=owner, mode=str(event.get("mode") or "fresh"),
     )
@@ -142,6 +150,61 @@ async def _research(event: Dict[str, Any]) -> Dict[str, Any]:
         "status": record.get("status"),
         "cost_usd": record.get("cost_usd"),
     }}
+
+
+async def _research_ensemble(db: Any, ensemble_id: str, owner: str) -> Dict[str, Any]:
+    """Research an ensemble once, then create its members. `PERSONA-RESEARCH.md` §6.
+
+    **The fan-out happens whatever the research did.** Research is additive (§5.2) — a search
+    outage is not a reason to lose five conversations somebody asked for — and an ensemble left at
+    `researching` with no members is the worst of the available failures: the parent lists run ids
+    that do not exist, and nothing is working on them.
+
+    So the record is written first and the fan-out is attempted regardless. If the fan-out itself
+    raises, the parent is marked `failed` rather than left mid-flight, because a parent stuck at
+    `researching` is indistinguishable from one still being worked on.
+    """
+    from matrix_studio import research_state
+    from matrix_studio.api.manager import RunManager
+
+    record = await research_state.research_ensemble(db, ensemble_id, owner_sub=owner)
+
+    groups: Any = None
+    try:
+        # The creator's verified groups, recorded on the parent's members when they are created.
+        # Read from the ensemble row rather than invented, and absent is correct for a deployment
+        # with no group grants.
+        parent = await db.get_ensemble(ensemble_id)
+        raw = (parent or {}).get("groups_json")
+        groups = json.loads(raw) if raw else None
+    except Exception:  # noqa: BLE001
+        groups = None
+
+    try:
+        # `RunManager` over the UNBOUND store: it binds per owner internally, and
+        # `fan_out_ensemble` reads the parent from that binding.
+        from matrix_studio.storage import Database
+
+        assert _store is not None and isinstance(_store, Database)
+        out = await RunManager(_store).fan_out_ensemble(
+            ensemble_id, owner_sub=owner, groups=groups,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Ensemble %s could not be fanned out after research", ensemble_id)
+        await db.update_ensemble(
+            ensemble_id, status="failed", owner_sub=owner,
+            report_error=f"fan-out failed after research: {exc}"[:500],
+        )
+        return {"ensemble_id": ensemble_id, "research": record.get("status"),
+                "fanned_out": 0, "error": str(exc)}
+
+    return {
+        "ensemble_id": ensemble_id,
+        "research": record.get("status"),
+        "cost_usd": record.get("cost_usd"),
+        "fanned_out": len(out.get("members") or []),
+        "failed": len(out.get("failed") or []),
+    }
 
 
 async def _turn(event: Dict[str, Any]) -> Dict[str, Any]:

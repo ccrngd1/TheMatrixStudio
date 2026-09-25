@@ -13,6 +13,7 @@ buffered stream a client sees is identical whether the run is live or finished.
 """
 
 import asyncio
+import json
 import logging
 import os
 import uuid
@@ -335,7 +336,17 @@ class RunManager:
                     engine_request.get("config")
                 )
                 research_record = None
-                if research_settings.enabled:
+                # `not ensemble_id` is load-bearing and was missing. §6: an ensemble researches
+                # ONCE, before its members exist, and every member inherits the resolved config
+                # — INCLUDING `research.enabled`. So a member reaching here with research on is
+                # the normal case, and researching would give each replicate its own corpus,
+                # which is the exact failure §6 exists to prevent.
+                #
+                # `run_research` already refuses on `ensemble_id`, but this path calls
+                # `research_definition` directly and so bypassed that guard. Caught by a test
+                # asserting the pass runs once: it ran three times for a two-member fan-out.
+                # The same guard in two paths, because one of them is not a guard.
+                if research_settings.enabled and not ensemble_id:
                     research_record = await research_state.research_definition(
                         owned,
                         topic=topic,
@@ -454,6 +465,27 @@ class RunManager:
             base_name = naming["name"]
             description = request.get("description") or naming["description"]
 
+        # PERSONA-RESEARCH.md §6: an ensemble researches ONCE, before its members exist, and
+        # every member binds the same collections. So the targets are allocated HERE, against
+        # the base config, and the resolved config is what every member inherits — which is
+        # what makes them replicates rather than N runs that each searched the web separately.
+        #
+        # Allocation is fast (it creates collections; it searches nothing), so it belongs in
+        # the request. The SEARCHING is minutes and cannot be, which is why it is dispatched.
+        from matrix_studio import research_state
+
+        researching = research_state.settings_from(request.get("config")).enabled
+        if researching:
+            request = await research_state.allocate_targets(
+                owned, dict(request), owner_sub=owner_sub, label=base_name,
+                privileged=self.db,
+            )
+            # `plan` again, because the base config changed underneath the first plan: the
+            # members were computed before `knowledge_bases` and `research.targets` existed on
+            # it, so reusing them would give every member a config with no bindings — research
+            # would run and no turn would ever query it.
+            members = ensemble_spec.plan(request.get("config") or {}, cells)
+
         member_rows = [
             {"run_id": str(uuid.uuid4()), "cell": m.cell, "index": m.index}
             for m in members
@@ -464,10 +496,45 @@ class RunManager:
             spec=ensemble_spec.describe(cells),
             members=member_rows,
             base_config=request.get("config") or {},
+            # The cast, so the parent is self-sufficient: research and the fan-out both run in
+            # a worker holding only this row.
+            cast=request.get("cast") or [],
+            # `researching` rather than `pending`, because a parent with no members yet and no
+            # explanation is indistinguishable from a fan-out that died.
+            status="researching" if researching else "pending",
+            # Carried so the WORKER can attach them when it creates the members minutes later.
+            # There is no JWT there, and a KB granted to a group would otherwise be unsearchable
+            # for the whole fan-out while still listing in the API.
+            groups=groups,
             name=base_name,
             description=description,
             owner_sub=owner_sub,
         )
+
+        if researching:
+            # Fan out AFTER the pass, from the parent row, in the research worker. Returning
+            # here leaves a parent that already lists every member id — so an interrupted
+            # research is a parent that knows what is missing, which is the same property the
+            # parent-before-members ordering was built for.
+            dispatched = await research_state.dispatch_ensemble(owned, ensemble_id)
+            if dispatched:
+                return {
+                    "ensemble_id": ensemble_id,
+                    "name": base_name,
+                    "description": description,
+                    "topic": topic,
+                    "status": "researching",
+                    "spec": ensemble_spec.describe(cells),
+                    "members": [],
+                    "failed": [],
+                }
+            # No research function configured — the local path. Research inline, then fall
+            # through to the ordinary fan-out below. A long-lived process can await it.
+            logger.info(
+                "No research function configured, so ensemble %s researches inline before "
+                "fanning out.", ensemble_id,
+            )
+            await research_state.research_ensemble(owned, ensemble_id, owner_sub=owner_sub)
 
         started: List[Dict[str, Any]] = []
         failed: List[Dict[str, Any]] = []
@@ -521,6 +588,96 @@ class RunManager:
             "members": started,
             "failed": failed,
         }
+
+    async def fan_out_ensemble(
+        self, ensemble_id: str, *, owner_sub: str, groups: Optional[Sequence[str]] = None,
+    ) -> Dict[str, Any]:
+        """Create and start an ensemble's members from its PARENT ROW alone.
+
+        The other half of `create_ensemble` when research is on: the parent is written first, the
+        single research pass runs, and then this creates the runs whose ids the parent already
+        listed (PERSONA-RESEARCH.md §6).
+
+        **From the row, not from a remembered request.** This runs in the research worker, which
+        has an ensemble id and nothing else — which is exactly why the parent carries `cast_json`
+        and `base_config_json`. Reconstructing rather than passing the request through an async
+        Lambda payload also keeps the 256 KB invoke limit out of it: a cast with attached document
+        text is easily larger than that.
+
+        Idempotent on the member runs that already exist, so a redispatch after a partial fan-out
+        finishes the job instead of doubling it.
+        """
+        from matrix_studio import ensemble_spec
+
+        owned = self.db.for_owner(owner_sub)
+        parent = await owned.get_ensemble(ensemble_id)
+        if parent is None:
+            raise ValueError(f"ensemble {ensemble_id!r} does not exist")
+
+        base_config = json.loads(parent.get("base_config_json") or "{}")
+        cast = json.loads(parent.get("cast_json") or "[]")
+        planned = json.loads(parent.get("members_json") or "[]")
+        cells = ensemble_spec.cells_from(json.loads(parent.get("spec_json") or "[]"))
+        members = ensemble_spec.plan(base_config, cells)
+
+        base_name = str(parent.get("name") or "")
+        description = parent.get("description")
+        request = {
+            "topic": parent.get("topic"),
+            "cast": cast,
+            "config": base_config,
+            # The per-run model lives in the base config (`create_run` puts it there), so it
+            # travels with the row and does not need a separate field.
+            "model": base_config.get("model"),
+        }
+
+        started: List[Dict[str, Any]] = []
+        failed: List[Dict[str, Any]] = []
+        by_key = {(m.cell, m.index): m for m in members}
+        for row in planned:
+            member = by_key.get((row.get("cell"), row.get("index")))
+            if member is None:
+                # The spec and the member list disagree, which should be impossible — both are
+                # written in the same transaction. Reported rather than guessed at, so the
+                # denominator in a report stays honest.
+                failed.append({**row, "error": "no planned member matches this cell and index"})
+                continue
+            if await owned.get_run(str(row["run_id"])) is not None:
+                # Already created by an earlier dispatch. Counted as started so the parent's
+                # status reflects reality.
+                started.append({**row, "name": None})
+                continue
+            member_request = dict(request)
+            member_request["config"] = member.config
+            member_request["name"] = member.name_for(base_name)
+            member_request["description"] = description
+            try:
+                created = await self.create_run(
+                    member_request,
+                    owner_sub=owner_sub,
+                    groups=groups,
+                    run_id=str(row["run_id"]),
+                    ensemble_id=ensemble_id,
+                    ensemble_cell=str(member.cell),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception(
+                    "Ensemble %s member %s/%s failed to start after research",
+                    ensemble_id, member.cell, member.index,
+                )
+                failed.append({**row, "error": str(exc)})
+                continue
+            started.append({**row, "name": created.get("name")})
+            stagger = _ensemble_stagger()
+            if stagger:
+                await asyncio.sleep(stagger)
+
+        status = "running" if started else "failed"
+        await owned.update_ensemble(ensemble_id, status=status, owner_sub=owner_sub)
+        logger.info("Ensemble %s fanned out after research: %d started, %d failed",
+                    ensemble_id, len(started), len(failed))
+        return {"ensemble_id": ensemble_id, "status": status,
+                "members": started, "failed": failed}
 
     async def create_branch(
         self,

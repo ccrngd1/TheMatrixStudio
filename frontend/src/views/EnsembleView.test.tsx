@@ -71,6 +71,7 @@ function detail(over: Record<string, unknown> = {}) {
     members: [member('r1', 'base', 1), member('r2', 'base', 2)],
     cells: [{ cell: 'base', declared: 2, complete: 2, settled: 2 }],
     report_ready: true,
+    research: null,
     ...over,
   }
 }
@@ -333,5 +334,62 @@ describe('EnsembleView', () => {
     render(<EnsembleView ensembleId="e1" onBack={() => {}} onOpenRun={() => {}} />)
 
     await waitFor(() => expect(screen.getByText(/network down/)).toBeInTheDocument())
+  })
+})
+
+// PERSONA-RESEARCH.md §6: an ensemble researches ONCE, before its members exist, and every
+// member binds the same collections. Live search per member would give replicates different
+// inputs, and `ENSEMBLE-CONVERSATIONS.md` §2 rests on the opposite — same config, same brief, so
+// divergence is evidence about the BRIEF. That is why the record belongs on the parent and why
+// the view says "once" out loud rather than leaving a reader to assume it.
+describe('EnsembleView — the single research pass', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('shows the parent record and says every conversation read one corpus', async () => {
+    mocked.getEnsemble.mockResolvedValue(
+      detail({
+        research: {
+          status: 'researched',
+          provider: 'tavily',
+          cost_usd: 0.2581,
+          scopes: [{ scope: 'shared', documents: 20, controlling: 4, embedded: 710,
+                     kb_id: 'kb1' }],
+        },
+      }),
+    )
+    render(<EnsembleView ensembleId="e1" onBack={vi.fn()} onOpenRun={vi.fn()} />)
+
+    expect(await screen.findByText('Researched')).toBeInTheDocument()
+    // The claim that makes the members replicates. Without it a reader cannot tell whether
+    // each conversation searched for itself, which would make any difference between them
+    // uninterpretable.
+    expect(screen.getByText(/every one of them read this same corpus/)).toBeInTheDocument()
+  })
+
+  it('renders no research section for an ensemble that did not research', async () => {
+    mocked.getEnsemble.mockResolvedValue(detail())
+    render(<EnsembleView ensembleId="e1" onBack={vi.fn()} onOpenRun={vi.fn()} />)
+
+    await screen.findByText(/renewal renewal/)
+    expect(screen.queryByText(/Pre-conversation research/)).not.toBeInTheDocument()
+  })
+
+  it('explains the window where the parent exists and its members do not yet', async () => {
+    // Research runs BEFORE the members are created, so for a few minutes the parent lists run
+    // ids that do not exist. An empty list is what a dead fan-out looks like too, so the state
+    // has to be named.
+    mocked.getEnsemble.mockResolvedValue(
+      detail({
+        status: 'researching',
+        members: [],
+        cells: [{ cell: 'base', declared: 2, complete: 0, settled: 0 }],
+        report_ready: false,
+        research: null,
+      }),
+    )
+    render(<EnsembleView ensembleId="e1" onBack={vi.fn()} onOpenRun={vi.fn()} />)
+
+    expect(await screen.findByText(/Researching the subject first/)).toBeInTheDocument()
+    expect(screen.getByText(/nothing is lost if you navigate away/)).toBeInTheDocument()
   })
 })

@@ -11,6 +11,7 @@ import type {
   KbGrant,
   KnowledgeBase,
   KnowledgeBaseDetail,
+  ResearchRecord,
   RunDetail,
   RunSummary,
   SimEvent,
@@ -293,6 +294,16 @@ export interface EnsembleDetail extends EnsembleSummary {
    * is true and `has_report` is false. Poll `has_report` / `report_error`.
    */
   report_ready: boolean
+  /**
+   * The account of the ONE research pass, from the parent row. PERSONA-RESEARCH.md §6.
+   *
+   * On the parent rather than per member on purpose: the whole claim is that a single pass fed
+   * N conversations, so every replicate read the same corpus. A per-member record would say N
+   * passes happened, which would mean the members were not replicates at all.
+   *
+   * Null for every ensemble that did not research.
+   */
+  research: ResearchRecord | null
 }
 
 export interface CreateEnsembleResponse {

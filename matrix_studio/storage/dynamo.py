@@ -191,6 +191,25 @@ _ENSEMBLE_FIELDS = (
     # usable runs is the minimum" are different states, and only one of them is worth
     # retrying.
     "report_error",
+    # The cast, so the parent is SELF-SUFFICIENT. PERSONA-RESEARCH.md §6 has an ensemble
+    # research once before its members exist and then fan out — and both halves run in a
+    # worker that has only this row. Without the cast here, research could not build a
+    # per-persona corpus and the fan-out could not create a member.
+    #
+    # It also removes a latent gap: the parent already recorded the topic, the spec and the
+    # base config, so the one thing missing was the one thing that says WHO talks.
+    "cast_json",
+    # What the single pre-fan-out research pass managed, in the same shape a run's
+    # `research_json` uses (`research_state._record`). On the PARENT, because §6's whole
+    # point is that there is one pass for N members — a copy per member would imply N
+    # passes, which is the thing that would make replicates stop being replicates.
+    "research_json",
+    # The creator's VERIFIED Cognito groups, for the same reason a run row carries them and
+    # with one extra: when research is on, an ensemble's members are created by a WORKER,
+    # minutes after the request, where no JWT exists. Without this the members would be made
+    # with no group membership and a knowledge base granted to a group would list in the API
+    # and retrieve nothing for the whole fan-out.
+    "groups_json",
 )
 
 #: Ceiling on a stored ensemble report. A DynamoDB item is capped at 400 KB in total, and
@@ -1436,6 +1455,9 @@ class DynamoStorage:
         members: Sequence[Dict[str, Any]],
         *,
         base_config: Optional[Dict[str, Any]] = None,
+        cast: Optional[Sequence[Dict[str, Any]]] = None,
+        status: str = "pending",
+        groups: Optional[Sequence[str]] = None,
         name: Optional[str] = None,
         description: Optional[str] = None,
         slug: Optional[str] = None,
@@ -1466,13 +1488,18 @@ class DynamoStorage:
             "description": description,
             "slug": slug or name,
             # `pending` until a member starts, matching a run's own first status so the two
-            # read the same way in a UI.
-            "status": "pending",
+            # read the same way in a UI. An ensemble that researches first is written
+            # `researching` instead, because a parent with no members yet and no explanation
+            # is indistinguishable from a fan-out that died.
+            "status": status,
             "created_at": now,
             "completed_at": None,
             "spec_json": json.dumps(list(spec)),
             "base_config_json": json.dumps(base_config or {}),
             "members_json": json.dumps(list(members)),
+            "cast_json": json.dumps(list(cast or [])),
+            "groups_json": json.dumps(list(groups)) if groups else None,
+            "research_json": None,
             "report_json": None,
             "report_generated_at": None,
             "report_cost_usd": None,
@@ -1524,6 +1551,7 @@ class DynamoStorage:
         report: Optional[Dict[str, Any]] = None,
         report_cost_usd: Optional[float] = None,
         report_error: Optional[str] = None,
+        research: Optional[Dict[str, Any]] = None,
         owner_sub: Optional[str] = None,
     ) -> None:
         """Set whichever of these were supplied, leaving the rest untouched.
@@ -1552,6 +1580,10 @@ class DynamoStorage:
             sets["report_generated_at"] = int(time.time())
         if report_cost_usd is not None:
             sets["report_cost_usd"] = report_cost_usd
+        if research is not None:
+            # No size guard, unlike the report: the record is counts per scope, bounded by the
+            # size of the cast by construction. See `research_state._record`.
+            sets["research_json"] = json.dumps(research)
 
         removes: List[str] = []
         if report_error is not None:
