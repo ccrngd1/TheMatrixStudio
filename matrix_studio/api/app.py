@@ -1636,6 +1636,116 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             if tmp_path is not None:
                 tmp_path.unlink(missing_ok=True)
 
+    #: Chunks shown either side of the cited one when only passages are available (a shared
+    #: collection). One is enough to read a passage in context without reconstructing the source.
+    SOURCE_CONTEXT_CHUNKS = 1
+
+    @app.get("/api/runs/{ref}/sources/{document_id}")
+    async def get_run_source(
+        ref: str,
+        document_id: str,
+        ordinal: Optional[int] = Query(default=None, ge=0),
+        user: str = Depends(current_user),
+        groups: List[str] = Depends(current_groups),
+    ) -> Dict[str, Any]:
+        """The source behind a passage a turn retrieved — so a human can read what the persona read.
+
+        A turn's `document.retrieved` event records which passage was used (document, ordinal,
+        title, score) but not its text, so until now a reader could see THAT a persona drew on
+        "Iowa Admin Code Ch. 811 #4" and not what it says — and could not check whether the persona
+        used it fairly. Research made that worse: a pass ingests a hundred sources nobody chose.
+
+        ## Scoped to the RUN, not to the document
+
+        The route resolves a document only if this run could have retrieved it: an attachment of
+        this run, or a document in a collection this run binds (at either level) that the caller
+        may read. Two reasons. It works for events recorded before passages carried a `kb_id`,
+        because the run's bindings are enough to place the document. And it is not a way to open
+        arbitrary documents by id: anything outside the run's reach is a 404, the same answer as a
+        document that does not exist, so it says nothing about what exists elsewhere.
+
+        ## Full text only for what the caller OWNS
+
+        Write permission is ownership alone (Phase 6), and reading the S3 body is the same
+        boundary: a KB document's body lives under its owner's prefix, and a grantee's credentials
+        cannot fetch it. That is PHASE6-KB-DESIGN.md §8.2 on purpose — *a grantee retrieves
+        passages; they do not download the source file* — and this route does not widen it with
+        elevated credentials. A grantee gets the cited passage and its neighbours from the vector
+        index, which is exactly what a turn already showed them, plus a plain statement that the
+        full source belongs to another account.
+        """
+        from matrix_studio.bindings import bound_kbs, _cast
+        from matrix_studio.documents import chunk_text
+
+        owned = db.for_owner(user)
+        run = await owned.get_run_by_ref(ref)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+
+        not_found = HTTPException(status_code=404, detail="Source not found for this run")
+        doc = await owned.find_document(document_id)
+        if not doc:
+            raise not_found
+
+        kb_id = doc.get("kb_id")
+        kb: Optional[Dict[str, Any]] = None
+        if kb_id:
+            reachable = set(bound_kbs(run, None))
+            for member in _cast(run):
+                reachable.update(bound_kbs(run, str(member.get("name") or "")))
+            if kb_id not in reachable:
+                raise not_found
+            if not await owned.may_read_kb(kb_id, user, groups):
+                # A binding the caller can no longer read — a revoked grant. 404 rather than 403,
+                # matching every KB route: "exists but not yours" is information about who can.
+                raise not_found
+            kb = await owned.get_knowledge_base(kb_id)
+        elif str(doc.get("run_id") or "") != str(run["id"]):
+            raise not_found
+
+        owns = kb is None or str((kb or {}).get("owner_sub") or "") == user
+        source_path = str(doc.get("source_path") or "")
+        out: Dict[str, Any] = {
+            "document_id": document_id,
+            "title": doc.get("title") or document_id,
+            "scope": "knowledge_base" if kb_id else "run",
+            "kb_id": kb_id,
+            "kb_name": (kb or {}).get("name"),
+            "owned": owns,
+            "origin": doc.get("origin"),
+            "authority": doc.get("authority"),
+            # A researched document's `source_path` is the page it was read from, which is the
+            # link a reader wants in order to check the original. An upload's is a filename.
+            "source_url": source_path if source_path.startswith(("https://", "http://")) else None,
+            "cited_ordinal": ordinal,
+            "chunk_count": doc.get("chunk_count"),
+        }
+
+        if owns:
+            text = await owned.document_text(document_id)
+            # Re-chunked with the same function retrieval uses, so ordinal N here is ordinal N in
+            # the event — which is what lets the cited passage be highlighted rather than guessed.
+            out["full"] = True
+            # Each chunk's OWN ordinal, not an enumeration: it is the value the event recorded, and
+            # `kb_chunks_missing_vectors` keys vectors on the same attribute.
+            out["chunks"] = [
+                {"ordinal": c.ordinal, "text": c.content} for c in chunk_text(text)
+            ] if text else []
+            return out
+
+        # A grantee: the cited passage and its neighbours, from the vector index.
+        centre = ordinal if ordinal is not None else 0
+        wanted = range(max(0, centre - SOURCE_CONTEXT_CHUNKS), centre + SOURCE_CONTEXT_CHUNKS + 1)
+        passages = await owned.kb_passages(kb_id, document_id, list(wanted))
+        out["full"] = False
+        out["chunks"] = [{"ordinal": o, "text": passages[o]} for o in sorted(passages)]
+        out["notice"] = (
+            "This collection is shared with you, so you can read the passages a conversation "
+            "retrieved but not the whole source — it belongs to another account. Shown: the cited "
+            "passage and the passages either side of it."
+        )
+        return out
+
     @app.get("/api/runs/{ref}/setup")
     async def get_run_setup(ref: str, user: str = Depends(current_user)) -> Dict[str, Any]:
         """This run's setup, shaped as a create-run request body.

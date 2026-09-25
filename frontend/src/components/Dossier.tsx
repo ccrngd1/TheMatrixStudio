@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { api, avatarUrl } from '../api'
 import type { AgentDossier, AgentView, FeedMessage, TurnTrace } from '../types'
 import { AvatarBadge } from './AvatarBadge'
+import { SourceViewer } from './SourceViewer'
 
 interface Props {
   agent: AgentView
@@ -13,6 +14,8 @@ interface Props {
 
 export function Dossier({ agent, feed, runId, onClose }: Props) {
   const messages = feed.filter((m) => m.speaker === agent.name)
+  // The source a reader has opened from the passages list, if any.
+  const [openSource, setOpenSource] = useState<{ documentId: string; ordinal: number } | null>(null)
   const [dossier, setDossier] = useState<AgentDossier | null>(null)
   const [loaded, setLoaded] = useState(false)
   const [regeneratingAvatar, setRegeneratingAvatar] = useState(false)
@@ -81,6 +84,14 @@ export function Dossier({ agent, feed, runId, onClose }: Props) {
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-black/50" onClick={onClose}>
+      {openSource && (
+        <SourceViewer
+          runId={runId}
+          documentId={openSource.documentId}
+          ordinal={openSource.ordinal}
+          onClose={() => setOpenSource(null)}
+        />
+      )}
       <div
         className="h-full w-full max-w-md overflow-y-auto border-l border-matrix-border bg-matrix-panel p-5"
         onClick={(e) => e.stopPropagation()}
@@ -225,7 +236,15 @@ export function Dossier({ agent, feed, runId, onClose }: Props) {
                   <ul className="mt-1 list-inside list-disc text-xs text-slate-400">
                     {r.passages.map((p) => (
                       <li key={p.chunk_id}>
-                        {p.title} #{p.ordinal}{' '}
+                        {/* Opens the source itself, so a reader can check what the persona was
+                            actually given rather than trust a title and a score. */}
+                        <button
+                          onClick={() => setOpenSource({ documentId: p.document_id, ordinal: p.ordinal })}
+                          className="text-left text-matrix-accent hover:underline"
+                          title="Read this source"
+                        >
+                          {p.title} #{p.ordinal}
+                        </button>{' '}
                         {/* Controlling authority is called out because it is the tier the
                             floor reserves a slot for: seeing it here is how an operator knows
                             the reservation did something. */}

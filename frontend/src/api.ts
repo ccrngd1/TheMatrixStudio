@@ -156,6 +156,27 @@ export interface CreateRunBody {
   summary?: { enabled: boolean; fields?: string[]; focus?: string }
 }
 
+/** One source as `GET /api/runs/{ref}/sources/{document_id}` returns it. */
+export interface RunSource {
+  document_id: string
+  title: string
+  scope: 'knowledge_base' | 'run'
+  kb_id: string | null
+  kb_name: string | null
+  /** Whether the caller owns it — and therefore whether `chunks` is the WHOLE source. */
+  owned: boolean
+  full: boolean
+  origin: string | null
+  authority: string | null
+  /** The page a researched document was read from, so a reader can check the original. */
+  source_url: string | null
+  cited_ordinal: number | null
+  chunk_count: number | null
+  chunks: { ordinal: number; text: string }[]
+  /** Present when `full` is false, saying why only passages are shown. */
+  notice?: string
+}
+
 export interface CreateRunResponse {
   run_id: string
   name: string
@@ -553,6 +574,17 @@ export const api = {
 
   // -------- Phase 2c: introspection (read-only) -------- //
 
+  /**
+   * The source behind a passage a turn retrieved. Scoped to the RUN: it opens only documents this
+   * conversation could have retrieved, and a 404 is the same answer for "not reachable from here"
+   * as for "does not exist". Full text only for sources you own; a collection shared with you
+   * returns the cited passage and its neighbours (PHASE6-KB-DESIGN.md §8.2).
+   */
+  getRunSource: (ref: string, documentId: string, ordinal?: number) =>
+    jsonFetch<RunSource>(
+      `/api/runs/${encodeURIComponent(ref)}/sources/${encodeURIComponent(documentId)}` +
+        (ordinal !== undefined ? `?ordinal=${ordinal}` : ''),
+    ),
   getDossier: (ref: string, name: string) =>
     jsonFetch<AgentDossier>(
       `/api/runs/${encodeURIComponent(ref)}/agents/${encodeURIComponent(name)}/dossier`,

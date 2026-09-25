@@ -3113,6 +3113,57 @@ class DynamoStorage:
             if not token:
                 return keys
 
+    async def find_document(self, document_id: str) -> Optional[Dict[str, Any]]:
+        """A document's row by id, run-scoped or KB, with NO authorisation check.
+
+        The public name for `_find_document`, for the one caller that needs to know WHERE a
+        document lives before deciding whether the caller may see it — the source viewer, which
+        makes that decision itself against the run's bindings. Same contract as `get_run`: a
+        caller serving a user must authorise what it returns.
+        """
+        return await self._find_document(document_id)
+
+    async def kb_passages(
+        self, kb_id: str, document_id: str, ordinals: Sequence[int]
+    ) -> Dict[int, str]:
+        """Passage text for these chunks of a KB document, read from the VECTOR INDEX.
+
+        This is how a GRANTEE sees a source. A KB document's S3 body lives under the owner's
+        prefix and tenant object ARNs are scoped to `…/{sub}/*`, so a grantee's credentials cannot
+        read it — deliberately (PHASE6-KB-DESIGN.md §8.2: a grantee retrieves passages, they do
+        not download the source file). The passage text travels in the vector's metadata for that
+        same reason, and `GetVectors` by key is a read of exactly what a k-NN query already
+        returns to them. So a shared collection can show the cited passage and its neighbours,
+        and nothing it would not have shown a turn anyway.
+
+        Missing ordinals are simply absent from the result: a chunk before the first or after the
+        last is not an error, it is the edge of the document.
+        """
+        bucket = os.environ.get("VECTOR_BUCKET", "")
+        if not bucket or not ordinals:
+            return {}
+        from matrix_studio.storage.vectors import kb_index_name
+
+        index = kb_index_name(kb_id, self.table_prefix)
+        keys = [self._vector_key(document_id, int(o)) for o in ordinals if int(o) >= 0]
+        client = self._vectors_client()
+
+        def _get() -> Dict[int, str]:
+            got = client.get_vectors(
+                vectorBucketName=bucket, indexName=index, keys=keys, returnMetadata=True,
+            )
+            out: Dict[int, str] = {}
+            for v in got.get("vectors") or []:
+                meta = v.get("metadata") or {}
+                try:
+                    ordinal = int(str(v.get("key", "")).rsplit(":", 1)[1])
+                except (IndexError, ValueError):
+                    continue
+                out[ordinal] = str(meta.get("text") or "")
+            return out
+
+        return await asyncio.to_thread(_get)
+
     async def _find_document(self, document_id: str) -> Optional[Dict[str, Any]]:
         """Locate a document by its own id via the GSI (key design §5)."""
         found = await self._call(
