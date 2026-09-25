@@ -728,3 +728,51 @@ async def test_the_floor_never_evicts_a_collections_only_passage(db, fake):
     docs = [p.document_id for p in passages]
     assert "d-ada" in docs, f"the persona's only passage was evicted: {docs}"
     assert "d-act" in docs, f"the statute did not get its slot: {docs}"
+
+
+# --------------------------------------------------------------------------- #
+# The standing query (§9.5), through the whole retrieval path
+# --------------------------------------------------------------------------- #
+
+
+async def test_the_standing_query_surfaces_what_the_conversation_never_asks_for(db, fake):
+    """§9.4 measured it: a negative for exactly the authority a persona demands ranked below #50 on
+    most real turns, because the turn's query is conversation-shaped. Here the negative sits on an
+    axis the conversation query never points at, and only the standing query can reach it."""
+    kb = await db.create_knowledge_base("researched", owner_sub=TEST_OWNER)
+    index = vecmod.kb_index_name(kb["id"], db.table_prefix)
+    for doc_id, ordinal, text, axis, title in (
+        ("d-talk", 0, "what the clinic said", (1.0, 0.0), "talk.md"),
+        ("d-talk", 1, "more talk", (0.99, 0.14), "talk.md"),
+        ("d-talk", 2, "still talk", (0.98, 0.20), "talk.md"),
+        ("d-neg", 0, "no statute found", (0.0, 1.0), "No controlling authority found — statute"),
+    ):
+        fake.add(index, doc_id, ordinal, text, unit_vector(*axis),
+                 kb_id=kb["id"], owner_sub=TEST_OWNER, title=title)
+    await _run(db, config={"knowledge_bases": [kb["id"]]})
+
+    # The conversation embeds on axis 1; the standing text embeds on axis 2.
+    vectors = {"standing": unit_vector(0.0, 1.0)}
+
+    async def embed(model=None, input=None, **kw):
+        v = vectors["standing"] if "STANDING" in str(input) else unit_vector(1.0, 0.0)
+        return type("R", (), {"data": [{"embedding": list(v)}],
+                              "usage": type("U", (), {"prompt_tokens": 1})()})()
+
+    with patch("litellm.aembedding", side_effect=embed), \
+         patch("litellm.completion_cost", return_value=0.0):
+        async def go(standing):
+            out, *_ = await retrieve_for_turn(
+                db, "run-1", "Ada", topic="t",
+                conversation=[{"content": "what did the clinic say"}],
+                k=3, max_chars=4000, mode="vector", embedding_model=MODEL,
+                min_similarity=0.0, standing_text=standing,
+            )
+            return [p.document_id for p in out]
+
+        without = await go("")
+        with_standing = await go("STANDING a statute defining plans as regulated-only")
+
+    assert "d-neg" not in without, "premise: the conversation query alone never reaches it"
+    assert "d-neg" in with_standing
+    assert len(with_standing) == 3, "k must not change — the standing query spends no prompt budget"

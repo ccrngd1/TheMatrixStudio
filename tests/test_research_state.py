@@ -788,3 +788,42 @@ def test_a_passage_reports_whether_a_human_chose_it():
     # these fields, and this function serves every retrieval mode.
     assert mine.is_researched is False
     assert mine.origin == "" and mine.authority == ""
+
+
+# --------------------------------------------------------------------------- #
+# The standing query (§9.5)
+# --------------------------------------------------------------------------- #
+
+
+def test_the_standing_query_is_built_from_shift_conditions_and_NOT_positions():
+    """A query from the position would pull material SUPPORTING it — the confirmation engine §2.2
+    exists to prevent. The shift conditions are by construction the evidence that could move them."""
+    from matrix_studio.retrieval import standing_query_text
+
+    structured = {"viewpoints": [
+        {"position": "Plan renewal is fine without an exam",
+         "evidence_that_shifts": ["a state statute defining specialty plans as regulated-only"]},
+        {"position": "Volume matters", "evidence_that_shifts": ["a board enforcement action"]},
+    ]}
+    text = standing_query_text(structured)
+    assert "statute defining specialty plans" in text
+    assert "board enforcement action" in text
+    assert "fine without an exam" not in text
+    assert "Volume matters" not in text
+
+
+def test_no_structured_block_means_no_standing_query():
+    from matrix_studio.retrieval import standing_query_text
+
+    assert standing_query_text(None) == ""
+    assert standing_query_text({"viewpoints": [{"position": "x"}]}) == ""
+
+
+def test_the_flag_defaults_off():
+    """It changes what reaches a prompt and arrived with its own pre-registered measurement."""
+    from matrix_studio.state import RetrievalConfig
+
+    assert RetrievalConfig().standing_query is False
+    assert RetrievalConfig.from_config(
+        {"retrieval": {"enabled": True, "standing_query": True}}
+    ).standing_query is True
