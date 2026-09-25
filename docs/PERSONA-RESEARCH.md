@@ -668,7 +668,7 @@ Nothing about the bar moves because the mechanism did.
 **A mechanism check before the paid run.** The standing query will first be replayed offline against
 run 2's research corpus, using run 2's recorded turns. That run is void, so this measures the
 mechanism without touching an outcome. **If the replay does not put a per-query negative into a
-k=3 selection on a meaningful share of turns, run 3 is not launched** — a second void would cost
+k=3 selection on a meaningful share of turns, run 3 is not launched** — "meaningful" fixed before the replay ran as R1's own bar: a per-query negative in the final selection in ≥ 3 of the 5 replayed member runs — a second void would cost
 ~$10 to learn what a free replay already said.
 
 **Guardrail 4 is the one to watch.** The standing query pulls toward material about a persona's
