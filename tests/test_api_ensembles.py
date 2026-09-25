@@ -22,6 +22,7 @@ The engine is faked throughout, as everywhere else in the API tests: the real en
 carries a Bedrock key and a real fan-out would make five billable runs.
 """
 
+import asyncio
 import json
 import time
 from unittest.mock import patch
@@ -279,24 +280,6 @@ class TestRefusals:
 
     def test_an_unknown_ensemble_is_404(self, client):
         assert client.get("/api/ensembles/nope").status_code == 404
-
-    def test_research_on_an_ensemble_is_refused_rather_than_ignored(self, client):
-        """PERSONA-RESEARCH.md §6: an ensemble must research ONCE, before its members exist.
-
-        That pass is §11 step 6 and is not built. Both alternatives to refusing are worse:
-        researching per member gives replicates different inputs, which makes divergence
-        unattributable and is exactly what ENSEMBLE-CONVERSATIONS.md §2 rests on not
-        happening; and accepting the flag while ignoring it hands the operator five
-        conversations they believe are researched.
-
-        Delete this test with the refusal, when step 6 lands.
-        """
-        res = _create(client, config={"research": {"enabled": True}})
-        assert res.status_code == 422
-        assert "research once" in res.json()["detail"]
-        # And nothing was created — no parent, no members, no collections.
-        assert client.get("/api/ensembles").json()["ensembles"] == []
-        assert client.get("/api/knowledge-bases").json()["knowledge_bases"] == []
 
     def test_research_on_a_SINGLE_run_is_accepted(self, client):
         """The positive half. Without it the refusal above could be passing because the
@@ -583,3 +566,103 @@ class TestTheReportRoute:
 
     def test_an_unknown_ensemble_is_404(self, client):
         assert client.post("/api/ensembles/nope/report").status_code == 404
+
+
+# --------------------------------------------------------------------------- #
+# Research: once for the whole fan-out (PERSONA-RESEARCH.md §6)
+# --------------------------------------------------------------------------- #
+
+
+class TestAnEnsembleResearchesOnce:
+    """§6 is the whole point of these: live search per member would give replicates DIFFERENT
+    inputs, and `ENSEMBLE-CONVERSATIONS.md` §2 rests on the opposite — same config, same brief,
+    so divergence is evidence about the brief. Independent searches make divergence
+    unattributable, which destroys the only thing an ensemble is for.
+
+    So the assertions are about identity, not about search: one pass, one record on the PARENT,
+    and every member bound to the SAME collections. A count of searches is not directly
+    observable; "all five members read one corpus" is, and it is the property that matters.
+    """
+
+    @pytest.fixture
+    def researched(self, client, monkeypatch):
+        """Fan out two members with research on, with the searching faked.
+
+        The pass itself is faked rather than mocked out entirely, so the path that allocates
+        targets, records on the parent and fans out is the real one.
+        """
+        from matrix_studio import research_state
+
+        calls = []
+
+        async def fake_definition(db, *, topic, cast, settings, owner_sub, label=""):
+            calls.append({"topic": topic, "cast": [c.get("name") for c in cast],
+                          "label": label})
+            return research_state._record(
+                research_state.RESEARCHED, batch="b1", provider="fake", cost_usd=0.25,
+                scopes=[{"scope": "shared", "documents": 4, "controlling": 1,
+                         "kb_id": settings.target_for(None)}],
+            )
+
+        monkeypatch.setattr(research_state, "research_definition", fake_definition)
+        res = _create(client, config={"research": {"enabled": True}}, cells=[
+            {"label": "base", "n": 2},
+        ])
+        assert res.status_code == 201, res.text
+        return res.json(), calls
+
+    def test_the_pass_runs_exactly_once_for_the_whole_fan_out(self, researched):
+        _body, calls = researched
+        assert len(calls) == 1, f"research ran {len(calls)} times; §6 requires once"
+        assert calls[0]["label"].startswith("ensemble ")
+
+    def test_every_member_binds_the_SAME_collections(self, client, researched):
+        # The property §6 exists to guarantee. Two members reading different corpora are not
+        # replicates, and any difference between them would be uninterpretable.
+        body, _calls = researched
+        detail = client.get(f"/api/ensembles/{body['ensemble_id']}").json()
+        members = [m for m in detail["members"] if m.get("run")]
+        assert len(members) == 2, detail["members"]
+        bound = [
+            _member_config(client, m["run_id"]).get("knowledge_bases") or []
+            for m in members
+        ]
+        assert bound[0] == bound[1], f"members bound different collections: {bound}"
+        assert bound[0], "members were bound no collections, so research reached no turn"
+
+    def test_the_record_is_on_the_PARENT_not_copied_per_member(self, client, researched):
+        # A copy per member would say N passes happened, which is the one thing that must not
+        # be true. The parent is where "one pass for N members" can be stated.
+        body, _calls = researched
+        detail = client.get(f"/api/ensembles/{body['ensemble_id']}").json()
+        assert detail["research"]["status"] == "researched"
+        assert detail["research"]["cost_usd"] == 0.25
+        for m in [m for m in detail["members"] if m.get("run")]:
+            run = client.get(f"/api/runs/{m['run_id']}").json()
+            # A member SKIPS its own pass, and says so rather than staying silent.
+            assert run["research"] is None or run["research"]["status"] == "skipped"
+
+    def test_a_member_never_researches_for_itself(self, client, researched):
+        from matrix_studio import research_state
+
+        body, _calls = researched
+        detail = client.get(f"/api/ensembles/{body['ensemble_id']}").json()
+        run_id = next(m["run_id"] for m in detail["members"] if m.get("run"))
+        # Asserted at the state's own entry point, not only through the API: this guard is what
+        # stops a member's Research state from searching again on a redeploy or a resume.
+        from matrix_studio.storage import Database
+        from matrix_studio.tenancy import LOCAL_USER_SUB
+
+        async def check():
+            store = Database(); await store.connect()
+            try:
+                db = store.for_owner(LOCAL_USER_SUB)
+                return await research_state.run_research(
+                    db, run_id, owner_sub=LOCAL_USER_SUB,
+                )
+            finally:
+                await store.close()
+
+        record = asyncio.get_event_loop_policy().new_event_loop().run_until_complete(check())
+        assert record["status"] == "skipped"
+        assert "replicates stay replicates" in record["error"]

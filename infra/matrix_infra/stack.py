@@ -19,6 +19,7 @@ See `docs/AWS-SERVERLESS-ARCHITECTURE.md` for the design and
 from typing import Dict, List, Optional
 
 from aws_cdk import (
+    ArnFormat,
     CfnOutput,
     Duration,
     RemovalPolicy,
@@ -1364,6 +1365,56 @@ function handler(event) {
         self.turn_loop.grant_start_execution(self.api_lambda)
         self.api_lambda.add_environment(
             "TURN_LOOP_ARN", self.turn_loop.state_machine_arn
+        )
+
+        # The API dispatches an ensemble's single research pass, and does not wait for it.
+        #
+        # PERSONA-RESEARCH.md §6: the pass happens ONCE, before any member exists, so there is
+        # no member execution to host it — and it is minutes against API Gateway's 29-second
+        # integration timeout. So `POST /api/ensembles` writes the parent, dispatches, and
+        # answers; the worker researches and then creates the members.
+        #
+        # That means this function creates runs and starts executions, which the turn-loop
+        # workers do not. Granted here rather than by widening a shared helper, so the one
+        # worker that fans out is the only one that can.
+        #
+        # **The ARN is DERIVED, not referenced, and that is forced rather than stylistic.**
+        # `grant_start_execution` plus `state_machine_arn` would make the research function
+        # depend on the state machine, which already depends on the research function (Research
+        # is its first state). CloudFormation rejects the cycle outright:
+        #
+        #   Template is undeployable, these resources have a dependency cycle:
+        #   ApiFunctionServiceRoleDefaultPolicy -> TurnLoop -> TurnLoopRoleDefaultPolicy
+        #   -> ResearchFunction -> ResearchFunctionServiceRoleDefaultPolicy -> TurnLoop
+        #
+        # Composing the ARN from the same explicit `state_machine_name` the machine is created
+        # with introduces no reference and so no edge. Safe because that name is set by this
+        # stack rather than generated — if it ever stops being explicit, this silently grants
+        # nothing and the fan-out fails with AccessDenied, which `test_template.py` guards.
+        turn_loop_arn = Stack.of(self).format_arn(
+            service="states",
+            resource="stateMachine",
+            resource_name=f"{self.config.prefix}-turn-loop",
+            arn_format=ArnFormat.COLON_RESOURCE_NAME,
+        )
+        self.research_lambda.add_environment("TURN_LOOP_ARN", turn_loop_arn)
+        self.research_lambda.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["states:StartExecution"], resources=[turn_loop_arn],
+            )
+        )
+        self.research_lambda.grant_invoke(self.api_lambda)
+        self.api_lambda.add_environment(
+            "RESEARCH_FUNCTION", self.research_lambda.function_name
+        )
+        # No automatic retries, for the reason the report gives and one more: `research_ensemble`
+        # does not raise, so the only thing a retry could follow is a TIMEOUT — and a timed-out
+        # pass has already searched, already paid, and may already have ingested. A retry would
+        # pay twice and race the first attempt's fan-out.
+        lambda_.EventInvokeConfig(
+            self, "ResearchNoRetries",
+            function=self.research_lambda,
+            retry_attempts=0,
         )
 
         # Two callers dispatch an ensemble report, and neither one waits for it.

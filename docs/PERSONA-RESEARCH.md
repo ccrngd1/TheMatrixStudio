@@ -542,7 +542,42 @@ is recorded so curation and research stay separable, and a re-run replaces rathe
    intermediate selections; this needs a unit test reproducing that exact shape (one run-scoped
    row, three same-collection persuasive rows, one controlling at rank 6). It is the same class as
    the bug already fixed once here, so it is worth pinning rather than leaving.
-6. **The ensemble path** — research once, bind to all members (§6).
+6. **The ensemble path** — research once, bind to all members (§6). **DONE.**
+
+   The flow: `POST /api/ensembles` allocates the targets against the **base config** (fast — it
+   creates collections and searches nothing), re-plans the members so every one inherits the
+   resolved bindings, writes the parent with every member id and `status: "researching"`, and
+   dispatches. The research worker researches once, records on the parent, and **then** creates
+   the members. The route returns immediately, because a pass is minutes against API Gateway's
+   29-second ceiling.
+
+   Parent-then-members is the same property the fan-out already had: an interrupted pass leaves a
+   parent that knows what is missing, rather than orphan runs with nothing to aggregate them.
+
+   Four things this forced, none of them in the design:
+
+   - **The parent had to become self-sufficient.** Research and the fan-out both run in a worker
+     holding only an ensemble id, so the row now carries `cast_json` — without it there is no
+     per-persona corpus to build and no member to create — and `groups_json`, because members are
+     created minutes later where no JWT exists and a KB granted to a group would otherwise be
+     unsearchable for the entire fan-out.
+   - **`ensemble_spec.plan` has to run twice.** The members were planned before `knowledge_bases`
+     and `research.targets` existed on the base config, so reusing that plan would have given
+     every member a config with no bindings: research would run and no turn would query it.
+   - **A dependency cycle in the infrastructure.** Granting the worker `states:StartExecution`
+     with `grant_start_execution` makes it depend on the state machine, which already depends on
+     it (Research is its first state). CloudFormation refuses: *"Template is undeployable, these
+     resources have a dependency cycle."* The ARN is composed from the same explicit
+     `state_machine_name` instead, and a test pins that name so it cannot silently become
+     generated.
+   - **The local path bypassed the member guard**, and a test caught it. `run_research` refuses on
+     `ensemble_id`, but the local path calls `research_definition` directly — so a two-member
+     fan-out researched **three times**. The same guard now exists in both places, because one of
+     them is not a guard.
+
+   The fan-out happens **whatever the research did** (§5.2). An ensemble stuck at `researching`
+   with no members is the worst available failure: the parent lists run ids that do not exist and
+   nothing is working on them.
 7. **The §9 comparison**, 5 replicates each way.
 
 Step 1 is deliberately separable and deliberately first: if the researcher's output does not look

@@ -1026,27 +1026,13 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         cells_body = request.pop("cells", None)
         await _preflight(request, user, groups)
 
-        # PERSONA-RESEARCH.md §6 and §11 step 6: an ensemble must research ONCE, before its
-        # members exist, so every replicate searches the same corpus. That pass is not built
-        # yet, and the alternatives are both worse than a refusal: researching per member would
-        # give replicates different inputs and make divergence unattributable (which is what
-        # ENSEMBLE-CONVERSATIONS.md §2 rests on NOT happening), while accepting the flag and
-        # ignoring it would produce five conversations the operator believes are researched.
+        # PERSONA-RESEARCH.md §6 is now BUILT (§11 step 6), so research on an ensemble is
+        # accepted rather than refused. The pass happens once, before any member exists, and
+        # every member binds the same collections — see `RunManager.create_ensemble`, which
+        # allocates the targets here and dispatches the searching to the research worker.
         #
-        # Delete this when step 6 lands.
-        from matrix_studio import research_state
-
-        if research_state.settings_from(request.get("config")).enabled:
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    "Research is not yet available for ensembles. An ensemble has to research "
-                    "once, before its members are created, so that every replicate reads the "
-                    "same corpus — otherwise differences between members stop being evidence "
-                    "about the brief. Run a single conversation with research on, or run the "
-                    "ensemble without it."
-                ),
-            )
+        # The route still returns immediately: the parent is written with every member id and
+        # a `researching` status, and the members appear when the pass finishes.
 
         # `cells` omitted → replicates, nothing varied. §8: the default mode, and the
         # control every other axis is defined against.
@@ -1159,6 +1145,18 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             for m in members
         ]
         out.update(_ensemble_progress(members))
+
+        # PERSONA-RESEARCH.md §6: the account of the ONE research pass, from the parent.
+        #
+        # On the parent and not summed from the members, because §6's whole claim is that there
+        # was one pass for N conversations — a per-member record would say N, which is exactly
+        # the thing that must not be true. `None` for every ensemble that did not research.
+        out["research"] = None
+        if row.get("research_json"):
+            try:
+                out["research"] = json.loads(row["research_json"])
+            except (TypeError, json.JSONDecodeError):
+                logger.warning("Ensemble %s has an unreadable research record", ensemble_id)
         return out
 
     @app.get("/api/runs")

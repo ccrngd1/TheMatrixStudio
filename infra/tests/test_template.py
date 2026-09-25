@@ -1107,11 +1107,23 @@ def test_each_worker_may_assume_the_tenant_role(template: Template):
         assert matching, f"{name} cannot assume the tenant role"
 
 
-def test_only_the_api_may_start_an_execution(template: Template):
+def test_only_the_api_and_the_research_worker_may_start_an_execution(template: Template):
     """A worker able to start executions could fork a run's loop.
 
-    Two executions on one run id would both append to the same event log and both
-    write snapshots, which is corruption rather than duplication.
+    Two executions on one run id would both append to the same event log and both write
+    snapshots, which is corruption rather than duplication. So this is an EXACT SET, and a third
+    starter appearing here must fail and be justified rather than slip in.
+
+    **The research worker is the second one, and it is justified rather than convenient.**
+    PERSONA-RESEARCH.md §6 has an ensemble research ONCE before any member exists, so the pass
+    cannot be a state in a member's machine — there is no member yet. The worker therefore
+    creates the members and starts them, which is the fan-out `POST /api/ensembles` would have
+    done had it not been minutes long against a 29-second integration timeout.
+
+    It cannot fork an existing loop: `fan_out_ensemble` creates a run only when
+    `get_run(run_id)` returns None, so a member that already exists is skipped rather than
+    started a second time. The failure that guard prefers is a member stuck at `pending` — which
+    is visible — over two executions writing one event log, which is not.
     """
     policies = template.find_resources("AWS::IAM::Policy")
     starters = {
@@ -1119,8 +1131,41 @@ def test_only_the_api_may_start_an_execution(template: Template):
         if "states:StartExecution" in str(p["Properties"]["PolicyDocument"])
     }
     assert starters, "nothing may start the turn loop"
-    assert all("ApiFunction" in lid for lid in starters), (
-        f"something other than the API may start executions: {starters}"
+    allowed = ("ApiFunction", "ResearchFunction")
+    assert all(any(a in lid for a in allowed) for lid in starters), (
+        f"something other than the API or the research worker may start executions: {starters}"
+    )
+
+
+def test_the_research_worker_starts_executions_by_a_DERIVED_arn(template: Template):
+    """Referencing the state machine here would be a dependency cycle CloudFormation refuses.
+
+    The turn loop's first state is Research, so the machine depends on the function; granting
+    with `grant_start_execution` would make the function depend on the machine. Synth fails with
+    "Template is undeployable, these resources have a dependency cycle".
+
+    So the ARN is composed from the same explicit `state_machine_name` the machine is created
+    with. This test is what keeps that name explicit: if it ever becomes CDK-generated, the
+    composed ARN stops matching, the grant silently covers nothing, and the fan-out fails with
+    AccessDenied minutes after a research pass has already been paid for.
+    """
+    machines = template.find_resources("AWS::StepFunctions::StateMachine")
+    name = next(iter(machines.values()))["Properties"]["StateMachineName"]
+    assert name == "matrix-studio-turn-loop", (
+        f"the state machine name is not the literal the research grant composes: {name!r}"
+    )
+
+    policies = template.find_resources("AWS::IAM::Policy")
+    research = next(
+        p for lid, p in policies.items() if lid.startswith("ResearchFunctionServiceRole")
+    )
+    body = str(research["Properties"]["PolicyDocument"])
+    assert "states:StartExecution" in body
+    # The composed ARN, not a Ref/GetAtt to the machine — which is what would reintroduce
+    # the cycle.
+    assert "stateMachine:matrix-studio-turn-loop" in body, body[:400]
+    assert "TurnLoop" not in body, (
+        "the grant references the state machine construct, which is the dependency cycle"
     )
 
 
