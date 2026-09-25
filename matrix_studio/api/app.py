@@ -1636,6 +1636,60 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             if tmp_path is not None:
                 tmp_path.unlink(missing_ok=True)
 
+    def _export_response(model: Dict[str, Any], fmt: str) -> Response:
+        """A rendered export as a download. `fmt` is validated here so both routes refuse alike."""
+        from matrix_studio import export
+
+        if fmt not in export.FORMATS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"format must be one of {sorted(export.FORMATS)}; a PDF is the HTML export "
+                       "printed by the browser, which carries its own print stylesheet",
+            )
+        return Response(
+            content=export.render(model, fmt),
+            media_type=export.FORMATS[fmt],
+            headers={"Content-Disposition": f'attachment; filename="{export.filename(model, fmt)}"'},
+        )
+
+    @app.get("/api/runs/{ref}/export")
+    async def export_run(
+        ref: str,
+        format: str = Query(default="md"),  # noqa: A002 - the query parameter's public name
+        user: str = Depends(current_user),
+    ) -> Response:
+        """This conversation as Markdown or self-contained HTML — see `matrix_studio/export.py`.
+
+        Everything is read through the caller's own partition, so this can only ever export the
+        caller's run; a run they cannot see is a 404, as on every `{ref}` route.
+        """
+        from matrix_studio import export
+
+        owned = db.for_owner(user)
+        run = await owned.get_run_by_ref(ref)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        return _export_response(await export.run_model(owned, run), format)
+
+    @app.get("/api/ensembles/{ensemble_id}/export")
+    async def export_ensemble(
+        ensemble_id: str,
+        format: str = Query(default="md"),  # noqa: A002
+        user: str = Depends(current_user),
+    ) -> Response:
+        """An ensemble — its groups, members, per-group claims and report — as Markdown or HTML.
+
+        The stored report is exported as it is; nothing is regenerated, so an export costs nothing
+        and says exactly what the ensemble view says.
+        """
+        from matrix_studio import export
+
+        owned = db.for_owner(user)
+        parent = await owned.get_ensemble(ensemble_id)
+        if not parent:
+            raise HTTPException(status_code=404, detail="Ensemble not found")
+        return _export_response(await export.ensemble_model(owned, parent), format)
+
     #: Chunks shown either side of the cited one when only passages are available (a shared
     #: collection). One is enough to read a passage in context without reconstructing the source.
     SOURCE_CONTEXT_CHUNKS = 1

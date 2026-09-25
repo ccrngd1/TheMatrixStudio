@@ -77,6 +77,32 @@ async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>
 }
 
+/**
+ * An authenticated GET that returns the body as TEXT — for exports, which are files rather than
+ * JSON. Same token attachment as `jsonFetch`, so a download cannot be written that forgets it.
+ */
+async function textFetch(url: string): Promise<string> {
+  const headers: Record<string, string> = {}
+  if (tokenProvider) {
+    const token = await tokenProvider()
+    if (token) headers.Authorization = `Bearer ${token}`
+  }
+  const res = await fetch(url, { headers })
+  if (res.status === 401 && onUnauthorized) onUnauthorized()
+  if (!res.ok) {
+    let detail = res.statusText
+    try {
+      detail = (await res.json()).detail || detail
+    } catch {
+      /* ignore */
+    }
+    throw new Error(`${res.status}: ${detail}`)
+  }
+  return res.text()
+}
+
+export type ExportFormat = 'md' | 'html'
+
 /** One drafted persona from the wizard, in the same shape `createRun` accepts. */
 export interface SuggestedPersona {
   name: string
@@ -584,6 +610,11 @@ export const api = {
     jsonFetch<RunSource>(
       `/api/runs/${encodeURIComponent(ref)}/sources/${encodeURIComponent(documentId)}` +
         (ordinal !== undefined ? `?ordinal=${ordinal}` : ''),
+    ),
+  /** A run or an ensemble rendered for download. PDF is the HTML printed by the browser. */
+  exportText: (kind: 'run' | 'ensemble', id: string, format: ExportFormat) =>
+    textFetch(
+      `/api/${kind === 'run' ? 'runs' : 'ensembles'}/${encodeURIComponent(id)}/export?format=${format}`,
     ),
   getDossier: (ref: string, name: string) =>
     jsonFetch<AgentDossier>(

@@ -10,6 +10,7 @@ import { CostMeter } from '../components/CostMeter'
 import { ParticipationPanel } from '../components/ParticipationPanel'
 import { PlaybackControls } from '../components/PlaybackControls'
 import { Dossier } from '../components/Dossier'
+import { ExportMenu } from '../components/ExportMenu'
 import { ResearchPanel } from '../components/ResearchPanel'
 import { SummaryPanel } from '../components/SummaryPanel'
 import { AsidesDrawer } from '../components/AsidesDrawer'
@@ -174,6 +175,9 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh }: Props) {
           </div>
         </div>
         <div className="flex items-center gap-3">
+          {/* Offered only once the run has finished: an export mid-run would be a transcript that
+              stops at an arbitrary turn with no sign that more is coming. */}
+          {completed && <ExportMenu kind="run" id={runId} name={detail?.name ?? runId} />}
           {running && (
             <button
               onClick={stop}
