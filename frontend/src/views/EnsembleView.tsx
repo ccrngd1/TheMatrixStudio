@@ -22,6 +22,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, type EnsembleDetail } from '../api'
 import { ClaimTable } from '../components/ClaimTable'
+import { ExportMenu } from '../components/ExportMenu'
 import { ResearchPanel } from '../components/ResearchPanel'
 
 interface Props {
@@ -165,6 +166,11 @@ export function EnsembleView({ ensembleId, onBack, onOpenRun }: Props) {
   return (
     <Frame onBack={onBack} title={detail.name || 'Ensemble'}>
       <p className="mb-4 text-sm text-slate-400">{detail.topic}</p>
+      {/* Always available: an ensemble's export says which conversations are still running and
+          whether a report exists, so an early export is incomplete and SAYS so. */}
+      <div className="mb-4">
+        <ExportMenu kind="ensemble" id={ensembleId} name={detail.name || 'ensemble'} />
+      </div>
 
       {/* What was asked for. Rendered from the STORED spec, so a group whose runs all
           failed still appears — that is a result, not an absence. */}

@@ -666,3 +666,45 @@ class TestAnEnsembleResearchesOnce:
         record = asyncio.get_event_loop_policy().new_event_loop().run_until_complete(check())
         assert record["status"] == "skipped"
         assert "replicates stay replicates" in record["error"]
+
+
+# --------------------------------------------------------------------------- #
+# Export
+# --------------------------------------------------------------------------- #
+
+
+class TestExport:
+    def test_an_ensemble_exports_as_markdown_and_html(self, client):
+        eid = _create(client).json()["ensemble_id"]
+        for fmt, media in (("md", "text/markdown"), ("html", "text/html")):
+            r = client.get(f"/api/ensembles/{eid}/export", params={"format": fmt})
+            assert r.status_code == 200, r.text
+            assert r.headers["content-type"].startswith(media)
+            assert r.headers["content-disposition"].startswith("attachment;")
+            assert "renewal" in r.text
+
+    def test_a_run_exports_as_markdown_and_html(self, client):
+        eid = _create(client).json()["ensemble_id"]
+        run_id = client.get(f"/api/ensembles/{eid}").json()["members"][0]["run_id"]
+        for fmt in ("md", "html"):
+            r = client.get(f"/api/runs/{run_id}/export", params={"format": fmt})
+            assert r.status_code == 200, r.text
+            assert f'.{fmt}"' in r.headers["content-disposition"]
+
+    def test_pdf_is_refused_with_how_to_get_one(self, client):
+        # PDF is the browser printing the HTML export; the refusal says so rather than "invalid".
+        eid = _create(client).json()["ensemble_id"]
+        r = client.get(f"/api/ensembles/{eid}/export", params={"format": "pdf"})
+        assert r.status_code == 422
+        assert "printed by the browser" in r.json()["detail"]
+
+    def test_another_user_cannot_export_an_ensemble(self, client):
+        """Not a `{ref}` route, so the tenancy registry does not cover it — asserted here."""
+        from matrix_studio.api import identity
+
+        eid = _create(client).json()["ensemble_id"]
+        client.app.dependency_overrides[identity.current_user] = lambda: "sub-someone-else"
+        try:
+            assert client.get(f"/api/ensembles/{eid}/export").status_code == 404
+        finally:
+            client.app.dependency_overrides.pop(identity.current_user, None)
