@@ -418,6 +418,55 @@ Measured as a research cell against a no-research cell on the same brief, **5 re
 Failing (1) means the feature does not do its job. Failing (2) or (3) with (1) passing is a tuning
 problem. Failing (4) is a retrieval-floor bug.
 
+### 9.1 Operationalised 2026-09-25, before either arm was launched
+
+The criteria above say WHAT counts. They do not say how to count it, and choosing that after seeing
+output is the error the dismissal retune records. So this section is committed before any run
+exists, and the analysis must use it as written.
+
+**The arms.** Two ensembles, one cell each, n=5, rather than one ensemble with a research axis —
+§6.1's reason: a cell varying research would need two corpora and "the parent researched once"
+would stop being true.
+
+- **control** — `examples/renewalBrief/run.section9-control.json`
+- **research** — `examples/renewalBrief/run.section9-research.json`
+
+Built from one config and **asserted byte-identical** once the research block and the collection ids
+are removed. `stop_when_converged` and `authority_floor: 1` are on in BOTH (the floor is a no-op on
+the control, which has nothing tiered). Collections are **asserted disjoint**: the research arm binds
+its own clone of the same seven curated documents (passage counts identical, 32/23/18/18/15/19/14),
+because binding the control's would have let research write into the control's corpus.
+
+**Censoring.** A run that hits the 40-turn ceiling without converging is scored at 40 and counted
+separately as "did not converge". It is not dropped — dropping it would make the cell that converges
+less often look faster.
+
+**n=5 cannot resolve small differences.** `ENSEMBLE-CONVERSATIONS.md` §3.3, and I have walked into
+it once in this project. So criteria 2–4 fail only on a difference larger than the CONTROL cell's own
+spread, defined below per criterion. A smaller difference is reported as "no detectable difference",
+never as a pass or a fail.
+
+| # | measured as | passes if |
+|---|---|---|
+| **1a** | per research run: did ANY turn's `document.retrieved` carry a passage with `authority == "controlling"`, or one titled `No controlling authority found…` (the documented negative) | ≥ 4 of 5 research runs |
+| **1b** | per run: does the extraction's `unresolved` list contain a question matching the rule below | research count < control count |
+| **2** | median of `turn_count` at stop | research median ≤ control median + ½ × control range |
+| **3** | median of total `concessions` per run, summed over participants | research median ≥ control median − ½ × control range |
+| **4** | mean per turn of retrieved passages whose `origin` is not `researched` | research ≥ 50% of control |
+
+**1b's matching rule**, fixed now because it is the one place a reader's judgement could drift: an
+`unresolved` item matches if, lowercased, it contains any of `statute`, `practice act`,
+`board opinion`, `board case`, `board ruling`, `regulation`, `legal authority`, `case law`,
+`controlling`. Items are also read by hand and the reading reported, but the rule decides.
+
+**1 is the primary criterion** and needs both halves: 1a is whether research REACHED the room, 1b is
+whether the room's question got answered. 1a passing with 1b failing means the authority was in the
+prompt and did not settle anything, which is a different finding from research not finding one.
+
+**Criterion 4 is expected to be at risk.** On run `602ddffe` a persona's curated source material lost
+every slot to research that shared its collection (§5.1), and that behaviour was accepted and made
+visible rather than fixed. If 4 fails, that decision is what it indicts.
+
 ---
 
 ## 10. Risks
