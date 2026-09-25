@@ -259,7 +259,9 @@ export interface EnsembleMember {
 /** One claim, tiered inside each cell against THAT cell's denominator. */
 export interface EnsembleClaim {
   claim: string
-  kind: 'demand' | 'refusal'
+  // `conclusion` rows come from `report.conclusions` and share this shape — and therefore the
+  // same per-cell arithmetic and the same no-total table.
+  kind: 'demand' | 'refusal' | 'conclusion'
   /**
    * The distinct phrasings grouped under this claim, with the runs each came from.
    *
@@ -289,6 +291,11 @@ export interface EnsembleReport {
   }[]
   missing_members: { run_id: string; cell: string | null; index: number | null }[]
   claims: EnsembleClaim[]
+  /**
+   * What the runs concluded, clustered across runs and counted per group. ABSENT on a report built
+   * before this existed — which is different from an empty list, meaning no run concluded anything.
+   */
+  conclusions?: EnsembleClaim[]
   /**
    * Whether the counts came from model-assigned canonical labels or from crude text matching.
    *

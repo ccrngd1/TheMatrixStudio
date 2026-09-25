@@ -172,6 +172,10 @@ _EXTRACT_SCHEMA = {
             },
         },
         "outcome": {"type": "string"},
+        # The outcome broken into its separate decisions, so they can be counted ACROSS runs.
+        # Not required: an extraction from before this field existed, or one where the group
+        # decided nothing, has none — and "none" is itself the finding in that case.
+        "conclusions": {"type": "array", "items": {"type": "string"}},
         "unresolved": {"type": "array", "items": {"type": "string"}},
     },
     "required": ["personas", "outcome"],
@@ -189,6 +193,10 @@ For every participant, record:
 
 Then record:
   outcome         what the group actually decided or committed to, in two sentences
+  conclusions     the same decisions as separate items, ONE decision per item, each worded
+                  plainly enough that the same decision reached in a different discussion
+                  would read the same (e.g. "exclude California from launch", not "they agreed
+                  Morgan's revised scope was acceptable")
   unresolved      questions left open, deferred, or escalated rather than settled
 
 Rules that matter more than completeness:
@@ -197,6 +205,9 @@ Rules that matter more than completeness:
 record two different things.
 - If the discussion did not reach a decision, say so in `outcome`. "Escalated without \
 deciding" is a real outcome and the most common one in short conversations.
+- A conclusion is something the GROUP reached, not one participant's view. If they decided \
+nothing, `conclusions` is EMPTY — do not promote a proposal, a preference or a majority lean \
+into a conclusion.
 
 Transcript:
 {transcript}
@@ -209,6 +220,7 @@ Return ONLY a JSON object of exactly this shape, with no prose around it and no 
                 "concessions": [{{"gave_up": "<what>", "because": "<what moved them>"}}],
                 "refusals": ["<what they would not accept>"]}}],
  "outcome": "<what the group decided or committed to, in two sentences>",
+ "conclusions": ["<one decision the group reached>"],
  "unresolved": ["<question left open, deferred or escalated>"]}}
 """
 

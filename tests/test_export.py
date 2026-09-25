@@ -231,3 +231,66 @@ def test_filenames_are_safe_and_say_what_they_are():
 def test_an_unknown_format_is_refused():
     with pytest.raises(ValueError, match="md"):
         ex.render(_run_model(), "pdf")
+
+
+# --------------------------------------------------------------------------- #
+# Conclusions and agreements (the ensemble export)
+# --------------------------------------------------------------------------- #
+
+
+def _concl(claim, **cells):
+    return {"claim": claim, "kind": "conclusion", "per_cell": {
+        c: {"held": h, "of": o, "tier": "unanimous" if h == o else ("rare" if h == 1 else "split")}
+        for c, (h, o) in cells.items()}}
+
+
+def _with(conclusions):
+    rep = _ensemble_model()["report"]
+    if conclusions is not None:
+        rep["conclusions"] = conclusions
+    return _ensemble_model(report=rep)
+
+
+@pytest.mark.parametrize("fmt", ["md", "html"])
+def test_conclusions_come_before_the_claim_table_and_per_group(fmt):
+    out = ex.render(_with([_concl("exclude California", base=(4, 5), hybrid=(1, 4))]), fmt)
+    assert out.index("What the runs concluded") < out.index("Claims, per group")
+    assert "4 of 5" in out and "1 of 4" in out
+    assert "5 of 9" not in out, "a conclusion must never be pooled across groups"
+
+
+def test_a_report_that_predates_conclusions_says_so_and_is_not_read_as_none():
+    out = ex.render_markdown(_with(None))
+    assert "built before conclusions were extracted" in out
+    assert "No run reached a conclusion" not in out
+
+
+def test_no_conclusions_at_all_is_reported_as_the_finding():
+    assert "No run reached a conclusion" in ex.render_markdown(_with([]))
+
+
+def test_divergence_is_reported_rather_than_a_conclusion_promoted():
+    out = ex.render_markdown(_with([_concl("exclude CA", base=(1, 5)),
+                                    _concl("launch everywhere", base=(1, 5))]))
+    assert "No conclusion recurred" in out
+    assert "divergence is the result" in out
+
+
+def test_a_recurring_conclusion_gets_no_divergence_note():
+    out = ex.render_markdown(_with([_concl("exclude CA", base=(3, 5))]))
+    assert "No conclusion recurred" not in out
+
+
+def test_agreements_are_the_claims_unanimous_in_a_group():
+    out = ex.render_markdown(_ensemble_model())
+    section = out[out.index("What every run in a group agreed on"):out.index("Claims, per group")]
+    # "labwork required" is 5 of 5 in base: unanimous there, and only there.
+    assert "labwork required — base: all 5 runs" in section
+    assert "hybrid" not in section
+
+
+@pytest.mark.parametrize("fmt", ["md", "html"])
+def test_conclusions_are_labelled_as_model_analysis(fmt):
+    out = ex.render(_with([_concl("exclude CA", base=(3, 5))]), fmt)
+    start = out.index("What the runs concluded")
+    assert "Model-generated analysis" in out[start:start + 600]
