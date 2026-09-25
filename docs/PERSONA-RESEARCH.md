@@ -463,6 +463,42 @@ never as a pass or a fail.
 whether the room's question got answered. 1a passing with 1b failing means the authority was in the
 prompt and did not settle anything, which is a different finding from research not finding one.
 
+#### Amendment 1 — 2026-09-25, both arms running, NEITHER with a report
+
+Two corrections to the measurement above, both forced by testing `scripts/analyse_section9.py`
+against PRIOR ensembles before any §9 output existed. Recorded rather than silently edited, because
+an amendment to a pre-registration is only legitimate if it is visible and dated.
+
+**Where open questions live.** "The extraction's `unresolved` list" per run is not persisted — only
+the clustered tally in `agreements.unresolved_by_frequency`, one entry per cluster, holding a
+representative RAW text (the first run's own wording, not a generated label) and every run
+clustered with it. So the rule is applied to each representative and credited to every run in its
+cluster. The arms are clustered in separate reports; matching on raw representatives rather than on
+labels is what keeps that from being two different labelling passes compared.
+
+**The matching rule as first written could not see the question.** Calibrated on `renewal-cells`
+and `renewal-ens`: the most-repeated open question in the project — *"Whether CA's 'treatment of
+whatever nature' language has been interpreted to reach plan renewal"*, left open in **5
+runs** — matched **none** of the original terms. Nor did `practice-act` (hyphenated), *"board
+enforcement history"*, *"legally sufficient"* or *"statutory breadth"*. A rule that cannot see the
+question cannot tell whether it was answered, so 1b would have scored both arms near zero and could
+never have failed.
+
+The amended rule is word-bounded regexes (so `board` cannot match "onboarding"): `statute(s)`,
+`statutory`, `practice act` / `practice-act`, `board(s)`, `regulation(s)`, `regulatory`,
+`legal(ly)`, `case law`, `controlling`, `interpret(ed|ation|s)`, `enforcement`,
+`practicing licensed medicine`, `regulated product`, `legend`, `law`, `citation(s)`.
+
+On the two prior ensembles it matches 10 of 31 and 12 of 22 open questions. Known borderline
+calls, stated so a reader can disagree with them rather than discover them:
+
+- **missed**: *"Whether other states have narrower drug-specific language…"* — legal, but adding
+  `language` would also match "Final SLA language".
+- **excluded on purpose**: *"records review satisfies the knowledge standard"* and *"who owns
+  securing outside counsel"* — the first is a clinical-standard question, the second procedural.
+- **over-matched**: *"Whether/when Riley will sign off pending the legal/compliance response"* —
+  about WAITING on the legal answer rather than the legal question itself.
+
 **Criterion 4 is expected to be at risk.** On run `602ddffe` a persona's curated source material lost
 every slot to research that shared its collection (§5.1), and that behaviour was accepted and made
 visible rather than fixed. If 4 fails, that decision is what it indicts.
