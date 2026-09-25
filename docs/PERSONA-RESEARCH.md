@@ -648,6 +648,34 @@ for a decision rather than taken:
   convictions are rendered. Deterministic, a few short lines per persona, and guaranteed to be seen;
   but it stops being retrieval, and it puts "nothing was found for your condition" in front of a
   persona on every turn, which may entrench rather than settle.
+
+### 9.5 Run 3 — pre-registered 2026-09-25, BEFORE the standing query is built
+
+**Decided:** option 1 of §9.4. Each turn, retrieval also runs a **standing query** built from the
+speaker's own `evidence_that_shifts` — their declared "what would change my mind" — against the
+collections they may search, and merges the results into the SAME candidate pool before the floors
+apply. `k` is unchanged, so this spends no extra prompt budget; it changes which passages compete.
+
+**On BOTH arms.** The standing query is a retrieval change, not research, and putting it on the
+research arm alone would make any difference unattributable between the two. It is a config flag
+(`retrieval.standing_query`), set identically in both definitions, so the arms still differ only by
+the research block and the collection ids — asserted, as in runs 1 and 2.
+
+**Criteria: §9.3's, unchanged.** R1 (≥ 3 of 5 research runs retrieve a per-query negative, else VOID),
+R2 (runs with an open existence question: PASS if research ≤ control − 2), guardrails 2–4 as §9.1.
+Nothing about the bar moves because the mechanism did.
+
+**A mechanism check before the paid run.** The standing query will first be replayed offline against
+run 2's research corpus, using run 2's recorded turns. That run is void, so this measures the
+mechanism without touching an outcome. **If the replay does not put a per-query negative into a
+k=3 selection on a meaningful share of turns, run 3 is not launched** — a second void would cost
+~$10 to learn what a free replay already said.
+
+**Guardrail 4 is the one to watch.** The standing query pulls toward material about a persona's
+conditions, which in the research arm is mostly found material — so curated passages per turn may
+fall further than run 1's 80%. Its threshold stays 50%.
+
+Fresh arms again, fresh research-arm clones (`-research-arm-3`).
 ---
 
 ## 10. Risks
