@@ -428,6 +428,36 @@ def apply_budget(
     return passages
 
 
+def standing_query_text(structured: Any) -> str:
+    """The speaker's standing information need: what they declared would change their mind.
+
+    `PERSONA-RESEARCH.md` §9.5. A turn's retrieval query is a term bag from the last few messages,
+    and §9.4 measured what that costs: a persona's negative for exactly the authority she keeps
+    demanding ranked #5 at best across 23 real turns, usually below #50 — and #3 when queried with
+    her own stated demand. The conversation almost never says the demand in words a search result
+    can match. This is those words.
+
+    Built from `evidence_that_shifts` only, and deliberately not from `position`. A query from the
+    position would pull material SUPPORTING it, which is the confirmation engine §2.2 exists to
+    prevent; the shift conditions are by construction the evidence that could move them.
+
+    Empty for a persona with no structured block or no declared conditions, which makes the standing
+    query a no-op for them rather than a query for nothing.
+    """
+    if structured is None:
+        return ""
+    viewpoints = getattr(structured, "viewpoints", None)
+    if viewpoints is None and isinstance(structured, dict):
+        viewpoints = structured.get("viewpoints")
+    parts: List[str] = []
+    for vp in viewpoints or []:
+        shifts = getattr(vp, "evidence_that_shifts", None)
+        if shifts is None and isinstance(vp, dict):
+            shifts = vp.get("evidence_that_shifts")
+        parts.extend(str(x).strip() for x in (shifts or []) if str(x).strip())
+    return "\n".join(parts)
+
+
 async def _search_bound_kbs(
     db: Any,
     run_id: str,
@@ -564,6 +594,9 @@ async def retrieve_for_turn(
     # PERSONA-RESEARCH.md §3. 0 = off and is byte-identical to the pre-research behaviour,
     # which is why it is safe to have threaded this through three trims at once.
     authority_floor: int = 0,
+    # PERSONA-RESEARCH.md §9.5: the speaker's own "what would change my mind", searched against the
+    # knowledge bases every turn and merged into the same pool. "" = off, byte-identical to before.
+    standing_text: str = "",
 ) -> tuple[List[RetrievedPassage], str, int, List[str]]:
     """Retrieve a persona's supporting passages for one turn.
 
@@ -693,6 +726,34 @@ async def retrieve_for_turn(
                 db, run_id, persona_name, query_vector, fetch_k, kb_ids,
                 authority_floor=authority_floor,
             )
+
+            # §9.5: the standing query. A second k-NN over the SAME collections, merged into the
+            # same candidate pool before any floor applies — so `k` is unchanged and this spends no
+            # prompt budget; it only changes which passages compete for it.
+            #
+            # Merged by distance, keeping the nearer score for a chunk both queries found. The two
+            # distances are to different query vectors, which is a real approximation — but both are
+            # cosine distances on unit vectors, so they share a scale, and the alternative (a separate
+            # reserved slot) was rejected in §9.4 on the authority floor's own argument.
+            #
+            # KB rows only. Negatives and researched sources live in knowledge bases; the run slice
+            # holds the conversation's own attachments, which the conversation query already serves.
+            if standing_text.strip():
+                standing = await embed_query(standing_text, model=model)
+                if standing and standing.vectors and standing.vectors[0]:
+                    extra, extra_failed, _personal = await _search_bound_kbs(
+                        db, run_id, persona_name, standing.vectors[0], fetch_k, kb_ids,
+                        authority_floor=authority_floor,
+                    )
+                    best: Dict[Any, Dict[str, Any]] = {}
+                    for row in list(kb_rows) + list(extra):
+                        key = row.get("chunk_id")
+                        if key not in best or float(row.get("score") or 0.0) < float(
+                            best[key].get("score") or 0.0
+                        ):
+                            best[key] = row
+                    kb_rows = list(best.values())
+                    kb_failures = list(dict.fromkeys(list(kb_failures) + list(extra_failed)))
             if kb_rows:
                 # Sorted ascending because smaller cosine distance is better, matching
                 # `vector_search` and what `apply_similarity_floor` expects. Trimmed to

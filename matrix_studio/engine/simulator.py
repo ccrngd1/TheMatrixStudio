@@ -45,6 +45,7 @@ from matrix_studio.retrieval import (
     format_documents_block,
     format_unsupported_block,
     retrieve_for_turn,
+    standing_query_text,
 )
 from matrix_studio.personas import (
     effective_persona,
@@ -1771,6 +1772,12 @@ async def _run_turns(
                     # would be a setting that looks enabled and does nothing, which is how
                     # three earlier features in this project shipped inert.
                     authority_floor=retrieval.authority_floor,
+                    # §9.5. Built here because the engine holds the speaker's structured block;
+                    # "" when the flag is off, which is byte-identical to before.
+                    standing_text=(
+                        standing_query_text(agents[speaker_name].structured)
+                        if retrieval.standing_query else ""
+                    ),
                 )
                 if passages:
                     await emit(

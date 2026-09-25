@@ -356,6 +356,13 @@ class RetrievalConfig(BaseModel):
         default=0, ge=0,
         description="Reserved retrieval slots for controlling authority (0 = off)",
     )
+    # PERSONA-RESEARCH.md §9.5: also search each turn with the speaker's own
+    # `evidence_that_shifts`, merged into the same pool (k unchanged). Default OFF: it changes
+    # what reaches a prompt, and it arrives with its own pre-registered measurement (§9 run 3).
+    standing_query: bool = Field(
+        default=False,
+        description="Also retrieve with the speaker's evidence_that_shifts each turn",
+    )
 
     @field_validator("mode")
     @classmethod

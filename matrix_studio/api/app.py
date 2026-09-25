@@ -197,6 +197,8 @@ class RetrievalConfigModel(BaseModel):
     # exactly the pre-research behaviour — see `RetrievalConfig.authority_floor` for why the
     # default stays off even though it would be harmless on a run with no research.
     authority_floor: int = Field(default=0, ge=0)
+    # PERSONA-RESEARCH.md §9.5. Off by default; see `RetrievalConfig.standing_query`.
+    standing_query: bool = False
 
 
 class ResearchConfigModel(BaseModel):
