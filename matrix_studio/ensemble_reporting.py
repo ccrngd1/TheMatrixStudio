@@ -84,12 +84,24 @@ def _harvest_claims(
                         "kind": "unresolved", "text": text, "cell": label,
                         "run": view.name, "persona": None,
                     })
+            # Conclusions belong to the RUN too, and are clustered in the same pass — which is
+            # what lets "exclude California" in one run and "launch without CA" in another count
+            # as the same conclusion. Clustering partitions by kind, so a conclusion can never be
+            # merged with a demand that happens to share its words.
+            for raw in view.positions.get("conclusions") or []:
+                text = str(raw).strip()
+                if text:
+                    out.append({
+                        "kind": "conclusion", "text": text, "cell": label,
+                        "run": view.name, "persona": None,
+                    })
     return out
 
 
 def _claims_by_cell(
     views_by_cell: Dict[str, List[ensemble.RunView]],
     keys: Optional[Dict[int, Any]] = None,
+    kinds: Sequence[str] = ("demand", "refusal"),
 ) -> List[Dict[str, Any]]:
     """Every demand and refusal, tiered within each cell against that cell's denominator.
 
@@ -108,11 +120,15 @@ def _claims_by_cell(
     they came from. That is what makes a merge auditable — a reader who thinks two claims were
     wrongly combined can see it and say so, which is not possible from a count alone.
     """
-    # Demands and refusals only. An open question is not a position anybody held, so it has no
-    # place in a table of who required what — even though it IS clustered, in the same pass.
+    # Demands and refusals by default. An open question is not a position anybody held, so it has
+    # no place in a table of who required what — even though it IS clustered, in the same pass.
+    #
+    # `kinds=("conclusion",)` builds the conclusions table with the SAME per-cell arithmetic, so the
+    # two cannot disagree about denominators, tiers or what an empty cell means. A second copy of
+    # this function for conclusions is exactly how they would drift.
     claims = [
         (i, c) for i, c in enumerate(_harvest_claims(views_by_cell))
-        if c["kind"] in ("demand", "refusal")
+        if c["kind"] in kinds
     ]
 
     held: Dict[Any, Dict[str, set]] = defaultdict(lambda: defaultdict(set))
@@ -337,6 +353,11 @@ async def build(
         "missing_members": missing,
         # Per-cell, per-claim tiers. The §4 table.
         "claims": _claims_by_cell(views_by_cell, keys),
+        # What the runs CONCLUDED, clustered across runs and counted per cell — the answer to "so
+        # what did the room decide, and how consistently?". Same arithmetic as the claim table:
+        # per cell, never pooled, and a conclusion reached in one run is `rare`, not a finding.
+        # Empty when no run concluded anything, which is a result and is reported as one.
+        "conclusions": _claims_by_cell(views_by_cell, keys, kinds=("conclusion",)),
         # Which way the counts were produced. Not a detail: the two modes differ by more than
         # precision — text matching measured 128 of 128 claims as unique on the first live
         # ensemble, so its counts are not a worse version of the clustered ones, they are

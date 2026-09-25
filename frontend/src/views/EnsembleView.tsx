@@ -22,6 +22,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, type EnsembleDetail } from '../api'
 import { ClaimTable } from '../components/ClaimTable'
+import { ConclusionsPanel } from '../components/ConclusionsPanel'
 import { ExportMenu } from '../components/ExportMenu'
 import { ResearchPanel } from '../components/ResearchPanel'
 
@@ -329,6 +330,8 @@ export function EnsembleView({ ensembleId, onBack, onOpenRun }: Props) {
 
         {detail.report && (
           <div className="space-y-6">
+            {/* Read first: what the runs concluded and agreed on, before the full claim table. */}
+            <ConclusionsPanel report={detail.report} cells={reportCells} />
             <div>
               <h3 className="mb-2 text-sm text-slate-300">
                 What held, by group

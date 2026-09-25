@@ -270,6 +270,53 @@ def _research_lines(research: Optional[Dict[str, Any]]) -> List[str]:
     return lines
 
 
+def conclusions_view(report: Dict[str, Any], cells: Sequence[str]) -> Dict[str, Any]:
+    """What the runs concluded and agreed on — the export's version of the view's panel.
+
+    ``state`` is one of:
+
+    - ``predates`` — the report was built before conclusions were extracted. NOT the same as
+      "concluded nothing", which is a finding, so the two must not render alike.
+    - ``none`` — no run reached a conclusion.
+    - ``diverged`` — conclusions exist and none recurred in two runs of any group. The divergence is
+      the result; no conclusion is promoted to "the" conclusion.
+    - ``recurring`` — at least one conclusion was reached in two or more runs of a group.
+
+    Agreements are derived from the claim table (a claim `unanimous` in some group), not stored,
+    so the two cannot disagree.
+    """
+    conclusions = report.get("conclusions")
+    agreed = []
+    for cl in report.get("claims") or []:
+        per = cl.get("per_cell") or {}
+        in_cells = [c for c in cells if (per.get(c) or {}).get("tier") == "unanimous"]
+        if in_cells:
+            agreed.append({"claim": cl, "cells": in_cells})
+    if conclusions is None:
+        state = "predates"
+    elif not conclusions:
+        state = "none"
+    elif not any(
+        (cell or {}).get("held", 0) >= 2
+        for c in conclusions for cell in (c.get("per_cell") or {}).values()
+    ):
+        state = "diverged"
+    else:
+        state = "recurring"
+    return {"state": state, "conclusions": conclusions or [], "agreed": agreed}
+
+
+_CONCLUSION_NOTES = {
+    "predates": "This report was built before conclusions were extracted. Regenerate it to see "
+                "what the runs concluded.",
+    "none": "No run reached a conclusion. Every conversation ended without the group deciding "
+            "anything — which is itself the finding.",
+    "diverged": "No conclusion recurred: no two runs in any group concluded the same thing. The "
+                "runs diverged, and that divergence is the result — none of the conclusions below "
+                "is \"the\" conclusion.",
+}
+
+
 # --------------------------------------------------------------------------- #
 # Markdown
 # --------------------------------------------------------------------------- #
@@ -380,6 +427,28 @@ def _ensemble_markdown(m: Dict[str, Any]) -> str:
 
     cells = [c for c in m["cells"] if c] or sorted({k for cl in report.get("claims") or []
                                                     for k in (cl.get("per_cell") or {})})
+    cv = conclusions_view(report, cells)
+    out += ["## What the runs concluded", "", f"> *{ANALYSIS_LABEL}*", ""]
+    if cv["state"] in _CONCLUSION_NOTES:
+        out += [_CONCLUSION_NOTES[cv["state"]], ""]
+    if cv["conclusions"]:
+        out.append("| conclusion | " + " | ".join(_md_cell(c) for c in cells) + " |")
+        out.append("|---|" + "---|" * len(cells))
+        for cl in cv["conclusions"]:
+            per = cl.get("per_cell") or {}
+            out.append(f"| {_md_cell(cl.get('claim'))} | "
+                       + " | ".join(_cell_count(per.get(c)) for c in cells) + " |")
+        out.append("")
+    out += ["## What every run in a group agreed on", ""]
+    if cv["agreed"]:
+        for a in cv["agreed"]:
+            where = ", ".join(f"{c}: all {(a['claim']['per_cell'].get(c) or {}).get('of')} runs"
+                              for c in a["cells"])
+            out.append(f"- [{a['claim'].get('kind')}] {a['claim'].get('claim')} — {where}")
+    else:
+        out.append("No demand or refusal was held in every run of any group.")
+    out.append("")
+
     out += ["## Claims, per group", "",
             "Counted within each group against that group's own runs. There is deliberately **no "
             "total column**: the same count means a strong method-dependent finding or a coin flip "
@@ -538,6 +607,28 @@ def _ensemble_html(m: Dict[str, Any]) -> str:
 
     cells = [c for c in m["cells"] if c] or sorted({k for cl in report.get("claims") or []
                                                     for k in (cl.get("per_cell") or {})})
+    cv = conclusions_view(report, cells)
+    b += ["<h2>What the runs concluded</h2><div class=\"analysis\">",
+          f"<div class=\"label\">{_e(ANALYSIS_LABEL)}</div>"]
+    if cv["state"] in _CONCLUSION_NOTES:
+        b.append(f"<p>{_e(_CONCLUSION_NOTES[cv['state']])}</p>")
+    if cv["conclusions"]:
+        b.append("<table><tr><th>conclusion</th>" + "".join(f"<th>{_e(c)}</th>" for c in cells) + "</tr>")
+        for cl in cv["conclusions"]:
+            per = cl.get("per_cell") or {}
+            b.append(f"<tr><td>{_e(cl.get('claim'))}</td>"
+                     + "".join(f"<td>{_e(_cell_count(per.get(c)))}</td>" for c in cells) + "</tr>")
+        b.append("</table>")
+    b.append("</div><h2>What every run in a group agreed on</h2>")
+    if cv["agreed"]:
+        b.append(_html_list([
+            f"[{a['claim'].get('kind')}] {a['claim'].get('claim')} — "
+            + ", ".join(f"{c}: all {(a['claim']['per_cell'].get(c) or {}).get('of')} runs" for c in a["cells"])
+            for a in cv["agreed"]
+        ]))
+    else:
+        b.append("<p>No demand or refusal was held in every run of any group.</p>")
+
     b += ["<h2>Claims, per group</h2>",
           "<p class=\"meta\">Counted within each group against that group's own runs. There is "
           "deliberately no total column: the same count means a strong method-dependent finding or a "

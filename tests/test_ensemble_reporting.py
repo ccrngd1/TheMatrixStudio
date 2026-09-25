@@ -1105,3 +1105,76 @@ class TestInvariantIsJudgedAgainstRunsThatNamedADemand:
         q = report["per_persona"]["Quiet"]
         assert q["demanded_in_runs"] == 0
         assert q["invariant_demands"] == [], "an empty denominator is not a vacuous truth"
+
+
+# --------------------------------------------------------------------------- #
+# Conclusions — what the runs decided, counted across runs per group
+# --------------------------------------------------------------------------- #
+
+
+class TestConclusions:
+    """The request: an ensemble must say what the runs agreed on and what they concluded.
+
+    Conclusions go through the same harvest, clustering and per-cell arithmetic as the claim table,
+    so they get its guarantees — per group, never pooled, `rare` for a single run — rather than a
+    second implementation of them.
+    """
+
+    async def _two_cells(self, db, said):
+        await _ensemble(
+            db,
+            [{"label": "base", "n": 2, "overrides": {}},
+             {"label": "hybrid", "n": 2, "overrides": {"selection.method": "hybrid"}}],
+            [{"run_id": r, "cell": c, "index": i} for r, c, i in
+             (("b1", "base", 1), ("b2", "base", 2), ("h1", "hybrid", 1), ("h2", "hybrid", 2))],
+        )
+        for run_id, cell, marker in (("b1", "base", "alpha1"), ("b2", "base", "alpha2"),
+                                     ("h1", "hybrid", "beta1"), ("h2", "hybrid", "beta2")):
+            await _member(db, "ens", run_id, cell, f"{cell}-{run_id}", marker)
+        return FakeModel({m: {**_extraction(("Ada", [], [])), "conclusions": said[m]}
+                          for m in said})
+
+    async def test_conclusions_are_counted_per_group_never_pooled(self, db):
+        model = await self._two_cells(db, {
+            "alpha1": ["exclude California"], "alpha2": ["exclude California"],
+            "beta1": ["launch everywhere"], "beta2": ["exclude California"],
+        })
+        report = await ensemble_reporting.build(db, "ens", call=model, cluster=False)
+        by = {c["claim"]: c["per_cell"] for c in report["conclusions"]}
+        # Per group: unanimous in base, one of two in hybrid. Pooled it would be "3 of 4", which
+        # reads as a broad consensus and hides that hybrid split.
+        assert by["exclude California"]["base"]["held"] == 2
+        assert by["exclude California"]["base"]["tier"] == "unanimous"
+        assert by["exclude California"]["hybrid"]["held"] == 1
+        assert by["launch everywhere"]["hybrid"]["tier"] == "rare"
+        assert all(c["kind"] == "conclusion" for c in report["conclusions"])
+
+    async def test_conclusions_never_leak_into_the_claim_table(self, db):
+        # A conclusion is the GROUP's; the claim table is who required what. Mixing them would
+        # make a group decision read as one participant's demand.
+        model = await self._two_cells(db, {m: ["exclude California"] for m in
+                                           ("alpha1", "alpha2", "beta1", "beta2")})
+        report = await ensemble_reporting.build(db, "ens", call=model, cluster=False)
+        assert all(c["kind"] in ("demand", "refusal") for c in report["claims"])
+        assert "exclude California" not in {c["claim"] for c in report["claims"]}
+
+    async def test_no_run_concluding_anything_is_an_empty_list_not_a_missing_key(self, db):
+        """Empty means "no run concluded" — a finding. A MISSING key means the report predates
+        the field. The view and the export tell those apart, so the builder must too."""
+        model = await self._two_cells(db, {m: [] for m in ("alpha1", "alpha2", "beta1", "beta2")})
+        report = await ensemble_reporting.build(db, "ens", call=model, cluster=False)
+        assert report["conclusions"] == []
+
+
+def test_the_extraction_prompt_forbids_manufacturing_a_conclusion():
+    """A conclusion must be the group's, and "decided nothing" must stay empty. Pinned because a
+    softer prompt would turn every majority lean into a conclusion and make divergence invisible."""
+    from matrix_studio import ensemble
+
+    prompt = ensemble._EXTRACT_PROMPT
+    assert "conclusions" in prompt
+    assert "GROUP reached" in prompt
+    assert "`conclusions` is EMPTY" in prompt
+    assert "conclusions" in ensemble._EXTRACT_SCHEMA["properties"]
+    # Not required: an old extraction, or a run that decided nothing, has none.
+    assert "conclusions" not in ensemble._EXTRACT_SCHEMA["required"]
