@@ -676,6 +676,26 @@ conditions, which in the research arm is mostly found material — so curated pa
 fall further than run 1's 80%. Its threshold stays 50%.
 
 Fresh arms again, fresh research-arm clones (`-research-arm-3`).
+
+#### The replay gate — PASSED, run before launch
+
+Run 2's five research runs replayed through the real `retrieve_for_turn`, each turn's query text
+rebuilt from the transcript (the preceding three messages plus the topic). **Faithful: the replay
+without the standing query reproduces the recorded selection on 158 of 158 turns.**
+
+A first attempt was not faithful and is recorded because the mistake is easy to repeat: it embedded
+the event's `query` field, which is the LEXICAL term bag (`"a" OR "b" OR …`), not the text that
+vector retrieval embeds. Its baseline showed 0.5–0.8 curated passages per turn against a recorded
+2.0–2.4 — a replay that cannot reproduce the baseline cannot vouch for a treatment.
+
+With the standing query, a per-query negative reaches the k=3 selection on **4–5 turns in each of the
+5 runs** (0 in the real run). Gate: 5 of 5, needs 3.
+
+**A prediction, recorded before the run so it cannot be reinterpreted afterwards: guardrail 4 will
+land near its line.** In the replay, curated passages per turn fall from 2.00–2.35 to 1.39–1.73.
+Against a control near 3.00 that is roughly 46–58% — straddling the 50% threshold. The threshold does
+not move. If 4 fails, it is the standing query pulling toward found material, which is exactly the
+cost §9.5 named in advance.
 ---
 
 ## 10. Risks
