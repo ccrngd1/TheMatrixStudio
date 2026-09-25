@@ -602,6 +602,52 @@ feature does its job on the question it can answer, and stays.
 
 **Criterion 4 is at more risk than in run 1.** Up to one negative per query now competes for prompt
 slots alongside everything else.
+
+### 9.4 Run 2 result — **VOID**. The negatives were produced and never retrieved.
+
+Control `1c135dc0`, research `962ba446`. $9.92: $7.79 conversations, $1.86 reports, $0.27 research.
+
+    R1  mechanism   9 per-query negative(s) produced; reached a prompt in 0 of 5 research runs
+                    (needs >= 3)  VOID — the fix was inert; nothing is concluded
+
+As pre-registered, R2 and the guardrails are **not scored**, and nothing is concluded about whether
+per-query negatives help. The script stops at the gate by design.
+
+**The zero was checked rather than trusted**, because a detection bug had already produced a false
+number once in this comparison. Matched by document id against the KB rows — not by title — the
+research arm retrieved a negative **15 times, in all 5 runs, and every one was Quinn's
+corpus-level negative** (her corpus found no controlling authority at all). Of the 9 per-query
+negatives, none was retrieved once in 474 passages. The detection was right.
+
+**Why they lose — measured, not reasoned.** Casey's corpus holds a negative for exactly the authority
+she keeps demanding: *`state statute "specialty plan" defined as regulated product`*. Replaying
+her 23 recorded retrieval queries against her own collection, that negative ranked **#5 at best**,
+usually below #50, and beyond #100 on 8 turns. Queried with her own stated demand instead —
+*"A state statute defining specialty plans as regulated-only would change my sign-off"* — it
+ranks **#3**.
+
+So the negative is relevant to the question, and the turns never ask the question. A turn's retrieval
+query is a term bag from the last few messages; it is conversation-shaped, and the negative is written
+in the vocabulary of the SEARCH that produced it. It is §3's statute-versus-commentary problem again:
+material whose wording mirrors the conversation wins by construction, and being right about relevance
+is exactly how it hides.
+
+Also observed and not changed mid-run: each negative splits into **2 chunks**, not the 1 its length
+cap aimed at, because the chunker's window is smaller than 1,500 characters.
+
+**The mechanism has to change, and the choice changes what a persona sees.** Three options, recorded
+for a decision rather than taken:
+
+- **A standing query per persona.** Each turn, retrieve once more with a query built from the
+  persona's own `evidence_that_shifts` — their declared "what would change my mind" — and merge.
+  Replayed above, that query puts the negative at #3. Stays inside retrieval and its budget.
+- **A reserved slot for negatives**, like the authority floor. Rejected in advance on the floor's own
+  argument: at typical ranks of #50+ it would force a low-relevance passage into most prompts, and an
+  irrelevant reservation reads as the room citing at random.
+- **Render the persona's own negatives directly** in their prompt, outside retrieval — the way
+  convictions are rendered. Deterministic, a few short lines per persona, and guaranteed to be seen;
+  but it stops being retrieval, and it puts "nothing was found for your condition" in front of a
+  persona on every turn, which may entrench rather than settle.
 ---
 
 ## 10. Risks
