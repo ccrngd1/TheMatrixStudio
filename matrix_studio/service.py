@@ -36,7 +36,9 @@ def _run_config(run: Dict[str, Any]) -> Dict[str, Any]:
         return {}
 
 
-def resolve_model(run: Dict[str, Any], override: Optional[str] = None) -> Optional[str]:
+def resolve_model(
+    run: Dict[str, Any], override: Optional[str] = None, role: str = "summary"
+) -> Optional[str]:
     """
     Resolve the model for an analysis call: an explicit override wins, then the
     run's configured model, else None (analysis falls back to the current
@@ -64,8 +66,14 @@ def resolve_model(run: Dict[str, Any], override: Optional[str] = None) -> Option
     cfg = _run_config(run)
     if cfg.get("imported"):
         return None  # use the current settings default for fresh analysis
-    model = cfg.get("model")
-    return model or None
+    # Through `ModelSet`, the resolver the ENGINE uses, so a per-role `models.summary` (or
+    # `models.aside`) is honoured. This read only `config.model` before, which made the per-role
+    # choice inert for analysis: measured on brainstorm-opus, whose definition pinned the
+    # summary to Sonnet 5 and whose summary ran on Opus 5 — found in Bedrock's invocation log,
+    # not from anything the run reported. `config.model` still applies when no role is named.
+    from matrix_studio.models import ModelSet
+
+    return ModelSet.from_config(cfg).resolve(role) or None
 
 
 def summary_config(run: Dict[str, Any]) -> Dict[str, Any]:
@@ -149,6 +157,20 @@ async def generate_and_store_summary(
         instructions=result["instructions"],
     )
     saved["parsed"] = result["parsed"]
+    # Charged to the owner's month, here rather than in the auto-summary path, because every
+    # summary is generated through this function — including a regenerate from the UI, which is
+    # a real model call over the whole transcript. It was charged to nobody: measured on
+    # brainstorm-opus as ~$0.21, the largest single uncounted call in the run. Best-effort, for
+    # the reason `record_spend` gives: a missed increment delays the cap rather than losing a
+    # summary that has already been paid for and stored.
+    cost = float(result.get("cost_usd") or 0.0)
+    owner = run.get("owner_sub")
+    if cost > 0 and owner:
+        try:
+            await db.add_user_spend(cost, owner_sub=str(owner))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not record $%.4f of summary spend for run %s: %s",
+                           cost, run.get("id"), exc)
     return saved
 
 
@@ -230,7 +252,7 @@ async def post_aside_message(
     """
     conversation = await _load_conversation(db, run)
     topic = run.get("topic", "")
-    resolved_model = resolve_model(run, model)
+    resolved_model = resolve_model(run, model, role="aside")
 
     # Persist the user turn first so it is part of the history for THIS call's
     # follow-ups (but not passed as the current user_message again).

@@ -139,7 +139,11 @@ async def test_validation_off_byte_for_byte_pre_4a(db, settings_off):
         "tokens_out": 5,
         "cost_usd": 0.001,
     }
-    sel_payload = {"speaker": "Ada", "candidates": ["Ada", "Ben"]}
+    # `cost_usd` on `speaker.selected` is the ONE deliberate change to this stream since it was
+    # captured (2026-09-26): the selection call's cost used to be computed and dropped, so a run's
+    # reported cost omitted a model call per turn. It is unrelated to validation — what this test
+    # guards is still exact: no validation events, and 6 model calls, not more.
+    sel_payload = {"speaker": "Ada", "candidates": ["Ada", "Ben"], "cost_usd": 0.001}
     expected = [
         [0, 0, "sim.started", None, {"topic": "AI ethics", "agent_count": 2}],
         [1, 1, "speaker.selected", "Ada", sel_payload],

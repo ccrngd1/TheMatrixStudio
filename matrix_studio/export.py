@@ -175,6 +175,12 @@ async def run_model(db: Any, run: Dict[str, Any]) -> Dict[str, Any]:
 
     summaries = await db.get_summaries(run_id)
     generated = next((s for s in summaries if s.get("kind") == "generated"), None)
+    research = _json(run.get("research_json"), None)
+    # The whole cost, as the run page reports it: in-run calls from the event log, plus the
+    # summary and the research pass, which are stored outside it.
+    whole_cost = (float(stats.get("total_cost_usd") or 0.0)
+                  + float((generated or {}).get("cost_usd") or 0.0)
+                  + float((research or {}).get("cost_usd") or 0.0))
     return {
         "kind": "run",
         "id": run_id,
@@ -184,11 +190,11 @@ async def run_model(db: Any, run: Dict[str, Any]) -> Dict[str, Any]:
         "status": run.get("status"),
         "created_at": run.get("created_at"),
         "turn_count": stats.get("turn_count"),
-        "cost_usd": stats.get("total_cost_usd"),
+        "cost_usd": whole_cost,
         "converged": converged,
         "cast": public_cast(_json(run.get("cast_json"), [])),
         "settings": settings_lines(config),
-        "research": _json(run.get("research_json"), None),
+        "research": research,
         "transcript": transcript,
         "summary": (generated or {}).get("payload"),
         "exported_at": int(time.time()),
