@@ -152,7 +152,7 @@ flag and wonders why nothing changed.
 stored cast, including the private fields. A branch asking "what if they had held
 firm" needs the convictions to exist on the other side of the fork, or it answers
 a different question. (This is unrelated to the older, still-open
-cognition-state replay gap in `docs/BACKLOG.md` — cast data is stored, so getting
+cognition-state replay gap in `private/private/docs/BACKLOG.md` (kept out of git) — cast data is stored, so getting
 this right was free.)
 
 ## Using it
@@ -449,7 +449,7 @@ itself held perfectly — **zero verbatim leaks** of any persona's
 
 That is a finding about the *design*, not just the measurement: nothing in a run
 creates pressure to ask a stakeholder why. Left alone, `underlying_concern` may be
-inert in practice — carried, never surfaced. Recorded in `docs/BACKLOG.md`.
+inert in practice — carried, never surfaced. Recorded in `private/private/docs/BACKLOG.md` (kept out of git).
 
 ### Honest verdict
 

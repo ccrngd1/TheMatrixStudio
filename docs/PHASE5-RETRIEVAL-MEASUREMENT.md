@@ -464,7 +464,7 @@ documents it derives from"*); previously the second-hand hop was invisible.
   produced no illegitimate citation at all, so the rejection path is proven only
   by tests with a mocked bad citation — not yet by catching a real one.
 - **Entailment is still not checked** — DEFERRED with evidence and a revisit
-  trigger; see `docs/BACKLOG.md`. A first-hand citation of a passage that does not
+  trigger; see `private/private/docs/BACKLOG.md` (kept out of git). A first-hand citation of a passage that does not
   actually support the claim remains undetected. That needs an LLM judge and a
   measured base rate, and it consumes this stage's output (a first-hand cite is
   verified against the passage, a second-hand one against the transcript).

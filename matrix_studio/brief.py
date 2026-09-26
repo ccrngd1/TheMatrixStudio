@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """A one-page decision brief for a conversation or an ensemble — what a leadership reader gets.
 
-The customer persona in both brainstorm brainstorms asked for this, and the Opus run's room
-settled what it must NOT be: a single confidence number. Sam dropped his own request for one,
-persuaded it would be indefensible in front of leadership. So the brief's organising rule is the one
-that room agreed:
+The organising rule is one a brainstorm run of this tool settled on: a single confidence number
+would be indefensible in front of a leadership reader, so
 
     No number without its group and replicate count. Where either is missing, it says
     "not yet measured".

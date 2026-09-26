@@ -221,7 +221,7 @@ in for before its numbers are used to decide anything.
 
 ## 9. Two defects found by reading the code — fixed 2026-09-15, before any further arm
 
-Neither was a quality question. Both are fixed and both are in `docs/BACKLOG.md`.
+Neither was a quality question. Both are fixed and both are in `private/private/docs/BACKLOG.md` (kept out of git).
 
 1. **A programming error in the selection call was indistinguishable from a choice.** While
    building the harness I called `_select_next_speaker(agents, topic, …)` with the first two
@@ -418,7 +418,7 @@ than the model, which is the thing Stage 2 exists to judge.
 
 The Sonnet passes drew intermittent `400 Bad Request` from `bedrock-runtime` — 3 occurrences,
 one whole pass lost and topped up by hand. Not the prompt: the same prompt ran 20/20 clean on
-retry. That is the second sweep in a row where the missing retry (see `docs/BACKLOG.md`) cost
+retry. That is the second sweep in a row where the missing retry (see `private/private/docs/BACKLOG.md` (kept out of git)) cost
 paid work, and on Sonnet a lost pass costs ~$1.70 rather than ~$0.43.
 
 ---
@@ -532,7 +532,7 @@ nothing to allocate.
 **The real defect is that a run has no termination criterion other than `max_messages`.**
 Nothing detects that a conversation has converged, so the engine keeps buying turns after
 the argument is over — at Sonnet prices, about $0.30 of the $0.91 here bought fifteen turns
-of people agreeing. That is now in `docs/BACKLOG.md`.
+of people agreeing. That is now in `private/private/docs/BACKLOG.md` (kept out of git).
 
 **A+B stays.** The first 25 turns of the fair run are better by every measure that matters
 and the last 15 are cheap filler; the control's 40 turns are a two-person argument with an
@@ -671,7 +671,7 @@ thing that works on the path the tests take and not on the path that ships.
 It failed safe — a guard that can never be satisfied means a run that never stops early — but
 the feature is inert. To fix it the streak has to be reconstructed from durable state rather
 than held in a closure: count the trailing `speaker.declined` events since the last
-`agent.response`, which the turn Lambda can read, and pass it in. Filed in `docs/BACKLOG.md`.
+`agent.response`, which the turn Lambda can read, and pass it in. Filed in `private/private/docs/BACKLOG.md` (kept out of git).
 
 ### What this leaves
 

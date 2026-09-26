@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Export a conversation, or an ensemble, as Markdown or a self-contained HTML file.
 
-`docs/BACKLOG.md` asked for Markdown, HTML and PDF. The split is: this module builds ONE plain data
+`private/private/docs/BACKLOG.md` (kept out of git) asked for Markdown, HTML and PDF. The split is: this module builds ONE plain data
 model from stored data and renders it two ways. PDF is the browser printing the HTML export — see
 "Why PDF is print" below.
 

@@ -178,7 +178,7 @@ F scored 2, 2, 5, against Arm B's consistent 5, 5, 5. Arm B is still the only ar
 holds five distinct positions in every run. This is the third time this signal has
 appeared and it remains the one thing pointing at a real cost to rendering
 convictions from data rather than prose. n = 3 with unknown judge variance, so it is
-recorded and not concluded. Tracked in `docs/BACKLOG.md`.
+recorded and not concluded. Tracked in `private/private/docs/BACKLOG.md` (kept out of git).
 
 Cross-speaker similarity for E (0.1441 normalised) is inside the noise floor
 established earlier (~0.02) against every arm except B, so nothing is claimed there

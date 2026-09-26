@@ -10,7 +10,7 @@ interface Props {
 // What the runs concluded, and what every run in a group agreed on — the answer to "so what did the
 // room decide, and how consistently?", placed above the full claim table so it is read first.
 //
-// Four rules, from docs/BACKLOG.md and ENSEMBLE-CONVERSATIONS.md §4:
+// Four rules, from private/docs/BACKLOG.md and ENSEMBLE-CONVERSATIONS.md §4:
 //
 //   - Per group, never pooled. Conclusions reuse ClaimTable, so they get its one-column-per-group,
 //     no-total layout rather than a second implementation of it.

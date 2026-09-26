@@ -384,7 +384,7 @@ export interface AgentDossier {
   // Phase 6. Null for a run that used no structured personas. The backend has
   // already stripped `underlying_concern` and `validity` — both are private to
   // the operator by design, so they are absent from this type on purpose rather
-  // than by omission. No UI renders this yet (see docs/BACKLOG.md).
+  // than by omission. No UI renders this yet (see private/docs/BACKLOG.md).
   structured?: StructuredPersona | null
   // Whether cognition was CONFIGURED on the run, which is not the same question as
   // whether it produced anything. Optional so a dossier from an older backend parses;

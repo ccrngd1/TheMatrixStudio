@@ -188,7 +188,7 @@ Sonnet, **77% on Opus**:
 ### Two cost caveats that matter more than the percentages
 
 - **Selection spend is currently not counted at all.** The run's cost total sums the voice
-  calls only (already in `docs/BACKLOG.md`), so today's $0.139 of selection is invisible to
+  calls only (already in `private/private/docs/BACKLOG.md` (kept out of git)), so today's $0.139 of selection is invisible to
   the run total *and to the user spend cap*. Moving to Opus would make the unmetered
   fraction ~40% of a run's true cost, so a cap set at $2 would stop a run that had actually
   spent nearly $3. **Fix the metering in the same change, or before it.** This is the one
