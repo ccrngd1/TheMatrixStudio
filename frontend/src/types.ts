@@ -76,6 +76,9 @@ export interface RunDetail extends RunSummary {
   // PERSONA-RESEARCH.md §5.3: the account of a research pass nobody watched.
   // Null or absent for every run that did not ask for research.
   research?: ResearchRecord | null
+  // Each model role -> the model it resolved to, from the stored config via the engine's own
+  // ModelSet. Shown so a run cannot use a different model than it asked for without anyone seeing.
+  models?: Record<string, string | null>
 }
 
 // -------- Pre-conversation research (docs/PERSONA-RESEARCH.md) --------- //

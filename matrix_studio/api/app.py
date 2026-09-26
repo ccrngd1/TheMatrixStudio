@@ -47,7 +47,7 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from matrix_studio import (
     analysis, bindings, blobs, ensemble_spec, orchestration, service,
@@ -242,7 +242,18 @@ class PersonaConfigModel(BaseModel):
 
 
 class RunConfigModel(BaseModel):
+    # UNKNOWN KEYS ARE REFUSED, not dropped. Pydantic ignores undeclared fields by default, and for
+    # a run's config that default is a silent failure: `config.model` was undeclared, so every run
+    # built from a definition that set it — all the renewal runs and three §9 comparisons — asked
+    # for Opus 5 and ran on the deployment's Sonnet 5, with nothing anywhere saying so. A misplaced
+    # setting is now a 422 naming the key, which is a mistake an author can see and fix.
+    model_config = ConfigDict(extra="forbid")
+
     max_messages: Optional[int] = None
+    # The conversation's model — applied to EVERY role that `models` does not name
+    # (`matrix_studio/models.py`, `ModelSet.resolve`). Also accepted at the top level of the request
+    # for older clients; giving both, differently, is refused rather than resolved by a guess.
+    model: Optional[str] = None
     generate_avatars: Optional[bool] = None
     # Phase 2c: optional cognition config. Omitted -> cognition disabled
     # (engine behaves exactly as Phase 2b).
@@ -301,6 +312,19 @@ class SuggestPersonasModel(BaseModel):
 
 
 class CreateRunModel(BaseModel):
+    @model_validator(mode="after")
+    def _one_model(self) -> "CreateRunModel":
+        # Two places can name the conversation's model. If they disagree, either choice would be a
+        # guess about which the author meant — and a wrong guess is invisible, which is the failure
+        # that made `config.model` worth fixing in the first place.
+        inner = getattr(self.config, "model", None)
+        if self.model and inner and self.model != inner:
+            raise ValueError(
+                f"model is set twice and differently: top-level {self.model!r} and config.model "
+                f"{inner!r}. Set one."
+            )
+        return self
+
     topic: str
     cast: List[PersonaModel]
     config: RunConfigModel = Field(default_factory=RunConfigModel)
@@ -1241,10 +1265,16 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             except (TypeError, json.JSONDecodeError):
                 logger.warning("Run %s has an unreadable research record", run["id"])
 
+        # What each model role ACTUALLY resolved to — the thing a run could not show when
+        # `config.model` was being dropped. From the stored config, through the same `ModelSet`
+        # the engine uses, so the page cannot disagree with what ran.
+        from matrix_studio.models import ModelSet
+
         return {
             **summary,
             "cast": cast,
             "config": config,
+            "models": ModelSet.from_config(config).as_dict(),
             "result": result,
             "summary": {"generated": generated, "imported": imported},
             "lineage": {"parent": parent, "branches": branches},
@@ -1885,8 +1915,14 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             # A binding whose grant has since been revoked is re-validated at creation
             # and refused with a 422 naming it, which is the right outcome: carrying it
             # forward silently would produce a run that searches less than it claims.
+            #
+            # `selection`, `research` and `models` were missing for the same reason, found while
+            # fixing `config.model`: "start over" silently lost the speaker method, the research
+            # toggle and the per-role model choices. `research.targets` is dropped by its own model
+            # and re-allocated on creation, which is right — a copied target would point the new run
+            # at the old run's collections.
             ("max_messages", "generate_avatars", "cognition", "retrieval", "personas",
-             "knowledge_bases")
+             "knowledge_bases", "selection", "research", "models")
             if k in config and config[k] is not None
         }
 

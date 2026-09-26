@@ -510,6 +510,12 @@ every slot to research that shared its collection (§5.1), and that behaviour wa
 visible rather than fixed. If 4 fails, that decision is what it indicts.
 
 
+> **Model note, added 2026-09-26.** Every §9 run — all three, both arms — ran with **Sonnet 5**
+> as the personas' voice, not the Opus 5 the definitions named. `config.model` was being silently
+> dropped by request validation (fixed: it is now honoured, and an unknown config key is refused).
+> Both arms of every run got the same model, so the comparisons are internally fair; what they do
+> not show is how Opus 5 would have behaved.
+
 ### 9.2 Result — 2026-09-25. **Criterion 1 FAILS as registered.**
 
 Control ensemble `8b71fedb`, research ensemble `cfce13ed`, scored by `scripts/analyse_section9.py`

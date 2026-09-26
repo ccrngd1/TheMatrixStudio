@@ -132,8 +132,13 @@ def settings_lines(config: Dict[str, Any]) -> List[str]:
     lines.append("Pre-conversation research: " + ("on" if research.get("enabled") else "off"))
     cognition = config.get("cognition") or {}
     lines.append("Cognition (memory, reflection, goals): " + ("on" if cognition.get("enabled") else "off"))
-    if config.get("model"):
-        lines.append(f"Conversation model: {config['model']}")
+    # The RESOLVED voice model, not `config.get("model")`: with nothing configured the voice is the
+    # deployment default, and printing nothing then would hide what actually spoke.
+    from matrix_studio.models import ModelSet
+
+    voice = ModelSet.from_config(config).as_dict().get("voice")
+    if voice:
+        lines.append(f"Personas' voice model: {voice.rsplit('/', 1)[-1].split('anthropic.')[-1]}")
     return lines
 
 
