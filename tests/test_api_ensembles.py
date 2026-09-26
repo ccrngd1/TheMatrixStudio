@@ -144,6 +144,15 @@ class TestTheDefaultIsReplicates:
         for member in detail["members"]:
             assert _run(client, member["run_id"])["run_id"] == member["run_id"]
 
+    def test_the_run_list_says_which_ensemble_and_group_a_run_belongs_to(self, client):
+        # The history list nests members under their ensemble; without these fields every
+        # replicate lands among the individual conversations.
+        out = _create(client).json()
+        listed = {r["run_id"]: r for r in client.get("/api/runs").json()["runs"]}
+        for m in out["members"]:
+            assert listed[m["run_id"]]["ensemble_id"] == out["ensemble_id"]
+            assert listed[m["run_id"]]["ensemble_cell"] == "base"
+
     def test_every_member_config_is_identical(self, client):
         # The premise of the default mode. If the configs differed, the ensemble would be
         # measuring a config difference and calling it sampling variance.

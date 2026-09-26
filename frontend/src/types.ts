@@ -46,6 +46,9 @@ export interface RunSummary {
   // fresh/root run).
   parent_run_id?: string | null
   branch_turn?: number | null
+  // Set on an ensemble's member runs (and the group label it was created under).
+  ensemble_id?: string | null
+  ensemble_cell?: string | null
 }
 
 export interface AgentResult {

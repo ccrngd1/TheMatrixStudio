@@ -152,3 +152,71 @@ describe('History ensembles', () => {
     expect(mocked.listEnsembles).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('History — ensembles fold their own conversations', () => {
+  const run = (id: string, name: string, over: Record<string, unknown> = {}) => ({
+    run_id: id, name, description: 'd', slug: name, topic: 't', status: 'complete',
+    turn_count: 2, total_cost_usd: 0.01, created_at: 1, completed_at: 2, last_event_at: 2,
+    parent_run_id: null, branch_turn: null, ensemble_id: null, ensemble_cell: null, ...over,
+  })
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    localStorage.clear()
+    mocked.listRuns.mockResolvedValue([
+      run('r0', 'solo-run'),
+      run('r1', 'renewal-base-1', { ensemble_id: 'e1', ensemble_cell: 'base' }),
+      run('r2', 'renewal-base-2', { ensemble_id: 'e1', ensemble_cell: 'base' }),
+    ])
+    mocked.listEnsembles.mockResolvedValue([ens()])
+  })
+
+  it('keeps members out of the individual list, folded under their ensemble', async () => {
+    render(<History onOpen={() => {}} onNew={() => {}} onOpenEnsemble={() => {}} />)
+    await waitFor(() => expect(screen.getByText('solo-run')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('renewal')).toBeInTheDocument())
+    expect(screen.queryByText('renewal-base-1')).not.toBeInTheDocument()
+    expect(screen.getByText('Individual conversations').parentElement).toHaveTextContent('(1)')
+
+    fireEvent.click(screen.getByLabelText(/Show the conversations in renewal/))
+    expect(screen.getByText('renewal-base-1')).toBeInTheDocument()
+    expect(screen.getByText('renewal-base-2')).toBeInTheDocument()
+    fireEvent.click(screen.getByLabelText(/Hide the conversations in renewal/))
+    expect(screen.queryByText('renewal-base-1')).not.toBeInTheDocument()
+  })
+
+  it('opens a nested member as an ordinary run, and unfolding does not open the ensemble', async () => {
+    const onOpen = vi.fn()
+    const onOpenEnsemble = vi.fn()
+    render(<History onOpen={onOpen} onNew={() => {}} onOpenEnsemble={onOpenEnsemble} />)
+    await waitFor(() => expect(screen.getByText('renewal')).toBeInTheDocument())
+    fireEvent.click(screen.getByLabelText(/Show the conversations in renewal/))
+    expect(onOpenEnsemble).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByText('renewal-base-2'))
+    expect(onOpen).toHaveBeenCalledWith('r2')
+  })
+
+  it('folds each section, and remembers it', async () => {
+    const { unmount } = render(<History onOpen={() => {}} onNew={() => {}} onOpenEnsemble={() => {}} />)
+    await waitFor(() => expect(screen.getByText('solo-run')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Individual conversations'))
+    expect(screen.queryByText('solo-run')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByText('Ensembles'))
+    expect(screen.queryByText('renewal')).not.toBeInTheDocument()
+    unmount()
+
+    render(<History onOpen={() => {}} onNew={() => {}} onOpenEnsemble={() => {}} />)
+    await waitFor(() => expect(mocked.listRuns).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.getByText('Individual conversations')).toBeInTheDocument())
+    expect(screen.queryByText('solo-run')).not.toBeInTheDocument()
+    expect(screen.queryByText('renewal')).not.toBeInTheDocument()
+  })
+
+  it('leaves members in the individual list when their ensemble is not listed', async () => {
+    // A failed ensembles request must not make its runs unreachable.
+    mocked.listEnsembles.mockRejectedValue(new Error('404 Not Found'))
+    render(<History onOpen={() => {}} onNew={() => {}} onOpenEnsemble={() => {}} />)
+    await waitFor(() => expect(screen.getByText('renewal-base-1')).toBeInTheDocument())
+    expect(screen.getByText('solo-run')).toBeInTheDocument()
+  })
+})
