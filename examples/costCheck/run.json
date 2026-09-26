@@ -1,0 +1,37 @@
+{
+  "name": "cost-check",
+  "description": "Verifies a run's reported cost against Bedrock's invocation log",
+  "topic": "Should a small team adopt a four-day work week for one quarter as an experiment?",
+  "cast": [
+    {
+      "name": "Maya",
+      "persona": "You are Maya, an engineering manager who wants the experiment and has read the pilot studies. Keep replies to one short paragraph.",
+      "goals": [
+        "Get a fair trial approved"
+      ]
+    },
+    {
+      "name": "Tom",
+      "persona": "You are Tom, a finance lead worried about coverage and client response times. Keep replies to one short paragraph.",
+      "goals": [
+        "Protect client commitments"
+      ]
+    }
+  ],
+  "config": {
+    "max_messages": 8,
+    "generate_avatars": true,
+    "cognition": {
+      "enabled": true,
+      "memory": true,
+      "reflection_every": 4,
+      "goals_dynamic": true,
+      "relationships": true
+    },
+    "models": {
+      "speaker_selection": "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0",
+      "validation": "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0",
+      "naming": "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0"
+    }
+  }
+}
