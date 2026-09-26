@@ -172,6 +172,14 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh }: Props) {
               </span>
             </h1>
             <p className="text-xs text-slate-500">{detail?.description ?? detail?.topic}</p>
+            {/* Which model the personas actually spoke with. A definition once asked for Opus 5 and
+                every run silently used Sonnet 5; this is where that becomes visible. */}
+            {detail?.models?.voice && (
+              <p className="text-[11px] text-slate-600" title={Object.entries(detail.models)
+                .map(([role, m]) => `${role}: ${m ?? 'default'}`).join('\n')}>
+                voices: {detail.models.voice.split('/').pop()?.split('anthropic.').pop()}
+              </p>
+            )}
           </div>
         </div>
         <div className="flex items-center gap-3">
