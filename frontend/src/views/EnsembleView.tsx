@@ -88,6 +88,11 @@ export function EnsembleView({ ensembleId, onBack, onOpenRun }: Props) {
     void load()
   }, [load])
 
+  // `rebuilding` is in the dependencies, and that is the fix for a dead poll. A forced rebuild
+  // changes neither `has_report` nor `report_error` — the previous report is still stored and still
+  // served — so without it the effect never re-ran after the click: `settled` went false and no
+  // timer existed to notice the new report. The page said "Rebuilding" until reloaded by hand.
+  // Found by an operator on s9c-research, whose rebuilt report had landed minutes earlier.
   useEffect(() => {
     if (settled.current) return
     const timer = setInterval(() => {
@@ -95,7 +100,7 @@ export function EnsembleView({ ensembleId, onBack, onOpenRun }: Props) {
       void load()
     }, POLL_MS)
     return () => clearInterval(timer)
-  }, [load, detail?.has_report, detail?.report_error])
+  }, [load, detail?.has_report, detail?.report_error, rebuilding])
 
   const generate = async (force: boolean) => {
     setGenerating(true)
