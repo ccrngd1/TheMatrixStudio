@@ -26,8 +26,8 @@ function ens(over: Record<string, unknown> = {}) {
   return {
     ensemble_id: 'e1',
     name: 'renewal',
-    description: 'renewal',
-    topic: 'renewal',
+    description: 'annual renewal proposal',
+    topic: 'renewal policy',
     status: 'running',
     created_at: 1,
     completed_at: null,
