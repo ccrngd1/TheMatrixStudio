@@ -327,6 +327,42 @@ describe('EnsembleView', () => {
     )
   })
 
+  it('POLLS for a rebuilt report that lands after the request returns', async () => {
+    // The real timing, which the test above does not model: a rebuild is minutes long, so the new
+    // report is NOT there when the request returns — only polling can find it. The test above makes
+    // the new timestamp available inside the request, so the view's immediate reload finds it and
+    // the poll is never exercised. It passed while the poll was dead: the effect only re-ran on
+    // `has_report` / `report_error`, and a forced rebuild changes neither (the old report is still
+    // stored and served), so no timer existed and the page said "Rebuilding" until reloaded by hand.
+    // Found by an operator, 2026-09-26, on s9c-research — the report had landed at 14:40.
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      mocked.getEnsemble.mockResolvedValue(
+        detail({ has_report: true, report: REPORT, report_generated_at: 10 }),
+      )
+      mocked.generateEnsembleReport.mockResolvedValue({ accepted: true })
+      render(<EnsembleView ensembleId="e1" onBack={() => {}} onOpenRun={() => {}} />)
+
+      await waitFor(() => expect(screen.getByText('labwork required')).toBeInTheDocument())
+      fireEvent.click(screen.getByRole('button', { name: /Rebuild report/ }))
+      await waitFor(() =>
+        expect(screen.getByText(/previous one until the new report lands/)).toBeInTheDocument(),
+      )
+
+      // The new report lands later, on the server, with nothing on the page having asked.
+      mocked.getEnsemble.mockResolvedValue(
+        detail({ has_report: true, report: REPORT, report_generated_at: 99 }),
+      )
+      await vi.advanceTimersByTimeAsync(10_000)
+
+      await waitFor(() =>
+        expect(screen.queryByText(/previous one until the new report lands/)).not.toBeInTheDocument(),
+      )
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('reports a load failure instead of rendering an empty ensemble', async () => {
     // "This ensemble has nothing" and "the request failed" look identical otherwise, and the
     // first is a lie.
