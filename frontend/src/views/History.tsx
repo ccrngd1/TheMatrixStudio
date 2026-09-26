@@ -28,7 +28,8 @@ export function History({ onOpen, onNew, onKnowledgeBases, onOpenEnsemble }: Pro
   const [runs, setRuns] = useState<RunSummary[]>([])
   // Ensembles are listed ABOVE the runs rather than mixed into them. They are a different
   // kind of thing — no transcript, no turn count — and interleaving them by date would put a
-  // row with no turns and no cost in a list whose columns are turns and cost.
+  // row with no turns and no cost in a list whose columns are turns and cost. Their member
+  // runs are nested under them, not repeated in the individual list.
   const [ensembles, setEnsembles] = useState<EnsembleSummary[]>([])
   const [q, setQ] = useState('')
   const [loading, setLoading] = useState(true)
@@ -105,6 +106,52 @@ export function History({ onOpen, onNew, onKnowledgeBases, onOpenEnsemble }: Pro
     }
   }, [canOpenEnsembles])
 
+  const [openSections, setOpenSections] = useState(readSections)
+  const toggleSection = (id: SectionId) =>
+    setOpenSections((prev) => {
+      const next = { ...prev, [id]: !prev[id] }
+      try {
+        localStorage.setItem(SECTIONS_KEY, JSON.stringify(next))
+      } catch {
+        // Storage can be unavailable (private mode, quota). Folding still works for this visit.
+      }
+      return next
+    })
+  // Each ensemble starts folded: its members are replicates, and the point of nesting them is
+  // that they stay out of the way until asked for.
+  const [openEnsembles, setOpenEnsembles] = useState<Set<string>>(new Set())
+  const toggleEnsemble = (id: string) =>
+    setOpenEnsembles((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+
+  // A member is nested only under an ensemble that is actually LISTED. If the ensembles request
+  // failed, or the ensemble is gone, its runs stay in the individual list — hiding them under a
+  // parent that is not on screen would make them unreachable.
+  const listed = new Set(ensembles.map((e) => e.ensemble_id))
+  const membersOf = new Map<string, RunSummary[]>()
+  const individual: RunSummary[] = []
+  for (const r of runs) {
+    if (onOpenEnsemble && r.ensemble_id && listed.has(r.ensemble_id)) {
+      const list = membersOf.get(r.ensemble_id) ?? []
+      list.push(r)
+      membersOf.set(r.ensemble_id, list)
+    } else {
+      individual.push(r)
+    }
+  }
+  // Grouped by cell, then oldest first — the order the ensemble page lists them in.
+  for (const list of membersOf.values()) {
+    list.sort(
+      (a, b) =>
+        (a.ensemble_cell ?? '').localeCompare(b.ensemble_cell ?? '') ||
+        (a.created_at ?? 0) - (b.created_at ?? 0),
+    )
+  }
+
   return (
     <div className="mx-auto max-w-4xl p-6">
       <div className="mb-4 flex items-center justify-between">
@@ -135,54 +182,82 @@ export function History({ onOpen, onNew, onKnowledgeBases, onOpenEnsemble }: Pro
       />
 
       {onOpenEnsemble && ensembles.length > 0 && (
-        <section className="mb-6">
-          <h2 className="mb-2 text-xs uppercase tracking-wide text-slate-500">Ensembles</h2>
+        <Section
+          id="ensembles"
+          title="Ensembles"
+          count={ensembles.length}
+          open={openSections.ensembles}
+          onToggle={() => toggleSection('ensembles')}
+        >
           <div className="space-y-2">
             {ensembles.map((e) => {
-              const runs = (e.spec ?? []).reduce((n, c) => n + (c.n ?? 0), 0)
+              const planned = (e.spec ?? []).reduce((n, c) => n + (c.n ?? 0), 0)
+              const members = membersOf.get(e.ensemble_id) ?? []
+              const expanded = openEnsembles.has(e.ensemble_id)
               return (
-                <button
-                  key={e.ensemble_id}
-                  onClick={() => onOpenEnsemble(e.ensemble_id)}
-                  className="flex w-full items-center justify-between rounded-lg border border-matrix-border bg-matrix-panel p-3 text-left hover:border-matrix-accent"
-                >
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="font-semibold text-matrix-accent">
-                        {e.name ?? e.ensemble_id.slice(0, 8)}
-                      </span>
-                      <span className="rounded bg-matrix-border px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-300">
-                        {runs} run{runs === 1 ? '' : 's'}
-                        {(e.spec ?? []).length > 1 ? `, ${e.spec.length} groups` : ''}
-                      </span>
-                      {/* Three states, not two. "No report yet" and "a report was refused"
-                          are different, and only one of them is worth opening to retry. */}
-                      {e.report_error ? (
-                        <span className="rounded bg-rose-900/40 px-2 py-0.5 text-[10px] uppercase tracking-wide text-rose-200">
-                          report failed
-                        </span>
-                      ) : e.has_report ? (
-                        <span className="rounded bg-emerald-900/40 px-2 py-0.5 text-[10px] uppercase tracking-wide text-emerald-200">
-                          report ready
-                        </span>
-                      ) : (
-                        <span className="rounded bg-matrix-border px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-400">
-                          {e.status ?? 'pending'}
-                        </span>
-                      )}
+                <div key={e.ensemble_id} className="rounded-lg border border-matrix-border bg-matrix-panel">
+                  <div className="flex items-stretch">
+                    {/* Its own control, not part of the row: the row opens the ensemble, and
+                        folding a list open should not navigate away from it. */}
+                    <button
+                      onClick={() => toggleEnsemble(e.ensemble_id)}
+                      aria-expanded={expanded}
+                      aria-label={`${expanded ? 'Hide' : 'Show'} the conversations in ${e.name ?? e.ensemble_id}`}
+                      disabled={members.length === 0}
+                      className="w-8 shrink-0 border-r border-matrix-border text-slate-400 hover:text-slate-100 disabled:opacity-30"
+                    >
+                      {expanded ? '▾' : '▸'}
+                    </button>
+                    <button
+                      onClick={() => onOpenEnsemble(e.ensemble_id)}
+                      className="flex min-w-0 flex-1 items-center justify-between p-3 text-left hover:bg-matrix-border/30"
+                    >
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="font-semibold text-matrix-accent">
+                            {e.name ?? e.ensemble_id.slice(0, 8)}
+                          </span>
+                          <span className="rounded bg-matrix-border px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-300">
+                            {planned} run{planned === 1 ? '' : 's'}
+                            {(e.spec ?? []).length > 1 ? `, ${e.spec.length} groups` : ''}
+                          </span>
+                          {/* Three states, not two. "No report yet" and "a report was refused"
+                              are different, and only one of them is worth opening to retry. */}
+                          {e.report_error ? (
+                            <span className="rounded bg-rose-900/40 px-2 py-0.5 text-[10px] uppercase tracking-wide text-rose-200">
+                              report failed
+                            </span>
+                          ) : e.has_report ? (
+                            <span className="rounded bg-emerald-900/40 px-2 py-0.5 text-[10px] uppercase tracking-wide text-emerald-200">
+                              report ready
+                            </span>
+                          ) : (
+                            <span className="rounded bg-matrix-border px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-400">
+                              {e.status ?? 'pending'}
+                            </span>
+                          )}
+                        </div>
+                        <p className="truncate text-sm text-slate-300">
+                          {e.description ?? e.topic}
+                        </p>
+                      </div>
+                      <div className="ml-3 whitespace-nowrap text-right text-xs text-slate-500">
+                        {e.report_cost_usd != null && <div>${e.report_cost_usd.toFixed(4)} report</div>}
+                      </div>
+                    </button>
+                  </div>
+                  {expanded && members.length > 0 && (
+                    <div className="space-y-2 border-t border-matrix-border p-2 pl-10">
+                      {members.map((r) => (
+                        <RunRow key={r.run_id} run={r} onOpen={onOpen} cell={r.ensemble_cell} />
+                      ))}
                     </div>
-                    <p className="truncate text-sm text-slate-300">
-                      {e.description ?? e.topic}
-                    </p>
-                  </div>
-                  <div className="ml-3 whitespace-nowrap text-right text-xs text-slate-500">
-                    {e.report_cost_usd != null && <div>${e.report_cost_usd.toFixed(4)} report</div>}
-                  </div>
-                </button>
+                  )}
+                </div>
               )
             })}
           </div>
-        </section>
+        </Section>
       )}
 
       {loading ? (
@@ -208,46 +283,122 @@ export function History({ onOpen, onNew, onKnowledgeBases, onOpenEnsemble }: Pro
       ) : runs.length === 0 ? (
         <p className="text-slate-500">No runs yet. Start one with “+ New run”.</p>
       ) : (
-        <div className="space-y-2">
-          {runs.map((r) => (
-            <button
-              key={r.run_id}
-              onClick={() => onOpen(r.run_id)}
-              className="flex w-full items-center justify-between rounded-lg border border-matrix-border bg-matrix-panel p-3 text-left hover:border-matrix-accent"
-            >
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="font-semibold text-matrix-accent">{r.name ?? r.run_id.slice(0, 8)}</span>
-                  {/* `lastEventAt` and `createdAt` were never passed, so the
-                      staleness branch inside StatusPill could not fire: a run orphaned
-                      by a restart rendered as a healthy "running" for ever. The API has
-                      supplied `last_event_at` for exactly this since it was added. */}
-                  <StatusPill
-                    status={r.status}
-                    lastEventAt={r.last_event_at}
-                    createdAt={r.created_at}
-                  />
-                  {r.parent_run_id && (
-                    <span
-                      title={`Branched @ turn ${r.branch_turn}`}
-                      className="rounded bg-matrix-border px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-300"
-                    >
-                      ⑂ branch @ {r.branch_turn}
-                    </span>
-                  )}
-                </div>
-                <p className="truncate text-sm text-slate-300">{r.description ?? r.topic}</p>
-                <p className="truncate text-xs text-slate-500">{r.topic}</p>
-              </div>
-              <div className="ml-3 whitespace-nowrap text-right text-xs text-slate-500">
-                <div>{r.turn_count} turns</div>
-                <div>${(r.total_cost_usd ?? 0).toFixed(4)}</div>
-              </div>
-            </button>
-          ))}
-        </div>
+        <Section
+          id="runs"
+          title="Individual conversations"
+          count={individual.length}
+          open={openSections.runs}
+          onToggle={() => toggleSection('runs')}
+        >
+          {individual.length === 0 ? (
+            <p className="text-sm text-slate-500">
+              {q ? 'No individual conversation matches.' : 'Every conversation here belongs to an ensemble above.'}
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {individual.map((r) => (
+                <RunRow key={r.run_id} run={r} onOpen={onOpen} />
+              ))}
+            </div>
+          )}
+        </Section>
       )}
     </div>
+  )
+}
+
+// Which sections are folded is remembered across visits: a user who closes the individual list
+// to work with ensembles should not reopen it on every return to this page.
+const SECTIONS_KEY = 'matrix-studio.history.sections'
+type SectionId = 'ensembles' | 'runs'
+
+function readSections(): Record<SectionId, boolean> {
+  const all = { ensembles: true, runs: true }
+  try {
+    const saved = JSON.parse(localStorage.getItem(SECTIONS_KEY) ?? '{}')
+    return { ...all, ...(saved && typeof saved === 'object' ? saved : {}) }
+  } catch {
+    return all
+  }
+}
+
+function Section({
+  id,
+  title,
+  count,
+  open,
+  onToggle,
+  children,
+}: {
+  id: SectionId
+  title: string
+  count: number
+  open: boolean
+  onToggle: () => void
+  children: React.ReactNode
+}) {
+  return (
+    <section className="mb-6">
+      <h2 className="mb-2">
+        <button
+          onClick={onToggle}
+          aria-expanded={open}
+          aria-controls={`history-${id}`}
+          className="flex items-center gap-1 text-xs uppercase tracking-wide text-slate-500 hover:text-slate-300"
+        >
+          <span aria-hidden>{open ? '▾' : '▸'}</span>
+          <span>{title}</span>
+          <span className="normal-case text-slate-600">({count})</span>
+        </button>
+      </h2>
+      {open && <div id={`history-${id}`}>{children}</div>}
+    </section>
+  )
+}
+
+function RunRow({
+  run: r,
+  onOpen,
+  cell,
+}: {
+  run: RunSummary
+  onOpen: (runId: string) => void
+  /** The ensemble group the run was created under; shown only when nested. */
+  cell?: string | null
+}) {
+  return (
+    <button
+      onClick={() => onOpen(r.run_id)}
+      className="flex w-full items-center justify-between rounded-lg border border-matrix-border bg-matrix-panel p-3 text-left hover:border-matrix-accent"
+    >
+      <div className="min-w-0">
+        <div className="flex items-center gap-2">
+          {cell && (
+            <span className="text-[10px] uppercase tracking-wide text-slate-500">{cell}</span>
+          )}
+          <span className="font-semibold text-matrix-accent">{r.name ?? r.run_id.slice(0, 8)}</span>
+          {/* `lastEventAt` and `createdAt` were never passed, so the
+              staleness branch inside StatusPill could not fire: a run orphaned
+              by a restart rendered as a healthy "running" for ever. The API has
+              supplied `last_event_at` for exactly this since it was added. */}
+          <StatusPill status={r.status} lastEventAt={r.last_event_at} createdAt={r.created_at} />
+          {r.parent_run_id && (
+            <span
+              title={`Branched @ turn ${r.branch_turn}`}
+              className="rounded bg-matrix-border px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-300"
+            >
+              ⑂ branch @ {r.branch_turn}
+            </span>
+          )}
+        </div>
+        <p className="truncate text-sm text-slate-300">{r.description ?? r.topic}</p>
+        {!cell && <p className="truncate text-xs text-slate-500">{r.topic}</p>}
+      </div>
+      <div className="ml-3 whitespace-nowrap text-right text-xs text-slate-500">
+        <div>{r.turn_count} turns</div>
+        <div>${(r.total_cost_usd ?? 0).toFixed(4)}</div>
+      </div>
+    </button>
   )
 }
 

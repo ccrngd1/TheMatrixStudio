@@ -555,6 +555,10 @@ def _run_summary(run: Dict[str, Any]) -> Dict[str, Any]:
         # "branched from <parent> @ turn N". Both null for a fresh (root) run.
         "parent_run_id": run.get("parent_run_id"),
         "branch_turn": run.get("branch_turn"),
+        # Set on an ensemble's member runs, so the history list can nest them under their
+        # ensemble instead of listing replicates among the individual conversations.
+        "ensemble_id": run.get("ensemble_id"),
+        "ensemble_cell": run.get("ensemble_cell"),
     }
 
 
