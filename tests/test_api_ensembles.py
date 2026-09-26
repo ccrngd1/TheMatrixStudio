@@ -708,3 +708,29 @@ class TestExport:
             assert client.get(f"/api/ensembles/{eid}/export").status_code == 404
         finally:
             client.app.dependency_overrides.pop(identity.current_user, None)
+
+
+class TestBrief:
+    def test_an_ensemble_brief_renders_in_both_formats(self, client):
+        eid = _create(client).json()["ensemble_id"]
+        for fmt, media in (("md", "text/markdown"), ("html", "text/html")):
+            r = client.get(f"/api/ensembles/{eid}/brief", params={"format": fmt})
+            assert r.status_code == 200, r.text
+            assert r.headers["content-type"].startswith(media)
+            assert "Decision brief" in r.text
+
+    def test_a_run_brief_says_not_yet_measured(self, client):
+        eid = _create(client).json()["ensemble_id"]
+        run_id = client.get(f"/api/ensembles/{eid}").json()["members"][0]["run_id"]
+        r = client.get(f"/api/runs/{run_id}/brief", params={"format": "md"})
+        assert r.status_code == 200 and "not yet measured" in r.text
+
+    def test_another_user_cannot_read_an_ensemble_brief(self, client):
+        from matrix_studio.api import identity
+
+        eid = _create(client).json()["ensemble_id"]
+        client.app.dependency_overrides[identity.current_user] = lambda: "sub-someone-else"
+        try:
+            assert client.get(f"/api/ensembles/{eid}/brief").status_code == 404
+        finally:
+            client.app.dependency_overrides.pop(identity.current_user, None)

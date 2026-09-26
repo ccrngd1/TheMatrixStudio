@@ -1736,6 +1736,55 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Ensemble not found")
         return _export_response(await export.ensemble_model(owned, parent), format)
 
+    def _brief_response(b: Dict[str, Any], fmt: str) -> Response:
+        from matrix_studio import brief as brief_mod
+
+        if fmt not in ("md", "html"):
+            raise HTTPException(status_code=422, detail="format must be md or html")
+        return Response(
+            content=brief_mod.render(b, fmt),
+            media_type="text/markdown; charset=utf-8" if fmt == "md" else "text/html; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{brief_mod.filename(b, fmt)}"'},
+        )
+
+    @app.get("/api/runs/{ref}/brief")
+    async def brief_run(
+        ref: str,
+        format: str = Query(default="html"),  # noqa: A002
+        user: str = Depends(current_user),
+    ) -> Response:
+        """A one-page decision brief for this conversation — `matrix_studio/brief.py`.
+
+        Built from the same stored model as the export, through the caller's own partition, so it
+        can only brief the caller's run and it inherits the export's guarantees (private persona
+        fields omitted, model text escaped, the whole cost). Makes no model call.
+        """
+        from matrix_studio import brief as brief_mod
+        from matrix_studio import export
+
+        owned = db.for_owner(user)
+        run = await owned.get_run_by_ref(ref)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        return _brief_response(brief_mod.run_brief(await export.run_model(owned, run)), format)
+
+    @app.get("/api/ensembles/{ensemble_id}/brief")
+    async def brief_ensemble(
+        ensemble_id: str,
+        format: str = Query(default="html"),  # noqa: A002
+        user: str = Depends(current_user),
+    ) -> Response:
+        """A one-page decision brief for an ensemble, from its STORED report. Regenerates nothing."""
+        from matrix_studio import brief as brief_mod
+        from matrix_studio import export
+
+        owned = db.for_owner(user)
+        parent = await owned.get_ensemble(ensemble_id)
+        if not parent:
+            raise HTTPException(status_code=404, detail="Ensemble not found")
+        return _brief_response(
+            brief_mod.ensemble_brief(await export.ensemble_model(owned, parent)), format)
+
     #: Chunks shown either side of the cited one when only passages are available (a shared
     #: collection). One is enough to read a passage in context without reconstructing the source.
     SOURCE_CONTEXT_CHUNKS = 1

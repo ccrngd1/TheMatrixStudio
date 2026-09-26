@@ -461,9 +461,9 @@ def _ensemble_markdown(m: Dict[str, Any]) -> str:
     if cv["recurring"]:
         out += ["### Reached in two or more runs of a group", ""] + _md_table(cv["recurring"])
     if cv["single"]:
-        out += [f"### Reached in a single run only ({len(cv['single'])})", "",
-                "Each of these was concluded by ONE conversation — rare, not a finding. Listed so "
-                "nothing is hidden, not because any of them is what the ensemble concluded.", ""]
+        out += [f"### Never reached twice within a group ({len(cv['single'])})", "",
+                "None of these recurred inside any group — rare, not findings. Listed so nothing is "
+                "hidden, not because any of them is what the ensemble concluded.", ""]
         out += _md_table(cv["single"])
     out += ["## What every run in a group agreed on", ""]
     if cv["agreed"]:
@@ -649,8 +649,8 @@ def _ensemble_html(m: Dict[str, Any]) -> str:
     if cv["recurring"]:
         b += ["<h3>Reached in two or more runs of a group</h3>", _html_table(cv["recurring"])]
     if cv["single"]:
-        b += [f"<h3>Reached in a single run only ({len(cv['single'])})</h3>",
-              "<p class=\"meta\">Each of these was concluded by ONE conversation — rare, not a finding. "
+        b += [f"<h3>Never reached twice within a group ({len(cv['single'])})</h3>",
+              "<p class=\"meta\">None of these recurred inside any group — rare, not findings. "
               "Listed so nothing is hidden, not because any of them is what the ensemble concluded.</p>",
               _html_table(cv["single"])]
     b.append("</div><h2>What every run in a group agreed on</h2>")
