@@ -31,7 +31,7 @@ from matrix_studio.models import ModelSet, model_for
 # event dict (same shape as a persisted row) for each event the engine emits.
 OnEvent = Callable[[Dict[str, Any]], Awaitable[None]]
 
-from matrix_studio.avatar import generate_avatar, store_avatar
+from matrix_studio.avatar import avatar_cost_usd, generate_avatar, store_avatar
 from matrix_studio.citations import (
     CitationContext,
     analyse_citations,
@@ -94,6 +94,10 @@ class SpeakerChoice(NamedTuple):
     name: Optional[str]
     reason: Optional[str]
     fallback: Optional[str] = None
+    #: What the selection call cost. It was computed by the provider and thrown away, so a run's
+    #: reported cost omitted one model call per moderated turn — measured on brainstorm-opus as
+    #: 35 Haiku calls, $0.20, charged to nobody.
+    cost_usd: float = 0.0
 
 
 def _fallback_speaker(
@@ -371,6 +375,9 @@ Respond with ONLY the name of the persona who should speak next. Choose naturall
         response = await litellm.acompletion(**kwargs)
         raw = (response.choices[0].message.content or "").strip()
         finish = getattr(response.choices[0], "finish_reason", None)
+        call_cost = float(
+            (getattr(response, "_hidden_params", None) or {}).get("response_cost") or 0.0
+        )
     except Exception as e:
         logger.error(f"Speaker selection call failed: {e}", exc_info=True)
         return _fallback_speaker(agent_names, last_speaker, "call_failed")
@@ -394,12 +401,12 @@ Respond with ONLY the name of the persona who should speak next. Choose naturall
 
     if declined:
         logger.info("Moderator declined to nominate: %s", reason)
-        return SpeakerChoice(None, reason, None)
+        return SpeakerChoice(None, reason, None, call_cost)
 
     # Validate selection
     matched = _match(selected)
     if matched is not None:
-        return SpeakerChoice(matched, reason)
+        return SpeakerChoice(matched, reason, None, call_cost)
 
     # The reply named nobody in the cast. The reason (if any) is kept — it says what the
     # moderator was trying to do — but the NAME is ours, and the event will say so.
@@ -410,7 +417,8 @@ Respond with ONLY the name of the persona who should speak next. Choose naturall
     # prompt or the resolver). With no `max_tokens` above, `truncated` should now never
     # appear — and that is exactly why it is worth recording if it does.
     why = "truncated" if finish == "length" else "unresolved"
-    return _fallback_speaker(agent_names, last_speaker, why, reason)
+    # The call was made and paid for even though its answer was unusable, so the cost is kept.
+    return _fallback_speaker(agent_names, last_speaker, why, reason)._replace(cost_usd=call_cost)
 
 
 #: A pass declared in prose rather than by setting the field. The backstop exists because
@@ -1014,7 +1022,12 @@ async def begin_run(
                 seq=next_seq(),
                 event_type="avatar.ready",
                 agent_name=agent.name,
-                payload={"agent_name": agent.name, "portrait_key": agent.portrait_key},
+                payload={
+                    "agent_name": agent.name, "portrait_key": agent.portrait_key,
+                    # Only when an image was actually produced: a disabled, filtered or failed
+                    # generation costs nothing and must not be charged.
+                    **({"cost_usd": avatar_cost_usd()} if portrait else {}),
+                },
             )
 
         await asyncio.gather(*[_make_avatar(a) for a in agents.values()])
@@ -1691,7 +1704,7 @@ async def _run_turns(
                     else "this is only the first decline",
                     pick,
                 )
-                choice = SpeakerChoice(pick, choice.reason, "declined_override")
+                choice = SpeakerChoice(pick, choice.reason, "declined_override", choice.cost_usd)
             else:
                 declines = 0
 
@@ -1719,6 +1732,11 @@ async def _run_turns(
             # and we drew a name" — which the turn shares cannot otherwise distinguish.
             if choice.fallback:
                 speaker_payload["selection_fallback"] = choice.fallback
+            # Every model call's cost lands on the event it produced, so a run's cost is the sum
+            # of its events and the display and the monthly cap cannot disagree. Omitted at zero
+            # (a round-robin or rounds turn makes no call), so those payloads are unchanged.
+            if choice.cost_usd:
+                speaker_payload["cost_usd"] = choice.cost_usd
             await emit(
                 turn=turn,
                 seq=next_seq(),
@@ -1911,6 +1929,18 @@ async def _run_turns(
                     if not verdict["ok"]:
                         checked_payload["principle"] = verdict["principle"]
                         checked_payload["reason"] = verdict["reason"]
+                    # What this check cost, including — when it rejects and a regeneration
+                    # follows — the attempt it threw away. Both were already added to the
+                    # speaker's snapshot total below, and neither was on any EVENT, so the UI
+                    # (which sums events) under-reported every regenerated turn. The attempt
+                    # that is finally KEPT is costed on its `agent.response`, not here, so
+                    # nothing is counted twice.
+                    rejected = (not verdict["ok"]) and attempt < settings.validation_retry_budget
+                    check_cost = float(verdict.get("llm_cost_usd") or 0.0) + (
+                        float(response_data.get("cost_usd") or 0.0) if rejected else 0.0
+                    )
+                    if check_cost:
+                        checked_payload["cost_usd"] = check_cost
                     await emit(
                         turn=turn,
                         seq=next_seq(),

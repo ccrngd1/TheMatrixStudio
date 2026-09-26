@@ -64,6 +64,20 @@ def store_avatar(portrait_b64: Optional[str]) -> Optional[str]:
         return None
 
 
+#: What one generated portrait costs, in USD. **A list price, not a measurement.** litellm has no
+#: price for the Bedrock Stability model this uses, so without a constant here an image cost nothing
+#: in the run's accounting — measured on brainstorm-opus as 6 images in us-west-2, charged to
+#: nobody. Bedrock's published price for Stable Diffusion 3.5 Large, recorded 2026-09; override with
+#: AVATAR_COST_USD if the model or the price changes.
+def avatar_cost_usd() -> float:
+    import os
+
+    try:
+        return max(0.0, float(os.environ.get("AVATAR_COST_USD", "0.08")))
+    except ValueError:
+        return 0.08
+
+
 async def generate_avatar(
     persona_name: str,
     persona_description: str,

@@ -1315,6 +1315,9 @@ class DynamoStorage:
         )
         turn_count = 0
         total_cost = 0.0
+        # Cost by event type, so a reader can see what the money went on — and so an
+        # under-count shows up as a missing kind rather than as a smaller total nobody questions.
+        by_kind: Dict[str, float] = {}
         last_event_at: Optional[int] = None
         for item in items:
             created = item.get("created_at")
@@ -1323,17 +1326,25 @@ class DynamoStorage:
                 last_event_at = created if last_event_at is None else max(
                     last_event_at, created
                 )
-            if item.get("event_type") != "agent.response":
-                continue
-            turn_count += 1
+            kind = str(item.get("event_type") or "")
+            if kind == "agent.response":
+                turn_count += 1
+            # EVERY event's `cost_usd`, not only `agent.response`'s. Summing responses alone
+            # was measured on brainstorm-opus to miss reflections, speaker selection and
+            # avatars (reported $4.25; Bedrock's own invocation log put the run at ~$5.15), and
+            # the engine now records each model call's cost on the event that call produced.
             try:
                 payload = json.loads(item.get("payload") or "{}")
-                total_cost += float(payload.get("cost_usd", 0.0) or 0.0)
+                cost = float(payload.get("cost_usd", 0.0) or 0.0) if isinstance(payload, dict) else 0.0
             except (ValueError, TypeError, json.JSONDecodeError):
                 continue
+            if cost:
+                total_cost += cost
+                by_kind[kind] = by_kind.get(kind, 0.0) + cost
         return {
             "turn_count": turn_count,
             "total_cost_usd": total_cost,
+            "cost_by_kind": {k: round(v, 6) for k, v in sorted(by_kind.items())},
             "last_event_at": last_event_at,
         }
 

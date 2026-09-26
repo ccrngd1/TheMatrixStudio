@@ -88,6 +88,13 @@ export function applyEvent(prev: SimState, e: SimEvent): SimState {
     feed: prev.feed,
   }
 
+  // Every model call's cost, not only the personas' replies. The engine records selection,
+  // validation, rejected attempts, reflections, passes and avatars on their own events; counting
+  // `agent.response` alone showed $4.25 for a run that Bedrock's own log put at ~$5.15.
+  // `agent.response` is excluded here only because its case below already adds it.
+  if (e.event_type !== 'agent.response' && typeof e.payload?.cost_usd === 'number') {
+    state.totalCost += e.payload.cost_usd
+  }
   switch (e.event_type) {
     case 'sim.started':
       state.topic = e.payload.topic ?? state.topic

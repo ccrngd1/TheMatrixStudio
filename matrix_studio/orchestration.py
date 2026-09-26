@@ -794,7 +794,17 @@ async def execute_slice(
     # than being charged to nobody — that only happens for a directly-driven engine call
     # (the CLI, a test), which has no user to bill.
     owner = str(fresh.get("owner_sub") or "")
+    # The run's cost from its EVENTS — the same number the run page shows — not the engine's
+    # per-persona snapshot totals. The two used to count different subsets: the snapshot missed
+    # speaker selection and avatars, the events missed validation checks, rejected attempts and
+    # reflections, and the monthly cap charged from the snapshot. Now every model call records
+    # its cost on an event, so summing events is complete and the cap and the page agree.
     total_cost = float(result.get("total_cost_usd") or 0.0)
+    try:
+        total_cost = float((await db.get_run_stats(run_id)).get("total_cost_usd") or total_cost)
+    except Exception as exc:  # noqa: BLE001
+        # Falling back to the snapshot total under-charges rather than failing a paid turn.
+        logger.warning("Run %s: could not total cost from events (%s); using the snapshot", run_id, exc)
     if owner:
         await record_spend(db, owner, spent_before, total_cost)
         if status == "running":

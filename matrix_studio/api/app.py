@@ -1270,10 +1270,26 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         # the engine uses, so the page cannot disagree with what ran.
         from matrix_studio.models import ModelSet
 
+        # The run's WHOLE cost, itemised. In-run model calls are summed from the event log
+        # (`get_run_stats`); the summary and the research pass are stored outside it, and each was
+        # charged to nobody until 2026-09-26 — so they are added here, and the parts are shown
+        # rather than only the total, so an under-count appears as a missing line.
+        in_run = float(stats.get("total_cost_usd") or 0.0)
+        summary_cost = float((generated or {}).get("cost_usd") or 0.0)
+        research_cost = float((research or {}).get("cost_usd") or 0.0)
+        cost = {
+            "in_run": round(in_run, 6),
+            "by_kind": stats.get("cost_by_kind") or {},
+            "summary": round(summary_cost, 6),
+            "research": round(research_cost, 6),
+            "total": round(in_run + summary_cost + research_cost, 6),
+        }
+
         return {
             **summary,
             "cast": cast,
             "config": config,
+            "cost": cost,
             "models": ModelSet.from_config(config).as_dict(),
             "result": result,
             "summary": {"generated": generated, "imported": imported},

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import { describe, expect, it } from 'vitest'
-import { deriveState, initialState } from './simState'
+import { applyEvent, deriveState, initialState } from './simState'
 import type { SimEvent } from '../types'
 
 const cast = [
@@ -67,5 +67,20 @@ describe('simState reducer', () => {
     const partial = deriveState(initialState(cast), all.slice(0, 3))
     expect(partial.feed).toHaveLength(1)
     expect(partial.status).toBe('running')
+  })
+})
+
+describe('cost counts every model call', () => {
+  it('adds costs recorded on events other than agent.response', () => {
+    // Selection, validation, rejected attempts, reflections and avatars record their cost on
+    // their own events; counting replies alone under-reported a real run by ~18%.
+    let s = initialState([])
+    const ev = (event_type: string, payload: Record<string, unknown>, seq: number) =>
+      ({ run_id: 'r', turn: 1, seq, event_type, agent_name: 'Ada', payload }) as never
+    s = applyEvent(s, ev('avatar.ready', { agent_name: 'Ada', portrait_key: 'k', cost_usd: 0.08 }, 1))
+    s = applyEvent(s, ev('speaker.selected', { speaker: 'Ada', cost_usd: 0.007 }, 2))
+    s = applyEvent(s, ev('validation.checked', { speaker: 'Ada', passed: false, cost_usd: 0.1 }, 3))
+    s = applyEvent(s, ev('agent.response', { speaker: 'Ada', message: 'hi', cost_usd: 0.1 }, 4))
+    expect(s.totalCost).toBeCloseTo(0.287, 10)
   })
 })
