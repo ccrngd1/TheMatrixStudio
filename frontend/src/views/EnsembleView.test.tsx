@@ -15,17 +15,18 @@
 // checked here is that the column order comes from the stored spec, so a group whose runs all
 // failed still gets a column.
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor, fireEvent } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react'
 import { EnsembleView } from './EnsembleView'
 import { api } from '../api'
 
 vi.mock('../api', () => ({
-  api: { getEnsemble: vi.fn(), generateEnsembleReport: vi.fn() },
+  api: { getEnsemble: vi.fn(), generateEnsembleReport: vi.fn(), briefText: vi.fn() },
 }))
 
 const mocked = api as unknown as {
   getEnsemble: ReturnType<typeof vi.fn>
   generateEnsembleReport: ReturnType<typeof vi.fn>
+  briefText: ReturnType<typeof vi.fn>
 }
 
 function member(id: string, cell: string, index: number, status = 'complete') {
@@ -137,6 +138,23 @@ describe('EnsembleView', () => {
     await waitFor(() => expect(screen.getByText('base-1')).toBeInTheDocument())
     fireEvent.click(screen.getByText('base-1'))
     expect(onOpenRun).toHaveBeenCalledWith('r1')
+  })
+
+  it("offers each finished member's own brief, and none for one still running", async () => {
+    mocked.getEnsemble.mockResolvedValue(
+      detail({ members: [member('r1', 'base', 1), member('r2', 'base', 2, 'running')] }),
+    )
+    mocked.briefText.mockResolvedValue('<html>member brief</html>')
+    render(<EnsembleView ensembleId="e1" onBack={() => {}} onOpenRun={() => {}} />)
+
+    const members = await waitFor(() =>
+      screen.getByText('base-1').closest('ul') as HTMLElement,
+    )
+    const rows = members.querySelectorAll('li')
+    expect(rows[0]).toHaveTextContent('Brief')
+    expect(rows[1]).not.toHaveTextContent('Brief')
+    fireEvent.click(within(rows[0] as HTMLElement).getByText('Brief'))
+    await waitFor(() => expect(mocked.briefText).toHaveBeenCalledWith('run', 'r1', 'html'))
   })
 
   it('shows a member that was never created, and says the group is short', async () => {
