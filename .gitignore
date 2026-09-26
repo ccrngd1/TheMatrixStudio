@@ -73,3 +73,7 @@ dmypy.json
 # CDK synthesis output
 infra/cdk.out/
 infra/.venv/
+
+# Operator-private material: real briefs, casts, study definitions, the backlog/roadmap,
+# and the sensitive-term denylist. Never committed; see scripts/check_private_terms.py.
+private/

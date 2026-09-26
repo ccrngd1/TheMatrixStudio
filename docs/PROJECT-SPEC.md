@@ -235,7 +235,7 @@ door open for tool-use/scale later.
    **polling**, not websockets: measured at ~1.4 KB per poll against a 30-turn run, which
    is cheaper than holding a connection open per viewer through API Gateway. A WebSocket
    path exists in the code for the single-process case and is deferred with those numbers
-   recorded in `docs/BACKLOG.md`.
+   recorded in `private/private/docs/BACKLOG.md` (kept out of git).
 4. **Image-gen provider for avatars:** ✅ DECIDED (CC 2026-07-08) — **must be an Amazon Bedrock
    image model** (e.g. Titan Image Generator v2 / Nova Canvas — PreCog to confirm best fit + BYO-key
    fit). Keep optional so a run works without image-gen (fallback to initials/color).

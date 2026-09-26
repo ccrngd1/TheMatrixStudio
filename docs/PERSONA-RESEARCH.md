@@ -273,7 +273,7 @@ copies `authority` through to a curated document, so that inference would be wro
 That converts the failure from *invisible* to *legible*: an operator sees "3 of 3 researched" on a
 turn where their own upload should have appeared. It does not prevent the displacement, and the
 honest version of that is a per-run "keep research in its own collection" option if it turns out to
-matter — a cleaner lever than a floor. Tracked in `docs/BACKLOG.md`.
+matter — a cleaner lever than a floor. Tracked in `private/private/docs/BACKLOG.md` (kept out of git).
 
 #### Research documents must be distinguishable from curated ones
 
@@ -434,8 +434,8 @@ exists, and the analysis must use it as written.
 §6.1's reason: a cell varying research would need two corpora and "the parent researched once"
 would stop being true.
 
-- **control** — `examples/renewalBrief/run.section9-control.json`
-- **research** — `examples/renewalBrief/run.section9-research.json`
+- **control** — `private/renewalBrief/run.section9-control.json`
+- **research** — `private/renewalBrief/run.section9-research.json`
 
 Built from one config and **asserted byte-identical** once the research block and the collection ids
 are removed. `stop_when_converged` and `authority_floor: 1` are on in BOTH (the floor is a no-op on

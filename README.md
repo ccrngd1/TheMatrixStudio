@@ -556,7 +556,7 @@ with zero leaks, per-persona scoping holds, convictions survive a fork, an inval
 
 Full numbers, the two measurement-instrument defects found and fixed en route, and the
 resolution floor (~0.02 similarity, ~0.2 on rates):
-`docs/PHASE6-STRUCTURED-PERSONAS.md` and `docs/BACKLOG.md`.
+`docs/PHASE6-STRUCTURED-PERSONAS.md` and `private/private/docs/BACKLOG.md` (kept out of git).
 
 ### Avatar Generation
 
@@ -787,12 +787,12 @@ npm run dev
 - **Next:** Explain `distinct_positions` instability in the rendered arms — the one signal of a real cost to rendering convictions from data
 - **Future:** Embedding-based *memory* retrieval (document retrieval shipped in Phase 5), multi-modal inputs
 
-**Open work is indexed in [`docs/BACKLOG.md`](docs/BACKLOG.md)** — including what was
+**Open work is indexed in [`private/private/docs/BACKLOG.md` (kept out of git)](private/docs/BACKLOG.md)** — including what was
 deliberately rejected after measurement, so it is not retried on intuition.
 
 ## Documentation
 
-- `docs/BACKLOG.md` — Open, deferred and rejected work, each with a revisit trigger
+- `private/private/docs/BACKLOG.md` (kept out of git) — Open, deferred and rejected work, each with a revisit trigger
 - `docs/PHASE6-STRUCTURED-PERSONAS.md` — Phase 6 design: why concerns are withheld, and the re-tuned dismissal rule
 - `docs/PHASE5-PREMISE-VALIDATION.md` — The three-arm experiment that justified Phase 6 (including its negative result)
 - `docs/AWS-SERVERLESS-ARCHITECTURE.md` — The deployed design: tenancy, storage keys, the turn loop, retrieval, sharing

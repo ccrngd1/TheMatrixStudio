@@ -16,7 +16,7 @@ contaminated**, because a "without research" conversation bound to those collect
 research.
 
 So this reconstructs the pre-research baseline: a new collection per source, holding only the
-documents research did not put there. `docs/BACKLOG.md` records the decision not to delete the
+documents research did not put there. `private/private/docs/BACKLOG.md` (kept out of git) records the decision not to delete the
 research instead — those documents are the corpus behind run `602ddffe`'s own citations, and the
 transcript records which passage each persona saw WITHOUT storing its text, so deleting them would
 make the first live proof of the feature unauditable.

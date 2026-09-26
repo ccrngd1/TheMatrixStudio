@@ -202,7 +202,7 @@ prior retrieval measurements.
   the workaround was measured rather than argued: duplicating a shared document across
   8 personas collapses its BM25 score from -4.2821 to -0.0000 and takes the persona's
   own private document down with it, because the shared text then occupies 8 of 16
-  chunks. Reasoning and numbers kept in `docs/BACKLOG.md` so the decision is
+  chunks. Reasoning and numbers kept in `private/private/docs/BACKLOG.md` (kept out of git) so the decision is
   revisitable.
 
 ### Testing
@@ -255,7 +255,7 @@ did not survive are recorded as withdrawn rather than quietly dropped.
 - **Fourth validation arm** added to `scripts/build_validation_arms.py` and `scripts/score_validation.py`: `arm-d-shipped` is the control prose + a `structured` block + `personas.enabled`, deliberately *not* Arm B's rendered persona string (reusing that would measure the hand-written prose and the engine's rendering at once). Arm D is the only arm that legitimately differs in `config`, so the byte-identity test now enumerates its two permitted extra keys by set difference rather than skipping it. Scored when present, skipped when absent, so the original three-arm comparison stays reproducible.
 - **Every quantitative claim from this single run was subsequently WITHDRAWN at n = 3** — see "Measured - Phase 6 at n = 3" below. Retained here only as the record of what one run appeared to show: evidence-driven position change 2 of 2, more divergent than the prose control, less divergent than Arm B. The first two did not replicate; the third is below the noise floor. Arm C's parallel-monologue failure genuinely did not reproduce (talking-past 2 vs C's 4), and that has held up.
 - **Two properties could not be tested.** `requires-escalation` never fired because the room never overruled the persona holding it. The withheld concern was never drawn out because nobody asked why — zero verbatim leaks (withholding works), zero "why" questions in 15 turns. The second is a **design finding**: nothing in a run creates pressure to ask a stakeholder why, so `underlying_concern` may be inert in practice.
-- Cost: $0.0719 run + $0.0207 judge. Six follow-ups in `docs/BACKLOG.md`, led by "repeat at several seeds" — `n = 1` on a non-deterministic model.
+- Cost: $0.0719 run + $0.0207 judge. Six follow-ups in `private/private/docs/BACKLOG.md` (kept out of git), led by "repeat at several seeds" — `n = 1` on a non-deterministic model.
 
 ### Fixed - premise-validation scorer (measurement instruments)
 - **Length bias in the headline similarity metric.** Every overlap metric on accumulated text grows with volume: the same arm truncated to 300-char turns scores 0.105 and at full length 0.160, with identical speakers and positions. `normalised_similarity` now truncates every speaker to a common token volume before comparing. Three other fixes were tried and rejected first, each recorded in the scorer with the measurement that killed it: stream subsampling (equalises count, not vocabulary size), vocabulary subsampling (worse), and TF-cosine (also length-sensitive).

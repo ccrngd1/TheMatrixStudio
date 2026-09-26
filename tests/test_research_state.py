@@ -749,7 +749,7 @@ async def test_a_single_run_DOES_allocate(db, monkeypatch):
 # researched passages. By the floor's own accounting nothing went wrong: the collection
 # contributed.
 #
-# The decision (docs/BACKLOG.md) was to accept the behaviour and make it VISIBLE rather than
+# The decision (private/docs/BACKLOG.md) was to accept the behaviour and make it VISIBLE rather than
 # add a third floor — floors that multiply leave every slot reserved and stop ranking deciding
 # anything. So `origin` has to survive from the document row to the turn's record, and these
 # assert the two hops that carry it.
