@@ -77,7 +77,7 @@ export function ConclusionsPanel({ report, cells }: Props) {
             {single.length > 0 && (
               <details className="mt-3">
                 <summary className="cursor-pointer text-xs text-slate-500">
-                  Reached in a single run only ({single.length}) — rare, not a finding
+                  Never reached twice within a group ({single.length}) — rare, not findings
                 </summary>
                 <div className="mt-2">
                   <ClaimTable claims={single} cells={cells} clustered={report.clustered} />

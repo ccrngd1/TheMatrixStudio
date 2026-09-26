@@ -23,6 +23,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, type EnsembleDetail } from '../api'
 import { ClaimTable } from '../components/ClaimTable'
 import { ConclusionsPanel } from '../components/ConclusionsPanel'
+import { BriefButton } from '../components/BriefButton'
 import { ExportMenu } from '../components/ExportMenu'
 import { ResearchPanel } from '../components/ResearchPanel'
 
@@ -174,7 +175,8 @@ export function EnsembleView({ ensembleId, onBack, onOpenRun }: Props) {
       <p className="mb-4 text-sm text-slate-400">{detail.topic}</p>
       {/* Always available: an ensemble's export says which conversations are still running and
           whether a report exists, so an early export is incomplete and SAYS so. */}
-      <div className="mb-4">
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <BriefButton kind="ensemble" id={ensembleId} name={detail.name || 'ensemble'} />
         <ExportMenu kind="ensemble" id={ensembleId} name={detail.name || 'ensemble'} />
       </div>
 

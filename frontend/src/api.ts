@@ -618,6 +618,11 @@ export const api = {
       `/api/runs/${encodeURIComponent(ref)}/sources/${encodeURIComponent(documentId)}` +
         (ordinal !== undefined ? `?ordinal=${ordinal}` : ''),
     ),
+  /** A one-page decision brief, rendered server-side. The modal shows this exact HTML. */
+  briefText: (kind: 'run' | 'ensemble', id: string, format: ExportFormat) =>
+    textFetch(
+      `/api/${kind === 'run' ? 'runs' : 'ensembles'}/${encodeURIComponent(id)}/brief?format=${format}`,
+    ),
   /** A run or an ensemble rendered for download. PDF is the HTML printed by the browser. */
   exportText: (kind: 'run' | 'ensemble', id: string, format: ExportFormat) =>
     textFetch(

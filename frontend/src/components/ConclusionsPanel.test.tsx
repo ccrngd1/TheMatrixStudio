@@ -78,7 +78,7 @@ describe('ConclusionsPanel — recurring vs single-run', () => {
       concl('exclude net-new', { base: [2, 5], hybrid: [2, 3] }),
       concl('file Ohio certification today', { base: [1, 5] })] })} />)
     expect(screen.getByText('Reached in two or more runs of a group')).toBeInTheDocument()
-    const summary = screen.getByText(/Reached in a single run only \(1\) — rare, not a finding/)
+    const summary = screen.getByText(/Never reached twice within a group \(1\) — rare, not findings/)
     expect(summary.closest('details')).not.toHaveAttribute('open')
   })
 })

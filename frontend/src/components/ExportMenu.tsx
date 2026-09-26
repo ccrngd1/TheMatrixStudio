@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { useState } from 'react'
 import { api, type ExportFormat } from '../api'
+import { downloadText, slugify } from '../lib/download'
 
 interface Props {
   kind: 'run' | 'ensemble'
@@ -22,24 +23,14 @@ export function ExportMenu({ kind, id, name }: Props) {
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  const slug = (name || kind).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+  const slug = slugify(name, kind)
 
   const download = async (format: ExportFormat) => {
     setBusy(format)
     setError(null)
     try {
       const text = await api.exportText(kind, id, format)
-      const blob = new Blob([text], {
-        type: format === 'md' ? 'text/markdown;charset=utf-8' : 'text/html;charset=utf-8',
-      })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `${slug}-${kind}.${format}`
-      document.body.appendChild(a)
-      a.click()
-      a.remove()
-      URL.revokeObjectURL(url)
+      downloadText(text, `${slug}-${kind}.${format}`, format)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {

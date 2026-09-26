@@ -304,7 +304,7 @@ def test_single_run_conclusions_are_separated_from_recurring_ones():
         _concl("file Ohio certification today", base=(1, 5)),
     ]))
     rec = out.index("Reached in two or more runs")
-    one = out.index("Reached in a single run only (1)")
+    one = out.index("Never reached twice within a group (1)")
     assert rec < one
     assert out.index("exclude net-new") < one < out.index("file Ohio certification today")
-    assert "rare, not a finding" in out
+    assert "rare, not findings" in out
