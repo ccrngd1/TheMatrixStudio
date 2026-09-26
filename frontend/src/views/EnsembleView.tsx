@@ -27,6 +27,9 @@ import { BriefButton } from '../components/BriefButton'
 import { ExportMenu } from '../components/ExportMenu'
 import { ResearchPanel } from '../components/ResearchPanel'
 
+// Mirrors LiveView's ENDED_WITH_TRANSCRIPT: a stopped or capped run has a brief too.
+const MEMBER_BRIEF_STATUSES = ['complete', 'stopped', 'capped']
+
 interface Props {
   ensembleId: string
   onBack: () => void
@@ -260,6 +263,11 @@ export function EnsembleView({ ensembleId, onBack, onOpenRun }: Props) {
                   {m.run.status} · {m.run.turn_count} turns · $
                   {(m.run.total_cost_usd ?? 0).toFixed(3)}
                 </span>
+              )}
+              {/* Each member's own brief, in place — the same one its conversation page offers.
+                  Only once it has ended with a transcript, as there. */}
+              {m.run && MEMBER_BRIEF_STATUSES.includes(m.run.status) && (
+                <BriefButton kind="run" id={m.run_id} name={m.run.name || m.run_id} />
               )}
             </li>
           ))}
