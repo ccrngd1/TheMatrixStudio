@@ -1,7 +1,7 @@
 # Asking personas to cite inline — pre-registration and result
 
-**Status:** pre-registered 2026-09-27, before any run. The result section is filled in afterwards and
-the criteria above it are not edited once a run has started.
+**Status:** pre-registered 2026-09-27 (`1ffbcad`), before any run; **result recorded below** — primary
+MISSED (off arm too high), both guardrails met. The criteria were not edited after the runs started.
 
 ## Why
 
@@ -47,6 +47,41 @@ an arm's two runs.
 n = 2 runs per arm is small and the verdict is labelled as such. It can support "this wording moves
 the rate a lot, or does not"; it cannot estimate the rate precisely.
 
-## Result
+## Result — 2026-09-27
 
-*(Not yet run.)*
+Runs: off `d9190686`, `01505752`; on `17538934`, `adc944e6`. All four complete, 12 turns, $0.33 forecast
+each. Scored by `scripts/analyse_cite_inline.py`, written before the runs finished.
+
+| | off | on |
+|---|---|---|
+| in-view messages | 24 | 24 |
+| **cite rate** | **0.21** (5/24) | **1.00** (24/24) |
+| attributive citations, unverified | 3, 0 | 33, 0 |
+| median words per message | 101 | 98.5 |
+
+- **Primary: MISSED.** The on arm cleared its bar (1.00 ≥ 0.50); the **off** arm did not stay under
+  its cap (0.21 > 0.10). As pre-registered, a missed primary means the rule stays **off by default**.
+- **Guardrail 1: met** — no citation of a passage the speaker was not given.
+- **Guardrail 2: met** — messages were the same length (−2.5%).
+
+**Why the off arm cited.** Its citations are genuine — "the filter from Cost observations #1". With two
+short, plain titles, personas sometimes cite unprompted. The 25 stored runs the cap was set from had
+long, similar titles ("Source material — …") and showed none. So the cap was set from a baseline this
+design does not reproduce; that is a flaw in the pre-registration, recorded rather than repaired.
+What the probe does show, at n = 2 per arm: the rule takes citing from occasional to every message,
+without invented labels and without longer speech.
+
+**Two defects found by the probe, both fixed:**
+
+1. A bracketed knowledge-base label ("[Cost observations #1]") read as a bare mention, not an
+   attributive citation, because the bracket pattern also assumed a file extension — so the citation
+   gate never checked such citations for borrowed authority. The attributive counts above are from
+   the fixed detector, re-applied offline to the stored messages; as recorded live, the on arm showed
+   6 attributive citations, not 33.
+2. (Pre-existing, found while designing this.) Knowledge-base titles were not recognised as citations
+   at all — `CITATION_RE` requires a file extension.
+
+**Decision.** Off by default, per the rule above. Offered as an opt-in on the launch form. The next
+test that would decide the default is the same comparison on a realistic cast — long, similar titles
+and 40 turns, the setting where the baseline was 0/816 — pre-registered with the off-arm cap taken
+from that setting.

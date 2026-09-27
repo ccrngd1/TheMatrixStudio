@@ -385,3 +385,13 @@ def test_cite_inline_adds_the_rule_with_a_real_label_and_is_off_by_default():
     block = format_documents_block([p], cite_inline=True)
     assert "[Iowa Admin Code Ch. 811 #4]" in block
     assert CITE_INLINE_RULE.split("{")[0] in block
+
+
+def test_a_bracketed_knowledge_base_label_is_attributive_but_a_markdown_link_is_not():
+    from matrix_studio.citations import CitationContext, analyse_citations
+
+    ctx = CitationContext.build(own_passages=[_P("Cost observations", 1)])
+    [c] = analyse_citations("It has to be measured [Cost observations #1].", "Dana", ["Dana"], ctx)
+    assert c.attributive is True
+    [c] = analyse_citations("see [Cost observations #1](x) later", "Dana", ["Dana"], ctx)
+    assert c.attributive is False

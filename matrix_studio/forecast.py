@@ -261,11 +261,15 @@ def _comparable(history: History, voice: str, cast: int, cognition: bool, respon
     """
     same_model = [o for o in history.runs if o.voice_model == voice]
     similar = lambda o: responses / 2 <= o.responses <= responses * 2  # noqa: E731
+    # Cast size before length. Measured 2026-09-27: a 2-persona, 12-turn probe had no same-size run of
+    # similar length, fell through to similar-length runs of any size — mostly 6-persona — and was
+    # forecast at 3.4× its actual $0.39. Every persona is in every prompt, so size moves the per-response
+    # cost more than length does.
     tiers = (
         (lambda o: o.cast == cast and o.cognition == cognition and similar(o), f"{cast} personas, similar length"),
         (lambda o: o.cast == cast and similar(o), f"{cast} personas, similar length"),
-        (lambda o: similar(o), "similar length"),
         (lambda o: o.cast == cast, f"{cast} personas"),
+        (lambda o: similar(o), "similar length, any cast size"),
     )
     for keep, label in tiers:
         pick = [o for o in same_model if keep(o)]

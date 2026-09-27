@@ -224,3 +224,15 @@ describe('NewRunForm research toggle', () => {
     expect(screen.getByText(/not made to wait/)).toBeInTheDocument()
   })
 })
+
+describe('NewRunForm inline citations', () => {
+  it('sends cite_inline only when asked, and only with retrieval on', () => {
+    renderForm()
+    fillMinimum()
+    expect(screen.queryByText(/cite their sources inline/)).not.toBeInTheDocument()
+    fireEvent.click(toggle())
+    fireEvent.click(screen.getByLabelText(/cite their sources inline/))
+    fireEvent.click(screen.getByRole('button', { name: /Research/ }))
+    expect(body().config.retrieval).toMatchObject({ enabled: true, cite_inline: true })
+  })
+})

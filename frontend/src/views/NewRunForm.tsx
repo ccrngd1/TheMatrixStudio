@@ -73,6 +73,8 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
   // deliberate rather than cautious: it searches the open web and costs a few minutes and
   // a quarter of a dollar per run, so it is a decision the operator makes each time.
   const [research, setResearch] = useState(false)
+  // Ask personas to cite each passage they rely on, inline. Opt-in: docs/CITE-INLINE.md.
+  const [citeInline, setCiteInline] = useState(false)
   const [researchShared, setResearchShared] = useState(true)
   const [researchPersonas, setResearchPersonas] = useState(true)
   // Sources taken per query. The one genuine dial: it decides how wide the search goes.
@@ -433,7 +435,11 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
         // that went looking for statutes should not then let them lose every slot.
         retrieval:
           anyDocuments || anyKnowledgeBases || research
-            ? { enabled: true, ...(research ? { authority_floor: 1 } : {}) }
+            ? {
+                enabled: true,
+                ...(research ? { authority_floor: 1 } : {}),
+                ...(citeInline ? { cite_inline: true } : {}),
+              }
             : undefined,
         // Sent only when asked for. `targets` is never sent: the server resolves it and
         // overwrites whatever arrives, because it names collections to WRITE into.
@@ -1492,6 +1498,27 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
         <div className="mt-2">
           <KbPicker level="run" selected={runKbs} onChange={setRunKbs} />
         </div>
+        {(anyDocuments || anyKnowledgeBases || research) && (
+          <label className="mt-3 flex items-center gap-2 text-xs text-slate-300">
+            <input
+              type="checkbox"
+              checked={citeInline}
+              onChange={(e) => setCiteInline(e.target.checked)}
+            />
+            Ask personas to cite their sources inline
+            <Hint label="inline citations">
+              Each persona ends a sentence that relies on a passage with its label, like
+              [Cost observations #1], and the conversation view links it to the passage. Without
+              this, personas rarely say which source a claim came from, so a claim can be traced
+              only to the passages that were in view.
+              <br />
+              <br />
+              Measured on a small comparison (docs/CITE-INLINE.md): every message with a source in
+              view cited it, none cited a passage it was not given, and messages were no longer.
+              Off by default until it has been tried on a larger conversation.
+            </Hint>
+          </label>
+        )}
       </div>
 
       {/* Research sits next to the KB pickers on purpose: it is a knowledge-base AUTHORING

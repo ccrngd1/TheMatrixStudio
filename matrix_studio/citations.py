@@ -169,7 +169,17 @@ def _window(text: str, start: int, end: int, size: int = CUE_WINDOW) -> str:
 
 
 def _is_bracketed(text: str, start: int, end: int) -> bool:
-    """Whether this label sits inside a citation bracket that is not a markdown link."""
+    """Whether this label sits inside a citation bracket that is not a markdown link.
+
+    Two ways in. The label itself enclosed — "[Iowa Admin Code Ch. 811 #4]" — which is the form the
+    passages are listed in, and works for any title. Or the older file-style pattern near it. The
+    first was missing: a bracketed knowledge-base citation read as a bare mention, so the citation
+    gate never checked it for borrowed authority (measured on the cite-inline probe, 2026-09-27).
+    """
+    before = text[max(0, start - 4):start].rstrip()
+    after = text[end:end + 4].lstrip()
+    if before.endswith("[") and after.startswith("]"):
+        return not text[end:].lstrip()[1:].lstrip().startswith("(")
     near = text[max(0, start - 4):min(len(text), end + 4)]
     if MARKDOWN_LINK_RE.search(near):
         return False
