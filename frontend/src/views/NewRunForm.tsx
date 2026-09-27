@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { useEffect, useState } from 'react'
-import { api } from '../api'
+import { api, type Forecast } from '../api'
+import { CostForecast } from '../components/CostForecast'
 import { Hint } from '../components/Hint'
 import { buildStructured } from '../lib/convictions'
 import { parseSetup, parseSetupObject, ImportError } from '../lib/importSetup'
@@ -349,8 +350,9 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
         }).length
       : 0)
 
-  const submit = async () => {
-    setError(null)
+  // The launch request, built once for both launching and forecasting, so the price shown is the
+  // price of exactly what would start. `null` when the form cannot launch yet.
+  const buildRequest = () => {
     const validCast = cast
       .filter((c) => c.name.trim() && c.persona.trim())
       .map((c) => {
@@ -378,109 +380,167 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
           ...(c.knowledgeBases.length ? { knowledge_bases: c.knowledgeBases } : {}),
         }
       })
-    if (!topic.trim() || validCast.length === 0) {
+    if (!topic.trim() || validCast.length === 0) return null
+    const body = {
+      topic: topic.trim(),
+      cast: validCast,
+      config: {
+        max_messages: maxMessages,
+        generate_avatars: avatars,
+        cognition: cognitionEnabled
+          ? {
+              enabled: true,
+              memory: cogMemory,
+              reflection_every: cogReflect ? 4 : 0,
+              goals_dynamic: cogGoals,
+              relationships: cogRelationships,
+            }
+          : undefined,
+        // Only sent when the cast actually authored the relevant content, so a
+        // plain run's config stays as small as it was before these features
+        // existed. Enabling a feature nobody configured would cost tokens for
+        // an empty prompt block.
+        personas: anyConvictions ? { enabled: true } : undefined,
+        // Only sent when asked for: it defaults off server-side while it is being
+        // validated, and an absent block means "use the deployment default".
+        // Sent only when it differs from the server's default, so a plain run's config
+        // stays as small as it was before either option existed.
+        selection:
+          method !== 'moderated' || stopWhenConverged || closingRound
+            ? {
+                ...(method !== 'moderated' ? { method } : {}),
+                ...(method === 'hybrid' ? { hybrid_opening_rounds: openingRounds } : {}),
+                ...(stopWhenConverged ? { stop_when_converged: true } : {}),
+                ...(closingRound ? { closing_round: true } : {}),
+              }
+            : undefined,
+        // Retrieval has to be ON for a binding to do anything: `retrieve_for_turn` is
+        // never called with it disabled, so a run that bound three collections and
+        // pasted no documents would search none of them and say nothing about why.
+        //
+        // `research` is included in that condition for exactly the same reason, and it is
+        // the more dangerous case: research creates collections and binds them itself, so
+        // an operator who enabled research and attached nothing else would pay for a full
+        // search pass and then run a conversation that never queried it. The corpus would
+        // be there, complete, and invisible — which is the failure this project keeps
+        // finding. `authority_floor` rides along because a floor of 0 is off, and a run
+        // that went looking for statutes should not then let them lose every slot.
+        retrieval:
+          anyDocuments || anyKnowledgeBases || research
+            ? { enabled: true, ...(research ? { authority_floor: 1 } : {}) }
+            : undefined,
+        // Sent only when asked for. `targets` is never sent: the server resolves it and
+        // overwrites whatever arrives, because it names collections to WRITE into.
+        research: research
+          ? {
+              enabled: true,
+              shared: researchShared,
+              personas: researchPersonas,
+              results_per_query: researchResults,
+            }
+          : undefined,
+        ...(runKbs.length ? { knowledge_bases: runKbs } : {}),
+      },
+      model: model || undefined,
+      name: name.trim() || undefined,
+      description: description.trim() || undefined,
+      // Only send a summary config when it differs from the useful default
+      // (enabled, no focus) — omitting it lets the server apply the default.
+      summary:
+        !summaryEnabled || summaryFocus.trim()
+          ? { enabled: summaryEnabled, focus: summaryFocus.trim() || undefined }
+          : undefined,
+    }
+
+    // `cells` is sent even for the replicates-only case rather than omitted. The server
+    // would default to exactly this, but an explicit spec is what the report header
+    // renders, and a spec that says `n: 5` is the difference between a reader knowing
+    // five runs were asked for and inferring it from how many exist.
+    const cells = [
+      { label: 'base', n: replicates },
+      // Only `selection.method` and its opening-round count differ. Anything else —
+      // turn count, fairness — would confound the comparison, and the server refuses
+      // it with the reason.
+      ...(compareHybrid
+        ? [
+            {
+              label: 'hybrid',
+              n: hybridReplicates,
+              overrides: {
+                'selection.method': 'hybrid',
+                'selection.hybrid_opening_rounds': openingRounds,
+              },
+            },
+          ]
+        : []),
+    ]
+    return { body, cells }
+  }
+
+  // The forecast is asked for whenever the request would change, debounced. Documents are left out
+  // of what is sent: the forecast does not read them, and a pasted document would otherwise be
+  // uploaded on every keystroke.
+  const built = buildRequest()
+  const forecastKey = built
+    ? JSON.stringify({
+        runType,
+        body: {
+          ...built.body,
+          cast: built.body.cast.map(({ document_texts: _docs, ...c }) => c),
+          ...(runType === 'ensemble' ? { cells: built.cells } : {}),
+        },
+      })
+    : ''
+  const [forecast, setForecast] = useState<Forecast | null>(null)
+  const [forecastLoading, setForecastLoading] = useState(false)
+  const [forecastError, setForecastError] = useState<string | null>(null)
+  useEffect(() => {
+    if (!forecastKey) {
+      setForecast(null)
+      setForecastError(null)
+      return
+    }
+    const { runType: kind, body } = JSON.parse(forecastKey)
+    const ctl = new AbortController()
+    setForecastLoading(true)
+    const id = setTimeout(() => {
+      // Through a promise chain, so a client or deployment without the route degrades to
+      // "unavailable" instead of an uncaught error in the form.
+      Promise.resolve()
+        .then(() =>
+          kind === 'ensemble'
+            ? api.forecastEnsemble(body, ctl.signal)
+            : api.forecastRun(body, ctl.signal),
+        )
+        .then((f) => {
+          setForecast(f)
+          setForecastError(null)
+        })
+        .catch((e) => {
+          if (!ctl.signal.aborted) setForecastError(e instanceof Error ? e.message : String(e))
+        })
+        .finally(() => {
+          if (!ctl.signal.aborted) setForecastLoading(false)
+        })
+    }, 600)
+    return () => {
+      clearTimeout(id)
+      ctl.abort()
+    }
+  }, [forecastKey])
+
+  const submit = async () => {
+    setError(null)
+    const built = buildRequest()
+    if (!built) {
       setError('A topic and at least one persona (name + persona) are required.')
       return
     }
     setSubmitting(true)
     try {
-      const body = {
-        topic: topic.trim(),
-        cast: validCast,
-        config: {
-          max_messages: maxMessages,
-          generate_avatars: avatars,
-          cognition: cognitionEnabled
-            ? {
-                enabled: true,
-                memory: cogMemory,
-                reflection_every: cogReflect ? 4 : 0,
-                goals_dynamic: cogGoals,
-                relationships: cogRelationships,
-              }
-            : undefined,
-          // Only sent when the cast actually authored the relevant content, so a
-          // plain run's config stays as small as it was before these features
-          // existed. Enabling a feature nobody configured would cost tokens for
-          // an empty prompt block.
-          personas: anyConvictions ? { enabled: true } : undefined,
-          // Only sent when asked for: it defaults off server-side while it is being
-          // validated, and an absent block means "use the deployment default".
-          // Sent only when it differs from the server's default, so a plain run's config
-          // stays as small as it was before either option existed.
-          selection:
-            method !== 'moderated' || stopWhenConverged || closingRound
-              ? {
-                  ...(method !== 'moderated' ? { method } : {}),
-                  ...(method === 'hybrid' ? { hybrid_opening_rounds: openingRounds } : {}),
-                  ...(stopWhenConverged ? { stop_when_converged: true } : {}),
-                  ...(closingRound ? { closing_round: true } : {}),
-                }
-              : undefined,
-          // Retrieval has to be ON for a binding to do anything: `retrieve_for_turn` is
-          // never called with it disabled, so a run that bound three collections and
-          // pasted no documents would search none of them and say nothing about why.
-          //
-          // `research` is included in that condition for exactly the same reason, and it is
-          // the more dangerous case: research creates collections and binds them itself, so
-          // an operator who enabled research and attached nothing else would pay for a full
-          // search pass and then run a conversation that never queried it. The corpus would
-          // be there, complete, and invisible — which is the failure this project keeps
-          // finding. `authority_floor` rides along because a floor of 0 is off, and a run
-          // that went looking for statutes should not then let them lose every slot.
-          retrieval:
-            anyDocuments || anyKnowledgeBases || research
-              ? { enabled: true, ...(research ? { authority_floor: 1 } : {}) }
-              : undefined,
-          // Sent only when asked for. `targets` is never sent: the server resolves it and
-          // overwrites whatever arrives, because it names collections to WRITE into.
-          research: research
-            ? {
-                enabled: true,
-                shared: researchShared,
-                personas: researchPersonas,
-                results_per_query: researchResults,
-              }
-            : undefined,
-          ...(runKbs.length ? { knowledge_bases: runKbs } : {}),
-        },
-        model: model || undefined,
-        name: name.trim() || undefined,
-        description: description.trim() || undefined,
-        // Only send a summary config when it differs from the useful default
-        // (enabled, no focus) — omitting it lets the server apply the default.
-        summary:
-          !summaryEnabled || summaryFocus.trim()
-            ? { enabled: summaryEnabled, focus: summaryFocus.trim() || undefined }
-            : undefined,
-      }
-
+      const { body, cells } = built
       if (runType === 'ensemble') {
-        // `cells` is sent even for the replicates-only case rather than omitted. The server
-        // would default to exactly this, but an explicit spec is what the report header
-        // renders, and a spec that says `n: 5` is the difference between a reader knowing
-        // five runs were asked for and inferring it from how many exist.
-        const ens = await api.createEnsemble({
-          ...body,
-          cells: [
-            { label: 'base', n: replicates },
-            // Only `selection.method` and its opening-round count differ. Anything else —
-            // turn count, fairness — would confound the comparison, and the server refuses
-            // it with the reason.
-            ...(compareHybrid
-              ? [
-                  {
-                    label: 'hybrid',
-                    n: hybridReplicates,
-                    overrides: {
-                      'selection.method': 'hybrid',
-                      'selection.hybrid_opening_rounds': openingRounds,
-                    },
-                  },
-                ]
-              : []),
-          ],
-        })
+        const ens = await api.createEnsemble({ ...body, cells })
         onEnsembleStarted(ens.ensemble_id)
         return
       }
@@ -1520,22 +1580,16 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
                 Both tiers are off, so nothing would be researched.
               </p>
             )}
-            {runType === 'ensemble' && (
-              <p className="text-xs text-amber-400">
-                Research is not yet available for ensembles. An ensemble has to research once,
-                before its members exist, so every replicate reads the same corpus — otherwise
-                differences between members stop being evidence about the brief. Starting this
-                will be refused.
-              </p>
-            )}
           </div>
         )}
       </div>
 
+      <CostForecast forecast={forecast} loading={forecastLoading} error={forecastError} />
+
       <button
         onClick={submit}
         disabled={submitting}
-        className="mt-6 w-full rounded-lg bg-matrix-accent py-3 font-semibold text-matrix-bg hover:bg-sky-400 disabled:opacity-50"
+        className="mt-3 w-full rounded-lg bg-matrix-accent py-3 font-semibold text-matrix-bg hover:bg-sky-400 disabled:opacity-50"
       >
         {submitting
           ? 'Starting…'

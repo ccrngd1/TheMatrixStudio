@@ -235,6 +235,31 @@ export interface EnsembleCell {
  * doc argues for: it measures whether a conclusion survives resampling, and it is the
  * control any varied cell is compared against.
  */
+/** One priced part of a forecast. `low`/`high` are null when the part is not yet measured. */
+export interface ForecastPart {
+  part: string
+  low: number | null
+  /** What the median comparable past run cost. */
+  typical: number | null
+  high: number | null
+  measured: boolean
+  basis: string
+}
+
+/** What launching a run or ensemble would cost, priced from this account's own runs. */
+export interface Forecast {
+  runs: number
+  parts: ForecastPart[]
+  low: number
+  typical: number
+  high: number
+  /** False: the total is "at least", because a part in `unmeasured` has no history yet. */
+  complete: boolean
+  unmeasured: string[]
+  responses?: { low: number; typical: number; high: number }
+  budget: { cap: number; spent: number; remaining: number } | null
+}
+
 export type CreateEnsembleBody = Omit<CreateRunBody, 'config'> & {
   config: CreateRunBody['config']
   cells?: EnsembleCell[]
@@ -452,6 +477,14 @@ export const api = {
 
   // ----------------------------- Ensembles ----------------------------- //
 
+  /** The forecast for exactly this body. Nothing is created and no model is called. */
+  forecastEnsemble: (body: CreateEnsembleBody, signal?: AbortSignal) =>
+    jsonFetch<Forecast>('/api/ensembles/forecast', {
+      method: 'POST',
+      body: JSON.stringify(body),
+      signal,
+    }),
+
   createEnsemble: (body: CreateEnsembleBody) =>
     jsonFetch<CreateEnsembleResponse>('/api/ensembles', {
       method: 'POST',
@@ -517,6 +550,13 @@ export const api = {
       stored: boolean
     }>('/api/documents/extract', { method: 'POST', body: form, headers: {} })
   },
+
+  forecastRun: (body: CreateRunBody, signal?: AbortSignal) =>
+    jsonFetch<Forecast>('/api/runs/forecast', {
+      method: 'POST',
+      body: JSON.stringify(body),
+      signal,
+    }),
 
   createRun: (body: CreateRunBody) =>
     jsonFetch<CreateRunResponse>('/api/runs', {

@@ -1025,6 +1025,79 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
                 ),
             )
 
+    # ------------------------------------------------------------------ #
+    # Cost forecast — what launching this would cost, from what this account's runs cost
+    # ------------------------------------------------------------------ #
+
+    async def _forecast_env(user: str, groups: List[str]) -> Dict[str, Any]:
+        from matrix_studio import forecast
+        from matrix_studio.avatar import avatar_cost_usd
+
+        settings = get_settings()
+        owned = db.for_owner(user)
+        history = await forecast.cached_history(user, owned, settings.max_messages)
+        # The monthly cap alongside the price, so "this costs $6" can be read against what is left.
+        # Absent when no cap applies. A failed read omits it rather than failing the forecast: the
+        # launch itself re-checks, and fails closed.
+        budget: Optional[Dict[str, float]] = None
+        cap = settings.monthly_cap_for(groups)
+        if cap > 0:
+            try:
+                spent = await owned.user_spend(owner_sub=user)
+                budget = {"cap": cap, "spent": round(spent, 4), "remaining": round(max(0.0, cap - spent), 4)}
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Forecast could not read monthly spend for %s: %s", user, exc)
+        kwargs = dict(
+            default_model=settings.litellm_model,
+            default_max=settings.max_messages,
+            avatars_default=settings.enable_avatars,
+            avatar_price=avatar_cost_usd(),
+        )
+        return {"history": history, "budget": budget, "kwargs": kwargs}
+
+    @app.post("/api/runs/forecast")
+    async def forecast_run(
+        body: CreateRunModel,
+        user: str = Depends(current_user),
+        groups: List[str] = Depends(current_groups),
+    ) -> Dict[str, Any]:
+        """What `POST /api/runs` with this exact body would cost. No model call; nothing is created."""
+        from matrix_studio import forecast
+
+        request = body.model_dump(exclude_none=True)
+        env = await _forecast_env(user, groups)
+        one = forecast.forecast_run(request, env["history"], **env["kwargs"])
+        out = forecast.combine([one], [forecast.research_part(request, env["history"])])
+        return {**out, "responses": one["responses"], "budget": env["budget"]}
+
+    @app.post("/api/ensembles/forecast")
+    async def forecast_ensemble(
+        body: CreateEnsembleModel,
+        user: str = Depends(current_user),
+        groups: List[str] = Depends(current_groups),
+    ) -> Dict[str, Any]:
+        """What `POST /api/ensembles` with this exact body would cost: every member as planned (so a
+        varied group is priced with its own settings), one research pass, and the report."""
+        from matrix_studio import forecast
+
+        request = body.model_dump(exclude_none=True)
+        cells_body = request.pop("cells", None)
+        try:
+            cells = ensemble_spec.cells_from(cells_body) if cells_body else ensemble_spec.replicates()
+            members = ensemble_spec.plan(request.get("config") or {}, cells)
+        except ensemble_spec.SpecError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        env = await _forecast_env(user, groups)
+        runs = [
+            forecast.forecast_run({**request, "config": m.config}, env["history"], **env["kwargs"])
+            for m in members
+        ]
+        out = forecast.combine(
+            runs,
+            [forecast.research_part(request, env["history"]), forecast.report_part(len(members), env["history"])],
+        )
+        return {**out, "budget": env["budget"]}
+
     @app.post("/api/runs", status_code=201)
     async def create_run(
         body: CreateRunModel,

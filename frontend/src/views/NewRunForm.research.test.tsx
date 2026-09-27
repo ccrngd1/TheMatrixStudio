@@ -201,17 +201,17 @@ describe('NewRunForm research toggle', () => {
     expect(body().config.research.results_per_query).toBe(20)
   })
 
-  it('warns that an ensemble will refuse research', () => {
-    // §6: an ensemble must research once, before its members exist, or replicates get
-    // different inputs and divergence stops being evidence about the brief. The server
-    // returns a 422; saying so here means the operator does not fill in a form to find out.
+  it('no longer warns that an ensemble refuses research, because it does not', () => {
+    // §6 is built: the pass runs once before any member exists and every member binds the same
+    // collections (tests/test_api_ensembles.py). A warning that starting "will be refused" was
+    // telling the operator not to launch something that works.
     renderForm()
     fillMinimum()
     fireEvent.click(toggle())
     fireEvent.change(screen.getByLabelText(/Run/, { selector: 'select' }), {
       target: { value: 'ensemble' },
     })
-    expect(screen.getByText(/not yet available for ensembles/)).toBeInTheDocument()
+    expect(screen.queryByText(/not yet available for ensembles/)).not.toBeInTheDocument()
   })
 
   it('explains itself, because an unexplained switch that costs money stays off', () => {
