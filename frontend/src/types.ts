@@ -307,6 +307,18 @@ export interface CitationMark {
   reason?: string
 }
 
+/** A verbatim run of words a message shares with an in-view passage (`matrix_studio/attribution.py`). */
+export interface Quote {
+  chunk_id: number
+  document_id: string
+  title: string
+  ordinal: number
+  /** The words as they appear in the message. */
+  phrase: string
+  content_words: number
+  words: number
+}
+
 export interface FeedMessage {
   turn: number
   seq: number

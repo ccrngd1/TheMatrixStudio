@@ -408,6 +408,7 @@ def _cases(doc_id: str, thread_id: str) -> Dict[Tuple[str, str], Dict[str, Any]]
         ("GET", "/api/runs/{ref}/setup"): case("/api/runs/alpha-run/setup"),
         ("GET", "/api/runs/{ref}/export"): case("/api/runs/alpha-run/export?format=md"),
         ("GET", "/api/runs/{ref}/brief"): case("/api/runs/alpha-run/brief?format=md"),
+        ("GET", "/api/runs/{ref}/quotes"): case("/api/runs/alpha-run/quotes"),
         # A REAL document of user A's run, so user B is asking for an actual source — the case
         # where a leak would return text rather than merely fail to find something.
         ("GET", "/api/runs/{ref}/sources/{document_id}"):

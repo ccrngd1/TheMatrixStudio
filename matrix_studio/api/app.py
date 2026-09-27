@@ -1947,6 +1947,111 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
     #: collection). One is enough to read a passage in context without reconstructing the source.
     SOURCE_CONTEXT_CHUNKS = 1
 
+    @app.get("/api/runs/{ref}/quotes")
+    async def get_run_quotes(
+        ref: str,
+        user: str = Depends(current_user),
+        groups: List[str] = Depends(current_groups),
+    ) -> Dict[str, Any]:
+        """Which in-view passage each message QUOTES, with the quoted words (`matrix_studio/attribution.py`).
+
+        Only verbatim runs of words count, never a best guess among similar passages: measured, a best
+        guess could not tell in-view passages apart. Passages are read through `_reachable_source`, so
+        this reaches exactly what the source viewer does and nothing more.
+        """
+        from matrix_studio import attribution
+        from matrix_studio.documents import chunk_text
+
+        owned = db.for_owner(user)
+        run = await owned.get_run_by_ref(ref)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+
+        # Per document: None when out of reach; otherwise the passages read so far. An owned document is
+        # read whole once; a shared collection only exposes retrieved passages, so those are fetched
+        # one at a time — the same split the source viewer makes.
+        texts: Dict[str, Optional[Dict[int, str]]] = {}
+        whole: set = set()
+
+        async def chunk(document_id: str, ordinal: int) -> Optional[str]:
+            if document_id not in texts:
+                reached = await _reachable_source(owned, run, document_id, user, groups)
+                if not reached:
+                    texts[document_id] = None
+                elif reached[2]:
+                    body = await owned.document_text(document_id)
+                    texts[document_id] = {c.ordinal: c.content for c in chunk_text(body)} if body else {}
+                    whole.add(document_id)
+                else:
+                    texts[document_id] = {}
+            got = texts[document_id]
+            if got is None:
+                return None
+            if ordinal not in got and document_id not in whole:
+                doc = await owned.find_document(document_id)
+                if doc and doc.get("kb_id"):
+                    got.update(await owned.kb_passages(doc["kb_id"], document_id, [ordinal]))
+            return got.get(ordinal)
+
+        quotes: Dict[str, List[Dict[str, Any]]] = {}
+        parked: Dict[tuple, List[Dict[str, Any]]] = {}
+        with_sources = 0
+        for row in await owned.get_events(run["id"]):
+            payload = row["payload"]
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except json.JSONDecodeError:
+                    continue
+            if row["event_type"] == "document.retrieved":
+                parked[(row["turn"], row["agent_name"])] = list(payload.get("passages") or [])
+            elif row["event_type"] == "agent.response":
+                passages = parked.pop((row["turn"], row["agent_name"]), [])
+                refs = payload.get("document_refs")
+                if isinstance(refs, list):
+                    passages = [p for p in passages if p.get("chunk_id") in refs]
+                if not passages:
+                    continue
+                with_sources += 1
+                message = payload.get("message") or payload.get("content") or ""
+                enriched = [
+                    {**p, "text": await chunk(str(p.get("document_id")), int(p.get("ordinal") or 0))}
+                    for p in passages
+                ]
+                found = attribution.attribute(message, enriched)
+                if found:
+                    quotes[str(row["seq"])] = found
+        return {
+            "quotes": quotes,
+            "messages_with_sources": with_sources,
+            "messages_quoting": len(quotes),
+            "min_content_words": attribution.MIN_CONTENT_WORDS,
+        }
+
+    async def _reachable_source(owned: Any, run: Dict[str, Any], document_id: str, user: str,
+                                groups: List[str]) -> Optional[tuple]:
+        """`(doc, kb, owns)` when this run could have retrieved `document_id` and the caller may read
+        it; None otherwise. The one access check for reading a run's sources — the source viewer and
+        quote attribution both go through it, so neither can reach a document the other refuses."""
+        from matrix_studio.bindings import bound_kbs, _cast
+
+        doc = await owned.find_document(document_id)
+        if not doc:
+            return None
+        kb_id = doc.get("kb_id")
+        kb: Optional[Dict[str, Any]] = None
+        if kb_id:
+            reachable = set(bound_kbs(run, None))
+            for member in _cast(run):
+                reachable.update(bound_kbs(run, str(member.get("name") or "")))
+            if kb_id not in reachable or not await owned.may_read_kb(kb_id, user, groups):
+                return None
+            kb = await owned.get_knowledge_base(kb_id)
+        elif str(doc.get("run_id") or "") != str(run["id"]):
+            return None
+        owns = kb is None or str((kb or {}).get("owner_sub") or "") == user
+        return doc, kb, owns
+
     @app.get("/api/runs/{ref}/sources/{document_id}")
     async def get_run_source(
         ref: str,
@@ -1981,7 +2086,6 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         index, which is exactly what a turn already showed them, plus a plain statement that the
         full source belongs to another account.
         """
-        from matrix_studio.bindings import bound_kbs, _cast
         from matrix_studio.documents import chunk_text
 
         owned = db.for_owner(user)
@@ -1989,28 +2093,13 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
 
-        not_found = HTTPException(status_code=404, detail="Source not found for this run")
-        doc = await owned.find_document(document_id)
-        if not doc:
-            raise not_found
-
+        # Outside the run's reach, or a revoked grant: 404 rather than 403, matching every KB route —
+        # "exists but not yours" is information about who can.
+        reached = await _reachable_source(owned, run, document_id, user, groups)
+        if not reached:
+            raise HTTPException(status_code=404, detail="Source not found for this run")
+        doc, kb, owns = reached
         kb_id = doc.get("kb_id")
-        kb: Optional[Dict[str, Any]] = None
-        if kb_id:
-            reachable = set(bound_kbs(run, None))
-            for member in _cast(run):
-                reachable.update(bound_kbs(run, str(member.get("name") or "")))
-            if kb_id not in reachable:
-                raise not_found
-            if not await owned.may_read_kb(kb_id, user, groups):
-                # A binding the caller can no longer read — a revoked grant. 404 rather than 403,
-                # matching every KB route: "exists but not yours" is information about who can.
-                raise not_found
-            kb = await owned.get_knowledge_base(kb_id)
-        elif str(doc.get("run_id") or "") != str(run["id"]):
-            raise not_found
-
-        owns = kb is None or str((kb or {}).get("owner_sub") or "") == user
         source_path = str(doc.get("source_path") or "")
         out: Dict[str, Any] = {
             "document_id": document_id,

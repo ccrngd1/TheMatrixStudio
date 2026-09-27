@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import { useEffect, useRef, useState } from 'react'
-import type { AgentView, FeedMessage, SourcePassage } from '../types'
+import type { AgentView, FeedMessage, Quote, SourcePassage } from '../types'
 import { AvatarBadge } from './AvatarBadge'
 import { SourceViewer } from './SourceViewer'
 import { citeSegments, unsourcedCitations } from '../lib/citeText'
@@ -16,10 +16,12 @@ interface Props {
   runId?: string
   /** Every passage the run retrieved, by label — so a citation of another persona's source opens. */
   sourceIndex?: Record<string, SourcePassage>
+  /** Verbatim quotes of in-view passages, by message seq. */
+  quotes?: Record<string, Quote[]>
 }
 
 export function ConversationFeed({
-  feed, agents, activeSpeaker, thinking, jumpTo, runId, sourceIndex = {},
+  feed, agents, activeSpeaker, thinking, jumpTo, runId, sourceIndex = {}, quotes = {},
 }: Props) {
   // A claim is checked where it is read. The source viewer was reachable only from a persona's
   // dossier, so checking a sentence meant knowing who said it, opening their panel and finding the
@@ -111,6 +113,7 @@ export function ConversationFeed({
                   <MessageBody
                     m={m}
                     index={sourceIndex}
+                    quotes={quotes[String(m.seq)]}
                     onOpen={runId ? setOpenSource : undefined}
                   />
                 </div>
@@ -135,10 +138,11 @@ export function ConversationFeed({
 }
 
 function MessageBody({
-  m, index, onOpen,
+  m, index, quotes, onOpen,
 }: {
   m: FeedMessage
   index: Record<string, SourcePassage>
+  quotes?: Quote[]
   onOpen?: (p: SourcePassage) => void
 }) {
   const segments = onOpen ? citeSegments(m.content, m.sources, index, m.citations) : [{ text: m.content }]
@@ -175,6 +179,26 @@ function MessageBody({
           ),
         )}
       </p>
+      {/* Verbatim evidence of which passage was used, for a message that did not say. Quotation
+          only — a best guess among passages on the same subject could not tell them apart. */}
+      {onOpen && quotes && quotes.length > 0 && (
+        <p className="mt-1 text-[11px] text-slate-400">
+          Quotes{' '}
+          {quotes.map((q, i) => (
+            <span key={q.chunk_id}>
+              {i > 0 && '; '}
+              <button
+                onClick={() => onOpen(q)}
+                className="text-matrix-accent hover:underline"
+                title={`${q.content_words} content words appear in this order in the passage`}
+              >
+                {q.title} #{q.ordinal}
+              </button>
+              : <span className="italic text-slate-300">“{q.phrase}”</span>
+            </span>
+          ))}
+        </p>
+      )}
       {unsourced.length > 0 && (
         <p className="mt-1 text-[11px] text-amber-300/90">
           Cites {unsourced.map((c) => c.label).join(', ')} — no one in this conversation retrieved

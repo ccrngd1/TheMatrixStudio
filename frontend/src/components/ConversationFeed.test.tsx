@@ -124,3 +124,16 @@ describe('ConversationFeed citations', () => {
     expect(screen.getByText('As spec.md #3 says, no.')).toBeInTheDocument()
   })
 })
+
+describe('ConversationFeed quotes', () => {
+  it('shows which passage a message quoted, with the quoted words', () => {
+    const src = { chunk_id: 7, document_id: 'd1', title: 'Iowa Admin Code Ch. 811', ordinal: 4 }
+    const msg: FeedMessage[] = [{ turn: 1, seq: 2, speaker: 'Ada', content: 'x', sources: [src] }]
+    render(
+      <ConversationFeed feed={msg} agents={agents} activeSpeaker={null} thinking={false} runId="r1"
+        quotes={{ '2': [{ ...src, phrase: 'shall require an examination before', content_words: 4, words: 5 }] }} />,
+    )
+    expect(screen.getByText('“shall require an examination before”')).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: 'Iowa Admin Code Ch. 811 #4' }).length).toBeGreaterThan(0)
+  })
+})

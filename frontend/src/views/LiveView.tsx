@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { useEffect, useState } from 'react'
 import { api } from '../api'
-import type { Persona, RunDetail } from '../types'
+import type { Persona, Quote, RunDetail } from '../types'
 import { useRunStream } from '../hooks/useRunStream'
 import { isLive, isResumable, isTerminal } from '../lib/runStatus'
 import { CastBoard } from '../components/CastBoard'
@@ -102,6 +102,21 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh }: Props) {
   const running = isLive(detail?.status) && !isTerminal(state.status)
   const lineage = detail?.lineage
   const maxTurn = detail?.result?.total_turns ?? detail?.turn_count ?? 0
+
+  // Which passage each message quotes. Computed server-side from the finished transcript, so it is
+  // fetched once the run has ended; a failure leaves the feed as it was rather than blocking it.
+  const [quotes, setQuotes] = useState<Record<string, Quote[]>>({})
+  useEffect(() => {
+    if (!completed) return
+    let live = true
+    Promise.resolve()
+      .then(() => api.getRunQuotes(runId))
+      .then((r) => live && setQuotes(r.quotes))
+      .catch(() => live && setQuotes({}))
+    return () => {
+      live = false
+    }
+  }, [completed, runId])
 
   // Ask the engine to stop after the turn in flight. Not a cancel: that turn is
   // finished and persisted, which is why the label says "after this turn".
@@ -384,6 +399,7 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh }: Props) {
             jumpTo={jumpTo}
             runId={runId}
             sourceIndex={state.sourceIndex}
+            quotes={quotes}
           />
         </main>
       </div>

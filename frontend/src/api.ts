@@ -11,6 +11,7 @@ import type {
   KbGrant,
   KnowledgeBase,
   KnowledgeBaseDetail,
+  Quote,
   ResearchRecord,
   RunDetail,
   RunSummary,
@@ -695,6 +696,14 @@ export const api = {
    * as for "does not exist". Full text only for sources you own; a collection shared with you
    * returns the cited passage and its neighbours (PHASE6-KB-DESIGN.md §8.2).
    */
+  /** Which in-view passage each message quotes, by message seq. Verbatim evidence only. */
+  getRunQuotes: (ref: string) =>
+    jsonFetch<{
+      quotes: Record<string, Quote[]>
+      messages_with_sources: number
+      messages_quoting: number
+      min_content_words: number
+    }>(`/api/runs/${encodeURIComponent(ref)}/quotes`),
   getRunSource: (ref: string, documentId: string, ordinal?: number) =>
     jsonFetch<RunSource>(
       `/api/runs/${encodeURIComponent(ref)}/sources/${encodeURIComponent(documentId)}` +
