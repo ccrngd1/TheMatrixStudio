@@ -921,12 +921,15 @@ def format_unsupported_block() -> str:
     return UNSUPPORTED_BLOCK
 
 
-def format_documents_block(passages: Sequence[RetrievedPassage]) -> str:
+def format_documents_block(passages: Sequence[RetrievedPassage], cite_inline: bool = False) -> str:
     """Render retrieved passages for the system prompt.
 
     Each passage carries its citation so the persona can attribute a claim, and
     the framing states plainly that this is the persona's own background material
     — not conversation, and not something another participant said.
+
+    ``cite_inline`` adds `CITE_INLINE_RULE`, which asks for the label itself after each claim that
+    relies on a passage. Without it, measured on 25 stored runs, no persona ever cited by label.
     """
     if not passages:
         return ""
@@ -936,8 +939,20 @@ def format_documents_block(passages: Sequence[RetrievedPassage]) -> str:
     return (
         "\n\nFrom your own background material (quote or cite it by name when "
         f"it supports a claim; it is not part of the conversation):\n{lines}"
+        + (CITE_INLINE_RULE.format(example=passages[0].citation) if cite_inline else "")
         + CITATION_RULE
     )
+
+
+#: Asked for only when `retrieval.cite_inline` is on. Worded to keep the citation OUT of the prose:
+#: a label at the end of the sentence it supports, in the brackets the passages are listed with, so a
+#: reader can open it and the engine can check it — and "only what you used", so it does not become a
+#: list of everything in view.
+CITE_INLINE_RULE = (
+    "\n\nWhen a sentence relies on one of these passages, end that sentence with the passage's "
+    "label in square brackets, exactly as listed — for example [{example}]. Cite only passages "
+    "you actually used; say nothing about the ones you did not."
+)
 
 
 # Phase 5i: evidence legitimately travels through people — an SME shows you a

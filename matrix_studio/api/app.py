@@ -188,6 +188,9 @@ class RetrievalConfigModel(BaseModel):
     min_similarity: float = Field(default=0.15, ge=0.0, le=1.0)
     # Phase 5g: ask the persona to flag in-voice when retrieval found nothing.
     disclose_unsupported: bool = False
+    # Ask personas to cite each passage they rely on inline, as [title #n]. Off by default while
+    # measured — see `RetrievalConfig.cite_inline`.
+    cite_inline: bool = False
     # Experimental, DEFAULT OFF: measured harmful in
     # docs/PHASE5-RETRIEVAL-MEASUREMENT.md (recall fell on all three arms).
     term_limit: int = Field(default=0, ge=0)

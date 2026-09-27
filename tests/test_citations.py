@@ -313,3 +313,75 @@ def test_a_close_disclaimer_still_suppresses():
     )
     assert got[0].attributive is False
     assert citation_violation(got) is None
+
+
+# --------------------------------------------------------------------------- #
+# Knowledge-base titles — no file extension, so CITATION_RE alone never saw them
+# --------------------------------------------------------------------------- #
+
+
+class _P:
+    def __init__(self, title, ordinal):
+        self.title, self.ordinal = title, ordinal
+
+
+def test_a_knowledge_base_title_is_recognised_as_a_first_hand_citation():
+    from matrix_studio.citations import CitationContext, analyse_citations
+
+    ctx = CitationContext.build(own_passages=[_P("Iowa Admin Code Ch. 811", 4)])
+    cites = analyse_citations(
+        "An exam is required first [Iowa Admin Code Ch. 811 #4].", "Casey", ["Casey", "Avery"], ctx,
+    )
+    assert [(c.title, c.ordinal, c.kind, c.attributive) for c in cites] == [
+        ("iowa admin code ch. 811", 4, "firsthand", True)
+    ]
+
+
+def test_a_knowledge_base_citation_of_another_persona_s_source_needs_crediting():
+    from matrix_studio.citations import CitationContext, analyse_citations
+
+    ctx = CitationContext.build(own_passages=[], prior_firsthand=[("Avery", "Iowa Admin Code Ch. 811")])
+    unattributed = analyse_citations(
+        "It requires an exam [Iowa Admin Code Ch. 811 #4].", "Casey", ["Casey", "Avery"], ctx,
+    )
+    assert unattributed[0].kind == "unverified"
+    credited = analyse_citations(
+        "Avery cited Iowa Admin Code Ch. 811 #4 as requiring an exam.", "Casey", ["Casey", "Avery"], ctx,
+    )
+    assert credited[0].kind == "secondhand" and credited[0].via == "Avery"
+
+
+def test_a_short_title_in_prose_is_not_a_citation_but_with_an_ordinal_it_is():
+    from matrix_studio.citations import CitationContext, analyse_citations
+
+    ctx = CitationContext.build(own_passages=[_P("FAQ", 2)])
+    assert analyse_citations("the faq is long", "Casey", ["Casey"], ctx) == []
+    assert analyse_citations("see [FAQ #2]", "Casey", ["Casey"], ctx)[0].kind == "firsthand"
+
+
+def test_file_style_labels_are_not_matched_twice():
+    from matrix_studio.citations import CitationContext, analyse_citations
+
+    ctx = CitationContext.build(own_passages=[_P("spec.md", 3)])
+    assert len(analyse_citations("as [spec.md #3] says", "Casey", ["Casey"], ctx)) == 1
+
+
+# --------------------------------------------------------------------------- #
+# The cite-inline prompt option
+# --------------------------------------------------------------------------- #
+
+
+def test_cite_inline_adds_the_rule_with_a_real_label_and_is_off_by_default():
+    from matrix_studio.retrieval import CITE_INLINE_RULE, RetrievedPassage, format_documents_block
+    from matrix_studio.state import RetrievalConfig
+
+    import dataclasses
+    fields = {f.name for f in dataclasses.fields(RetrievedPassage)} if dataclasses.is_dataclass(RetrievedPassage) else set()
+    kwargs = {k: v for k, v in dict(chunk_id=1, document_id="d", title="Iowa Admin Code Ch. 811", ordinal=4,
+              content="An examination is required.", score=1.0).items() if not fields or k in fields}
+    p = RetrievedPassage(**kwargs)
+    assert RetrievalConfig().cite_inline is False
+    assert "end that sentence with" not in format_documents_block([p])
+    block = format_documents_block([p], cite_inline=True)
+    assert "[Iowa Admin Code Ch. 811 #4]" in block
+    assert CITE_INLINE_RULE.split("{")[0] in block

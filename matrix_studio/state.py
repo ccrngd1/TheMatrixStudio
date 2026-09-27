@@ -339,6 +339,14 @@ class RetrievalConfig(BaseModel):
         default=False,
         description="Ask the persona to flag in-voice when it has no retrieved source",
     )
+    # Ask the persona to end a claim with the bracketed label of the passage it relies on.
+    # DEFAULT OFF while it is measured (docs/CITE-INLINE.md): it changes how every persona
+    # speaks, and measured on 25 stored runs the existing "cite it by name" wording produced
+    # no label citations at all — so a claim could not be traced to the passage behind it.
+    cite_inline: bool = Field(
+        default=False,
+        description="Ask personas to cite each passage they rely on inline, as [title #n]",
+    )
     # Reserved slots for a CONTROLLING authority — a statute, a regulation, a board opinion,
     # a decided case. `docs/PERSONA-RESEARCH.md` §3, and `vectors.apply_floors` composes it
     # with the per-collection floor.

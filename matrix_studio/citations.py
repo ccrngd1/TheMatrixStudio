@@ -176,6 +176,41 @@ def _is_bracketed(text: str, start: int, end: int) -> bool:
     return bool(BRACKETED_RE.search(near))
 
 
+#: A title matched as a bare word only from this length up; with a `#n` any length is unambiguous.
+MIN_BARE_TITLE = 6
+
+
+def _citation_spans(utterance: str, context: "CitationContext") -> List[Tuple[str, Optional[int], int, int]]:
+    """Every citation in the utterance as ``(title, ordinal, start, end)``, title lower-cased.
+
+    Two sources, merged. `CITATION_RE` finds file-style labels ("spec.pdf #3") whether or not anyone
+    holds the document — that is how a citation of a document nobody has is caught. It cannot see a
+    knowledge-base or researched title ("Iowa Admin Code Ch. 811 #4"), which has no extension, so the
+    exact titles in this turn's context are matched too. Without the second, a correct citation of
+    a knowledge-base passage was never recognised as one.
+    """
+    spans: List[Tuple[str, Optional[int], int, int]] = []
+    for m in CITATION_RE.finditer(utterance):
+        raw = m.group("ordinal")
+        spans.append((m.group("title").strip().lower(), int(raw) if raw is not None else None,
+                      m.start(), m.end()))
+    known = sorted(set(context.own) | set(context.by_speaker), key=len, reverse=True)
+    if known:
+        pattern = re.compile(
+            "(" + "|".join(re.escape(t) for t in known) + r")(?:\s*#\s*(\d+))?", re.IGNORECASE,
+        )
+        for m in pattern.finditer(utterance):
+            if m.group(2) is None and len(m.group(1)) < MIN_BARE_TITLE:
+                continue
+            if m.start() > 0 and (utterance[m.start() - 1].isalnum() or utterance[m.start() - 1] in "-_"):
+                continue
+            if any(m.start() < e and s < m.end() for _, _, s, e in spans):
+                continue
+            spans.append((m.group(1).lower(), int(m.group(2)) if m.group(2) else None, m.start(), m.end()))
+    spans.sort(key=lambda x: x[2])
+    return spans
+
+
 def analyse_citations(
     utterance: str,
     speaker_name: str,
@@ -192,19 +227,16 @@ def analyse_citations(
     out: List[Citation] = []
     others = [n for n in agent_names if n != speaker_name]
 
-    for match in CITATION_RE.finditer(utterance):
-        title = match.group("title").strip().lower()
-        raw_ordinal = match.group("ordinal")
-        ordinal = int(raw_ordinal) if raw_ordinal is not None else None
-        near = _window(utterance, match.start(), match.end())
-        close = _window(utterance, match.start(), match.end(), DISCLAIMER_WINDOW)
+    for title, ordinal, start, end in _citation_spans(utterance, context):
+        near = _window(utterance, start, end)
+        close = _window(utterance, start, end, DISCLAIMER_WINDOW)
 
         disclaimed = any(d in close for d in DISCLAIMERS)
         # Either an explicit cue nearby, or the bracketed citation form the prompt
         # teaches for backing a claim (which is commonly used TRAILING, with no cue
         # word at all).
         asserted = any(cue in near for cue in ATTRIBUTION_CUES) or _is_bracketed(
-            utterance, match.start(), match.end()
+            utterance, start, end
         )
         attributive = asserted and not disclaimed
 

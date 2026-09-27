@@ -468,6 +468,7 @@ async def _generate_response(
     retrieved_passages: Optional[List[Any]] = None,
     disclose_unsupported: bool = False,
     personas: Optional[PersonaConfig] = None,
+    cite_inline: bool = False,
 ) -> Dict[str, Any]:
     """
     Generate a response from the selected speaker.
@@ -555,7 +556,7 @@ async def _generate_response(
     # only ever True when retrieval was actually attempted, so an empty block here
     # cannot be confused with "retrieval is turned off".
     if retrieved_passages:
-        documents_block = format_documents_block(retrieved_passages)
+        documents_block = format_documents_block(retrieved_passages, cite_inline=cite_inline)
     elif disclose_unsupported:
         documents_block = format_unsupported_block()
     else:
@@ -1881,6 +1882,7 @@ async def _run_turns(
                 disclose_unsupported=disclose, personas=personas,
                 allow_pass=rounds_now,
                 closing=in_closing,
+                cite_inline=bool(retrieval_on and retrieval.cite_inline),
             )
 
             # Phase 4a: pre-emit priority-hierarchy validation gate. The
@@ -1986,6 +1988,7 @@ async def _run_turns(
                         retrieved_passages=passages,
                         disclose_unsupported=disclose,
                         personas=personas,
+                        cite_inline=bool(retrieval_on and retrieval.cite_inline),
                     )
 
             # A pass never reaches the transcript. Emitted, so the run can say who was
