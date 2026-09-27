@@ -130,23 +130,17 @@ export function parseSetup(raw: string): ImportedSetup {
  * separate readers, a field could be honoured from a file but dropped from a run —
  * exactly the kind of silent asymmetry that is hard to notice in a form.
  */
-export function parseSetupObject(data: unknown): ImportedSetup {
-  if (!data || typeof data !== 'object' || Array.isArray(data)) {
-    throw new ImportError('Expected a JSON object with "topic" and "cast".')
-  }
-  const obj = data as Record<string, unknown>
-
-  const topic = String(obj.topic ?? '').trim()
-  if (!topic) throw new ImportError('The setup needs a "topic".')
-  if (!Array.isArray(obj.cast) || obj.cast.length === 0) {
-    throw new ImportError('The setup needs a non-empty "cast" array.')
-  }
-
+/**
+ * API-shape cast members (what `POST /api/runs` accepts, and what a saved template holds) as form
+ * drafts. Shared by the setup importer and cast templates, so the two cannot disagree about how a
+ * persona's convictions or bindings come back into the form.
+ */
+export function parseCast(raw: unknown[]): { cast: DraftPersona[]; warnings: string[] } {
   const warnings: string[] = []
   const cast: DraftPersona[] = []
   const seen = new Set<string>()
 
-  obj.cast.forEach((rawMember, i) => {
+  raw.forEach((rawMember, i) => {
     if (!rawMember || typeof rawMember !== 'object') {
       warnings.push(`Cast entry ${i + 1} was not an object and was skipped.`)
       return
@@ -188,6 +182,23 @@ export function parseSetupObject(data: unknown): ImportedSetup {
       documents: documentsFrom(m, warnings, name),
     })
   })
+
+  return { cast, warnings }
+}
+
+export function parseSetupObject(data: unknown): ImportedSetup {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    throw new ImportError('Expected a JSON object with "topic" and "cast".')
+  }
+  const obj = data as Record<string, unknown>
+
+  const topic = String(obj.topic ?? '').trim()
+  if (!topic) throw new ImportError('The setup needs a "topic".')
+  if (!Array.isArray(obj.cast) || obj.cast.length === 0) {
+    throw new ImportError('The setup needs a non-empty "cast" array.')
+  }
+
+  const { cast, warnings } = parseCast(obj.cast)
 
   if (cast.length === 0) {
     throw new ImportError('No usable personas in the file — every cast entry was skipped.')

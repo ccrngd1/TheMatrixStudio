@@ -47,7 +47,7 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from matrix_studio import (
     analysis, bindings, blobs, ensemble_spec, orchestration, service,
@@ -333,6 +333,30 @@ class CreateRunModel(BaseModel):
     description: Optional[str] = None
     # Phase 1.5: optional summary config; defaults applied server-side when omitted.
     summary: Optional[SummaryConfigModel] = None
+
+
+class CastTemplateModel(BaseModel):
+    """A cast saved under a name, to start new conversations from.
+
+    Holds what makes a cast reusable — each persona's description, goals, convictions and
+    knowledge-base bindings. Pasted documents are NOT kept: they are indexed for one run, and a
+    template that silently re-pasted a 40-page document into every conversation built from it would
+    be a cost nobody chose. A knowledge base is the reusable form of a document, and bindings are kept.
+    """
+
+    name: str = Field(min_length=1, max_length=80)
+    description: Optional[str] = Field(default=None, max_length=500)
+    cast: List[PersonaModel] = Field(min_length=1, max_length=30)
+    #: Replace a template of the same name. Off by default: a clash is a 409, not a silent overwrite.
+    overwrite: bool = False
+
+    @field_validator("name")
+    @classmethod
+    def _name_is_a_path_segment(cls, v: str) -> str:
+        v = v.strip()
+        if not v or "/" in v:
+            raise ValueError("a template name must be non-empty and may not contain '/'")
+        return v
 
 
 class EnsembleCellModel(BaseModel):
@@ -1024,6 +1048,63 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
                     "next month."
                 ),
             )
+
+    # ------------------------------------------------------------------ #
+    # Cast templates
+    # ------------------------------------------------------------------ #
+
+    @app.get("/api/cast-templates")
+    async def list_cast_templates(user: str = Depends(current_user)) -> Dict[str, Any]:
+        rows = await db.for_owner(user).list_cast_templates()
+        return {
+            "templates": [
+                {
+                    "name": t["name"],
+                    "description": t.get("description"),
+                    "personas": [c.get("name") for c in t["cast"]],
+                    "updated_at": t.get("updated_at"),
+                }
+                for t in rows
+            ]
+        }
+
+    @app.get("/api/cast-templates/{name}")
+    async def get_cast_template(name: str, user: str = Depends(current_user)) -> Dict[str, Any]:
+        row = await db.for_owner(user).get_cast_template(name)
+        if not row:
+            raise HTTPException(status_code=404, detail=f"No template named {name!r}")
+        return row
+
+    @app.post("/api/cast-templates", status_code=201)
+    async def save_cast_template(
+        body: CastTemplateModel, user: str = Depends(current_user)
+    ) -> Dict[str, Any]:
+        from matrix_studio.storage.dynamo import StorageError
+
+        cast, dropped = [], 0
+        for persona in body.cast:
+            row = persona.model_dump(exclude_none=True)
+            dropped += len(row.pop("document_texts", []) or []) + len(row.pop("documents", []) or [])
+            cast.append(row)
+        try:
+            saved = await db.for_owner(user).save_cast_template(
+                body.name, cast, body.description, overwrite=body.overwrite,
+            )
+        except StorageError as exc:
+            if str(exc) == "exists":
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"A template named {body.name!r} already exists. Save with overwrite to replace it.",
+                ) from exc
+            raise
+        # Said, not silent: the person saving should know the pasted text did not come along.
+        return {**saved, "dropped_documents": dropped}
+
+    @app.delete("/api/cast-templates/{name}")
+    async def delete_cast_template(name: str, user: str = Depends(current_user)) -> Dict[str, str]:
+        if not await db.for_owner(user).delete_cast_template(name):
+            raise HTTPException(status_code=404, detail=f"No template named {name!r}")
+        return {"deleted": name}
 
     # ------------------------------------------------------------------ #
     # Cost forecast — what launching this would cost, from what this account's runs cost

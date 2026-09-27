@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react'
 import { api, type Forecast } from '../api'
 import { CostForecast } from '../components/CostForecast'
+import { CastTemplates } from '../components/CastTemplates'
 import { Hint } from '../components/Hint'
 import { buildStructured } from '../lib/convictions'
 import { parseSetup, parseSetupObject, ImportError } from '../lib/importSetup'
@@ -350,10 +351,10 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
         }).length
       : 0)
 
-  // The launch request, built once for both launching and forecasting, so the price shown is the
-  // price of exactly what would start. `null` when the form cannot launch yet.
-  const buildRequest = () => {
-    const validCast = cast
+  // The cast as the API takes it: complete personas only. Used to launch, to forecast, and to save as a
+  // template, so all three see the same cast.
+  const buildCast = () =>
+    cast
       .filter((c) => c.name.trim() && c.persona.trim())
       .map((c) => {
         const structured = buildStructured(c)
@@ -380,6 +381,11 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
           ...(c.knowledgeBases.length ? { knowledge_bases: c.knowledgeBases } : {}),
         }
       })
+
+  // The launch request, built once for both launching and forecasting, so the price shown is the
+  // price of exactly what would start. `null` when the form cannot launch yet.
+  const buildRequest = () => {
+    const validCast = buildCast()
     if (!topic.trim() || validCast.length === 0) return null
     const body = {
       topic: topic.trim(),
@@ -1211,6 +1217,14 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
             + Add persona
           </button>
         </div>
+        <CastTemplates
+          getCast={buildCast}
+          hasCast={cast.some((c) => c.name.trim() || c.persona.trim())}
+          onLoad={(loaded, warnings) => {
+            setCast(loaded)
+            setImportWarnings(warnings)
+          }}
+        />
         <div className="space-y-3">
           {cast.map((p, i) => (
             <div key={i} className="rounded-lg border border-matrix-border p-3">

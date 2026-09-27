@@ -32,7 +32,7 @@ import logging
 import os
 import time
 import uuid
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 
 from matrix_studio.state import SimSnapshot
 from matrix_studio.tenancy import LOCAL_USER_SUB
@@ -311,6 +311,16 @@ def _ensemble_sk(ensemble_id: str) -> str:
     that looked like a run would eventually be handed to the turn loop.
     """
     return f"ENSEMBLE#{ensemble_id}"
+
+
+def _cast_sk(name: str) -> str:
+    """Sort key for a saved cast template, in the owner's partition.
+
+    Keyed by the name, case-folded, so saving "Board review" over "board review" replaces it rather
+    than listing two templates a reader cannot tell apart. Outside the `RUN#` prefix for the same
+    reason as `_ensemble_sk`: nothing that selects runs can ever pick one up.
+    """
+    return f"CAST#{name.strip().casefold()}"
 
 
 def _event_sk(run_id: str, seq: int) -> str:
@@ -1521,6 +1531,91 @@ class DynamoStorage:
             ConditionExpression="attribute_not_exists(pk) AND attribute_not_exists(sk)",
         )
         return _row(_to_ddb(item), _ENSEMBLE_FIELDS)
+
+    # ------------------------------------------------------------------ #
+    # Cast templates — a named cast, saved to start new conversations from
+    # ------------------------------------------------------------------ #
+
+    async def save_cast_template(
+        self,
+        name: str,
+        cast: List[Dict[str, Any]],
+        description: Optional[str] = None,
+        *,
+        overwrite: bool = False,
+        owner_sub: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Save a cast under `name`. Refuses to replace an existing one unless `overwrite`.
+
+        Raises `StorageError("exists")` on a clash, so the route can ask rather than clobber a
+        template somebody spent an afternoon on.
+        """
+        owner_sub = self._owner(owner_sub)
+        now = int(time.time())
+        existing = await self.get_cast_template(name, owner_sub=owner_sub)
+        item = {
+            "pk": _user_pk(owner_sub),
+            "sk": _cast_sk(name),
+            "name": name.strip(),
+            "description": description,
+            "cast_json": json.dumps(cast),
+            "created_at": (existing or {}).get("created_at") or now,
+            "updated_at": now,
+        }
+        kwargs: Dict[str, Any] = {}
+        if not overwrite:
+            kwargs["ConditionExpression"] = "attribute_not_exists(pk) AND attribute_not_exists(sk)"
+        try:
+            await self._call(self._table("runs").put_item, Item=_to_ddb(item), **kwargs)
+        except Exception as exc:  # noqa: BLE001
+            if "ConditionalCheckFailed" in str(exc):
+                raise StorageError("exists") from exc
+            raise
+        return self._cast_row(item)
+
+    @staticmethod
+    def _cast_row(item: Mapping[str, Any]) -> Dict[str, Any]:
+        cast = json.loads(item.get("cast_json") or "[]")
+        return {
+            "name": item.get("name"),
+            "description": item.get("description"),
+            "cast": cast,
+            "created_at": int(item["created_at"]) if item.get("created_at") is not None else None,
+            "updated_at": int(item["updated_at"]) if item.get("updated_at") is not None else None,
+        }
+
+    async def get_cast_template(
+        self, name: str, *, owner_sub: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        owner_sub = self._owner(owner_sub)
+        got = await self._call(
+            self._table("runs").get_item,
+            Key={"pk": _user_pk(owner_sub), "sk": _cast_sk(name)},
+        )
+        item = got.get("Item")
+        return self._cast_row(item) if item else None
+
+    async def list_cast_templates(self, *, owner_sub: Optional[str] = None) -> List[Dict[str, Any]]:
+        """This owner's templates, most recently saved first."""
+        owner_sub = self._owner(owner_sub)
+        items = await self._query_all(
+            "runs",
+            KeyConditionExpression="pk = :pk AND begins_with(sk, :prefix)",
+            ExpressionAttributeValues={":pk": _user_pk(owner_sub), ":prefix": "CAST#"},
+        )
+        out = [self._cast_row(i) for i in items]
+        out.sort(key=lambda t: t.get("updated_at") or 0, reverse=True)
+        return out
+
+    async def delete_cast_template(self, name: str, *, owner_sub: Optional[str] = None) -> bool:
+        """Delete one template. False when there was none — "not found" and "not yours" alike."""
+        owner_sub = self._owner(owner_sub)
+        got = await self._call(
+            self._table("runs").delete_item,
+            Key={"pk": _user_pk(owner_sub), "sk": _cast_sk(name)},
+            ReturnValues="ALL_OLD",
+        )
+        return bool(got.get("Attributes"))
 
     async def get_ensemble(
         self, ensemble_id: str, *, owner_sub: Optional[str] = None

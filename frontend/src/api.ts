@@ -264,6 +264,22 @@ export interface Forecast {
   budget: { cap: number; spent: number; remaining: number } | null
 }
 
+/** A saved cast, as listed. */
+export interface CastTemplateSummary {
+  name: string
+  description: string | null
+  personas: string[]
+  updated_at: number | null
+}
+
+export interface CastTemplate {
+  name: string
+  description: string | null
+  cast: CreateRunBody['cast']
+  created_at: number | null
+  updated_at: number | null
+}
+
 export type CreateEnsembleBody = Omit<CreateRunBody, 'config'> & {
   config: CreateRunBody['config']
   cells?: EnsembleCell[]
@@ -554,6 +570,28 @@ export const api = {
       stored: boolean
     }>('/api/documents/extract', { method: 'POST', body: form, headers: {} })
   },
+
+  // ----------------------------- Cast templates ----------------------------- //
+
+  listCastTemplates: () =>
+    jsonFetch<{ templates: CastTemplateSummary[] }>('/api/cast-templates').then((r) => r.templates),
+  getCastTemplate: (name: string) =>
+    jsonFetch<CastTemplate>(`/api/cast-templates/${encodeURIComponent(name)}`),
+  /** 409 when the name is taken and `overwrite` is false. Pasted documents are not kept. */
+  saveCastTemplate: (body: {
+    name: string
+    description?: string
+    cast: CreateRunBody['cast']
+    overwrite?: boolean
+  }) =>
+    jsonFetch<CastTemplate & { dropped_documents: number }>('/api/cast-templates', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  deleteCastTemplate: (name: string) =>
+    jsonFetch<{ deleted: string }>(`/api/cast-templates/${encodeURIComponent(name)}`, {
+      method: 'DELETE',
+    }),
 
   forecastRun: (body: CreateRunBody, signal?: AbortSignal) =>
     jsonFetch<Forecast>('/api/runs/forecast', {
