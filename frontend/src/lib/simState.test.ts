@@ -84,3 +84,29 @@ describe('cost counts every model call', () => {
     expect(s.totalCost).toBeCloseTo(0.287, 10)
   })
 })
+
+describe('document.retrieved folds onto the message it fed', () => {
+  const ev = (seq: number, event_type: string, payload: Record<string, unknown>, turn = 1) =>
+    ({ run_id: 'r1', turn, seq, event_type, agent_name: 'Ada', payload }) as never
+  const passage = (chunk_id: number, ordinal: number) =>
+    ({ chunk_id, document_id: 'd1', title: 'spec.md', ordinal, score: 1, chars: 10 })
+
+  it("attaches the turn's passages, narrowed to document_refs, and indexes them for the run", () => {
+    const s = deriveState(initialState([]), [
+      ev(1, 'document.retrieved', { speaker: 'Ada', passages: [passage(10, 1), passage(11, 2)] }),
+      ev(2, 'agent.response', {
+        speaker: 'Ada', content: 'per spec.md #1', document_refs: [10],
+        citation_provenance: [{ label: 'spec.md #1', title: 'spec.md', kind: 'firsthand', attributive: true }],
+      }),
+    ])
+    expect(s.feed[0].sources?.map((p) => p.chunk_id)).toEqual([10])
+    expect(s.feed[0].citations?.[0].kind).toBe('firsthand')
+    expect(Object.keys(s.sourceIndex).sort()).toEqual(['spec.md #1', 'spec.md #2'])
+    expect(s.retrieved).toEqual({})
+  })
+
+  it('leaves a message with no retrieval exactly as before', () => {
+    const s = deriveState(initialState([]), [ev(1, 'agent.response', { speaker: 'Ada', content: 'hi' })])
+    expect(s.feed[0]).toEqual({ turn: 1, seq: 1, speaker: 'Ada', content: 'hi' })
+  })
+})

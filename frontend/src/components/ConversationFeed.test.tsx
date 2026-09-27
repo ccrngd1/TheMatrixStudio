@@ -98,3 +98,29 @@ describe('ConversationFeed jump-to-turn', () => {
     expect(centred).toHaveLength(0)
   })
 })
+
+describe('ConversationFeed citations', () => {
+  const src = { chunk_id: 7, document_id: 'd1', title: 'spec.md', ordinal: 3 }
+  const cited: FeedMessage[] = [{
+    turn: 1, seq: 2, speaker: 'Ada', content: 'As spec.md #3 says, no.', sources: [src],
+    citations: [{ label: 'ghost.md #1', title: 'ghost.md', kind: 'unverified', attributive: true }],
+  }]
+  const renderCited = (runId?: string) => render(
+    <ConversationFeed feed={cited} agents={agents} activeSpeaker={null} thinking={false}
+      runId={runId} sourceIndex={{ 'spec.md #3': src }} />,
+  )
+
+  it('links the citation, lists what was in view, and flags a citation nobody retrieved', () => {
+    renderCited('r1')
+    // Once inline, once in the list of what was in view.
+    expect(screen.getAllByRole('button', { name: 'spec.md #3' })).toHaveLength(2)
+    expect(screen.getByText('Sources in view:')).toBeInTheDocument()
+    expect(screen.getByText(/Cites ghost.md #1 — no one in this conversation retrieved it/)).toBeInTheDocument()
+  })
+
+  it('renders plain text when there is no run to open a source from', () => {
+    renderCited(undefined)
+    expect(screen.queryByRole('button', { name: 'spec.md #3' })).not.toBeInTheDocument()
+    expect(screen.getByText('As spec.md #3 says, no.')).toBeInTheDocument()
+  })
+})

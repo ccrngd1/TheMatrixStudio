@@ -382,6 +382,8 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh }: Props) {
             activeSpeaker={state.activeSpeaker}
             thinking={state.thinking}
             jumpTo={jumpTo}
+            runId={runId}
+            sourceIndex={state.sourceIndex}
           />
         </main>
       </div>

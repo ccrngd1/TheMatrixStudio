@@ -23,6 +23,8 @@ export interface SimEvent {
     // simply missing, so a cost-capped run read as still running in the UI.
     | 'sim.stopped'
     | 'sim.capped'
+    // Phase 5: the passages a speaker's turn retrieved, just before that speaker's message.
+    | 'document.retrieved'
     | 'error'
   agent_name: string | null
   payload: Record<string, any>
@@ -283,11 +285,37 @@ export interface AgentView {
   costUsd: number
 }
 
+/** A retrieved passage, as `document.retrieved` records it: enough to open it in the source viewer. */
+export interface SourcePassage {
+  chunk_id: number
+  document_id: string
+  title: string
+  ordinal: number
+  authority?: string
+  origin?: string
+}
+
+/** One citation found in a message, as the engine judged it (`matrix_studio/citations.py`). */
+export interface CitationMark {
+  label: string
+  title: string
+  /** firsthand: in the speaker's own passages; secondhand: attributed to who surfaced it;
+   *  anything else: nobody it was attributed to had it. */
+  kind: string
+  attributive?: boolean
+  via?: string
+  reason?: string
+}
+
 export interface FeedMessage {
   turn: number
   seq: number
   speaker: string
   content: string
+  /** The passages that were in this message's prompt. Absent when retrieval gave it none. */
+  sources?: SourcePassage[]
+  /** The citations the engine found in the text, with their provenance. */
+  citations?: CitationMark[]
 }
 
 // -------- Phase 2c: cognition / introspection -------- //

@@ -7,7 +7,7 @@
 // events up to the current reveal cursor. Nothing here ever talks to the engine.
 
 import { avatarUrl } from '../api'
-import type { AgentView, FeedMessage, Persona, SimEvent } from '../types'
+import type { AgentView, FeedMessage, Persona, SimEvent, SourcePassage } from '../types'
 
 export interface SimState {
   topic: string | null
@@ -24,6 +24,11 @@ export interface SimState {
   // hidden until the page is reloaded.
   status: 'idle' | 'running' | 'complete' | 'failed' | 'stopped' | 'capped' | 'interrupted'
   error: string | null
+  /** Each turn's retrieved passages, keyed `turn|speaker`, until that speaker's message claims them. */
+  retrieved: Record<string, SourcePassage[]>
+  /** Every passage retrieved so far in the run, keyed by its citation label (`title #ordinal`).
+   *  A message may cite a source another persona surfaced; this is how that citation still opens. */
+  sourceIndex: Record<string, SourcePassage>
 }
 
 export function initialState(cast: Persona[] = []): SimState {
@@ -57,6 +62,8 @@ export function initialState(cast: Persona[] = []): SimState {
     totalTokensOut: 0,
     status: cast.length ? 'running' : 'idle',
     error: null,
+    retrieved: {},
+    sourceIndex: {},
   }
 }
 
@@ -129,6 +136,18 @@ export function applyEvent(prev: SimState, e: SimEvent): SimState {
       }
       break
     }
+    case 'document.retrieved': {
+      // Retrieval precedes the message it feeds, on the same turn and by the same speaker, so the
+      // passages are parked under that key until the message arrives and claims them.
+      const name = e.payload.speaker ?? e.agent_name
+      const passages: SourcePassage[] = Array.isArray(e.payload.passages) ? e.payload.passages : []
+      if (name && passages.length) {
+        state.retrieved = { ...state.retrieved, [`${e.turn}|${name}`]: passages }
+        state.sourceIndex = { ...state.sourceIndex }
+        for (const p of passages) state.sourceIndex[`${p.title} #${p.ordinal}`] = p
+      }
+      break
+    }
     case 'agent.response': {
       const name = e.payload.speaker ?? e.agent_name
       if (name) {
@@ -144,6 +163,24 @@ export function applyEvent(prev: SimState, e: SimEvent): SimState {
           tokensOut: a.tokensOut + tout,
           costUsd: a.costUsd + cost,
         }
+        // What was in the prompt: the turn's retrieval, narrowed to `document_refs` when the
+        // engine recorded them (they are the causal set). Left undefined, not [], when there was
+        // none, so a run without retrieval renders exactly as before.
+        const key = `${e.turn}|${name}`
+        const parked = state.retrieved[key]
+        const refs: unknown = e.payload.document_refs
+        const sources = parked
+          ? Array.isArray(refs)
+            ? parked.filter((p) => refs.includes(p.chunk_id))
+            : parked
+          : undefined
+        if (parked) {
+          const { [key]: _claimed, ...rest } = state.retrieved
+          state.retrieved = rest
+        }
+        const citations = Array.isArray(e.payload.citation_provenance)
+          ? e.payload.citation_provenance
+          : undefined
         state.feed = [
           ...state.feed,
           {
@@ -151,6 +188,8 @@ export function applyEvent(prev: SimState, e: SimEvent): SimState {
             seq: e.seq,
             speaker: name,
             content: e.payload.message ?? e.payload.content ?? '',
+            ...(sources && sources.length ? { sources } : {}),
+            ...(citations && citations.length ? { citations } : {}),
           },
         ]
         state.totalCost += cost
