@@ -46,7 +46,7 @@ const mocked = api as unknown as {
   forecastEnsemble: ReturnType<typeof vi.fn>
 }
 const FORECAST = {
-  runs: 1, parts: [], low: 0.5, typical: 0.6, high: 0.7, complete: true, unmeasured: [], budget: null,
+  runs: 1, parts: [], low: 0.5, typical: 0.6, high: 0.7, complete: true, unmeasured: [], thin: [], budget: null,
 }
 
 describe('NewRunForm cost forecast', () => {

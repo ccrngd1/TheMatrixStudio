@@ -134,6 +134,13 @@ class TestForecastRun:
         assert part["high"] == pytest.approx(40 * 0.001)
         assert "1 run(s)" in part["basis"]
 
+    def test_a_part_priced_from_too_few_runs_is_called_thin(self):
+        f = fc.forecast_run(_req(), _history(_row(0.02)), **KW)
+        assert _part(f, "conversation")["based_on"] == 1
+        assert "conversation" in f["thin"]
+        f = fc.forecast_run(_req(), _history(_row(), _row(), _row()), **KW)
+        assert "conversation" not in f["thin"]
+
     def test_no_moderation_part_when_nobody_is_selected(self):
         f = fc.forecast_run(_req(max_messages=8, selection={"method": "simultaneous"}), _history(_row()), **KW)
         assert all(p["part"] != "speaker selection and checks" for p in f["parts"])

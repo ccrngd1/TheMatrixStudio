@@ -26,7 +26,7 @@ export function CostForecast({ forecast, loading, error }: Props) {
     return loading ? <p className="mt-6 text-xs text-slate-500">Estimating cost…</p> : null
   }
 
-  const { low, typical, high, complete, unmeasured, budget } = forecast
+  const { low, typical, high, complete, unmeasured, thin, budget } = forecast
   const range = low === high ? money(high) : `${money(low)}–${money(high)}`
   const over = budget != null && high > budget.remaining
 
@@ -59,6 +59,12 @@ export function CostForecast({ forecast, loading, error }: Props) {
       {!complete && (
         <p className="mt-1 text-xs text-amber-300">
           Not yet priced: {unmeasured.join(', ')} — no past run to price it from.
+        </p>
+      )}
+      {thin.length > 0 && (
+        <p className="mt-1 text-xs text-amber-300/80">
+          Rough: {thin.join(', ')} priced from fewer than three past runs, so the range is only as
+          narrow as the evidence.
         </p>
       )}
       {budget && (

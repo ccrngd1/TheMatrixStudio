@@ -10,14 +10,15 @@ import type { Forecast } from '../api'
 const f = (over: Partial<Forecast> = {}): Forecast => ({
   runs: 1,
   parts: [
-    { part: 'conversation', low: 0.8, typical: 0.9, high: 1.0, measured: true, basis: '40 responses × …' },
-    { part: 'avatars', low: 0.48, typical: 0.48, high: 0.48, measured: true, basis: '6 image(s) × $0.08' },
+    { part: 'conversation', low: 0.8, typical: 0.9, high: 1.0, measured: true, basis: '40 responses × …', based_on: 12 },
+    { part: 'avatars', low: 0.48, typical: 0.48, high: 0.48, measured: true, basis: '6 image(s) × $0.08', based_on: null },
   ],
   low: 1.28,
   typical: 1.38,
   high: 1.48,
   complete: true,
   unmeasured: [],
+  thin: [],
   budget: null,
   ...over,
 })
@@ -47,6 +48,11 @@ describe('CostForecast', () => {
     fireEvent.click(screen.getByText('Breakdown'))
     expect(screen.getByText('avatars')).toBeInTheDocument()
     expect(screen.getByText('6 image(s) × $0.08')).toBeInTheDocument()
+  })
+
+  it('calls a part priced from one or two runs rough', () => {
+    render(<CostForecast forecast={f({ thin: ['conversation'] })} loading={false} error={null} />)
+    expect(screen.getByText(/Rough: conversation priced from fewer than three/)).toBeInTheDocument()
   })
 
   it('says it is unavailable instead of disappearing', () => {

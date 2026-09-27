@@ -27,6 +27,7 @@ history it came from.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import statistics
 import time
@@ -165,16 +166,22 @@ def research_rate(record: Any) -> Optional[float]:
 async def load_history(store: Any, default_max: int) -> History:
     """Everything this owner's store can teach a forecast. Reads only; one pass."""
     history = History()
-    for run in await store.list_runs(limit=1000):
-        summary_cost: Optional[float] = None
+    runs = await store.list_runs(limit=1000)
+
+    async def summary_cost(run_id: str) -> Optional[float]:
         try:
-            rows = await store.get_summaries(run["id"])
-            gen = next((r for r in rows if r.get("kind") == "generated"), None)
-            if gen and gen.get("cost_usd"):
-                summary_cost = float(gen["cost_usd"])
+            rows = await store.get_summaries(run_id)
         except Exception:  # noqa: BLE001 — a missing summary is simply no observation
-            pass
-        obs = observe(run, summary_cost, default_max)
+            return None
+        gen = next((r for r in rows if r.get("kind") == "generated"), None)
+        return float(gen["cost_usd"]) if gen and gen.get("cost_usd") else None
+
+    # Concurrently, in batches: one at a time was measured at most of a 25 s first forecast.
+    costs: List[Optional[float]] = []
+    for i in range(0, len(runs), 16):
+        costs += await asyncio.gather(*(summary_cost(r["id"]) for r in runs[i:i + 16]))
+    for run, cost in zip(runs, costs):
+        obs = observe(run, cost, default_max)
         if obs:
             history.runs.append(obs)
         rate = research_rate(run.get("research_json"))
@@ -226,7 +233,7 @@ def _short(model: str) -> str:
 
 def _part(
     name: str, low: Optional[float], high: Optional[float], basis: str,
-    typical: Optional[float] = None,
+    typical: Optional[float] = None, based_on: Optional[int] = None,
 ) -> Dict[str, Any]:
     """`typical` is what the median comparable run cost; the range is what they all covered."""
     measured = low is not None and high is not None
@@ -239,6 +246,9 @@ def _part(
         "high": round(high, 4) if measured else None,
         "measured": measured,
         "basis": basis,
+        # How many past observations priced it; None for a fixed price. Under `SAME_CAST_MIN` the
+        # range is as narrow as the evidence, not as narrow as the truth — one run is a 0-width range.
+        "based_on": based_on,
     }
 
 
@@ -311,7 +321,7 @@ def forecast_run(
         parts.append(_part(
             "conversation", low_n * rate["low"], high_n * rate["high"],
             f"{low_n}–{high_n} responses" if low_n != high_n else f"{high_n} responses",
-            typical=typical_n * rate["typical"],
+            typical=typical_n * rate["typical"], based_on=len(pool),
         ))
         parts[-1]["basis"] += (
             f" × ${rate['low']:.4f}–{rate['high']:.4f} each, from {len(pool)} past "
@@ -332,7 +342,7 @@ def forecast_run(
             parts.append(_part(
                 "speaker selection and checks", low_m * rate["low"], moderated * rate["high"],
                 f"{moderated} moderated turn(s), from {len(full)} run(s) that recorded it",
-                typical=min(moderated, typical_n) * rate["typical"],
+                typical=min(moderated, typical_n) * rate["typical"], based_on=len(full),
             ))
         else:
             parts.append(_part(
@@ -350,7 +360,7 @@ def forecast_run(
             s = _spread(seen)
             parts.append(_part(
                 "summary", s["low"], s["high"], f"from {len(seen)} past {_short(summary_model)} summaries",
-                typical=s["typical"],
+                typical=s["typical"], based_on=len(seen),
             ))
         else:
             parts.append(_part(
@@ -391,7 +401,7 @@ def research_part(request: Mapping[str, Any], history: History) -> Optional[Dict
         "research", n * r["low"], n * r["high"],
         f"{n} collection(s), from {len(history.research_per_collection)} past research pass(es); "
         "runs once, before the conversation",
-        typical=n * r["typical"],
+        typical=n * r["typical"], based_on=len(history.research_per_collection),
     )
 
 
@@ -405,6 +415,11 @@ def _total(parts: Iterable[Mapping[str, Any]]) -> Dict[str, Any]:
         # False means the total is "at least": something it would spend on is not yet priced.
         "complete": len(measured) == len(parts),
         "unmeasured": [p["part"] for p in parts if not p["measured"]],
+        # Priced, but from fewer than `SAME_CAST_MIN` past runs: rough, whatever its range says.
+        "thin": [
+            p["part"] for p in parts
+            if p["measured"] and p.get("based_on") is not None and p["based_on"] < SAME_CAST_MIN
+        ],
     }
 
 
@@ -446,5 +461,5 @@ def report_part(members: int, history: History) -> Dict[str, Any]:
     return _part(
         "ensemble report", members * r["low"], members * r["high"],
         f"{members} run(s) × ${r['low']:.3f}–{r['high']:.3f} each, from {len(history.report_per_member)} past report(s)",
-        typical=members * r["typical"],
+        typical=members * r["typical"], based_on=len(history.report_per_member),
     )

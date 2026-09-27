@@ -244,6 +244,8 @@ export interface ForecastPart {
   high: number | null
   measured: boolean
   basis: string
+  /** How many past observations priced it; null for a fixed price. */
+  based_on: number | null
 }
 
 /** What launching a run or ensemble would cost, priced from this account's own runs. */
@@ -256,6 +258,8 @@ export interface Forecast {
   /** False: the total is "at least", because a part in `unmeasured` has no history yet. */
   complete: boolean
   unmeasured: string[]
+  /** Priced, but from fewer than three past runs — rough, however narrow its range. */
+  thin: string[]
   responses?: { low: number; typical: number; high: number }
   budget: { cap: number; spent: number; remaining: number } | null
 }
