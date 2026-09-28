@@ -142,6 +142,18 @@ def settings_lines(config: Dict[str, Any]) -> List[str]:
     return lines
 
 
+#: Said wherever assumptions are listed, so a reader never takes one for a finding.
+ASSUMPTIONS_NOTE = ("Given to the cast to reason from, not established. Conclusions below may depend "
+                    "on them.")
+
+
+def assumption_line(a: Dict[str, Any]) -> str:
+    who = "the operator" if a.get("source") == "operator" else str(a.get("source") or "")
+    when = f", turn {a.get('turn')}" if a.get("turn") else ""
+    basis = f" (basis: {a.get('basis')})" if a.get("basis") else ""
+    return f"{a.get('id')}: {a.get('statement')}{basis} — set by {who}{when}"
+
+
 async def run_model(db: Any, run: Dict[str, Any]) -> Dict[str, Any]:
     """Everything a run export shows, from stored data only. Makes no model call."""
     run_id = str(run["id"])
@@ -154,6 +166,7 @@ async def run_model(db: Any, run: Dict[str, Any]) -> Dict[str, Any]:
     retrieved: Dict[Any, List[Dict[str, Any]]] = {}
     transcript: List[Dict[str, Any]] = []
     converged: Optional[Dict[str, Any]] = None
+    assumptions: List[Dict[str, Any]] = []
     for e in events:
         p = _payload(e)
         if e["event_type"] == "document.retrieved":
@@ -180,6 +193,8 @@ async def run_model(db: Any, run: Dict[str, Any]) -> Dict[str, Any]:
                 "message": f"Asked by {p.get('asked_by')}: \u201c{p.get('question')}\u201d\n\n{p.get('answer') or ''}",
                 "passages": retrieved.get((e.get("turn"), expert), []),
             })
+        elif e["event_type"] == "assumption.made":
+            assumptions.append({k: p.get(k) for k in ("id", "statement", "basis", "source", "turn")})
         elif e["event_type"] == "sim.completed" and p.get("converged"):
             converged = {"at_turn": p.get("converged_at_turn"), "reason": p.get("converged_reason")}
 
@@ -205,6 +220,9 @@ async def run_model(db: Any, run: Dict[str, Any]) -> Dict[str, Any]:
         "cast": public_cast(_json(run.get("cast_json"), [])),
         "settings": settings_lines(config),
         "research": research,
+        # What the room reasoned from (matrix_studio/assumptions.py), from the event log so the record
+        # is what the run actually used.
+        "assumptions": assumptions,
         "transcript": transcript,
         "summary": (generated or {}).get("payload"),
         "exported_at": int(time.time()),
@@ -405,6 +423,9 @@ def render_markdown(model: Dict[str, Any]) -> str:
             f"- Exported {_when(m.get('exported_at'))}", ""]
 
     out += ["## Settings", ""] + [f"- {s}" for s in m["settings"]] + [""]
+    if m.get("assumptions"):
+        out += ["## Working assumptions", "", f"*{ASSUMPTIONS_NOTE}*", ""]
+        out += [f"- {assumption_line(a)}" for a in m["assumptions"]] + [""]
     research = _research_lines(m.get("research"))
     if research:
         out += ["## Pre-conversation research", ""] + [f"- {s}" for s in research] + [""]
@@ -575,6 +596,9 @@ def render_html(model: Dict[str, Any]) -> str:
           f"<p class=\"meta\">Run <code>{_e(m['id'])}</code> · created {_e(_when(m.get('created_at')))} · "
           f"{_e(status)} · exported {_e(_when(m.get('exported_at')))}</p>",
           "<h2>Settings</h2>", _html_list(m["settings"])]
+    if m.get("assumptions"):
+        b += ["<h2>Working assumptions</h2>", f"<p class=\"meta\"><em>{_e(ASSUMPTIONS_NOTE)}</em></p>",
+              _html_list([assumption_line(a) for a in m["assumptions"]])]
     research = _research_lines(m.get("research"))
     if research:
         b += ["<h2>Pre-conversation research</h2>", _html_list(research)]

@@ -26,6 +26,7 @@ from typing import Any, Awaitable, Callable, Dict, List, NamedTuple, Optional, S
 # depended on import order. See matrix_studio/lazy_litellm.py.
 from matrix_studio.lazy_litellm import litellm
 from matrix_studio.models import ModelSet, model_for
+from matrix_studio import assumptions as assumptions_mod
 from matrix_studio import experts as experts_mod
 
 # Type alias for the Phase 1 live-emit callback. It receives one structured
@@ -494,6 +495,7 @@ async def _generate_response(
     personas: Optional[PersonaConfig] = None,
     cite_inline: bool = False,
     consultants: str = "",
+    assumptions: str = "",
 ) -> Dict[str, Any]:
     """
     Generate a response from the selected speaker.
@@ -590,6 +592,8 @@ async def _generate_response(
     # Consultants the persona may ask (matrix_studio/experts.py). "" when there are none, so a run
     # without them is byte-identical to before.
     documents_block += consultants
+    # Working assumptions (matrix_studio/assumptions.py). "" when there are none.
+    documents_block += assumptions
 
     if cognition_on:
         # Compose the JSON schema from the enabled cognition sub-features so the
@@ -965,6 +969,8 @@ async def begin_run(
     # Consultants' definitions (config["experts"]): their pasted documents are ingested here, scoped
     # to the consultant's name, so they exist before the first question is asked.
     experts: Optional[List[Dict[str, Any]]] = None,
+    # The operator's working assumptions (config["assumptions"]), recorded once at turn 0.
+    assumptions: Optional[List[Any]] = None,
 ) -> Dict[str, AgentState]:
     """Everything a run does at turn 0, before any turn is generated.
 
@@ -1032,6 +1038,12 @@ async def begin_run(
                     "evidence_lean": personas_cfg.evidence_lean,
                 },
             )
+
+    # Working assumptions, recorded once so the transcript shows them from the start and an export or
+    # branch can say what the run was built on. The prompts read them from config, not from here.
+    for a in assumptions or []:
+        await emit(turn=0, seq=next_seq(), event_type="assumption.made", agent_name=None,
+                   payload=a.payload())
 
     # Generate avatars in parallel. Phase 0 generated them serially before the
     # loop and blocked on all of them; here we still gather() them but emit an
@@ -1245,6 +1257,7 @@ async def run_simulation(
         personas_cfg=personas_cfg,
         retrieval=retrieval,
         experts=config.get("experts") or [],
+        assumptions=assumptions_mod.from_config(config),
     )
 
     # Fresh start: no prior turns, no seed conversation.
@@ -1278,6 +1291,7 @@ async def run_simulation(
         should_stop=should_stop,
         experts=experts_mod.from_config(config),
         consult_limit=experts_mod.consult_limit(config),
+        assumptions=assumptions_mod.from_config(config),
     )
 
 
@@ -1600,6 +1614,8 @@ async def _run_turns(
     # Consultants (matrix_studio/experts.py) and the run's consultation cap. Empty = none.
     experts: Optional[List[Any]] = None,
     consult_limit: int = 0,
+    # Working assumptions every persona reasons from (matrix_studio/assumptions.py). Empty = none.
+    assumptions: Optional[List[Any]] = None,
     # Intervention H's streak, carried in because ONE TURN PER CALL is what ships: a
     # counter local to this function is reset on every turn under Step Functions, which
     # made the two-declines-in-a-row guard unsatisfiable in production while passing every
@@ -1917,6 +1933,7 @@ async def _run_turns(
             # entirely (zero queries, zero prompt change) when disabled.
             retrieval_on = bool(retrieval and retrieval.enabled and db is not None)
             passages: List[Any] = []
+            assumptions_prompt = assumptions_mod.assumptions_block(assumptions or [])
             # Consultants need retrieval (they answer from their sources) and the run's remaining cap.
             consult_remaining = (consult_limit - experts_mod.consults_used(conversation)) if experts else 0
             consult_prompt = (
@@ -2033,6 +2050,7 @@ async def _run_turns(
                 closing=in_closing,
                 cite_inline=bool(retrieval_on and retrieval.cite_inline),
                 consultants=consult_prompt,
+                assumptions=assumptions_prompt,
             )
 
             # Phase 4a: pre-emit priority-hierarchy validation gate. The
@@ -2145,6 +2163,7 @@ async def _run_turns(
                         personas=personas,
                         cite_inline=bool(retrieval_on and retrieval.cite_inline),
                         consultants=consult_prompt,
+                        assumptions=assumptions_prompt,
                     )
 
             # A pass never reaches the transcript. Emitted, so the run can say who was
@@ -3144,12 +3163,14 @@ async def resume_simulation(
     # a run (branch, resume, the orchestrator's slice), and a setting each had to remember to pass is
     # the shape of bug that has shipped features inert here before. One read per call.
     expert_list: List[Any] = []
+    assumption_list: List[Any] = []
     limit = 0
     if db is not None:
         try:
             row = await db.get_run(run_id)
             cfg = json.loads((row or {}).get("config_json") or "{}")
             expert_list, limit = experts_mod.from_config(cfg), experts_mod.consult_limit(cfg)
+            assumption_list = assumptions_mod.from_config(cfg)
         except Exception as exc:  # noqa: BLE001 — no consultants rather than a failed turn
             logger.warning("Could not read consultants for %s: %s", run_id, exc)
 
@@ -3176,5 +3197,6 @@ async def resume_simulation(
         decline_streak=decline_streak,
         experts=expert_list,
         consult_limit=limit,
+        assumptions=assumption_list,
         should_stop=should_stop,
     )

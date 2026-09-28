@@ -266,6 +266,7 @@ async def generate_summary(
     focus: Optional[str] = None,
     model: Optional[str] = None,
     instructions: Optional[str] = None,
+    context: str = "",
 ) -> Dict[str, Any]:
     """
     Generate a structured analyst summary of a completed conversation.
@@ -292,7 +293,7 @@ async def generate_summary(
         else None
     )
     user = (
-        f'The conversation topic was: "{topic}".\n\n'
+        f'The conversation topic was: "{topic}".{context}\n\n'
         f"Transcript:\n{transcript}\n\n"
         "Produce the JSON analysis now."
     )

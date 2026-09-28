@@ -606,6 +606,7 @@ async def prepare_run(db: Database, run_id: str) -> Dict[str, Any]:
     document and pay to re-embed the whole corpus — the last of which is the only
     genuinely expensive mistake available in this phase.
     """
+    from matrix_studio.assumptions import from_config as assumptions_from_config
     from matrix_studio.engine.simulator import begin_run
 
     run = await db.get_run(run_id)
@@ -638,6 +639,9 @@ async def prepare_run(db: Database, run_id: str) -> Dict[str, Any]:
         # The deployed path. Missing here would ingest consultants' documents locally and never in
         # production — the difference between the two paths that has shipped features inert before.
         experts=cfg.get("experts") or [],
+        # Same reason: an assumption recorded only on the local path would be missing from every
+        # deployed transcript while its prompt text still arrived (that is read from config).
+        assumptions=assumptions_from_config(cfg),
     )
     fresh = await db.get_run(run_id) or run
     return _payload(run_id, "running", fresh, 0)

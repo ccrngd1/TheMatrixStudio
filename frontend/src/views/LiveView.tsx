@@ -401,6 +401,7 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh }: Props) {
             runId={runId}
             sourceIndex={state.sourceIndex}
             quotes={quotes}
+            assumptions={state.assumptions}
           />
         </main>
       </div>

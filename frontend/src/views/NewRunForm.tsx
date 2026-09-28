@@ -5,6 +5,7 @@ import { CostForecast } from '../components/CostForecast'
 import { CastTemplates } from '../components/CastTemplates'
 import { PersonaLibrary } from '../components/PersonaLibrary'
 import { ConsultantsEditor, consultantsConfig, type DraftConsultant } from '../components/ConsultantsEditor'
+import { AssumptionsEditor, assumptionsConfig, type DraftAssumption } from '../components/AssumptionsEditor'
 import { Hint } from '../components/Hint'
 import { buildStructured } from '../lib/convictions'
 import { parseSetup, parseSetupObject, ImportError } from '../lib/importSetup'
@@ -83,6 +84,8 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
   // Experts outside the room (matrix_studio/experts.py).
   const [consultants, setConsultants] = useState<DraftConsultant[]>([])
   const [consultLimit, setConsultLimit] = useState(6)
+  // Working assumptions (matrix_studio/assumptions.py).
+  const [assumptions, setAssumptions] = useState<DraftAssumption[]>([])
   const [researchShared, setResearchShared] = useState(true)
   const [researchPersonas, setResearchPersonas] = useState(true)
   const [researchConsultants, setResearchConsultants] = useState(true)
@@ -233,6 +236,7 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
     // Same "absent is not empty" rule as avatars: a setup file written before knowledge
     // bases existed must not clear a selection the operator has already made.
     if (setup.knowledgeBases !== undefined) setRunKbs(setup.knowledgeBases)
+    if (setup.assumptions !== undefined) setAssumptions(setup.assumptions)
     if (setup.cognition) {
       setCognitionEnabled(setup.cognition.enabled)
       setCogMemory(setup.cognition.memory ?? true)
@@ -470,6 +474,7 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
           : undefined,
         ...(runKbs.length ? { knowledge_bases: runKbs } : {}),
         ...(experts.length ? { experts, consult_limit: consultLimit } : {}),
+        ...(assumptionsConfig(assumptions).length ? { assumptions: assumptionsConfig(assumptions) } : {}),
       },
       model: model || undefined,
       name: name.trim() || undefined,
@@ -1584,6 +1589,8 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
         limit={consultLimit}
         onLimit={setConsultLimit}
       />
+
+      <AssumptionsEditor assumptions={assumptions} onChange={setAssumptions} />
 
       {/* Research sits next to the KB pickers on purpose: it is a knowledge-base AUTHORING
           step, and the bindings it produces are the same bindings chosen above. */}

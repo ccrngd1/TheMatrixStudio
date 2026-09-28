@@ -253,6 +253,15 @@ class PersonaConfigModel(BaseModel):
     evidence_lean: bool = False
 
 
+class AssumptionModel(BaseModel):
+    """One working assumption (`matrix_studio/assumptions.py`): not a fact, a thing to reason from."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    statement: str = Field(min_length=1, max_length=300)
+    basis: str = Field(default="", max_length=300)
+
+
 class ExpertModel(BaseModel):
     """A consultant (`matrix_studio/experts.py`): outside the room, asked by the personas, answering only
     from its own documents and knowledge bases. Never a speaker."""
@@ -317,6 +326,9 @@ class RunConfigModel(BaseModel):
     # are exactly what they were. `consult_limit` bounds consultations per run; each is a model call.
     experts: List[ExpertModel] = Field(default_factory=list, max_length=5)
     consult_limit: Optional[int] = Field(default=None, ge=0, le=20)
+    # Working assumptions every persona reasons from (matrix_studio/assumptions.py). Omitted -> none,
+    # and the prompts are exactly what they were.
+    assumptions: List[AssumptionModel] = Field(default_factory=list, max_length=8)
 
 
 class SummaryConfigModel(BaseModel):

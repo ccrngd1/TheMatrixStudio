@@ -7,7 +7,7 @@
 // events up to the current reveal cursor. Nothing here ever talks to the engine.
 
 import { avatarUrl } from '../api'
-import type { AgentView, FeedMessage, Persona, SimEvent, SourcePassage } from '../types'
+import type { AgentView, FeedMessage, Persona, SimEvent, SourcePassage, WorkingAssumption } from '../types'
 
 export interface SimState {
   topic: string | null
@@ -29,6 +29,9 @@ export interface SimState {
   /** Every passage retrieved so far in the run, keyed by its citation label (`title #ordinal`).
    *  A message may cite a source another persona surfaced; this is how that citation still opens. */
   sourceIndex: Record<string, SourcePassage>
+  /** Working assumptions, in the order made. Kept out of `feed`: they are not speech, and every
+   *  reader of the feed (rounds, participation) would otherwise have to learn to skip them. */
+  assumptions: WorkingAssumption[]
 }
 
 export function initialState(cast: Persona[] = []): SimState {
@@ -64,6 +67,7 @@ export function initialState(cast: Persona[] = []): SimState {
     error: null,
     retrieved: {},
     sourceIndex: {},
+    assumptions: [],
   }
 }
 
@@ -145,6 +149,17 @@ export function applyEvent(prev: SimState, e: SimEvent): SimState {
         state.retrieved = { ...state.retrieved, [`${e.turn}|${name}`]: passages }
         state.sourceIndex = { ...state.sourceIndex }
         for (const p of passages) state.sourceIndex[`${p.title} #${p.ordinal}`] = p
+      }
+      break
+    }
+    case 'assumption.made': {
+      const p = e.payload
+      if (p.id && p.statement) {
+        const a: WorkingAssumption = {
+          id: String(p.id), statement: String(p.statement), basis: String(p.basis ?? ''),
+          source: String(p.source ?? 'operator'), turn: Number(p.turn ?? e.turn ?? 0),
+        }
+        state.assumptions = [...state.assumptions.filter((x) => x.id !== a.id), a]
       }
       break
     }

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import { useEffect, useRef, useState } from 'react'
-import type { AgentView, FeedMessage, Quote, SourcePassage } from '../types'
+import type { AgentView, FeedMessage, Quote, SourcePassage, WorkingAssumption } from '../types'
 import { AvatarBadge } from './AvatarBadge'
 import { SourceViewer } from './SourceViewer'
 import { citeSegments, unsourcedCitations } from '../lib/citeText'
@@ -18,10 +18,12 @@ interface Props {
   sourceIndex?: Record<string, SourcePassage>
   /** Verbatim quotes of in-view passages, by message seq. */
   quotes?: Record<string, Quote[]>
+  /** Working assumptions, each shown where it was made (turn 0: above the first message). */
+  assumptions?: WorkingAssumption[]
 }
 
 export function ConversationFeed({
-  feed, agents, activeSpeaker, thinking, jumpTo, runId, sourceIndex = {}, quotes = {},
+  feed, agents, activeSpeaker, thinking, jumpTo, runId, sourceIndex = {}, quotes = {}, assumptions = [],
 }: Props) {
   // A claim is checked where it is read. The source viewer was reachable only from a persona's
   // dossier, so checking a sentence meant knowing who said it, opening their panel and finding the
@@ -86,8 +88,12 @@ export function ConversationFeed({
           // Consultants' answers share their question's turn but are not part of any round.
           const roundSize = feed.filter((x) => x.turn === m.turn && !x.consultant).length
           const opensRound = roundSize > 1 && feed[i - 1]?.turn !== m.turn
+          // An assumption made at turn t is shown before the first message of a later turn.
+          const prevTurn = i === 0 ? -Infinity : feed[i - 1].turn
+          const madeHere = assumptions.filter((a) => a.turn < m.turn && a.turn >= prevTurn)
           return (
             <div key={`${m.seq}`} className="space-y-3">
+              {madeHere.map((a) => <AssumptionCard key={a.id} a={a} />)}
               {opensRound && (
                 <div className="flex items-center gap-2 pt-1 text-[11px] text-slate-500">
                   <span className="h-px flex-1 bg-matrix-border" />
@@ -138,6 +144,10 @@ export function ConversationFeed({
             </div>
           )
         })}
+        {/* Made after the last message so far — or before any message, which is every operator one. */}
+        {assumptions
+          .filter((a) => feed.length === 0 || a.turn >= feed[feed.length - 1].turn)
+          .map((a) => <AssumptionCard key={a.id} a={a} />)}
         {thinking && activeSpeaker && (
           <div className="flex items-center gap-3 text-slate-400">
             <AvatarBadge name={activeSpeaker} portrait={agents[activeSpeaker]?.portrait ?? null}
@@ -245,5 +255,23 @@ function MessageBody({
         </p>
       )}
     </>
+  )
+}
+
+function AssumptionCard({ a }: { a: WorkingAssumption }) {
+  return (
+    <div
+      className="rounded border border-dashed border-sky-500/40 bg-sky-950/20 px-3 py-2 text-xs text-slate-300"
+      title="Not an established fact: the room was told to reason from it"
+    >
+      <span className="mr-2 rounded bg-sky-900/50 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-sky-200">
+        assumption {a.id}
+      </span>
+      {a.statement}
+      <span className="ml-1 text-slate-500">
+        — {a.source === 'operator' ? 'set before the run' : `made at turn ${a.turn} by the ${a.source}`}
+        {a.basis ? `; basis: ${a.basis}` : ''}
+      </span>
+    </div>
   )
 }

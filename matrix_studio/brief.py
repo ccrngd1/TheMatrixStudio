@@ -43,6 +43,11 @@ MAX_DISSENT = 3
 #: Evidence requests shown, one clipped line each. The full table (with what each unlocks and the
 #: cheapest way to get it) is in the report; here it has to share one page.
 MAX_EVIDENCE = 3
+MAX_ASSUMPTIONS = 3
+MAX_ASSUMPTION_CHARS = 80
+#: "Where they agreed" gives up two items to the assumptions it may rest on. Measured: a brief at every
+#: cap with assumptions was 723 words against the one-page bound of 650; with these caps, 645.
+MAX_AGREED_WITH_ASSUMPTIONS = 2
 MAX_EVIDENCE_CHARS = 150
 #: Open questions and objections shown when there IS an evidence plan. The plan is the specific form
 #: of what is open — which data, what result, what to do meanwhile — and restates much of what the
@@ -107,7 +112,8 @@ def _question(topic: str) -> str:
 def run_brief(model: Dict[str, Any]) -> Dict[str, Any]:
     """The brief for ONE conversation, from `export.run_model`'s output."""
     s = model.get("summary") or {}
-    agreed, agreed_more = _cap([_clip(_text(x)) for x in s.get("consensus") or []], MAX_AGREED)
+    agreed, agreed_more = _cap([_clip(_text(x)) for x in s.get("consensus") or []],
+                               MAX_AGREED_WITH_ASSUMPTIONS if model.get("assumptions") else MAX_AGREED)
     plan = [row for row in s.get("evidence_plan") or [] if isinstance(row, dict) and row.get("data")]
     open_, open_more = _cap([_clip(_text(x)) for x in s.get("open_questions") or []],
                             MAX_OPEN_WITH_PLAN if plan else MAX_OPEN)
@@ -135,6 +141,12 @@ def run_brief(model: Dict[str, Any]) -> Dict[str, Any]:
         # they never supplied reads "not stated", which is the gap worth seeing.
         "evidence": evidence, "evidence_more": evidence_more,
         "conditional": _clip(s.get("conditional_recommendation"), MAX_CONDITIONAL_CHARS),
+        # What the conclusion rests on. Capped like everything else, and the cut is said.
+        **dict(zip(("assumptions", "assumptions_more"), _cap(
+            # Statement only; the basis and who set it are in the full report.
+            [_clip(f"{a.get('id')}: {a.get('statement')}", MAX_ASSUMPTION_CHARS)
+             for a in model.get("assumptions") or []],
+            MAX_ASSUMPTIONS))),
         # Never a percentage. One conversation is one draw.
         "confidence": (
             f"{NOT_MEASURED} — this is one conversation, and one run cannot say which of its "
@@ -251,6 +263,9 @@ def render_markdown(b: Dict[str, Any]) -> str:
         out += _more(b.get("open_more", 0)) + [""]
     if b.get("dissent"):
         out += ["## Standing objections", ""] + [f"- {x}" for x in b["dissent"]] + _more(b["dissent_more"]) + [""]
+    if b.get("assumptions"):
+        out += (["## Assumed, not established", ""] + [f"- {x}" for x in b["assumptions"]]
+                + _more(b.get("assumptions_more", 0)) + [""])
     if b.get("conditional") or b.get("evidence"):
         out += ["## What would settle it", ""]
         if b.get("conditional"):
@@ -338,6 +353,8 @@ def render_html(b: Dict[str, Any]) -> str:
         body += ["<h2>Still open</h2>", _ul(items, b.get("open_more", 0))]
     if b.get("dissent"):
         body += ["<h2>Standing objections</h2>", _ul(b["dissent"], b.get("dissent_more", 0))]
+    if b.get("assumptions"):
+        body += ["<h2>Assumed, not established</h2>", _ul(b["assumptions"], b.get("assumptions_more", 0))]
     if b.get("conditional") or b.get("evidence"):
         body.append("<h2>What would settle it</h2>")
         if b.get("conditional"):

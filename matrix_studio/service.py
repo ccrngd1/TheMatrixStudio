@@ -144,6 +144,8 @@ async def generate_and_store_summary(
     """
     conversation = await _load_conversation(db, run)
     topic = run.get("topic", "")
+    from matrix_studio import assumptions as assumptions_mod
+
     result = await analysis.generate_summary(
         conversation=conversation,
         topic=topic,
@@ -151,6 +153,7 @@ async def generate_and_store_summary(
         focus=focus,
         model=resolve_model(run, model),
         instructions=instructions,
+        context=assumptions_mod.summary_note(assumptions_mod.from_events(await db.get_events(run["id"]))),
     )
     saved = await db.save_summary(
         run_id=run["id"],

@@ -27,6 +27,8 @@ export interface SimEvent {
     | 'document.retrieved'
     // A consultant's answer to a persona's question (matrix_studio/experts.py). Not a participant's turn.
     | 'expert.answered'
+    // A working assumption the room reasons from (matrix_studio/assumptions.py). Not speech.
+    | 'assumption.made'
     | 'error'
   agent_name: string | null
   payload: Record<string, any>
@@ -241,6 +243,15 @@ export interface StoredSummary {
 // Response shape for the summary endpoints. `default_instructions` is the
 // editable analyst-role framing; the guardrails (JSON schema, JSON-only,
 // no-fabrication) are enforced automatically and are NOT part of it.
+/** A working assumption the room reasons from (matrix_studio/assumptions.py) — not a fact. */
+export interface WorkingAssumption {
+  id: string
+  statement: string
+  basis: string
+  source: string
+  turn: number
+}
+
 export interface SummaryResponse {
   run_id: string
   generated: StoredSummary | null

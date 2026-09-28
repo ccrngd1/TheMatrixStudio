@@ -205,3 +205,17 @@ def test_plan_text_is_escaped():
                             "conditional_recommendation": hostile})
     out = br.render_html(br.run_brief(m))
     assert "<script>alert" not in out
+
+
+def test_with_assumptions_too_the_worst_case_brief_stays_one_page():
+    long = "a considered, specific sentence that a persona might well say in a long debate " * 4
+    m = _run_model(topic=long * 3, summary={
+        "overview": long * 4, "consensus": [long] * 10, "open_questions": [long] * 10, "key_ideas": [],
+        "dissenters": [{"speaker": "P", "position": long}] * 10,
+        "evidence_plan": [{k: long for k in _PLAN_ROW}] * 10, "conditional_recommendation": long * 4},
+        assumptions=[{"id": f"A{i}", "statement": long, "basis": long, "source": "operator", "turn": 0}
+                     for i in range(8)])
+    b = br.run_brief(m)
+    assert len(b["assumptions"]) == br.MAX_ASSUMPTIONS and b["assumptions_more"] == 8 - br.MAX_ASSUMPTIONS
+    assert len(b["agreed"]) == br.MAX_AGREED_WITH_ASSUMPTIONS
+    assert len(br.render_markdown(b).split()) < 650
