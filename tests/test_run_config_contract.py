@@ -15,7 +15,9 @@ misplaced setting vanishing silently.
 import pytest
 from unittest.mock import patch
 
-from tests.test_api import REQUEST, _wait_complete, client, make_fake_run  # noqa: F401
+# `_storage_backend` is autouse in test_api and provides the MOCKED account. Importing `client` without it
+# built the app against real DynamoDB: these tests passed only while real credentials happened to be valid.
+from tests.test_api import REQUEST, _storage_backend, _wait_complete, client, make_fake_run  # noqa: F401
 
 OPUS = "bedrock/global.anthropic.claude-opus-5"
 
