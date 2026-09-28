@@ -236,7 +236,8 @@ export interface SummaryResponse {
   default_instructions: string
 }
 
-export type AsideTarget = 'analyst' | 'persona' | 'room'
+// 'consultant': one of the run's consultants (matrix_studio/experts.py), asked directly.
+export type AsideTarget = 'analyst' | 'persona' | 'room' | 'consultant'
 
 export interface ThreadSummary {
   id: string

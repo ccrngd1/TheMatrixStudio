@@ -105,3 +105,12 @@ describe('waitForReply', () => {
     expect(await waitForReply('t', () => {}, { everyMs: 1, forMs: 20 })).toBe(false)
   })
 })
+
+describe('AsidesDrawer consultants', () => {
+  it('offers a consultant as a target only when the run has one', async () => {
+    const { rerender } = render(<AsidesDrawer runId="r1" cast={cast} turnCount={4} onClose={() => {}} />)
+    expect(screen.queryByText(/A consultant \(answers from its sources\)/)).not.toBeInTheDocument()
+    rerender(<AsidesDrawer runId="r1" cast={cast} turnCount={4} consultants={['Ada']} onClose={() => {}} />)
+    expect(screen.getByText(/A consultant \(answers from its sources\)/)).toBeInTheDocument()
+  })
+})

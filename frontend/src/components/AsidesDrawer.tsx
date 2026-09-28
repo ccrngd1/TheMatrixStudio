@@ -14,6 +14,8 @@ interface Props {
   model?: string
   // Selectable models for the drawer's own picker.
   models?: { id: string; label: string }[]
+  /** The run's consultants, by name: offered as a target so the reviewer can ask one directly. */
+  consultants?: string[]
   // Called with the new branch run_id after a successful promote-aside branch.
   onBranch?: (branchRunId: string) => void
   onClose: () => void
@@ -24,11 +26,12 @@ interface Props {
 // the canonical conversation, does not change the run, and other asides don't
 // see it. The UI states this plainly (canon boundary) and shows a disabled
 // "bring into conversation" affordance reserved for a later version (Phase 2).
-export function AsidesDrawer({ runId, cast, turnCount, model, models = [], onBranch, onClose }: Props) {
+export function AsidesDrawer({ runId, cast, turnCount, model, models = [], consultants = [], onBranch, onClose }: Props) {
   const [threads, setThreads] = useState<ThreadSummary[]>([])
   const [active, setActive] = useState<ThreadDetail | null>(null)
   const [target, setTarget] = useState<AsideTarget>('analyst')
   const [personaName, setPersonaName] = useState<string>(cast[0]?.name ?? '')
+  const [consultantName, setConsultantName] = useState<string>(consultants[0] ?? '')
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
   // A reply the aside worker is still writing (deployed path: the API answers 202 and the reply
@@ -60,7 +63,7 @@ export function AsidesDrawer({ runId, cast, turnCount, model, models = [], onBra
       const t = await api.createThread(
         runId,
         target,
-        target === 'persona' ? personaName : undefined,
+        target === 'persona' ? personaName : target === 'consultant' ? consultantName : undefined,
       )
       await loadThreads()
       await openThread(t.id)
@@ -120,7 +123,9 @@ export function AsidesDrawer({ runId, cast, turnCount, model, models = [], onBra
   }
 
   const targetLabel = (t: ThreadSummary) =>
-    t.target === 'persona' ? `${t.persona_name}` : t.target === 'room' ? 'The room' : 'Analyst'
+    t.target === 'persona' ? `${t.persona_name}`
+      : t.target === 'consultant' ? `${t.persona_name} (consultant)`
+      : t.target === 'room' ? 'The room' : 'Analyst'
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-black/50" onClick={onClose}>
@@ -163,7 +168,22 @@ export function AsidesDrawer({ runId, cast, turnCount, model, models = [], onBra
                   <option value="analyst">Analyst (about the whole run)</option>
                   <option value="persona">A persona (in character)</option>
                   <option value="room">The room (all personas)</option>
+                  {consultants.length > 0 && (
+                    <option value="consultant">A consultant (answers from its sources)</option>
+                  )}
                 </select>
+                {target === 'consultant' && (
+                  <select
+                    aria-label="Consultant"
+                    value={consultantName}
+                    onChange={(e) => setConsultantName(e.target.value)}
+                    className="rounded border border-matrix-border bg-matrix-bg p-2 text-sm"
+                  >
+                    {consultants.map((n) => (
+                      <option key={n} value={n}>{n}</option>
+                    ))}
+                  </select>
+                )}
                 {target === 'persona' && (
                   <select
                     value={personaName}
@@ -222,6 +242,8 @@ export function AsidesDrawer({ runId, cast, turnCount, model, models = [], onBra
               <span className="text-xs text-slate-500">
                 {active.target === 'persona'
                   ? `${active.persona_name} (in character)`
+                  : active.target === 'consultant'
+                    ? `${active.persona_name} (consultant, answers from its sources)`
                   : active.target === 'room'
                     ? 'The room'
                     : 'Analyst'}{' '}

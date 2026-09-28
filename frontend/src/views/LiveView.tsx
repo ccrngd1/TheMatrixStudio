@@ -420,6 +420,9 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh }: Props) {
         <AsidesDrawer
           runId={runId}
           cast={cast}
+          consultants={((detail?.config?.experts ?? []) as { name?: string }[])
+            .map((e) => e.name ?? '')
+            .filter(Boolean)}
           turnCount={maxTurn}
           model={analysisModel || undefined}
           models={models}

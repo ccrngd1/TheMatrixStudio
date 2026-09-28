@@ -221,3 +221,39 @@ async def test_a_consultant_cannot_share_a_persona_s_name():
         CreateRunModel(**body)
     with pytest.raises(ValidationError, match="already used"):
         CreateEnsembleModel(**body)
+
+
+# --------------------------------------------------------------------------- #
+# Asking a consultant directly, from the conversation view (aside target)
+# --------------------------------------------------------------------------- #
+
+
+async def test_a_consultant_thread_needs_a_consultant_of_this_run(db):
+    from matrix_studio import service
+
+    await db.create_run(run_id="cx1", topic="t", cast=[{"name": "Dana", "persona": "p"}], name="cx1",
+                        config={"experts": [{"name": "Ada", "expertise": "costs"}]})
+    run = await db.get_run("cx1")
+    thread = await service.create_thread(db, run, target="consultant", persona_name="Ada")
+    assert thread["target"] == "consultant" and thread["persona_name"] == "Ada"
+    with pytest.raises(ValueError, match="consultants"):
+        await service.create_thread(db, run, target="consultant", persona_name="Dana")
+
+
+async def test_the_consultant_answers_the_reviewer_through_the_same_answer_path(db, monkeypatch):
+    from matrix_studio import service
+
+    asked = []
+
+    async def fake_answer(expert, question, asked_by, topic, passages, *, model, settings):
+        asked.append((expert.name, question, asked_by))
+        return {"answer": ex.NOT_IN_SOURCES, "tokens_in": 3, "tokens_out": 2, "cost_usd": 0.0004, "error": None}
+
+    monkeypatch.setattr(ex, "answer", fake_answer)
+    await db.create_run(run_id="cx2", topic="t", cast=[{"name": "Dana", "persona": "p"}], name="cx2",
+                        config={"experts": [{"name": "Ada", "expertise": "costs"}]})
+    run = await db.get_run("cx2")
+    thread = await service.create_thread(db, run, target="consultant", persona_name="Ada")
+    reply = await service.post_aside_message(db, run, thread, "What does it cost?")
+    assert asked == [("Ada", "What does it cost?", "The reviewer")]
+    assert reply["speaker"] == "Ada (consultant)" and reply["content"] == ex.NOT_IN_SOURCES

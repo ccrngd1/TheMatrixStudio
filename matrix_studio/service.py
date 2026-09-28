@@ -14,14 +14,16 @@ tables and reported separately from the canonical run cost.
 """
 
 import asyncio
-import os
-import time
 import json
 import logging
+import os
+import time
 import uuid
 from typing import Any, Dict, List, Optional
 
 from matrix_studio import analysis
+from matrix_studio import experts as experts_mod
+from matrix_studio.settings import get_settings
 from matrix_studio.storage import Database
 
 logger = logging.getLogger(__name__)
@@ -220,8 +222,14 @@ async def create_thread(
     target, the persona name must exist in the run's cast (we reuse the REAL
     stored persona text, never inventing one).
     """
-    if target not in ("analyst", "persona", "room"):
+    if target not in ("analyst", "persona", "room", "consultant"):
         raise ValueError(f"Unknown target: {target}")
+    if target == "consultant":
+        # A consultant defined on THIS run (matrix_studio/experts.py): the reviewer asks it directly,
+        # and it answers from its own sources exactly as it would a persona.
+        names = {e.name for e in experts_mod.from_config(_run_config(run))}
+        if not persona_name or persona_name not in names:
+            raise ValueError(f"persona_name must be one of the run's consultants: {sorted(names)}")
     if target == "persona":
         cast = _load_cast(run)
         names = {c.get("name") for c in cast}
@@ -234,7 +242,7 @@ async def create_thread(
         thread_id=thread_id,
         run_id=run["id"],
         target=target,
-        persona_name=persona_name if target == "persona" else None,
+        persona_name=persona_name if target in ("persona", "consultant") else None,
         mode="aside",
     )
 
@@ -263,7 +271,7 @@ async def post_aside_message(
     # Generate FIRST, store after. The user's message used to be stored before the reply was generated,
     # so a reply that timed out left the question unanswered in the thread for good (seen 2026-09-28).
     reply = await asyncio.wait_for(
-        _aside_reply(run, thread, user_message, conversation, topic, history, resolved_model),
+        _aside_reply(run, thread, user_message, conversation, topic, history, resolved_model, db=db),
         timeout=ASIDE_DEADLINE_SECONDS,
     )
     await db.add_thread_message(
@@ -297,10 +305,12 @@ ASIDE_DEADLINE_SECONDS = 26
 async def _aside_reply(
     run: Dict[str, Any], thread: Dict[str, Any], user_message: str,
     conversation: List[Dict[str, Any]], topic: str, history: List[Dict[str, Any]],
-    resolved_model: Optional[str], max_tokens: int = 0,
+    resolved_model: Optional[str], max_tokens: int = 0, db: Optional[Database] = None,
 ) -> Dict[str, Any]:
     """The target's reply to one aside message. Pure generation: stores nothing."""
     target = thread["target"]
+    if target == "consultant":
+        return await _consultant_reply(db, run, thread["persona_name"], user_message, resolved_model)
     if target == "analyst":
         return await analysis.analyst_reply(
             user_message=user_message,
@@ -338,6 +348,38 @@ async def _aside_reply(
             max_tokens=max_tokens,
         )
     raise ValueError(f"Unknown target: {target}")  # pragma: no cover - guarded at creation
+
+
+async def _consultant_reply(
+    db: Optional[Database], run: Dict[str, Any], name: str, question: str, model: Optional[str],
+) -> Dict[str, Any]:
+    """A consultant answering the reviewer directly: retrieval over ITS sources, then the same
+    `experts.answer` the engine uses mid-conversation: cited, or "That isn't in my sources."
+    """
+    from matrix_studio.models import model_for
+    from matrix_studio.retrieval import retrieve_for_turn
+    from matrix_studio.state import RetrievalConfig
+
+    config = _run_config(run)
+    expert = next((e for e in experts_mod.from_config(config) if e.name == name), None)
+    if expert is None:
+        raise ValueError("Consultant no longer present in the run's config")
+    retrieval = RetrievalConfig.from_config(config)
+    passages: List[Any] = []
+    if db is not None and retrieval.enabled:
+        passages, _q, _floor, _fail = await retrieve_for_turn(
+            db, run["id"], expert.name, "", [{"speaker": "reviewer", "content": question}],
+            k=retrieval.k, max_chars=retrieval.max_chars, recent_turns=1, mode=retrieval.mode,
+            embedding_model=retrieval.embedding_model, rrf_k=retrieval.rrf_k,
+            min_similarity=retrieval.min_similarity,
+        )
+    settings = get_settings()
+    result = await experts_mod.answer(
+        expert, question, "The reviewer", run.get("topic", ""), passages,
+        model=model_for(model, "voice") or settings.litellm_model, settings=settings,
+    )
+    return {"speaker": expert.speaker, "content": result["answer"], "tokens_in": result["tokens_in"],
+            "tokens_out": result["tokens_out"], "cost_usd": result["cost_usd"]}
 
 
 # --------------------------------------------------------------------------- #
@@ -402,7 +444,7 @@ async def answer_aside_in_background(
             history = history[:-1]
         reply = await _aside_reply(
             run, thread, user_message, conversation, run.get("topic", ""), history,
-            resolve_model(run, model, role="aside"), max_tokens=analysis.ASIDE_BACKGROUND_MAX_TOKENS,
+            resolve_model(run, model, role="aside"), max_tokens=analysis.ASIDE_BACKGROUND_MAX_TOKENS, db=db,
         )
         await db.add_thread_message(
             thread_id=thread_id, role="target", speaker=reply["speaker"], content=reply["content"],
