@@ -426,6 +426,9 @@ export interface AgentDossier {
   relationships: Record<string, string>
   // Phase 5. Optional so a dossier from an older backend still parses.
   documents?: DossierDocument[]
+  /** Knowledge bases this persona searches: the run's and its own. `readable` is re-checked on
+   *  every read, so a revoked grant shows as unreadable (and unnamed). */
+  knowledge_bases?: { id: string; name: string | null; scope: 'run' | 'persona'; readable: boolean }[]
   document_retrievals?: DossierRetrieval[]
   // Phase 6. Null for a run that used no structured personas. The backend has
   // already stripped `underlying_concern` and `validity` — both are private to

@@ -346,3 +346,21 @@ describe('Dossier — researched vs curated passages', () => {
     expect(screen.queryByText(/researched/)).not.toBeInTheDocument()
   })
 })
+
+describe('Dossier knowledge bases', () => {
+  it('names the collections a persona searches, and marks one it can no longer read', async () => {
+    ;(api.getDossier as ReturnType<typeof vi.fn>).mockResolvedValue({
+      run_id: 'r1', agent: 'Ada', persona: 'p', goals: [], memory_stream: [], beliefs: [], relationships: {},
+      tokens_in: 0, tokens_out: 0, cost_usd: 0, portrait_b64: null,
+      knowledge_bases: [
+        { id: 'k1', name: 'statutes', scope: 'run', readable: true },
+        { id: 'k2', name: null, scope: 'persona', readable: false },
+      ],
+    })
+    render(<Dossier agent={agent} feed={feed} runId="r1" onClose={() => {}} />)
+    expect(await screen.findByText('Knowledge bases searched (2)')).toBeInTheDocument()
+    expect(screen.getByText('statutes')).toBeInTheDocument()
+    expect(screen.getByText('A collection you can no longer read')).toBeInTheDocument()
+    expect(screen.getByText('whole cast')).toBeInTheDocument()
+  })
+})

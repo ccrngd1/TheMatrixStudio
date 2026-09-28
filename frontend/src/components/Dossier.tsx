@@ -72,6 +72,7 @@ export function Dossier({ agent, feed, runId, onClose }: Props) {
   // Phase 5. Defaulted because an older backend omits these fields entirely,
   // and retrieval is opt-in, so absent is the normal case rather than an error.
   const docs = dossier?.documents ?? []
+  const kbs = dossier?.knowledge_bases ?? []
   const retrievals = dossier?.document_retrievals ?? []
   const retrievedChars = retrievals.reduce((sum, r) => sum + (r.total_chars ?? 0), 0)
 
@@ -167,6 +168,24 @@ export function Dossier({ agent, feed, runId, onClose }: Props) {
             passages it actually did draw on. Both come straight from stored
             state and the document.retrieved audit events — a run without
             retrieval renders nothing here rather than an empty promise. */}
+        {/* The collections it searches. Without these a knowledge-base-bound persona showed no
+            background material at all beside passages it had plainly read. */}
+        {kbs.length > 0 && (
+          <Section title={`Knowledge bases searched (${kbs.length})`}>
+            <ul className="space-y-1 text-sm">
+              {kbs.map((kb) => (
+                <li key={kb.id} className="flex items-center justify-between rounded border border-matrix-border p-2">
+                  <span className={kb.readable ? 'text-slate-200' : 'italic text-slate-500'}>
+                    {kb.readable ? kb.name : 'A collection you can no longer read'}
+                  </span>
+                  <span className="text-[11px] uppercase tracking-wide text-slate-500">
+                    {kb.scope === 'run' ? 'whole cast' : 'this persona'}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </Section>
+        )}
         {docs.length > 0 && (
           <Section title={`Background documents (${docs.length})`}>
             <div className="space-y-1">

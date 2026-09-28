@@ -2406,6 +2406,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         ref: str,
         name: str,
         user: str = Depends(current_user),
+        groups: List[str] = Depends(current_groups),
     ) -> Dict[str, Any]:
         run = await db.for_owner(user).get_run_by_ref(ref)
         if not run:
@@ -2456,6 +2457,24 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             }
             for d in await db.for_owner(user).list_documents(run["id"], persona_name=name)
         ]
+        # The knowledge bases this persona searches: the run's, then its own. Without these a
+        # KB-bound run showed `documents: []` beside passages the persona demonstrably read, with
+        # nothing saying where they came from. `readable` is re-checked NOW, like retrieval does each
+        # turn, so a revoked grant shows as such rather than as a collection still in use.
+        from matrix_studio.bindings import bound_kbs
+
+        owned = db.for_owner(user)
+        run_level = set(bound_kbs(run, None))
+        collections: List[Dict[str, Any]] = []
+        for kb_id in bound_kbs(run, name):
+            readable = await owned.may_read_kb(kb_id, user, groups)
+            kb = await owned.get_knowledge_base(kb_id) if readable else None
+            collections.append({
+                "id": kb_id,
+                "name": (kb or {}).get("name"),
+                "scope": "run" if kb_id in run_level else "persona",
+                "readable": bool(readable and kb),
+            })
         drew_on: List[Dict[str, Any]] = []
         # Turns where cognition ran and its structured reply was DISCARDED. Reported
         # because an empty memory stream has two very different causes, and a UI that
@@ -2506,6 +2525,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             "beliefs": beliefs,
             "pending_threads": agent_threads,
             "documents": attached,
+            "knowledge_bases": collections,
             "document_retrievals": drew_on,
             # Whether cognition was CONFIGURED, which is a different question from
             # whether it produced anything. The dossier previously exposed only the

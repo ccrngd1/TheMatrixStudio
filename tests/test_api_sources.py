@@ -222,3 +222,40 @@ class TestTheDocumentReadsOnce:
         assert chunks[0]["display"] == chunks[0]["text"]
         assert all(len(c["display"]) < len(c["text"]) for c in chunks[1:])
         assert [c["text"] for c in chunks] == [c.content for c in chunk_text(LONG)]
+
+
+class TestTheDossierNamesItsCollections:
+    """A KB-bound persona's dossier listed `documents: []` beside passages it had demonstrably read."""
+
+    async def _snapshot(self, db, run_id, names):
+        from matrix_studio.state import AgentState, SimSnapshot
+
+        await db.save_snapshot(SimSnapshot(
+            run_id=run_id, turn=1, topic="t",
+            agents={n: AgentState(name=n, persona="p", goals=[]) for n in names},
+            conversation=[], status="running", created_at=1, total_turns=1,
+        ))
+
+    async def test_run_and_persona_collections_are_listed_with_their_scope(self, client, db):
+        shared = _create(client, "statutes")
+        own = _create(client, "casey notes")
+        await _run(db, "r1", kbs=[shared["id"]], persona_kbs=[own["id"]])
+        await self._snapshot(db, "r1", ["Casey"])
+        body = client.get("/api/runs/r1/agents/Casey/dossier").json()
+        got = {(k["name"], k["scope"], k["readable"]) for k in body["knowledge_bases"]}
+        assert got == {("statutes", "run", True), ("casey notes", "persona", True)}
+
+    async def test_a_revoked_collection_shows_as_unreadable_and_nameless(self, client, db):
+        # The owner binds a KB, then another user reads the dossier of a run in THEIR account that
+        # binds it without a grant: listed (it is in the config) but not readable, and not named.
+        kb = _create(client, "private notes")
+        _as(client, OTHER)
+        await db.create_run(run_id="r2", topic="t", cast=[{"name": "Avery"}], name="r2",
+                            config={"knowledge_bases": [kb["id"]]}, owner_sub=OTHER)
+        from matrix_studio.state import AgentState, SimSnapshot
+        await db.for_owner(OTHER).save_snapshot(SimSnapshot(
+            run_id="r2", turn=1, topic="t", agents={"Avery": AgentState(name="Avery", persona="p", goals=[])},
+            conversation=[], status="running", created_at=1, total_turns=1,
+        ))
+        [entry] = client.get("/api/runs/r2/agents/Avery/dossier").json()["knowledge_bases"]
+        assert entry["readable"] is False and entry["name"] is None
