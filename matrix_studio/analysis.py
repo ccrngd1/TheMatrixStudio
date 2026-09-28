@@ -349,16 +349,17 @@ _ASIDE_FRAMING = (
     "The group conversation has already FINISHED. You are now reflecting on it "
     "afterwards in a private side-discussion with a reviewer. Your reply here "
     "does NOT continue or change the original conversation and the other "
-    "participants will not see it. Keep your reply under about 200 words unless "
-    "the reviewer asks for more detail."
+    "participants will not see it. Answer in at most about 150 words: lead with "
+    "the point, and offer to expand rather than expanding."
 )
 
 #: The output budget for one aside reply. Asides used to fall back to the SUMMARY budget (8,000
 #: tokens), and a reply is generated inside the HTTP request, which the deployed API cuts off at 30 s:
 #: a persona aside timed out at 30 s on 2026-09-28 (a 504 in the UI) and no persona aside had ever
-#: returned on the deployed stack. Measured: a 15-turn transcript and a one-paragraph question took
-#: 8.3 s for 275 output tokens, so ~700 tokens is ~20 s at worst and a readable reply at best.
-ASIDE_MAX_TOKENS = 700
+#: returned on the deployed stack. Measured on the deployed API against a 40-turn, six-persona run:
+#: output runs at ~30–35 tokens/s, and at 700 tokens an open question took 25.5 s — past the 24 s
+#: server deadline. 450 is ~15 s of output plus reading the transcript, inside the deadline with room.
+ASIDE_MAX_TOKENS = 450
 
 
 def _history_messages(

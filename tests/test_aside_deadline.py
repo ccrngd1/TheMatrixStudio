@@ -36,7 +36,7 @@ async def test_persona_and_analyst_asides_use_their_own_small_budget(monkeypatch
     await analysis.persona_reply("q", "A", "p", conv, "t")
     await analysis.analyst_reply("q", conv, "t")
     assert calls == [analysis.ASIDE_MAX_TOKENS, analysis.ASIDE_MAX_TOKENS]
-    assert analysis.ASIDE_MAX_TOKENS <= 1000
+    assert analysis.ASIDE_MAX_TOKENS <= 500  # ~15 s of output at the measured deployed rate
 
 
 @pytest.mark.asyncio
