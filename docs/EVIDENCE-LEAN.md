@@ -58,3 +58,36 @@ extracts the evidence plan with every unsupplied column written as `not stated`.
 precisely, and guardrail 1 is a coarse proxy for capitulation — the study's `docs/CAPITULATION-STUDY.md`
 showed the deterministic lists recall 0.41 on this brief, so a folded/settled reading of the on arm's
 position changes is worth doing by hand if the primaries pass, and is not part of the verdict.
+
+## Result — 2026-09-28
+
+Runs: off `a2b3b412` `5c34a226` `4a086d55` ; on `640bb8f9` `a38103f1` `6191e1df` . All six complete at 40 turns, launched together after this document was
+committed (`6c4c51e`). Scored by `scripts/analyse_evidence_lean.py` as committed.
+
+| | off | on |
+|---|---|---|
+| evidence requests (analyst-extracted) | 11 | 14 |
+| **best guess stated** | **0.36** (4/11) | **0.57** (8/14) |
+| **runs stating a current lean** | **1 of 3** | **2 of 3** |
+| mean standing dissenters | 2.0 | 3.3 |
+| median words per message | 137 | 145 |
+| total cost | $3.33 | $3.43 |
+
+- **Primary 1: MISSED.** The on arm rose by 0.21 (clearing the +0.20 gap) but stayed under 0.80.
+- **Primary 2: met** — 2 of 3.
+- **Guardrails 1–3: met.** Standing dissent went *up*, speech length +6%, cost +3%.
+- **Decision, as pre-registered:** the default is not changed. The rule did not specify the case of one
+  primary met and one missed; read conservatively it is "keep opt-in", which is what is done. That gap
+  in the decision rule is recorded rather than filled after the fact.
+
+**Not part of the verdict — read afterwards.** A regex diagnostic written after scoring found no
+compliance in either arm; reading the on-arm transcripts showed the regex was wrong, not the rule.
+Personas wrote the requested form in their own words — an expected figure, then "so today I'm
+against" — and in one run two personas converged on a concrete test with thresholds on both sides
+("over X moves me, under Y does not"), which is the owner's bar for a run that ends in something
+usable. Of the on arm's 6 requests without a guess, 4 were of one kind: whether a case, statute, regulator
+action or harm **exists at all** — where the persona's honest guess is "it won't turn up" and it states
+its position instead of the guess. A wording that asked for the guess *even
+when the expected answer is "none exists"* is the obvious next variant; it would need its own
+pre-registration. The off-arm baseline (0.36) is also below Stage 1's 0.58 on stored runs, so the
+Stage 1 figure is not a stable baseline at n = 3.
