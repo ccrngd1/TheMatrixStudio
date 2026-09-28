@@ -1218,6 +1218,16 @@ function handler(event) {
             Duration.minutes(15),
         )
 
+        self.aside_lambda = self._worker(
+            "AsideFunction", "aside",
+            "matrix_studio.step_handlers.aside",
+            # One aside reply: a single model call over a finished transcript (a room aside is up to
+            # six, concurrently). Generated here rather than in the HTTP request, because the request
+            # is cut off at 30 s and a long transcript, an open question or a cold start crossed that
+            # (HTTP 504, 2026-09-28). Three minutes is several times the slowest reply measured.
+            Duration.minutes(3),
+        )
+
         research = sfn_tasks.LambdaInvoke(
             self, "Research",
             lambda_function=self.research_lambda,
@@ -1430,6 +1440,19 @@ function handler(event) {
             caller.add_environment(
                 "ENSEMBLE_REPORT_FUNCTION", self.ensemble_report_lambda.function_name
             )
+
+        # The API dispatches an aside reply and answers 202; the browser polls the thread. Invoke only,
+        # on this one function — the worker's own data and model access come from `_worker`, like
+        # every other worker (tenant role, Bedrock).
+        self.aside_lambda.grant_invoke(self.api_lambda)
+        self.api_lambda.add_environment("ASIDE_FUNCTION", self.aside_lambda.function_name)
+        # No retries: a retried reply would be generated and paid for twice, and would race the
+        # first attempt to write into the thread. A failure is recorded in the thread instead.
+        lambda_.EventInvokeConfig(
+            self, "AsideNoRetries",
+            function=self.aside_lambda,
+            retry_attempts=0,
+        )
 
         # No automatic retries on the async invoke.
         #

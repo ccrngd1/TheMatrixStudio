@@ -11,7 +11,6 @@ vi.mock('../api', () => ({
     getThread: vi.fn(),
     createThread: vi.fn(),
     postThreadMessage: vi.fn(),
-    warm: vi.fn().mockResolvedValue({ warm: true, seconds: 0 }),
     branchRun: vi.fn().mockResolvedValue({ run_id: 'branch-1' }),
   },
 }))
@@ -86,28 +85,23 @@ describe('asideError', () => {
   })
 })
 
-describe('AsidesDrawer warm-up', () => {
-  it('warms the API when opened, and a question waits for the warm-up to finish', async () => {
+describe('waitForReply', () => {
+  it('polls until the reply (or a recorded failure) follows the question', async () => {
     const { api } = await import('../api')
-    const { fireEvent } = await import('@testing-library/react')
-    let finishWarm: (v: unknown) => void = () => {}
-    ;(api.warm as any).mockReturnValue(new Promise((r) => { finishWarm = r }))
-    const thread = { id: 't9', run_id: 'r1', target: 'analyst', persona_name: null, mode: 'aside',
-      created_at: 0, message_count: 0, total_cost_usd: 0 }
-    ;(api.createThread as any).mockResolvedValue(thread)
-    ;(api.getThread as any).mockResolvedValue({ ...thread, messages: [] })
-    ;(api.postThreadMessage as any).mockResolvedValue({})
+    const { waitForReply } = await import('./AsidesDrawer')
+    const q = { id: 1, role: 'user', content: 'Why?' }
+    ;(api.getThread as any)
+      .mockResolvedValueOnce({ id: 't', messages: [q] })
+      .mockResolvedValueOnce({ id: 't', messages: [q, { id: 2, role: 'error', content: 'failed' }] })
+    const seen: unknown[] = []
+    expect(await waitForReply('t', (t) => seen.push(t), { everyMs: 1, forMs: 1000 })).toBe(true)
+    expect(seen).toHaveLength(2)
+  })
 
-    render(<AsidesDrawer runId="r1" cast={cast} turnCount={4} onBranch={() => {}} onClose={() => {}} />)
-    expect(api.warm).toHaveBeenCalledTimes(1)
-    screen.getByText('Start').click()
-    const box = await screen.findByPlaceholderText(/ask|message|question/i)
-    fireEvent.change(box, { target: { value: 'Why?' } })
-    fireEvent.click(screen.getByText('Send'))
-    await new Promise((r) => setTimeout(r, 30))
-    expect(api.postThreadMessage).not.toHaveBeenCalled()
-    expect(screen.getByText('Preparing…')).toBeInTheDocument()
-    finishWarm({ warm: true, seconds: 1 })
-    await waitFor(() => expect(api.postThreadMessage).toHaveBeenCalled())
+  it('gives up when nothing arrives in time', async () => {
+    const { api } = await import('../api')
+    const { waitForReply } = await import('./AsidesDrawer')
+    ;(api.getThread as any).mockResolvedValue({ id: 't', messages: [{ id: 1, role: 'user', content: 'Why?' }] })
+    expect(await waitForReply('t', () => {}, { everyMs: 1, forMs: 20 })).toBe(false)
   })
 })

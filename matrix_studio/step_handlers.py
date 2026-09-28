@@ -273,8 +273,24 @@ async def _ensemble_report(event: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+async def _aside(event: Dict[str, Any]) -> Dict[str, Any]:
+    """Generate and store one aside reply (`service.answer_aside_in_background`).
+
+    Invoked asynchronously by `POST /api/threads/{id}/messages`, which has already stored the question
+    and answered 202 — the reply used to be generated inside that request and ran into its 30 s limit.
+    The browser polls the thread until the reply, or a recorded failure, appears.
+    """
+    from matrix_studio import service
+
+    db = await _bound(_owner(event))
+    return await service.answer_aside_in_background(
+        db, str(event["thread_id"]), str(event.get("user_message") or ""), event.get("model"),
+    )
+
+
 research = _handler(_research)
 prepare = _handler(_prepare)
 turn = _handler(_turn)
 finalise = _handler(_finalise)
 ensemble_report = _handler(_ensemble_report)
+aside = _handler(_aside)

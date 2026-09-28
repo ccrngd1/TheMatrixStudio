@@ -14,6 +14,8 @@ tables and reported separately from the canonical run cost.
 """
 
 import asyncio
+import os
+import time
 import json
 import logging
 import uuid
@@ -295,7 +297,7 @@ ASIDE_DEADLINE_SECONDS = 26
 async def _aside_reply(
     run: Dict[str, Any], thread: Dict[str, Any], user_message: str,
     conversation: List[Dict[str, Any]], topic: str, history: List[Dict[str, Any]],
-    resolved_model: Optional[str],
+    resolved_model: Optional[str], max_tokens: int = 0,
 ) -> Dict[str, Any]:
     """The target's reply to one aside message. Pure generation: stores nothing."""
     target = thread["target"]
@@ -306,6 +308,7 @@ async def _aside_reply(
             topic=topic,
             thread_history=history,
             model=resolved_model,
+            max_tokens=max_tokens,
         )
     if target == "persona":
         cast = _load_cast(run)
@@ -322,6 +325,7 @@ async def _aside_reply(
             topic=topic,
             thread_history=history,
             model=resolved_model,
+            max_tokens=max_tokens,
         )
     if target == "room":
         return await analysis.room_reply(
@@ -331,5 +335,84 @@ async def _aside_reply(
             topic=topic,
             thread_history=history,
             model=resolved_model,
+            max_tokens=max_tokens,
         )
     raise ValueError(f"Unknown target: {target}")  # pragma: no cover - guarded at creation
+
+
+# --------------------------------------------------------------------------- #
+# Background replies — the aside WORKER (infra: AsideFunction)
+# --------------------------------------------------------------------------- #
+
+#: A question older than this with no reply is treated as abandoned: the worker's own timeout is 3 min,
+#: so a reply cannot still be coming. Without it, a worker that died silently would lock the thread.
+ASIDE_PENDING_SECONDS = 240
+
+
+def aside_function_name() -> str:
+    """The aside worker's name, set by the stack on the API. Empty locally and in tests, where the
+    reply is generated in the request as before."""
+    return os.environ.get("ASIDE_FUNCTION", "")
+
+
+def pending_question(messages: List[Dict[str, Any]], now: Optional[float] = None) -> Optional[Dict[str, Any]]:
+    """The thread's unanswered question, if one is still within its reply window."""
+    if not messages or messages[-1].get("role") != "user":
+        return None
+    last = messages[-1]
+    age = (now or time.time()) - float(last.get("created_at") or 0)
+    return last if age < ASIDE_PENDING_SECONDS else None
+
+
+async def dispatch_aside(thread_id: str, owner_sub: str, user_message: str, model: Optional[str]) -> None:
+    """Hand one reply to the aside worker, asynchronously, and return at once."""
+    def _invoke() -> None:
+        import boto3
+
+        boto3.client("lambda", region_name=os.environ.get("AWS_REGION")).invoke(
+            FunctionName=aside_function_name(),
+            # Event: the whole point is that nothing waits on the reply inside an HTTP request.
+            InvocationType="Event",
+            Payload=json.dumps({"thread_id": thread_id, "owner_sub": owner_sub,
+                                "user_message": user_message, "model": model}).encode(),
+        )
+    await asyncio.to_thread(_invoke)
+
+
+async def answer_aside_in_background(
+    db: Database, thread_id: str, user_message: str, model: Optional[str] = None,
+) -> Dict[str, Any]:
+    """The worker's job: generate the reply to the thread's pending question and store it.
+
+    The question is already stored (by the API, before dispatch). The reply is stored as the target's
+    message; a failure is stored as an `error` message, so the browser polling the thread stops
+    waiting and says what happened. Never raises.
+    """
+    thread = await db.get_thread(thread_id)
+    if not thread:
+        return {"thread_id": thread_id, "stored": False, "error": "thread not found"}
+    try:
+        run = await db.get_run(thread["run_id"])
+        if not run:
+            raise ValueError("the conversation this aside belongs to no longer exists")
+        conversation = await _load_conversation(db, run)
+        history = await db.get_thread_messages(thread_id)
+        # The question being answered is the last message; it is the user turn, not history.
+        if history and history[-1].get("role") == "user":
+            history = history[:-1]
+        reply = await _aside_reply(
+            run, thread, user_message, conversation, run.get("topic", ""), history,
+            resolve_model(run, model, role="aside"), max_tokens=analysis.ASIDE_BACKGROUND_MAX_TOKENS,
+        )
+        await db.add_thread_message(
+            thread_id=thread_id, role="target", speaker=reply["speaker"], content=reply["content"],
+            tokens_in=reply["tokens_in"], tokens_out=reply["tokens_out"], cost_usd=reply["cost_usd"],
+        )
+        return {"thread_id": thread_id, "stored": True, "cost_usd": reply["cost_usd"]}
+    except Exception as exc:  # noqa: BLE001 — recorded in the thread, where the user is looking
+        logger.warning("Aside reply for thread %s failed: %s", thread_id, exc)
+        await db.add_thread_message(
+            thread_id=thread_id, role="error", speaker="system",
+            content=f"The reply could not be generated ({type(exc).__name__}). Your question is kept above; ask again to retry.",
+        )
+        return {"thread_id": thread_id, "stored": False, "error": str(exc)[:300]}

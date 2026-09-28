@@ -252,7 +252,8 @@ export interface ThreadSummary {
 export interface ThreadMessage {
   id: number
   thread_id: string
-  role: 'user' | 'target'
+  // 'error': the aside worker could not write a reply, and says so in the thread.
+  role: 'user' | 'target' | 'error'
   speaker: string | null
   content: string
   tokens_in: number

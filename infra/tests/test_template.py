@@ -645,6 +645,8 @@ def test_the_tenant_role_is_assumable_only_by_this_stack_s_functions(template: T
         # the tenant role for the same reason every other worker does — and notably it does
         # NOT get ambient table rights in exchange for talking to the open web.
         "ResearchFunctionServiceRole",
+        # Aside replies read one owner's transcript and write into that owner's thread.
+        "AsideFunctionServiceRole",
     }
     matched = {
         name for name in expected
@@ -1191,8 +1193,8 @@ def test_the_workers_share_the_api_s_image(template: Template):
         code = f["Properties"].get("Code", {})
         if "ImageUri" in code:
             images[lid] = str(code["ImageUri"])
-    # API, research, prepare, turn, finalise, ensemble report.
-    assert len(images) == 6, f"expected 6 image functions, got {sorted(images)}"
+    # API, research, prepare, turn, finalise, ensemble report, aside.
+    assert len(images) == 7, f"expected 7 image functions, got {sorted(images)}"
     assert len(set(images.values())) == 1, (
         f"the functions do not share one image: {images}"
     )
@@ -1211,6 +1213,7 @@ def test_each_worker_overrides_the_image_command(template: Template):
         "TurnFunction": "matrix_studio.step_handlers.turn",
         "FinaliseFunction": "matrix_studio.step_handlers.finalise",
         "EnsembleReportFunction": "matrix_studio.step_handlers.ensemble_report",
+        "AsideFunction": "matrix_studio.step_handlers.aside",
     }
     for prefix, handler in expected.items():
         fn = next(f for lid, f in functions.items() if lid.startswith(prefix))
@@ -1463,3 +1466,14 @@ def test_the_cap_is_off_unless_asked_for(template: Template):
             assert float(env["MAX_USER_MONTHLY_COST_USD"]) == 0.0
         # And no per-group table by default either.
         assert "USER_SPEND_CAPS_JSON" not in env
+
+
+def test_the_api_dispatches_asides_to_their_own_worker(template: Template):
+    """The API may invoke the aside worker (asynchronously) and knows its name; nothing broader."""
+    functions = template.find_resources("AWS::Lambda::Function")
+    api = next(f for lid, f in functions.items() if lid.startswith("ApiFunction"))
+    assert "ASIDE_FUNCTION" in api["Properties"]["Environment"]["Variables"]
+    configs = template.find_resources("AWS::Lambda::EventInvokeConfig")
+    aside = [c for c in configs.values()
+             if "AsideFunction" in str(c["Properties"].get("FunctionName"))]
+    assert aside and aside[0]["Properties"]["MaximumRetryAttempts"] == 0

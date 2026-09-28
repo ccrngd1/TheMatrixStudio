@@ -3025,28 +3025,9 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         cost = await db.for_owner(user).thread_cost(thread_id)
         return {**thread, "messages": messages, "total_cost_usd": cost}
 
-    @app.get("/api/warm")
-    async def warm(user: str = Depends(current_user)) -> Dict[str, Any]:
-        """Load the model client on this container before a user waits on it.
-
-        The aside drawer calls this when it opens. Measured on the deployed API: the first aside on a
-        cold container took ~25 s against ~9 s for the next one, because the deferred litellm import
-        (and its Bedrock module) is paid by the first model call — inside a request the gateway cuts off
-        at 30 s. Imports only; no model call, nothing written, nothing charged.
-        """
-        started = time.monotonic()
-        from matrix_studio.lazy_litellm import litellm
-
-        getattr(litellm, "acompletion")  # resolves the deferred import
-        try:
-            import litellm.llms.bedrock.chat  # noqa: F401  the provider module the first call loads
-        except Exception:  # noqa: BLE001 — a different layout in another litellm version is not an error
-            pass
-        return {"warm": True, "seconds": round(time.monotonic() - started, 2)}
-
     @app.post("/api/threads/{thread_id}/messages", status_code=201)
     async def post_thread_message(
-        thread_id: str, body: ThreadMessageModel,
+        thread_id: str, body: ThreadMessageModel, response: Response,
         user: str = Depends(current_user),
     ) -> Dict[str, Any]:
         thread = await db.for_owner(user).get_thread(thread_id)
@@ -3055,6 +3036,23 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         if not body.content.strip():
             raise HTTPException(status_code=422, detail="Message content is required")
         run = await _require_thread_run(thread, user)
+
+        # Deployed: the reply is written by the aside WORKER, outside this request — the request is cut
+        # off at 30 s and generating in it produced 504s. Store the question, dispatch, answer 202; the
+        # browser polls the thread. One question at a time, or two workers would race to answer.
+        if service.aside_function_name():
+            owned = db.for_owner(user)
+            if service.pending_question(await owned.get_thread_messages(thread_id)):
+                raise HTTPException(status_code=409, detail="A reply to the last question is still being written.")
+            await owned.add_thread_message(
+                thread_id=thread_id, role="user", speaker="user", content=body.content.strip(),
+            )
+            await service.dispatch_aside(thread_id, user, body.content.strip(), body.model)
+            response.status_code = 202
+            return {"thread_id": thread_id, "pending": True,
+                    "total_cost_usd": await owned.thread_cost(thread_id)}
+
+        # Local and tests: no worker, so the reply is generated here, under the deadline.
         try:
             reply = await service.post_aside_message(
                 db.for_owner(user), run, thread, user_message=body.content.strip(), model=body.model

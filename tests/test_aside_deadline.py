@@ -81,8 +81,76 @@ def test_a_normal_reply_still_stores_question_and_answer(client):
     assert roles == ["user", "target"]
 
 
-def test_warm_loads_the_model_client_and_needs_a_caller(client):
-    r = client.get("/api/warm")
-    assert r.status_code == 200 and r.json()["warm"] is True
-    from matrix_studio.lazy_litellm import litellm
-    assert object.__getattribute__(litellm, "_module") is not None, "the deferred import did not run"
+# --------------------------------------------------------------------------- #
+# Background replies: the aside worker
+# --------------------------------------------------------------------------- #
+
+
+def _thread(client):
+    with patch("matrix_studio.api.manager.run_simulation", make_fake_run(turns=2)):
+        run_id = _start(client)["run_id"]
+        _wait_complete(client, run_id)
+    return client.post(f"/api/runs/{run_id}/threads", json={"target": "analyst"}).json()["id"]
+
+
+def test_deployed_the_question_is_stored_dispatched_and_answered_202(client, monkeypatch):
+    tid = _thread(client)
+    sent = []
+
+    async def fake_dispatch(thread_id, owner, message, model):
+        sent.append((thread_id, owner, message))
+
+    monkeypatch.setenv("ASIDE_FUNCTION", "matrix-studio-aside")
+    monkeypatch.setattr(service, "dispatch_aside", fake_dispatch)
+    r = client.post(f"/api/threads/{tid}/messages", json={"content": "Why?"})
+    assert r.status_code == 202 and r.json()["pending"] is True
+    assert sent and sent[0][0] == tid and sent[0][2] == "Why?"
+    msgs = client.get(f"/api/threads/{tid}").json()["messages"]
+    assert [m["role"] for m in msgs] == ["user"]
+
+    # A second question while the first is pending would race two workers.
+    assert client.post(f"/api/threads/{tid}/messages", json={"content": "And?"}).status_code == 409
+
+
+def test_an_abandoned_question_does_not_lock_the_thread():
+    now = 10_000.0
+    msgs = [{"role": "user", "created_at": now - service.ASIDE_PENDING_SECONDS - 1}]
+    assert service.pending_question(msgs, now=now) is None
+    assert service.pending_question([{"role": "user", "created_at": now - 5}], now=now) is not None
+    assert service.pending_question([{"role": "user"}, {"role": "target"}], now=now) is None
+
+
+@pytest.mark.asyncio
+async def test_the_worker_stores_the_reply_with_the_larger_budget(db, monkeypatch):
+    calls = []
+    monkeypatch.setattr(analysis, "_acompletion", _capture(calls))
+    await db.create_run(run_id="bg1", topic="t", cast=[{"name": "A", "persona": "p"}], name="bg1")
+    tid = await _new_thread(db, "bg1")
+    await db.add_thread_message(thread_id=tid, role="user", speaker="user", content="Why?")
+    out = await service.answer_aside_in_background(db, tid, "Why?")
+    assert out["stored"] is True
+    assert calls == [analysis.ASIDE_BACKGROUND_MAX_TOKENS]
+    roles = [m["role"] for m in await db.get_thread_messages(tid)]
+    assert roles == ["user", "target"]
+
+
+@pytest.mark.asyncio
+async def test_a_worker_failure_is_recorded_in_the_thread(db, monkeypatch):
+    async def boom(*_a, **_k):
+        raise RuntimeError("bedrock down")
+
+    monkeypatch.setattr(analysis, "_acompletion", boom)
+    await db.create_run(run_id="bg2", topic="t", cast=[{"name": "A", "persona": "p"}], name="bg2")
+    tid = await _new_thread(db, "bg2")
+    await db.add_thread_message(thread_id=tid, role="user", speaker="user", content="Why?")
+    out = await service.answer_aside_in_background(db, tid, "Why?")
+    assert out["stored"] is False
+    last = (await db.get_thread_messages(tid))[-1]
+    assert last["role"] == "error" and "ask again" in last["content"]
+
+
+async def _new_thread(db, run_id):
+    import uuid
+    tid = str(uuid.uuid4())
+    await db.create_thread(thread_id=tid, run_id=run_id, target="analyst")
+    return tid

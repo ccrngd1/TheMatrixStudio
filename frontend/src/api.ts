@@ -581,9 +581,6 @@ export const api = {
     }>('/api/documents/extract', { method: 'POST', body: form, headers: {} })
   },
 
-  /** Load the model client on the API container ahead of an aside (no model call, nothing charged). */
-  warm: () => jsonFetch<{ warm: boolean; seconds: number }>('/api/warm'),
-
   listPersonaPacks: () =>
     jsonFetch<{ packs: PersonaPack[] }>('/api/persona-packs').then((r) => r.packs),
 
@@ -671,7 +668,9 @@ export const api = {
     jsonFetch<ThreadDetail>(`/api/threads/${encodeURIComponent(threadId)}`),
 
   postThreadMessage: (threadId: string, content: string, model?: string) =>
-    jsonFetch<{ thread_id: string; reply: ThreadMessage; total_cost_usd: number }>(
+    // 201 with `reply` when generated in the request (local); 202 with `pending` when the aside
+    // worker is writing it (deployed) — poll the thread for the reply.
+    jsonFetch<{ thread_id: string; reply?: ThreadMessage; pending?: boolean; total_cost_usd: number }>(
       `/api/threads/${encodeURIComponent(threadId)}/messages`,
       { method: 'POST', body: JSON.stringify({ content, model }) },
     ),

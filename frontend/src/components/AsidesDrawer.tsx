@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api } from '../api'
 import type { AsideTarget, Persona, ThreadDetail, ThreadSummary } from '../types'
 
@@ -31,10 +31,9 @@ export function AsidesDrawer({ runId, cast, turnCount, model, models = [], onBra
   const [personaName, setPersonaName] = useState<string>(cast[0]?.name ?? '')
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
-  // The warm-up in flight. A question sent before it finishes would land on ANOTHER cold container
-  // (this one is busy importing) and pay the same ~20 s again, so sending waits for it.
-  const warming = useRef<Promise<unknown> | null>(null)
-  const [preparing, setPreparing] = useState(false)
+  // A reply the aside worker is still writing (deployed path: the API answers 202 and the reply
+  // appears in the thread when it is done).
+  const [awaiting, setAwaiting] = useState(false)
   // This drawer's own model picker; defaults to the page-level model.
   const [asideModel, setAsideModel] = useState<string>(model ?? '')
   const [promoting, setPromoting] = useState<number | null>(null) // message id being promoted
@@ -46,14 +45,6 @@ export function AsidesDrawer({ runId, cast, turnCount, model, models = [], onBra
 
   useEffect(() => {
     loadThreads()
-    // Warm the API container while the user reads and types: the first aside on a cold container
-    // otherwise pays ~20 s for loading the model client, inside a request the gateway cuts off at 30 s.
-    // ONCE per opening, in this effect — at the component's top level it ran on every render.
-    setPreparing(true)
-    warming.current = Promise.resolve()
-      .then(() => api.warm())
-      .catch(() => {})
-      .finally(() => setPreparing(false))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId])
 
@@ -85,12 +76,14 @@ export function AsidesDrawer({ runId, cast, turnCount, model, models = [], onBra
     const content = draft.trim()
     setDraft('')
     try {
-      // Wait for the warm-up, but never longer than it could usefully take.
-      if (warming.current) {
-        await Promise.race([warming.current, new Promise((r) => setTimeout(r, 25000))])
-      }
-      await api.postThreadMessage(active.id, content, asideModel || model)
+      const res = await api.postThreadMessage(active.id, content, asideModel || model)
       await openThread(active.id)
+      if (res.pending) {
+        setAwaiting(true)
+        const done = await waitForReply(active.id, (t) => setActive(t))
+        setAwaiting(false)
+        if (!done) setError('No reply arrived. Your question is kept in the thread; ask again to retry.')
+      }
       await loadThreads()
     } catch (e) {
       // Put the question back: the server stores nothing when a reply fails, so the draft is the only
@@ -249,7 +242,9 @@ export function AsidesDrawer({ runId, cast, turnCount, model, models = [], onBra
                     className={`inline-block max-w-[90%] rounded-lg p-2 text-sm ${
                       m.role === 'user'
                         ? 'bg-matrix-accent/20 text-slate-100'
-                        : 'border border-matrix-border bg-matrix-bg text-slate-300'
+                        : m.role === 'error'
+                          ? 'border border-rose-900/60 bg-rose-950/30 text-rose-200'
+                          : 'border border-matrix-border bg-matrix-bg text-slate-300'
                     }`}
                   >
                     {m.role === 'target' && (
@@ -274,6 +269,11 @@ export function AsidesDrawer({ runId, cast, turnCount, model, models = [], onBra
                   </div>
                 </div>
               ))}
+              {awaiting && (
+                <p className="text-left text-xs italic text-slate-500" data-testid="aside-writing">
+                  writing a reply…
+                </p>
+              )}
             </div>
 
             <div className="border-t border-matrix-border p-3">
@@ -313,7 +313,7 @@ export function AsidesDrawer({ runId, cast, turnCount, model, models = [], onBra
                   disabled={sending || !draft.trim()}
                   className="rounded bg-matrix-accent px-3 py-2 text-sm font-semibold text-matrix-bg hover:bg-sky-400 disabled:opacity-40"
                 >
-                  {sending ? (preparing ? 'Preparing…' : '…') : 'Send'}
+                  {sending ? '…' : 'Send'}
                 </button>
               </div>
             </div>
@@ -331,4 +331,26 @@ export function asideError(message: string): string {
     return 'The reply took too long and was stopped; nothing was saved. Try again, or ask a narrower question.'
   }
   return message
+}
+
+/** Re-read the thread until its last message is no longer the user's question — a reply, or a
+ *  recorded failure — or the worker's own time has run out. Returns whether one arrived. */
+export async function waitForReply(
+  threadId: string,
+  onUpdate: (t: ThreadDetail) => void,
+  { everyMs = 2000, forMs = 200_000 }: { everyMs?: number; forMs?: number } = {},
+): Promise<boolean> {
+  const until = Date.now() + forMs
+  while (Date.now() < until) {
+    await new Promise((r) => setTimeout(r, everyMs))
+    try {
+      const t = await api.getThread(threadId)
+      onUpdate(t)
+      const last = t.messages[t.messages.length - 1]
+      if (last && last.role !== 'user') return true
+    } catch {
+      /* a failed poll is retried on the next tick */
+    }
+  }
+  return false
 }
