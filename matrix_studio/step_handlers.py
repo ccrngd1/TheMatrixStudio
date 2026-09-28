@@ -283,6 +283,12 @@ async def _aside(event: Dict[str, Any]) -> Dict[str, Any]:
     from matrix_studio import service
 
     db = await _bound(_owner(event))
+    if event.get("kind") == "summary":
+        # A requested summary (`POST /api/runs/{ref}/summary`): the same worker, for the same reason.
+        return await service.summarise_in_background(
+            db, str(event["run_id"]), fields=event.get("fields"), focus=event.get("focus"),
+            model=event.get("model"), instructions=event.get("instructions"),
+        )
     return await service.answer_aside_in_background(
         db, str(event["thread_id"]), str(event.get("user_message") or ""), event.get("model"),
     )

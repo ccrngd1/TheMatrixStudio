@@ -62,8 +62,14 @@ export function SummaryPanel({
         custom || model
           ? { ...(custom ? { instructions: custom } : {}), ...(model ? { model } : {}) }
           : undefined
+      const before = generated?.id ?? null
       const res = await api.generateSummary(runId, body)
-      onUpdated(res.generated)
+      const fresh = res.pending ? await waitForSummary(runId, before) : res.generated
+      if (!fresh) {
+        setError('The summary did not arrive in time. Try again in a minute; it may still appear.')
+        return
+      }
+      onUpdated(fresh)
       setEditing(false)
     } catch (e) {
       setError((e as Error).message)
@@ -120,7 +126,7 @@ export function SummaryPanel({
               disabled={busy}
               className="rounded bg-matrix-accent/20 px-3 py-1 text-xs text-matrix-accent hover:bg-matrix-accent/30 disabled:opacity-40"
             >
-              {busy ? 'Analyzing…' : 'Regenerate with this prompt'}
+              {busy ? 'Analyzing… (up to a minute)' : 'Regenerate with this prompt'}
             </button>
             <button
               onClick={() => setPrompt(defaultInstructions)}
@@ -242,6 +248,26 @@ export function SummaryPanel({
       )}
     </section>
   )
+}
+
+/** Poll until a generated summary other than `before` exists. A long run's summary takes about a
+ * minute, which is why the server hands it to a worker rather than answering inside the request. */
+export async function waitForSummary(
+  runId: string,
+  before: number | null,
+  { everyMs = 3000, forMs = 200_000 }: { everyMs?: number; forMs?: number } = {},
+): Promise<StoredSummary | null> {
+  const until = Date.now() + forMs
+  while (Date.now() < until) {
+    await new Promise((r) => setTimeout(r, everyMs))
+    try {
+      const res = await api.getSummary(runId)
+      if (res.generated && res.generated.id !== before) return res.generated
+    } catch {
+      // A failed poll is not a failed summary; keep waiting until the deadline.
+    }
+  }
+  return null
 }
 
 // Mirrors `analysis.NOT_STATED`: a column the conversation never supplied, shown as the gap it is.

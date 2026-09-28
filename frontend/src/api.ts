@@ -650,7 +650,9 @@ export const api = {
     ref: string,
     body?: { fields?: string[]; focus?: string; instructions?: string; model?: string },
   ) =>
-    jsonFetch<SummaryResponse & { generated: StoredSummary }>(
+    // `pending`: deployed, the summary is written by a worker and this returns at once (202) with the
+    // CURRENT summaries; poll `getSummary` until `generated` changes (see `waitForSummary`).
+    jsonFetch<SummaryResponse & { generated: StoredSummary | null; pending?: boolean }>(
       `/api/runs/${encodeURIComponent(ref)}/summary`,
       { method: 'POST', body: JSON.stringify(body || {}) },
     ),

@@ -421,6 +421,50 @@ async def dispatch_aside(thread_id: str, owner_sub: str, user_message: str, mode
     await asyncio.to_thread(_invoke)
 
 
+async def dispatch_summary(run_id: str, owner_sub: str, *, fields: Optional[List[str]], focus: Optional[str],
+                           model: Optional[str], instructions: Optional[str]) -> None:
+    """Hand a requested summary to the aside worker, asynchronously, and return at once.
+
+    The same worker as asides because it is the same shape of job — one long model call over a finished
+    transcript — and the same reason: measured 2026-09-28, a 40-turn run's summary took 30.4 s with the
+    old fields and 56.9 s with the evidence plan, against the request's 30 s limit. The run's AUTOMATIC
+    summary is unaffected; it is generated in the finalise worker, which has five minutes.
+    """
+    def _invoke() -> None:
+        import boto3
+
+        boto3.client("lambda", region_name=os.environ.get("AWS_REGION")).invoke(
+            FunctionName=aside_function_name(),
+            InvocationType="Event",
+            Payload=json.dumps({"kind": "summary", "run_id": run_id, "owner_sub": owner_sub,
+                                "fields": fields, "focus": focus, "model": model,
+                                "instructions": instructions}).encode(),
+        )
+    await asyncio.to_thread(_invoke)
+
+
+async def summarise_in_background(
+    db: Database, run_id: str, *, fields: Optional[List[str]] = None, focus: Optional[str] = None,
+    model: Optional[str] = None, instructions: Optional[str] = None,
+) -> Dict[str, Any]:
+    """The worker's job for a requested summary. Never raises.
+
+    A failed model call is already stored as a summary that says so (`analysis.generate_summary`
+    degrades rather than raising), so the browser polling for a new summary always gets one.
+    """
+    run = await db.get_run(run_id)
+    if not run:
+        return {"run_id": run_id, "stored": False, "error": "run not found"}
+    try:
+        saved = await generate_and_store_summary(
+            db, run, fields=fields, focus=focus, model=model, instructions=instructions,
+        )
+        return {"run_id": run_id, "stored": True, "summary_id": saved.get("id")}
+    except Exception as exc:  # noqa: BLE001 — a worker has nobody to raise to
+        logger.exception("Requested summary for %s failed", run_id)
+        return {"run_id": run_id, "stored": False, "error": str(exc)[:300]}
+
+
 async def answer_aside_in_background(
     db: Database, thread_id: str, user_message: str, model: Optional[str] = None,
 ) -> Dict[str, Any]:

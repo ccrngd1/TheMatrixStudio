@@ -154,3 +154,60 @@ async def _new_thread(db, run_id):
     tid = str(uuid.uuid4())
     await db.create_thread(thread_id=tid, run_id=run_id, target="analyst")
     return tid
+
+
+# --------------------------------------------------------------------------- #
+# A requested summary: the same worker, for the same reason (30.4 s / 56.9 s on a 40-turn run)
+# --------------------------------------------------------------------------- #
+
+
+def test_deployed_a_requested_summary_is_dispatched_and_answered_202(client, monkeypatch):
+    with patch("matrix_studio.api.manager.run_simulation", make_fake_run(turns=2)):
+        run_id = _start(client)["run_id"]
+        _wait_complete(client, run_id)
+    sent = []
+
+    async def fake_dispatch(rid, owner, **kw):
+        sent.append((rid, kw))
+
+    monkeypatch.setenv("ASIDE_FUNCTION", "matrix-studio-aside")
+    monkeypatch.setattr(service, "dispatch_summary", fake_dispatch)
+    before = client.get(f"/api/runs/{run_id}/summary").json()["generated"]
+    r = client.post(f"/api/runs/{run_id}/summary", json={"focus": "cost"})
+    assert r.status_code == 202 and r.json()["pending"] is True
+    assert sent and sent[0][0] == run_id and sent[0][1]["focus"] == "cost"
+    # Nothing was generated in the request: the current summary is returned unchanged.
+    assert r.json()["generated"] == before
+
+
+@pytest.mark.asyncio
+async def test_the_worker_stores_a_requested_summary(db, monkeypatch):
+    async def fake(messages, model=None, temperature=0.4, max_tokens=None):
+        return {"content": '{"overview": "done", "evidence_plan": [], "conditional_recommendation": ""}',
+                "tokens_in": 10, "tokens_out": 5, "cost_usd": 0.001}
+
+    monkeypatch.setattr(analysis, "_acompletion", fake)
+    await db.create_run(run_id="bs1", topic="t", cast=[{"name": "A", "persona": "p"}], name="bs1")
+    out = await service.summarise_in_background(db, "bs1")
+    assert out["stored"] is True
+    [row] = [r for r in await db.get_summaries("bs1") if r["kind"] == "generated"]
+    assert row["payload"]["overview"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_the_aside_worker_routes_a_summary_event(monkeypatch):
+    from matrix_studio import step_handlers
+
+    seen = []
+
+    async def fake_bound(owner):
+        return "db"
+
+    async def fake_summarise(db, run_id, **kw):
+        seen.append((run_id, kw["focus"]))
+        return {"run_id": run_id, "stored": True}
+
+    monkeypatch.setattr(step_handlers, "_bound", fake_bound)
+    monkeypatch.setattr(service, "summarise_in_background", fake_summarise)
+    out = await step_handlers._aside({"kind": "summary", "run_id": "r9", "owner_sub": "o", "focus": "f"})
+    assert out["stored"] is True and seen == [("r9", "f")]
