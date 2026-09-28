@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 import type { AsideTarget, Persona, ThreadDetail, ThreadSummary } from '../types'
 
@@ -31,6 +31,10 @@ export function AsidesDrawer({ runId, cast, turnCount, model, models = [], onBra
   const [personaName, setPersonaName] = useState<string>(cast[0]?.name ?? '')
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
+  // The warm-up in flight. A question sent before it finishes would land on ANOTHER cold container
+  // (this one is busy importing) and pay the same ~20 s again, so sending waits for it.
+  const warming = useRef<Promise<unknown> | null>(null)
+  const [preparing, setPreparing] = useState(false)
   // This drawer's own model picker; defaults to the page-level model.
   const [asideModel, setAsideModel] = useState<string>(model ?? '')
   const [promoting, setPromoting] = useState<number | null>(null) // message id being promoted
@@ -39,12 +43,17 @@ export function AsidesDrawer({ runId, cast, turnCount, model, models = [], onBra
 
   const loadThreads = () =>
     api.listThreads(runId).then(setThreads).catch(() => setThreads([]))
-    // Warm the API container while the user reads and types: the first aside on a cold container
-    // otherwise pays for loading the model client inside a request the gateway cuts off at 30 s.
-    Promise.resolve().then(() => api.warm()).catch(() => {})
 
   useEffect(() => {
     loadThreads()
+    // Warm the API container while the user reads and types: the first aside on a cold container
+    // otherwise pays ~20 s for loading the model client, inside a request the gateway cuts off at 30 s.
+    // ONCE per opening, in this effect — at the component's top level it ran on every render.
+    setPreparing(true)
+    warming.current = Promise.resolve()
+      .then(() => api.warm())
+      .catch(() => {})
+      .finally(() => setPreparing(false))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId])
 
@@ -76,6 +85,10 @@ export function AsidesDrawer({ runId, cast, turnCount, model, models = [], onBra
     const content = draft.trim()
     setDraft('')
     try {
+      // Wait for the warm-up, but never longer than it could usefully take.
+      if (warming.current) {
+        await Promise.race([warming.current, new Promise((r) => setTimeout(r, 25000))])
+      }
       await api.postThreadMessage(active.id, content, asideModel || model)
       await openThread(active.id)
       await loadThreads()
@@ -300,7 +313,7 @@ export function AsidesDrawer({ runId, cast, turnCount, model, models = [], onBra
                   disabled={sending || !draft.trim()}
                   className="rounded bg-matrix-accent px-3 py-2 text-sm font-semibold text-matrix-bg hover:bg-sky-400 disabled:opacity-40"
                 >
-                  {sending ? '…' : 'Send'}
+                  {sending ? (preparing ? 'Preparing…' : '…') : 'Send'}
                 </button>
               </div>
             </div>

@@ -11,6 +11,7 @@ vi.mock('../api', () => ({
     getThread: vi.fn(),
     createThread: vi.fn(),
     postThreadMessage: vi.fn(),
+    warm: vi.fn().mockResolvedValue({ warm: true, seconds: 0 }),
     branchRun: vi.fn().mockResolvedValue({ run_id: 'branch-1' }),
   },
 }))
@@ -82,5 +83,31 @@ describe('asideError', () => {
     expect(asideError('504: Gateway Timeout')).toMatch(/took too long.*nothing was saved/)
     expect(asideError('504: The reply took longer than 24 s')).toBe('504: The reply took longer than 24 s')
     expect(asideError('404: Thread not found')).toBe('404: Thread not found')
+  })
+})
+
+describe('AsidesDrawer warm-up', () => {
+  it('warms the API when opened, and a question waits for the warm-up to finish', async () => {
+    const { api } = await import('../api')
+    const { fireEvent } = await import('@testing-library/react')
+    let finishWarm: (v: unknown) => void = () => {}
+    ;(api.warm as any).mockReturnValue(new Promise((r) => { finishWarm = r }))
+    const thread = { id: 't9', run_id: 'r1', target: 'analyst', persona_name: null, mode: 'aside',
+      created_at: 0, message_count: 0, total_cost_usd: 0 }
+    ;(api.createThread as any).mockResolvedValue(thread)
+    ;(api.getThread as any).mockResolvedValue({ ...thread, messages: [] })
+    ;(api.postThreadMessage as any).mockResolvedValue({})
+
+    render(<AsidesDrawer runId="r1" cast={cast} turnCount={4} onBranch={() => {}} onClose={() => {}} />)
+    expect(api.warm).toHaveBeenCalledTimes(1)
+    screen.getByText('Start').click()
+    const box = await screen.findByPlaceholderText(/ask|message|question/i)
+    fireEvent.change(box, { target: { value: 'Why?' } })
+    fireEvent.click(screen.getByText('Send'))
+    await new Promise((r) => setTimeout(r, 30))
+    expect(api.postThreadMessage).not.toHaveBeenCalled()
+    expect(screen.getByText('Preparing…')).toBeInTheDocument()
+    finishWarm({ warm: true, seconds: 1 })
+    await waitFor(() => expect(api.postThreadMessage).toHaveBeenCalled())
   })
 })
