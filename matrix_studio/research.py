@@ -102,6 +102,9 @@ class Corpus:
 
     persona: Optional[str]
     queries: List[Query] = field(default_factory=list)
+    #: True when `persona` names a CONSULTANT (`experts.py`) rather than a participant. Their targets
+    #: are kept apart (`research_state.Settings.target_for`) so the two can never share a KB.
+    consultant: bool = False
     documents: List[ResearchedDocument] = field(default_factory=list)
     #: URLs a search returned that could not be read, with the reason. Part of the negative: a state
     #: board's own statute page answering 403 is a fact about the search, not an absence of law.
@@ -174,6 +177,35 @@ Rules:
 
 Reply with ONLY a JSON object, no prose:
 {{"support": "<query>", "opposition": "<query>"}}"""
+
+
+_CONSULTANT_QUERY_PROMPT = """You are preparing the reference library of ONE consultant, before a \
+discussion happens. The consultant is not a participant and holds no position: the participants \
+will ask them specific factual questions, and they may answer ONLY from what is found now.
+
+THE SUBJECT OF THE DISCUSSION — every query must stay inside this domain:
+{brief}
+
+CONSULTANT: {name}
+THEIR EXPERTISE: {expertise}
+
+Produce exactly {n} search-engine queries that would surface the primary sources someone with this \
+expertise would consult on this subject: the statutes, regulations, official guidance, standards, \
+published data or decided cases themselves.
+
+Rules:
+  Queries, not questions. Use the vocabulary the sources use.
+  Name jurisdictions where the subject implies them.
+  Look for what the sources SAY, never for a conclusion or for support of either side — the \
+consultant has no side.
+  Cover different parts of their expertise rather than rephrasing one query.
+
+Reply with ONLY a JSON object, no prose:
+{{"queries": ["<query>", ...]}}"""
+
+#: Queries per consultant. Fewer than the shared corpus, because a consultant's expertise is
+#: narrower than the whole subject, and each query is a search plus fetches.
+CONSULTANT_QUERIES = 3
 
 
 #: Attempts per model call, and the wait before each retry.
@@ -317,6 +349,32 @@ async def persona_queries(
     return out, cost
 
 
+async def consultant_queries(
+    name: str,
+    expertise: str,
+    *,
+    brief: str = "",
+    call: Any,
+    model: Optional[str] = None,
+    n: int = CONSULTANT_QUERIES,
+) -> Tuple[List[Query], float]:
+    """Queries for a consultant's library: their expertise, inside the discussion's subject.
+
+    Intent `reference`, not `support`/`opposition`: a consultant has no position, so there is nothing
+    to support and nothing that would change their mind — only what the sources say.
+    """
+    parsed, cost = await _ask(
+        _CONSULTANT_QUERY_PROMPT.format(
+            brief=(brief or "(not supplied)")[:2500], name=name,
+            expertise=expertise or "a subject-matter expert on this subject", n=n,
+        ),
+        call=call, model=model,
+    )
+    raw = (parsed or {}).get("queries") or []
+    queries = [str(q).strip() for q in raw if str(q).strip()] if isinstance(raw, list) else []
+    return [Query(text=q, intent="reference") for q in queries[:n]], cost
+
+
 # --------------------------------------------------------------------------- #
 # Authority
 # --------------------------------------------------------------------------- #
@@ -445,7 +503,8 @@ def documented_negative(corpus: Corpus, *, on: Optional[str] = None) -> Optional
     for q in corpus.queries:
         intent = {"support": "for the position",
                   "opposition": "for what would change their mind",
-                  "background": "background"}.get(q.intent, q.intent)
+                  "background": "background",
+                  "reference": "for the consultant's library"}.get(q.intent, q.intent)
         lines.append(f"- `{q.text}`  ({intent})")
 
     lines += ["", "## Sources read, and what they were"]
@@ -538,7 +597,8 @@ def query_negatives(corpus: Corpus, *, on: Optional[str] = None) -> List[Tuple[Q
             continue
         intent = {"support": "for the position",
                   "opposition": "for what would change their mind",
-                  "background": "background"}.get(q.intent, q.intent)
+                  "background": "background",
+                  "reference": "for the consultant's library"}.get(q.intent, q.intent)
         lines = [
             f"# {NEGATIVE_TITLE} — {q.text}",
             "",
@@ -654,8 +714,9 @@ async def plan_and_gather(
     results_per_query: int = RESULTS_PER_QUERY,
     fetch_per_query: int = FETCH_PER_QUERY,
     shared: bool = True,
+    experts: Sequence[Dict[str, Any]] = (),
 ) -> List[Corpus]:
-    """Every corpus for one run: the shared one, then one per persona with a viewpoint.
+    """Every corpus for one run: the shared one, one per persona with a viewpoint, one per consultant.
 
     Corpora are gathered CONCURRENTLY. They are independent by construction, each is minutes of
     search and fetch, and a run's start waits on all of them — the same reasoning that took the
@@ -691,6 +752,23 @@ async def plan_and_gather(
             corpus.unreadable.append(
                 (f"(queries for {name})", "could not be generated")
             )
+        persona_corpora.append(corpus)
+
+    # Consultants (`experts.py`): one library each, from their stated expertise. A consultant answers
+    # only from its sources, so this is how "an expert who can look things up" is built without a
+    # live search mid-conversation — found once, stored in the consultant's KB, replayed like any
+    # other document.
+    for raw in experts:
+        name = str((raw or {}).get("name") or "").strip()
+        if not name:
+            continue
+        corpus = Corpus(persona=name, consultant=True)
+        corpus.queries, spent = await consultant_queries(
+            name, str(raw.get("expertise") or ""), brief=brief, call=call, model=model,
+        )
+        corpus.cost_usd = spent
+        if not corpus.queries:
+            corpus.unreadable.append((f"(queries for {name})", "could not be generated"))
         persona_corpora.append(corpus)
 
     everything = ([shared_corpus] if shared_corpus else []) + persona_corpora

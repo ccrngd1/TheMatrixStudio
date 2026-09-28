@@ -354,6 +354,7 @@ class RunManager:
                         settings=research_settings,
                         owner_sub=owner_sub,
                         label=run_id,
+                        experts=(engine_request.get("config") or {}).get("experts") or [],
                     )
 
                 result = await run_simulation(

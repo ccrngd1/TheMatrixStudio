@@ -409,7 +409,7 @@ def forecast_run(
 
 def research_collections(request: Mapping[str, Any]) -> int:
     """How many collections a research pass would build: the shared one, plus one per persona
-    with a viewpoint to research. The same count the launch button shows."""
+    with a viewpoint to research, plus one per consultant. The same count the launch button shows."""
     research = (request.get("config") or {}).get("research") or {}
     if not research.get("enabled"):
         return 0
@@ -418,6 +418,11 @@ def research_collections(request: Mapping[str, Any]) -> int:
         n += sum(
             1 for c in request.get("cast") or []
             if ((c.get("structured") or {}).get("viewpoints") or [])
+        )
+    if research.get("consultants", True):
+        n += sum(
+            1 for e in (request.get("config") or {}).get("experts") or []
+            if isinstance(e, dict) and str(e.get("name") or "").strip()
         )
     return n
 

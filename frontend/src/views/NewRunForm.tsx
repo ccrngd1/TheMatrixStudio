@@ -82,6 +82,7 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
   const [consultLimit, setConsultLimit] = useState(6)
   const [researchShared, setResearchShared] = useState(true)
   const [researchPersonas, setResearchPersonas] = useState(true)
+  const [researchConsultants, setResearchConsultants] = useState(true)
   // Sources taken per query. The one genuine dial: it decides how wide the search goes.
   // `queries per viewpoint` is deliberately NOT exposed — see the note by the toggle.
   const [researchResults, setResearchResults] = useState(5)
@@ -357,7 +358,8 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
           const s = buildStructured(c)
           return c.name.trim() && s !== undefined && (s.viewpoints?.length ?? 0) > 0
         }).length
-      : 0)
+      : 0) +
+    (researchConsultants ? experts.length : 0)
 
   // The cast as the API takes it: complete personas only. Used to launch, to forecast, and to save as a
   // template, so all three see the same cast.
@@ -457,6 +459,7 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
               enabled: true,
               shared: researchShared,
               personas: researchPersonas,
+              consultants: researchConsultants,
               results_per_query: researchResults,
             }
           : undefined,
@@ -1627,6 +1630,24 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
                 collection.
               </Hint>
             </label>
+            {experts.length > 0 && (
+              <label className="flex items-center gap-2 text-sm text-slate-300">
+                <input
+                  type="checkbox"
+                  aria-label="Consultant research"
+                  checked={researchConsultants}
+                  onChange={(e) => setResearchConsultants(e.target.checked)}
+                />
+                Consultant research — a library for each consultant
+                <Hint label="consultant research">
+                  Searches the open web for the primary sources each consultant's expertise
+                  covers, within this subject, and stores them in that consultant's own
+                  knowledge base. The consultant then answers from them, with citations, like
+                  any document you attached. Found once before turn 1 and never re-searched, so
+                  a replay or branch reads the same sources.
+                </Hint>
+              </label>
+            )}
             <label className="flex items-center gap-2 text-sm text-slate-300">
               Sources per query
               <input

@@ -93,6 +93,8 @@ export interface RunDetail extends RunSummary {
 export interface ResearchScope {
   // The persona's name, or the literal 'shared' for the researcher's own corpus.
   scope: string
+  // Set when `scope` names a consultant's library rather than a persona's corpus.
+  consultant?: boolean
   queries?: number
   documents?: number
   // Sources tiered as a statute, regulation, board ruling or decided case. Broken out

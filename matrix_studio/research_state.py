@@ -98,18 +98,23 @@ class Settings:
     #: A private corpus per persona: their stance AND the evidence they said would change their
     #: mind (§2.2).
     personas: bool = True
+    #: A library per consultant (`experts.py`), searched from their stated expertise. A consultant
+    #: answers only from its sources, so this is what lets one "look things up".
+    consultants: bool = True
     results_per_query: Optional[int] = None
     fetch_per_query: Optional[int] = None
     provider: Optional[str] = None
-    #: `{"shared": kb_id, "personas": {name: kb_id}}`, resolved by `allocate_targets` at creation.
+    #: `{"shared": kb_id, "personas": {name: kb_id}, "consultants": {name: kb_id}}`, resolved by `allocate_targets` at creation.
     #: Never trusted as it arrives — see `_verified_target`.
     targets: Dict[str, Any] = field(default_factory=dict)
 
-    def target_for(self, persona: Optional[str]) -> Optional[str]:
+    def target_for(self, persona: Optional[str], *, consultant: bool = False) -> Optional[str]:
         if persona is None:
             value = self.targets.get("shared")
         else:
-            value = (self.targets.get("personas") or {}).get(persona)
+            # Separate maps, so a consultant's library can never be resolved to a persona's KB (or
+            # the reverse) even if a stored config carried the same name in both.
+            value = (self.targets.get("consultants" if consultant else "personas") or {}).get(persona)
         return str(value) if value else None
 
 
@@ -140,6 +145,7 @@ def settings_from(config: Optional[Dict[str, Any]]) -> Settings:
         enabled=bool(raw.get("enabled")),
         shared=bool(raw.get("shared", True)),
         personas=bool(raw.get("personas", True)),
+        consultants=bool(raw.get("consultants", True)),
         results_per_query=_int(raw.get("results_per_query")),
         fetch_per_query=_int(raw.get("fetch_per_query")),
         provider=(str(raw["provider"]) if raw.get("provider") else None),
@@ -235,7 +241,7 @@ async def allocate_targets(
     if not settings.enabled:
         return request
 
-    targets: Dict[str, Any] = {"personas": {}}
+    targets: Dict[str, Any] = {"personas": {}, "consultants": {}}
 
     async def ensure_index(kb_id: str) -> None:
         if privileged is None:
@@ -294,6 +300,20 @@ async def allocate_targets(
             cast.append(member)
         request["cast"] = cast
 
+    if settings.consultants:
+        experts: List[Dict[str, Any]] = []
+        for raw in config.get("experts") or []:
+            expert = dict(raw) if isinstance(raw, dict) else raw
+            name = str((expert or {}).get("name") or "").strip() if isinstance(expert, dict) else ""
+            if name:
+                # The consultant's OWN bindings only, as for a persona: its library must not land in
+                # a collection the cast reads, or every persona would hold the consultant's sources.
+                kb_id, bound = await resolve(_persona_kbs(expert), f"consultant {name}")
+                targets["consultants"][name] = kb_id
+                expert["knowledge_bases"] = bound
+            experts.append(expert)
+        config["experts"] = experts
+
     research = dict(config.get(CONFIG_KEY)) if isinstance(config.get(CONFIG_KEY), dict) else {}
     research["enabled"] = True
     research["targets"] = targets
@@ -308,7 +328,7 @@ async def allocate_targets(
 
 
 async def _verified_target(
-    db: Any, settings: Settings, persona: Optional[str], owner_sub: str
+    db: Any, settings: Settings, persona: Optional[str], owner_sub: str, *, consultant: bool = False
 ) -> str:
     """The ingest target for one scope, or `ResearchRefused` with the reason.
 
@@ -320,8 +340,8 @@ async def _verified_target(
     It is a refusal rather than a silent fallback to a new KB: a run whose target was rejected should
     say so, because the reason is either a revoked grant or an attempt to write somewhere it may not.
     """
-    kb_id = settings.target_for(persona)
-    who = persona or "the shared corpus"
+    kb_id = settings.target_for(persona, consultant=consultant)
+    who = (f"consultant {persona}" if consultant else persona) or "the shared corpus"
     if not kb_id:
         raise ResearchRefused(
             f"no ingest target was allocated for {who}, so there is nowhere to put what was found"
@@ -392,7 +412,7 @@ async def run_research(
       inputs, and `ENSEMBLE-CONVERSATIONS.md` §2 rests on the opposite — same config, same brief, so
       divergence is evidence about the brief. Independent searches would make it unattributable.
     """
-    from matrix_studio.bindings import _cast
+    from matrix_studio.bindings import _cast, _config
 
     run = await db.get_run(run_id)
     if run is None:
@@ -419,6 +439,7 @@ async def run_research(
         settings=settings,
         owner_sub=owner_sub,
         label=run_id,
+        experts=_config(run).get("experts") or [],
     )
     return await _store(db, run_id, owner_sub, record)
 
@@ -509,7 +530,8 @@ async def research_ensemble(db: Any, ensemble_id: str, *, owner_sub: str) -> Dic
     if parent is None:
         return _record(SKIPPED, error=f"ensemble {ensemble_id} does not exist")
 
-    settings = settings_from(_config({"config_json": parent.get("base_config_json")}))
+    base_config = _config({"config_json": parent.get("base_config_json")})
+    settings = settings_from(base_config)
     if not settings.enabled:
         return _record(SKIPPED, error="research is not enabled for this ensemble")
 
@@ -527,6 +549,7 @@ async def research_ensemble(db: Any, ensemble_id: str, *, owner_sub: str) -> Dic
         settings=settings,
         owner_sub=owner_sub,
         label=f"ensemble {ensemble_id}",
+        experts=base_config.get("experts") or [],
     )
     try:
         await db.update_ensemble(ensemble_id, research=record, owner_sub=owner_sub)
@@ -545,6 +568,7 @@ async def research_definition(
     settings: Settings,
     owner_sub: str,
     label: str = "",
+    experts: Sequence[Dict[str, Any]] = (),
 ) -> Dict[str, Any]:
     """Search, tier, ingest and embed every corpus this definition calls for. Never raises.
 
@@ -592,6 +616,7 @@ async def research_definition(
             # searching and then thrown the results away.
             cast if settings.personas else [],
             shared=settings.shared,
+            experts=[e for e in experts if isinstance(e, dict)] if settings.consultants else [],
             search=search,
             fetch=fetch,
             call=_acompletion,
@@ -608,6 +633,7 @@ async def research_definition(
     for corpus in corpora:
         scope: Dict[str, Any] = {
             "scope": corpus.persona or "shared",
+            **({"consultant": True} if corpus.consultant else {}),
             "queries": len(corpus.queries),
             "documents": len(corpus.documents),
             "controlling": len(corpus.controlling),
@@ -619,7 +645,9 @@ async def research_definition(
             "query_negatives": len(corpus.query_negatives),
         }
         try:
-            kb_id = await _verified_target(db, settings, corpus.persona, owner_sub)
+            kb_id = await _verified_target(
+                db, settings, corpus.persona, owner_sub, consultant=corpus.consultant,
+            )
         except ResearchRefused as exc:
             scope["refused"] = str(exc)[:MAX_ERROR_CHARS]
             scopes.append(scope)

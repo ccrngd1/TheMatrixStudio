@@ -604,7 +604,7 @@ class TestAnEnsembleResearchesOnce:
 
         calls = []
 
-        async def fake_definition(db, *, topic, cast, settings, owner_sub, label=""):
+        async def fake_definition(db, *, topic, cast, settings, owner_sub, label="", experts=()):
             calls.append({"topic": topic, "cast": [c.get("name") for c in cast],
                           "label": label})
             return research_state._record(

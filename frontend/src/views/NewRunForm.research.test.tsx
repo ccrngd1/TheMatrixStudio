@@ -86,7 +86,7 @@ describe('NewRunForm research toggle', () => {
     expect(screen.getByText(/Per-persona research/)).toBeInTheDocument()
   })
 
-  it('sends both tiers on by default when enabled', () => {
+  it('sends every tier on by default when enabled', () => {
     renderForm()
     fillMinimum()
     fireEvent.click(toggle())
@@ -96,6 +96,7 @@ describe('NewRunForm research toggle', () => {
       enabled: true,
       shared: true,
       personas: true,
+      consultants: true,
       results_per_query: 5,
     })
   })

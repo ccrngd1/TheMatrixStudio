@@ -226,6 +226,9 @@ class ResearchConfigModel(BaseModel):
     shared: bool = True
     # A private corpus per persona: their stance AND what they said would change their mind (§2.2).
     personas: bool = True
+    # A library per consultant, searched from their stated expertise and stored in their own KB, so
+    # a consultant can answer from sources nobody pasted in.
+    consultants: bool = True
     # Per query. Higher costs more search and more fetching; the defaults live in `research.py`
     # next to the measurements that chose them, and `None` means "use those".
     results_per_query: Optional[int] = Field(default=None, ge=1, le=20)

@@ -57,6 +57,10 @@ export function ConsultantsEditor({ consultants, onChange, limit, onLimit }: Pro
             <br />
             A consultant never takes a turn and has no position to defend. Each consultation is a model
             call, so the room can ask only a limited number per run.
+            <br />
+            <br />
+            With "Research the subject before starting" on, each consultant also gets a library
+            searched from the web for its expertise, stored in its own knowledge base.
           </Hint>
         </h2>
         <button

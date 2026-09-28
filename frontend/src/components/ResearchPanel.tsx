@@ -140,10 +140,12 @@ export function ResearchPanel({ research }: Props) {
             </thead>
             <tbody className="text-slate-300">
               {scopes.map((s) => (
-                <tr key={s.scope} className="border-t border-matrix-border/50">
+                <tr key={`${s.consultant ? 'c:' : ''}${s.scope}`} className="border-t border-matrix-border/50">
                   <td className="py-1 pr-3">
                     {s.scope === 'shared' ? (
                       <span className="text-slate-200">shared (the researcher)</span>
+                    ) : s.consultant ? (
+                      `${s.scope} (consultant)`
                     ) : (
                       s.scope
                     )}

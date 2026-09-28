@@ -827,3 +827,85 @@ def test_the_flag_defaults_off():
     assert RetrievalConfig.from_config(
         {"retrieval": {"enabled": True, "standing_query": True}}
     ).standing_query is True
+
+
+# --------------------------------------------------------------------------- #
+# Consultants: a library each, found before turn 1 and stored in their own KB
+# --------------------------------------------------------------------------- #
+
+
+def _with_consultant(**research):
+    request = _request()
+    request["config"]["research"].update(research)
+    request["config"]["experts"] = [{"name": "Ada", "expertise": "the practice act"}]
+    return request
+
+
+async def test_a_consultant_gets_its_OWN_collection_bound_to_it(db):
+    out = await st.allocate_targets(db, _with_consultant(), owner_sub=OWNER, label="run")
+    targets = out["config"]["research"]["targets"]
+    ada = targets["consultants"]["Ada"]
+    assert ada not in {targets["shared"], *targets["personas"].values()}
+    assert out["config"]["experts"][0]["knowledge_bases"] == [ada]
+    # Not in the cast-wide bindings: every persona would otherwise hold the consultant's library.
+    assert ada not in out["config"]["knowledge_bases"]
+
+
+async def test_consultant_research_can_be_switched_off(db):
+    out = await st.allocate_targets(db, _with_consultant(consultants=False), owner_sub=OWNER, label="run")
+    assert out["config"]["research"]["targets"]["consultants"] == {}
+    assert "knowledge_bases" not in out["config"]["experts"][0]
+
+
+async def test_a_consultant_target_never_resolves_to_a_persona_of_the_same_name():
+    s = st.Settings(enabled=True, targets={"personas": {"Ada": "kb-p"}, "consultants": {"Ada": "kb-c"}})
+    assert s.target_for("Ada") == "kb-p" and s.target_for("Ada", consultant=True) == "kb-c"
+    assert st.Settings(enabled=True, targets={"personas": {"Ada": "kb-p"}}).target_for(
+        "Ada", consultant=True) is None
+
+
+async def test_the_pass_fills_the_consultant_s_library(db, monkeypatch):
+    kb = await db.create_knowledge_base("Ada's library", owner_sub=OWNER)
+    config = {
+        "research": {"enabled": True, "shared": False, "personas": False,
+                     "targets": {"consultants": {"Ada": kb["id"]}}},
+        "experts": [{"name": "Ada", "expertise": "the practice act", "knowledge_bases": [kb["id"]]}],
+    }
+    run_id = await _run_row(db, config=config)
+    _wire(monkeypatch, _Provider([_Hit("https://example.gov/act")]))
+    seen = []
+
+    async def embed(store, kb_id, **kw):
+        seen.append(kb_id)
+        return {"embedded": 1}
+
+    monkeypatch.setattr("matrix_studio.retrieval.embed_pending_kb_chunks", embed)
+    record = await st.run_research(db, run_id, owner_sub=OWNER)
+
+    [scope] = record["scopes"]
+    assert scope["scope"] == "Ada" and scope["consultant"] is True and scope["kb_id"] == kb["id"]
+    assert seen == [kb["id"]]
+    docs = await db.list_kb_documents(kb["id"])
+    assert any(d["source_path"] == "https://example.gov/act" for d in docs)
+
+
+async def test_the_consultant_query_prompt_names_the_expertise_and_forbids_sides():
+    prompts = []
+
+    async def call(messages, model=None, temperature=0.0, max_tokens=None):
+        prompts.append(messages[0]["content"])
+        return {"content": json.dumps({"queries": ["a", "b", "c", "d"]}), "cost_usd": 0.001,
+                "finish_reason": "stop"}
+
+    queries, _ = await rs.consultant_queries("Ada", "the practice act", brief="renewal", call=call)
+    assert [q.text for q in queries] == ["a", "b", "c"] and {q.intent for q in queries} == {"reference"}
+    assert "the practice act" in prompts[0] and "no side" in prompts[0]
+
+
+def test_the_forecast_counts_a_collection_per_consultant():
+    from matrix_studio import forecast
+
+    request = _with_consultant()
+    assert forecast.research_collections(request) == 4
+    request["config"]["research"]["consultants"] = False
+    assert forecast.research_collections(request) == 3
