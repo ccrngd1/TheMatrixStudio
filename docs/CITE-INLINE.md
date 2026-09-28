@@ -102,3 +102,37 @@ and sends an explicit false when unticked.
 The realistic-cast comparison is still the test that would say whether this default helps on long
 conversations; with the default on, its off arm is now the one that has to be asked for.
 
+
+---
+
+# Comparison 2 — a realistic cast (pre-registered 2026-09-28, before any run)
+
+The default is now on (above), decided on a 12-turn, two-persona probe with short plain titles. This
+asks whether it holds where it matters, and what it costs through the citation gate, which now sees
+every citation (`citation_integrity` in `validation.py`; a rejected turn is regenerated once).
+
+**Design.** A private six-persona definition kept out of the repository: 40 turns, a knowledge base
+bound to each persona plus one shared, long and similar titles — the setting in which 25 stored runs
+showed no label citations at all. Voice model: the deployment default (Sonnet 5), identical in both
+arms; the definition's own Opus setting is removed for cost. Two arms differing only in
+`retrieval.cite_inline` (false / true). **Two runs per arm.** Forecast before launch: ~$1.05 a run.
+
+**Criteria — decided before running.** The first comparison's flaw was a cap on the off arm set from
+a baseline its design did not reproduce, so the primary criterion here is on the DIFFERENCE.
+
+- **Primary.** On-arm cite rate ≥ 0.50 **and** on − off ≥ 0.40 (same definition as comparison 1: share
+  of in-view messages with a first- or second-hand citation, as recorded live).
+- **Guardrail 1.** Among the on arm's attributive citations, `unverified` ≤ 0.20.
+- **Guardrail 2.** Median words per message within ±25% of the off arm.
+- **Guardrail 3 — the gate's cost.** On-arm total cost ≤ 1.15 × off-arm total cost. Reported alongside:
+  `citation_integrity` rejections per 100 turns in each arm.
+- **Decision.** All met → the default stays on, with this as its evidence. Primary missed → recommend
+  reverting the default to off. A guardrail missed → say which, and recommend reverting or a fix.
+
+**Descriptive, not a criterion.** Every `citation_integrity` rejection is read and judged correct or a
+false positive (P2 "citation gate false-positive rate"). The judgement is made by the assistant, not a
+human, and is labelled so.
+
+## Result — comparison 2
+
+*(Not yet run.)*
