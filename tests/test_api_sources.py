@@ -204,3 +204,21 @@ class TestAGranteeGetsPassagesNotTheSource:
                       params={"user": TEST_OWNER}).raise_for_status()
         _as(client, TEST_OWNER)
         assert _get(client, "r1", doc).status_code == 404
+
+
+class TestTheDocumentReadsOnce:
+    async def test_display_drops_each_chunk_s_carried_overlap(self, client, db):
+        """Chunks overlap by design; shown one after another, the boundary text appeared twice."""
+        from matrix_studio.documents import chunk_text, join_chunks
+
+        kb = _create(client, "statutes")
+        doc = _add_kb_doc(client, kb["id"])
+        await _run(db, "r1", kbs=[kb["id"]])
+        chunks = _get(client, "r1", doc, ordinal=1).json()["chunks"]
+        assert len(chunks) > 2
+        # Reading the display parts in order is the document exactly once — the same text
+        # join_chunks rebuilds — while `text` stays the passage as a persona was given it.
+        assert "\n\n".join(c["display"] for c in chunks) == join_chunks([c["text"] for c in chunks])
+        assert chunks[0]["display"] == chunks[0]["text"]
+        assert all(len(c["display"]) < len(c["text"]) for c in chunks[1:])
+        assert [c["text"] for c in chunks] == [c.content for c in chunk_text(LONG)]

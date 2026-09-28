@@ -94,3 +94,23 @@ describe('SourceViewer', () => {
     expect(parent).not.toHaveBeenCalled()
   })
 })
+
+
+describe('SourceViewer overlap', () => {
+  it('shows each chunk once, and the cited passage in full', async () => {
+    const { api } = await import('../api')
+    ;(api.getRunSource as any).mockResolvedValue({
+      ...base,
+      chunks: [
+        { ordinal: 0, text: 'First part.', display: 'First part.' },
+        { ordinal: 1, text: 'First part.\n\nThe board shall require an examination.', display: 'The board shall require an examination.' },
+        { ordinal: 2, text: 'an examination.\n\nExceptions.', display: 'Exceptions.' },
+      ],
+    })
+    render(<SourceViewer runId="r1" documentId="d1" ordinal={1} onClose={vi.fn()} />)
+    const cited = await screen.findByText(/The board shall require an examination\./)
+    expect(cited.closest('[data-cited]')).toHaveTextContent('First part.')
+    expect(screen.getByText('Exceptions.')).toBeInTheDocument()
+    expect(screen.queryByText(/an examination\.\s+Exceptions/)).not.toBeInTheDocument()
+  })
+})

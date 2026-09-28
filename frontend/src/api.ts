@@ -199,7 +199,9 @@ export interface RunSource {
   source_url: string | null
   cited_ordinal: number | null
   chunk_count: number | null
-  chunks: { ordinal: number; text: string }[]
+  /** `text` is the passage as a persona was given it; `display` drops the overlap it carries from
+   *  the chunk before, so a document reads once (absent from older servers). */
+  chunks: { ordinal: number; text: string; display?: string }[]
   /** Present when `full` is false, saying why only passages are shown. */
   notice?: string
 }

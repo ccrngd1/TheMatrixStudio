@@ -139,7 +139,10 @@ export function SourceViewer({ runId, documentId, ordinal, onClose }: Props) {
                     the passage this turn retrieved
                   </div>
                 )}
-                {c.text}
+                {/* The cited passage in full — exactly what the persona read, overlap included. Every
+                    other chunk without the overlap it repeats from the one before, so the document
+                    reads once instead of stuttering at each boundary. */}
+                {isCited ? c.text : (c.display ?? c.text)}
               </div>
             )
           })}

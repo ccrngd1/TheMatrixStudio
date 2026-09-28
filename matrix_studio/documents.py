@@ -291,6 +291,23 @@ def join_chunks(chunks: List[str]) -> str:
     return out
 
 
+def display_parts(chunks: List[str]) -> List[str]:
+    """Each chunk's text with the overlap it carries from the chunk before removed.
+
+    For showing a document to a person as its chunks — the source viewer — where plain chunk text
+    repeats ~150 characters at every boundary. The same discovery `join_chunks` uses, so it needs no
+    knowledge of the chunking settings, and it errs toward showing text twice rather than losing any.
+    Consecutive chunks only: callers pass them in ordinal order with no gaps.
+    """
+    out: List[str] = []
+    so_far = ""
+    for chunk in chunks:
+        part = _new_part(so_far, chunk) if so_far else chunk
+        out.append(part)
+        so_far = f"{so_far}\n\n{part}" if so_far else chunk
+    return out
+
+
 def _extract_pdf(path: Path, shown: Optional[str] = None) -> str:
     shown = shown or path.name
     try:

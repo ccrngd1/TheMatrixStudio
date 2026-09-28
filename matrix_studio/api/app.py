@@ -57,6 +57,7 @@ from matrix_studio.api.identity import current_groups, current_user, current_use
 from matrix_studio.api.manager import RunManager, TERMINAL_EVENTS, event_row_to_wire
 from matrix_studio.documents import (
     ExtractionError,
+    display_parts,
     format_support,
     ingest_file,
     ingest_text,
@@ -2197,9 +2198,13 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             out["full"] = True
             # Each chunk's OWN ordinal, not an enumeration: it is the value the event recorded, and
             # `kb_chunks_missing_vectors` keys vectors on the same attribute.
+            chunks = chunk_text(text) if text else []
+            # `display` drops the overlap each chunk carries from the one before, so the document reads
+            # once top to bottom; `text` is the passage exactly as a persona was given it.
             out["chunks"] = [
-                {"ordinal": c.ordinal, "text": c.content} for c in chunk_text(text)
-            ] if text else []
+                {"ordinal": c.ordinal, "text": c.content, "display": d}
+                for c, d in zip(chunks, display_parts([c.content for c in chunks]))
+            ]
             return out
 
         # A grantee: the cited passage and its neighbours, from the vector index.
@@ -2207,7 +2212,18 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         wanted = range(max(0, centre - SOURCE_CONTEXT_CHUNKS), centre + SOURCE_CONTEXT_CHUNKS + 1)
         passages = await owned.kb_passages(kb_id, document_id, list(wanted))
         out["full"] = False
-        out["chunks"] = [{"ordinal": o, "text": passages[o]} for o in sorted(passages)]
+        ordered = sorted(passages)
+        # Neighbours are consecutive, so the same overlap removal applies; a gap (a passage the index
+        # lacks) restarts it, since text is never dropped across a boundary it cannot see.
+        displays: List[str] = []
+        run_start = 0
+        for i in range(1, len(ordered) + 1):
+            if i == len(ordered) or ordered[i] != ordered[i - 1] + 1:
+                displays += display_parts([passages[o] for o in ordered[run_start:i]])
+                run_start = i
+        out["chunks"] = [
+            {"ordinal": o, "text": passages[o], "display": d} for o, d in zip(ordered, displays)
+        ]
         out["notice"] = (
             "This collection is shared with you, so you can read the passages a conversation "
             "retrieved but not the whole source — it belongs to another account. Shown: the cited "
