@@ -109,6 +109,9 @@ class History:
     report_per_member: List[float] = field(default_factory=list)
     #: A run's total consultation spend (`expert.answered`), from runs that consulted anyone.
     consult_costs: List[float] = field(default_factory=list)
+    #: A run's total spend on the moderator's assumption checks (`assumption.checked`), per turn of the
+    #: run — the stats hold the kind's sum, not a count, and the number of checks scales with length.
+    assumption_check_costs: List[float] = field(default_factory=list)
 
 
 def _json(value: Any, default: Any) -> Any:
@@ -187,6 +190,9 @@ async def load_history(store: Any, default_max: int) -> History:
         consult_sum = float((run.get("cost_by_kind") or {}).get("expert.answered") or 0.0)
         if consult_sum > 0:
             history.consult_costs.append(consult_sum)
+        check_sum = float((run.get("cost_by_kind") or {}).get("assumption.checked") or 0.0)
+        if check_sum > 0 and run.get("turn_count"):
+            history.assumption_check_costs.append(check_sum / int(run["turn_count"]))
         obs = observe(run, cost, default_max)
         if obs:
             history.runs.append(obs)
@@ -380,6 +386,30 @@ def forecast_run(
             parts.append(_part(
                 "consultations", None, None,
                 f"up to {limit} consultation(s); not yet measured — no run has consulted anyone",
+            ))
+
+    from matrix_studio.assumptions import dynamic_from_config
+
+    dyn = dynamic_from_config(config)
+    if dyn.enabled:
+        # One check per `every` completed turns, whether or not it adds anything. Priced per TURN of
+        # past runs, scaled by this run's length, so a check every 2 turns is priced from runs that
+        # checked every 4 only approximately — which is why the basis says what it is.
+        turns = int(config.get("max_messages") or default_max)
+        checks = max(0, (turns - 1) // dyn.every)
+        seen = history.assumption_check_costs
+        if seen:
+            r = _spread(seen)
+            parts.append(_part(
+                "assumption checks", turns * r["low"], turns * r["high"],
+                f"about {checks} check(s) by the moderator; past runs spent "
+                f"${r['low']:.5f}–{r['high']:.5f} per turn on them ({len(seen)} run(s))",
+                typical=turns * r["typical"], based_on=len(seen),
+            ))
+        else:
+            parts.append(_part(
+                "assumption checks", None, None,
+                f"{checks} check(s) by the moderator; not yet measured — no run has recorded one",
             ))
 
     if config.get("generate_avatars", avatars_default):

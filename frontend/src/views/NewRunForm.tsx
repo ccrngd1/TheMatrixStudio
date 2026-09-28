@@ -86,6 +86,7 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
   const [consultLimit, setConsultLimit] = useState(6)
   // Working assumptions (matrix_studio/assumptions.py).
   const [assumptions, setAssumptions] = useState<DraftAssumption[]>([])
+  const [dynamicAssumptions, setDynamicAssumptions] = useState(false)
   const [researchShared, setResearchShared] = useState(true)
   const [researchPersonas, setResearchPersonas] = useState(true)
   const [researchConsultants, setResearchConsultants] = useState(true)
@@ -237,6 +238,7 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
     // bases existed must not clear a selection the operator has already made.
     if (setup.knowledgeBases !== undefined) setRunKbs(setup.knowledgeBases)
     if (setup.assumptions !== undefined) setAssumptions(setup.assumptions)
+    if (setup.dynamicAssumptions !== undefined) setDynamicAssumptions(setup.dynamicAssumptions)
     if (setup.cognition) {
       setCognitionEnabled(setup.cognition.enabled)
       setCogMemory(setup.cognition.memory ?? true)
@@ -475,6 +477,7 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
         ...(runKbs.length ? { knowledge_bases: runKbs } : {}),
         ...(experts.length ? { experts, consult_limit: consultLimit } : {}),
         ...(assumptionsConfig(assumptions).length ? { assumptions: assumptionsConfig(assumptions) } : {}),
+        ...(dynamicAssumptions ? { dynamic_assumptions: { enabled: true } } : {}),
       },
       model: model || undefined,
       name: name.trim() || undefined,
@@ -1590,7 +1593,12 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
         onLimit={setConsultLimit}
       />
 
-      <AssumptionsEditor assumptions={assumptions} onChange={setAssumptions} />
+      <AssumptionsEditor
+        assumptions={assumptions}
+        onChange={setAssumptions}
+        dynamic={dynamicAssumptions}
+        onDynamic={setDynamicAssumptions}
+      />
 
       {/* Research sits next to the KB pickers on purpose: it is a knowledge-base AUTHORING
           step, and the bindings it produces are the same bindings chosen above. */}

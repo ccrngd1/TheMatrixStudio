@@ -88,10 +88,15 @@ def from_events(events: Sequence[Dict[str, Any]]) -> List[Assumption]:
 
     out: Dict[str, Assumption] = {}
     for e in events:
-        if e.get("event_type") != "assumption.made":
+        if e.get("event_type") not in ("assumption.made", "assumption.withdrawn"):
             continue
         p = e.get("payload")
         p = json.loads(p) if isinstance(p, str) else (p or {})
+        if e["event_type"] == "assumption.withdrawn":
+            # A fork that withdrew it (slice C): from here on the room no longer reasons from it.
+            out.pop(str(p.get("id")), None)
+            continue
+        # A later event with the same id REPLACES the earlier one — how a fork swaps an assumption.
         if p.get("id") and p.get("statement"):
             out[str(p["id"])] = Assumption(str(p["id"]), str(p["statement"]), str(p.get("basis") or ""),
                                            str(p.get("source") or OPERATOR), int(p.get("turn") or 0))
@@ -107,3 +112,98 @@ def summary_note(assumptions: Sequence[Assumption]) -> str:
         "\n\nThe cast was told to reason from these working assumptions, which are NOT established "
         f"facts:\n{lines}\nWhere a conclusion depends on one, say so by its id."
     )
+
+
+# --------------------------------------------------------------------------- #
+# Made during the run, by the moderator (Stage 3, slice B)
+# --------------------------------------------------------------------------- #
+
+MODERATOR = "moderator"
+
+#: `config.dynamic_assumptions`. Off by default, like every optional capability here: a run without it
+#: is byte-identical to one from before, and it costs one small call per check.
+DEFAULT_EVERY = 4
+DEFAULT_LIMIT = 3
+
+
+@dataclass(frozen=True)
+class DynamicSettings:
+    enabled: bool = False
+    #: Check after every this-many completed turns.
+    every: int = DEFAULT_EVERY
+    #: Most assumptions the moderator may add in one run. The operator's do not count against it.
+    limit: int = DEFAULT_LIMIT
+
+
+def dynamic_from_config(config: Optional[Dict[str, Any]]) -> DynamicSettings:
+    raw = (config or {}).get("dynamic_assumptions")
+    if raw is True:
+        return DynamicSettings(enabled=True)
+    if not isinstance(raw, dict) or not raw.get("enabled"):
+        return DynamicSettings()
+    try:
+        every = max(1, int(raw.get("every") or DEFAULT_EVERY))
+        limit = max(0, int(raw.get("limit") if raw.get("limit") is not None else DEFAULT_LIMIT))
+    except (TypeError, ValueError):
+        every, limit = DEFAULT_EVERY, DEFAULT_LIMIT
+    return DynamicSettings(True, every, limit)
+
+
+def due(settings: DynamicSettings, completed_turns: int, ledger: Sequence[Assumption]) -> bool:
+    """Whether to check now: on, a multiple of `every` completed turns, cap not spent, and not already
+    checked after this turn (a retried slice must not add a second assumption for the same gap)."""
+    if not settings.enabled or completed_turns <= 0 or completed_turns % settings.every:
+        return False
+    made = [a for a in ledger if a.source == MODERATOR]
+    return len(made) < settings.limit and all(a.turn != completed_turns for a in made)
+
+
+_PROPOSE_PROMPT = """You keep a discussion moving. It is about: {topic}
+
+Working assumptions already in force (do not repeat or contradict these):
+{ledger}
+
+The recent conversation:
+{conversation}
+
+Decide ONE thing: is the discussion stuck on an unknown that NOBODY in it can supply — the same \
+missing fact or number asked for by two participants, or twice by one — that no assumption above \
+covers?
+
+If so, propose ONE working assumption so the discussion can move on: the most plausible value, stated \
+plainly and specifically, and its basis — preferably estimates the participants themselves gave. It \
+must be a FACT about the world, never the decision under discussion and never anyone's position.
+
+If not, the answer is null. Most of the time the answer is null.
+
+Reply with ONLY a JSON object:
+{{"assumption": null}}
+or
+{{"assumption": {{"statement": "<the assumption>", "basis": "<why this value>", "gap": "<the unknown it fills, and who asked>"}}}}"""
+
+
+def propose_messages(topic: str, conversation: Sequence[Dict[str, Any]],
+                     ledger: Sequence[Assumption], recent: int = 12) -> List[Dict[str, str]]:
+    lines = "\n".join(f"{m.get('speaker')}: {m.get('content')}" for m in list(conversation)[-recent:])
+    held = "\n".join(f"- {a.id}: {a.statement}" for a in ledger) or "(none)"
+    return [{"role": "user", "content": _PROPOSE_PROMPT.format(
+        topic=topic, ledger=held, conversation=lines or "(nothing yet)")}]
+
+
+def parse_proposal(parsed: Optional[Dict[str, Any]]) -> Optional[Dict[str, str]]:
+    """The proposed assumption, or None. Anything malformed is None: a missing assumption costs a turn of
+    "show me"; an invented one built from a parse accident would steer the whole run."""
+    raw = (parsed or {}).get("assumption")
+    if not isinstance(raw, dict):
+        return None
+    statement = " ".join(str(raw.get("statement") or "").split())[:MAX_STATEMENT_CHARS]
+    if not statement:
+        return None
+    return {"statement": statement,
+            "basis": " ".join(str(raw.get("basis") or "").split())[:MAX_BASIS_CHARS],
+            "gap": " ".join(str(raw.get("gap") or "").split())[:MAX_BASIS_CHARS]}
+
+
+def next_id(ledger: Sequence[Assumption]) -> str:
+    nums = [int(a.id[1:]) for a in ledger if a.id[:1] == "A" and a.id[1:].isdigit()]
+    return f"A{max(nums, default=0) + 1}"

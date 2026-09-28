@@ -1292,6 +1292,7 @@ async def run_simulation(
         experts=experts_mod.from_config(config),
         consult_limit=experts_mod.consult_limit(config),
         assumptions=assumptions_mod.from_config(config),
+        dynamic_assumptions=assumptions_mod.dynamic_from_config(config),
     )
 
 
@@ -1563,6 +1564,50 @@ async def _consult(
     })
 
 
+async def _propose_assumption(
+    topic: str, conversation: List[Dict[str, Any]], ledger: List[Any], completed_turns: int, *,
+    model: Any, settings: Any, emit: Callable[..., Awaitable[None]], next_seq: Callable[[], int],
+) -> Optional[Any]:
+    """Ask the moderator whether a gap is blocking the room, and record an assumption if so.
+
+    Every check is recorded (`assumption.checked`, with its cost) whatever it decided, so the spend is
+    counted and "the moderator looked and found no gap" is distinguishable from "it never looked".
+    Never raises: a failed check is a turn without a new assumption.
+    """
+    parsed: Optional[Dict[str, Any]] = None
+    cost = 0.0
+    error: Optional[str] = None
+    try:
+        response = await litellm.acompletion(
+            model=model_for(model, "speaker_selection") or settings.litellm_model,
+            messages=assumptions_mod.propose_messages(topic, conversation, ledger),
+            temperature=0.2,
+            response_format={"type": "json_object"},
+            drop_params=True,
+        )
+        parsed = extract_json_object((response.choices[0].message.content or "").strip())
+        cost = float((getattr(response, "_hidden_params", None) or {}).get("response_cost") or 0.0)
+    except Exception as exc:  # noqa: BLE001 — a failed check must not end the run
+        logger.warning("Assumption check after turn %d failed: %s", completed_turns, exc)
+        error = str(exc)[:300]
+    proposal = assumptions_mod.parse_proposal(parsed)
+    await emit(
+        turn=completed_turns, seq=next_seq(), event_type="assumption.checked", agent_name=None,
+        payload={"after_turn": completed_turns, "proposed": proposal is not None,
+                 "gap": (proposal or {}).get("gap", ""), "cost_usd": cost,
+                 **({"error": error} if error else {})},
+    )
+    if proposal is None:
+        return None
+    made = assumptions_mod.Assumption(
+        assumptions_mod.next_id(ledger), proposal["statement"], proposal["basis"],
+        assumptions_mod.MODERATOR, completed_turns,
+    )
+    await emit(turn=completed_turns, seq=next_seq(), event_type="assumption.made", agent_name=None,
+               payload={**made.payload(), "gap": proposal["gap"]})
+    return made
+
+
 async def rebuild_read_before(db: Any, run_id: str, up_to_turn: int) -> Dict[str, Set[Tuple[str, int]]]:
     """Each speaker's retrieved ``(title, ordinal)`` pairs up to and including ``up_to_turn``, from the
     run's own ``document.retrieved`` events. A read failure returns {}, which is the old "this turn
@@ -1616,6 +1661,8 @@ async def _run_turns(
     consult_limit: int = 0,
     # Working assumptions every persona reasons from (matrix_studio/assumptions.py). Empty = none.
     assumptions: Optional[List[Any]] = None,
+    # Whether, and how often, the moderator may add one when a gap blocks the room. None = never.
+    dynamic_assumptions: Optional[Any] = None,
     # Intervention H's streak, carried in because ONE TURN PER CALL is what ships: a
     # counter local to this function is reset on every turn under Step Functions, which
     # made the two-declines-in-a-row guard unsatisfiable in production while passing every
@@ -1693,6 +1740,8 @@ async def _run_turns(
     # odd judgement costs a turn rather than a run.
     converged: Optional[Dict[str, Any]] = None
     declines = decline_streak
+    # The working-assumption ledger for this call: what it was handed, plus any the moderator adds.
+    ledger_assumptions: List[Any] = list(assumptions or [])
 
     # Simultaneous mode. A ROUND is one turn: every persona is asked, against the state as
     # it stood when the round opened, and the ones who pass never reach the transcript.
@@ -1801,6 +1850,22 @@ async def _run_turns(
                 turn += 1
                 generated += 1
             blind = rounds_now and round_blind
+
+            # Working assumptions made by the moderator (matrix_studio/assumptions.py), checked at the
+            # start of a moderated turn or a round, never inside one and never in the closing round.
+            # Before selection, so the turn it enables already reasons from it.
+            if (
+                dynamic_assumptions is not None
+                and (starting_round or not rounds_now)
+                and not in_closing
+                and assumptions_mod.due(dynamic_assumptions, turn - 1, ledger_assumptions)
+            ):
+                made = await _propose_assumption(
+                    topic, conversation, ledger_assumptions, turn - 1,
+                    model=model, settings=settings, emit=emit, next_seq=next_seq,
+                )
+                if made is not None:
+                    ledger_assumptions.append(made)
 
             # Phase 1: Select next speaker — unless nobody selects. In simultaneous mode
             # the queue IS the answer, so the selection call is skipped entirely: no
@@ -1933,7 +1998,7 @@ async def _run_turns(
             # entirely (zero queries, zero prompt change) when disabled.
             retrieval_on = bool(retrieval and retrieval.enabled and db is not None)
             passages: List[Any] = []
-            assumptions_prompt = assumptions_mod.assumptions_block(assumptions or [])
+            assumptions_prompt = assumptions_mod.assumptions_block(ledger_assumptions)
             # Consultants need retrieval (they answer from their sources) and the run's remaining cap.
             consult_remaining = (consult_limit - experts_mod.consults_used(conversation)) if experts else 0
             consult_prompt = (
@@ -3164,13 +3229,20 @@ async def resume_simulation(
     # the shape of bug that has shipped features inert here before. One read per call.
     expert_list: List[Any] = []
     assumption_list: List[Any] = []
+    dynamic = None
     limit = 0
     if db is not None:
         try:
             row = await db.get_run(run_id)
             cfg = json.loads((row or {}).get("config_json") or "{}")
             expert_list, limit = experts_mod.from_config(cfg), experts_mod.consult_limit(cfg)
-            assumption_list = assumptions_mod.from_config(cfg)
+            # The ledger as of the fork, from the run's own events: the operator's (turn 0) and any the
+            # moderator made since. A branch copied its parent's log, so it inherits them — and a
+            # later event with the same id is how a fork replaces one.
+            assumption_list = assumptions_mod.from_events(
+                await db.get_events(run_id, to_turn=effective_from_turn)
+            ) or assumptions_mod.from_config(cfg)
+            dynamic = assumptions_mod.dynamic_from_config(cfg)
         except Exception as exc:  # noqa: BLE001 — no consultants rather than a failed turn
             logger.warning("Could not read consultants for %s: %s", run_id, exc)
 
@@ -3198,5 +3270,6 @@ async def resume_simulation(
         experts=expert_list,
         consult_limit=limit,
         assumptions=assumption_list,
+        dynamic_assumptions=dynamic,
         should_stop=should_stop,
     )

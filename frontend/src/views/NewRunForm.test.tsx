@@ -196,6 +196,21 @@ describe('NewRunForm option hints', () => {
     expect(body.cast[0].structured).toBeUndefined()
   })
 
+  it('sends assumptions and the moderator switch only when set', () => {
+    renderForm()
+    fireEvent.change(screen.getByPlaceholderText(/What should the cast discuss/i), { target: { value: 'a topic' } })
+    fireEvent.change(screen.getByPlaceholderText('Name'), { target: { value: 'Ada' } })
+    fireEvent.change(screen.getByPlaceholderText(/Persona description/), { target: { value: 'an ethicist' } })
+    fireEvent.click(screen.getByRole('button', { name: /Add assumption/ }))
+    fireEvent.change(screen.getByLabelText('Assumption 1'), { target: { value: 'Churn is 7%' } })
+    fireEvent.click(screen.getByLabelText(/Let the moderator add assumptions/))
+    fireEvent.click(screen.getByRole('button', { name: /Run simulation/ }))
+
+    const body = (api.createRun as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]
+    expect(body.config.assumptions).toEqual([{ statement: 'Churn is 7%' }])
+    expect(body.config.dynamic_assumptions).toEqual({ enabled: true })
+  })
+
   it('sends evidence_lean only when the operator ticks it', () => {
     renderForm()
     fireEvent.change(screen.getByPlaceholderText(/What should the cast discuss/i), { target: { value: 'a topic' } })

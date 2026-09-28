@@ -18,11 +18,14 @@ export function assumptionsConfig(list: DraftAssumption[]) {
 interface Props {
   assumptions: DraftAssumption[]
   onChange: (list: DraftAssumption[]) => void
+  /** Whether the moderator may add its own when a gap blocks the room. */
+  dynamic: boolean
+  onDynamic: (on: boolean) => void
 }
 
 // Working assumptions (matrix_studio/assumptions.py): what the room reasons from when nobody in it can
 // know the answer. Shown to every persona and marked in the transcript; never treated as evidence.
-export function AssumptionsEditor({ assumptions, onChange }: Props) {
+export function AssumptionsEditor({ assumptions, onChange, dynamic, onDynamic }: Props) {
   const update = (i: number, patch: Partial<DraftAssumption>) =>
     onChange(assumptions.map((a, n) => (n === i ? { ...a, ...patch } : a)))
   const input = 'rounded border border-matrix-border bg-matrix-bg p-2 text-sm'
@@ -52,6 +55,17 @@ export function AssumptionsEditor({ assumptions, onChange }: Props) {
           + Add assumption
         </button>
       </div>
+      <label className="mb-2 flex items-center gap-2 text-xs text-slate-300">
+        <input type="checkbox" checked={dynamic} onChange={(e) => onDynamic(e.target.checked)} />
+        Let the moderator add assumptions when the room is stuck on something nobody can know
+        <Hint label="moderator assumptions">
+          Every four turns the moderator checks whether the discussion is blocked on a missing fact —
+          the same unknown asked for by two personas, or twice by one. If so it adds one assumption,
+          using the personas' own estimates where they gave any, and the room carries on. There is no
+          approval step: each is marked in the conversation with who made it and why, and listed in
+          the brief. At most three per run; each check is one small model call.
+        </Hint>
+      </label>
       {assumptions.length === 0 ? (
         <p className="text-xs text-slate-500">None. Personas reason only from what they know.</p>
       ) : (

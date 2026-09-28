@@ -176,3 +176,122 @@ async def test_the_api_takes_them_and_refuses_an_empty_statement():
     assert CreateRunModel(**body).config.assumptions[0].statement == "Churn is 7%"
     with pytest.raises(ValidationError):
         CreateRunModel(**_request([{"statement": ""}]))
+
+
+# --------------------------------------------------------------------------- #
+# Slice B: the moderator adds one when a gap blocks the room
+# --------------------------------------------------------------------------- #
+
+
+def _fake_dynamic(log, checks, propose=True):
+    state = {"i": 0}
+
+    def fake(*_a, **kw):
+        msgs = kw["messages"]
+        text = " ".join(m["content"] for m in msgs)
+        if "You keep a discussion moving" in text:
+            checks.append(text)
+            body = ({"assumption": {"statement": "Churn is about 7%", "basis": "both guessed 5-9%",
+                                    "gap": "churn, asked by Dana twice"}} if propose else {"assumption": None})
+            return _Resp(json.dumps(body))
+        if "conversation moderator" in text:
+            who = ("Dana", "Marcus")[state["i"] % 2]
+            state["i"] += 1
+            return _Resp(json.dumps({"speaker": who, "reason": "turn"}))
+        if "consistency validator" in text:
+            return _Resp(json.dumps({"violation": False}))
+        log.append(msgs[0]["content"])
+        return _Resp("I need the churn number before I decide.")
+
+    return fake
+
+
+def _dyn_request(every=1, limit=1, turns=3):
+    req = _request(assumptions=None)
+    req["config"]["max_messages"] = turns
+    req["config"]["dynamic_assumptions"] = {"enabled": True, "every": every, "limit": limit}
+    return req
+
+
+async def test_due_respects_every_the_cap_and_a_retried_turn():
+    s = am.DynamicSettings(True, every=2, limit=1)
+    assert not am.due(s, 1, []) and am.due(s, 2, [])
+    made = [am.Assumption("A1", "x", source=am.MODERATOR, turn=2)]
+    assert not am.due(s, 2, made), "a retried slice must not add a second one for the same turn"
+    assert not am.due(s, 4, made), "cap spent"
+    assert am.due(am.DynamicSettings(True, 2, 2), 4, made + [am.Assumption("A2", "y")])
+    assert not am.due(am.DynamicSettings(), 4, [])
+
+
+async def test_a_malformed_proposal_is_no_assumption():
+    assert am.parse_proposal({"assumption": None}) is None
+    assert am.parse_proposal({"assumption": {"statement": "  "}}) is None
+    assert am.parse_proposal(None) is None
+    assert am.parse_proposal({"assumption": {"statement": "x", "basis": "b"}})["statement"] == "x"
+
+
+async def test_the_moderator_adds_one_and_later_turns_reason_from_it(db):
+    log, checks = [], []
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake_dynamic(log, checks)):
+        await run_simulation(_dyn_request(every=1, limit=1, turns=3), db=db, run_id="dy1")
+    made = await _events(db, "dy1", "assumption.made")
+    assert [(m["id"], m["source"], m["turn"]) for m in made] == [("A1", "moderator", 1)]
+    assert made[0]["gap"] == "churn, asked by Dana twice"
+    assert "A1: Churn is about 7%" not in log[0] and all("A1: Churn is about 7%" in p for p in log[1:])
+    checked = await _events(db, "dy1", "assumption.checked")
+    assert len(checked) == 1 and checked[0]["proposed"] is True and checked[0]["cost_usd"] > 0
+
+
+async def test_a_check_that_finds_no_gap_is_still_recorded_and_adds_nothing(db):
+    log, checks = [], []
+    with patch("matrix_studio.engine.simulator.litellm.acompletion",
+               side_effect=_fake_dynamic(log, checks, propose=False)):
+        await run_simulation(_dyn_request(every=1, limit=3, turns=3), db=db, run_id="dy2")
+    assert await _events(db, "dy2", "assumption.made") == []
+    assert [c["proposed"] for c in await _events(db, "dy2", "assumption.checked")] == [False, False]
+    assert all("Working assumptions" not in p for p in log)
+
+
+async def test_off_by_default_means_no_check_at_all(db):
+    log, checks = [], []
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake_dynamic(log, checks)):
+        await run_simulation(_request(assumptions=None), db=db, run_id="dy3")
+    assert checks == [] and await _events(db, "dy3", "assumption.checked") == []
+
+
+async def test_the_deployed_slices_carry_the_moderator_s_assumption_forward(db):
+    req = _dyn_request(every=1, limit=1, turns=3)
+    await db.create_run(run_id="dy4", topic=req["topic"], cast=req["cast"], config=req["config"])
+    log, checks = [], []
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake_dynamic(log, checks)):
+        await orchestration.prepare_run(db, "dy4")
+        for t in range(3):
+            await orchestration.execute_slice(db, "dy4", turn=t, turn_budget=1)
+    assert [m["id"] for m in await _events(db, "dy4", "assumption.made")] == ["A1"]
+    # Made in turn 2's slice; turn 3's slice is a fresh call that must rebuild it from the log.
+    # (More prompts than turns: the fake does not answer the validator, so turns are regenerated.)
+    assert "A1:" not in log[0] and len(log) >= 3 and all("A1: Churn is about 7%" in p for p in log[1:])
+    assert len(checks) == 1, "the cap must hold across slices, not per slice"
+
+
+async def test_operator_and_moderator_ids_do_not_collide(db):
+    log, checks = [], []
+    req = _dyn_request(every=1, limit=1, turns=2)
+    req["config"]["assumptions"] = [{"statement": "Launch date is fixed"}]
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake_dynamic(log, checks)):
+        await run_simulation(req, db=db, run_id="dy5")
+    assert [(m["id"], m["source"]) for m in await _events(db, "dy5", "assumption.made")] == [
+        ("A1", "operator"), ("A2", "moderator")]
+
+
+async def test_the_forecast_prices_checks_or_says_it_cannot():
+    from matrix_studio import forecast
+
+    req = _dyn_request(every=4, turns=40)
+    kw = dict(default_model="m", default_max=40, avatars_default=False, avatar_price=0.08)
+    part = next(p for p in forecast.forecast_run(req, forecast.History(), **kw)["parts"]
+                if p["part"] == "assumption checks")
+    assert part["measured"] is False and "9 check(s)" in part["basis"]
+    priced = forecast.History(assumption_check_costs=[0.0005, 0.001])
+    part = next(p for p in forecast.forecast_run(req, priced, **kw)["parts"] if p["part"] == "assumption checks")
+    assert part["measured"] and part["high"] == pytest.approx(0.04)

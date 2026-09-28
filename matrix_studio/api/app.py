@@ -262,6 +262,16 @@ class AssumptionModel(BaseModel):
     basis: str = Field(default="", max_length=300)
 
 
+class DynamicAssumptionsModel(BaseModel):
+    """`config.dynamic_assumptions` (`assumptions.DynamicSettings`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    every: int = Field(default=4, ge=1, le=20)
+    limit: int = Field(default=3, ge=0, le=8)
+
+
 class ExpertModel(BaseModel):
     """A consultant (`matrix_studio/experts.py`): outside the room, asked by the personas, answering only
     from its own documents and knowledge bases. Never a speaker."""
@@ -329,6 +339,9 @@ class RunConfigModel(BaseModel):
     # Working assumptions every persona reasons from (matrix_studio/assumptions.py). Omitted -> none,
     # and the prompts are exactly what they were.
     assumptions: List[AssumptionModel] = Field(default_factory=list, max_length=8)
+    # The moderator may add assumptions when a gap blocks the room, without approval — each is marked
+    # in the transcript and can be forked with a different value. Omitted -> never.
+    dynamic_assumptions: Optional[DynamicAssumptionsModel] = None
 
 
 class SummaryConfigModel(BaseModel):

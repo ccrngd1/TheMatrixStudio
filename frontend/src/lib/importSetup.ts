@@ -56,6 +56,8 @@ export interface ImportedSetup {
   knowledgeBases?: string[]
   /** Working assumptions the setup gives the room. Absent stays undefined, like `knowledgeBases`. */
   assumptions?: { statement: string; basis: string }[]
+  /** Whether the moderator may add assumptions during the run. */
+  dynamicAssumptions?: boolean
   /** Whether the setup asks the moderator to end the run when the discussion is done. */
   stopWhenConverged?: boolean
   /** Problems that did not stop the load. Shown to the operator verbatim. */
@@ -243,6 +245,10 @@ export function parseSetupObject(data: unknown): ImportedSetup {
           .map((a) => ({ statement: String(a.statement ?? '').trim(), basis: String(a.basis ?? '').trim() }))
           .filter((a) => a.statement)
       : undefined,
+    dynamicAssumptions:
+      config.dynamic_assumptions === undefined
+        ? undefined
+        : Boolean((config.dynamic_assumptions as Record<string, unknown> | null)?.enabled),
     // Absent stays undefined, like every other flag here: a setup written before this
     // existed must not silently turn it off, and one written with it off must not turn on.
     stopWhenConverged:
