@@ -73,8 +73,8 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
   // deliberate rather than cautious: it searches the open web and costs a few minutes and
   // a quarter of a dollar per run, so it is a decision the operator makes each time.
   const [research, setResearch] = useState(false)
-  // Ask personas to cite each passage they rely on, inline. Opt-in: docs/CITE-INLINE.md.
-  const [citeInline, setCiteInline] = useState(false)
+  // Ask personas to cite each passage they rely on, inline. On by default (docs/CITE-INLINE.md).
+  const [citeInline, setCiteInline] = useState(true)
   const [researchShared, setResearchShared] = useState(true)
   const [researchPersonas, setResearchPersonas] = useState(true)
   // Sources taken per query. The one genuine dial: it decides how wide the search goes.
@@ -438,7 +438,8 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
             ? {
                 enabled: true,
                 ...(research ? { authority_floor: 1 } : {}),
-                ...(citeInline ? { cite_inline: true } : {}),
+                // Always sent: the server default is on, so unticking has to say so.
+                cite_inline: citeInline,
               }
             : undefined,
         // Sent only when asked for. `targets` is never sent: the server resolves it and
@@ -1515,7 +1516,7 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
               <br />
               Measured on a small comparison (docs/CITE-INLINE.md): every message with a source in
               view cited it, none cited a passage it was not given, and messages were no longer.
-              Off by default until it has been tried on a larger conversation.
+              On by default; untick it to compare against how personas speak without it.
             </Hint>
           </label>
         )}

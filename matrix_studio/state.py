@@ -340,9 +340,9 @@ class RetrievalConfig(BaseModel):
         description="Ask the persona to flag in-voice when it has no retrieved source",
     )
     # Ask the persona to end a claim with the bracketed label of the passage it relies on.
-    # DEFAULT OFF while it is measured (docs/CITE-INLINE.md): it changes how every persona
-    # speaks, and measured on 25 stored runs the existing "cite it by name" wording produced
-    # no label citations at all — so a claim could not be traced to the passage behind it.
+    # OFF here on purpose, although new runs have it ON: the API request model defaults it to true
+    # and stores that in the run's config (docs/CITE-INLINE.md, decided 2026-09-28). A config with
+    # no value is a run created before then, and resuming or branching it must not change its prompt.
     cite_inline: bool = Field(
         default=False,
         description="Ask personas to cite each passage they rely on inline, as [title #n]",

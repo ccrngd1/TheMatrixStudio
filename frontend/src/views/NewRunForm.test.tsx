@@ -233,7 +233,7 @@ describe('NewRunForm option hints', () => {
     fireEvent.click(screen.getByRole('button', { name: /Run simulation/ }))
 
     const body = (api.createRun as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]
-    expect(body.config.retrieval).toEqual({ enabled: true })
+    expect(body.config.retrieval).toEqual({ enabled: true, cite_inline: true })
     expect(body.cast[0].document_texts[0].text).toMatch(/written consent/)
     // An untitled paste still gets a usable title rather than being dropped.
     expect(body.cast[0].document_texts[0].title).toBeTruthy()

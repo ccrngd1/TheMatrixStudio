@@ -2,6 +2,7 @@
 
 **Status:** pre-registered 2026-09-27 (`1ffbcad`), before any run; **result recorded below** — primary
 MISSED (off arm too high), both guardrails met. The criteria were not edited after the runs started.
+**Default: ON for new runs since 2026-09-28, by operator decision** — see the end of this document.
 
 ## Why
 
@@ -85,3 +86,19 @@ without invented labels and without longer speech.
 test that would decide the default is the same comparison on a realistic cast — long, similar titles
 and 40 turns, the setting where the baseline was 0/816 — pre-registered with the off-arm cap taken
 from that setting.
+
+## Operator decision — 2026-09-28
+
+The operator turned the rule **on by default for new runs**, overriding the pre-registered "primary
+missed → keep it off". That is the operator's call to make, and it is recorded as a decision, not as
+a result: the probe above did not meet its criterion, and nothing here re-scores it.
+
+How the default is applied: `RetrievalConfigModel.cite_inline` (the API request model) defaults to
+true and is written into each new run's stored config. The engine's own default
+(`RetrievalConfig.cite_inline`) stays false, so a run created before the change — whose stored config
+has no value — keeps its prompt when resumed or branched. The launch form's checkbox starts ticked
+and sends an explicit false when unticked.
+
+The realistic-cast comparison is still the test that would say whether this default helps on long
+conversations; with the default on, its off arm is now the one that has to be asked for.
+

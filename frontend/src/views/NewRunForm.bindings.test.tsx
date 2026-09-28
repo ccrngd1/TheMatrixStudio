@@ -156,7 +156,7 @@ describe('retrieval', () => {
     fireEvent.click(screen.getByRole('button', { name: /run simulation/i }))
 
     await waitFor(() => expect(mocked.createRun).toHaveBeenCalled())
-    expect(mocked.createRun.mock.calls[0][0].config.retrieval).toEqual({ enabled: true })
+    expect(mocked.createRun.mock.calls[0][0].config.retrieval).toEqual({ enabled: true, cite_inline: true })
   })
 
   it('stays off when neither a document nor a binding exists', async () => {

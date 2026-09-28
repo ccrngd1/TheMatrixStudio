@@ -395,3 +395,17 @@ def test_a_bracketed_knowledge_base_label_is_attributive_but_a_markdown_link_is_
     assert c.attributive is True
     [c] = analyse_citations("see [Cost observations #1](x) later", "Dana", ["Dana"], ctx)
     assert c.attributive is False
+
+
+def test_new_runs_default_to_citing_inline_but_a_stored_config_without_it_does_not():
+    """On for new runs (the request model writes it into the stored config); off for a config that
+    predates the decision, so resuming or branching an old run keeps its prompt."""
+    from matrix_studio.api.app import RunConfigModel
+    from matrix_studio.state import RetrievalConfig
+
+    new = RunConfigModel(retrieval={"enabled": True}).model_dump(exclude_none=True)
+    assert new["retrieval"]["cite_inline"] is True
+    assert RetrievalConfig.from_config(new).cite_inline is True
+    assert RetrievalConfig.from_config({"retrieval": {"enabled": True}}).cite_inline is False
+    off = RunConfigModel(retrieval={"enabled": True, "cite_inline": False}).model_dump(exclude_none=True)
+    assert RetrievalConfig.from_config(off).cite_inline is False

@@ -119,7 +119,7 @@ describe('NewRunForm research toggle', () => {
     fireEvent.click(toggle())
     fireEvent.click(screen.getByRole('button', { name: /Research/ }))
 
-    expect(body().config.retrieval).toEqual({ enabled: true, authority_floor: 1 })
+    expect(body().config.retrieval).toEqual({ enabled: true, authority_floor: 1, cite_inline: true })
   })
 
   it('sets an authority floor, so a statute it finds cannot lose every slot', () => {
@@ -226,13 +226,23 @@ describe('NewRunForm research toggle', () => {
 })
 
 describe('NewRunForm inline citations', () => {
-  it('sends cite_inline only when asked, and only with retrieval on', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('asks for inline citations by default whenever retrieval is on', () => {
     renderForm()
     fillMinimum()
     expect(screen.queryByText(/cite their sources inline/)).not.toBeInTheDocument()
     fireEvent.click(toggle())
-    fireEvent.click(screen.getByLabelText(/cite their sources inline/))
     fireEvent.click(screen.getByRole('button', { name: /Research/ }))
     expect(body().config.retrieval).toMatchObject({ enabled: true, cite_inline: true })
+  })
+
+  it('sends an explicit false when unticked, because the server default is on', () => {
+    renderForm()
+    fillMinimum()
+    fireEvent.click(toggle())
+    fireEvent.click(screen.getByLabelText(/cite their sources inline/))
+    fireEvent.click(screen.getByRole('button', { name: /Research/ }))
+    expect(body().config.retrieval.cite_inline).toBe(false)
   })
 })
