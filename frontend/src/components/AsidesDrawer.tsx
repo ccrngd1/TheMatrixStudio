@@ -77,7 +77,10 @@ export function AsidesDrawer({ runId, cast, turnCount, model, models = [], onBra
       await openThread(active.id)
       await loadThreads()
     } catch (e) {
-      setError((e as Error).message)
+      // Put the question back: the server stores nothing when a reply fails, so the draft is the only
+      // copy, and clearing it lost the user's words along with the reply.
+      setDraft(content)
+      setError(asideError((e as Error).message))
     } finally {
       setSending(false)
     }
@@ -303,4 +306,13 @@ export function AsidesDrawer({ runId, cast, turnCount, model, models = [], onBra
       </div>
     </div>
   )
+}
+
+/** The gateway's own timeout carries no explanation ("504: Gateway Timeout"); say what happened. The
+ *  server's own deadline already explains itself, and is shown as it is. */
+export function asideError(message: string): string {
+  if (/^50[34]:\s*(Gateway Timeout|Service Unavailable|Endpoint request timed out)?\s*$/i.test(message)) {
+    return 'The reply took too long and was stopped; nothing was saved. Try again, or ask a narrower question.'
+  }
+  return message
 }

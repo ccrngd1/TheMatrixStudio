@@ -3036,9 +3036,20 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         if not body.content.strip():
             raise HTTPException(status_code=422, detail="Message content is required")
         run = await _require_thread_run(thread, user)
-        reply = await service.post_aside_message(
-            db.for_owner(user), run, thread, user_message=body.content.strip(), model=body.model
-        )
+        try:
+            reply = await service.post_aside_message(
+                db.for_owner(user), run, thread, user_message=body.content.strip(), model=body.model
+            )
+        except asyncio.TimeoutError as exc:
+            # Our own deadline, inside the gateway's 30 s: a sentence the UI can show, rather than the
+            # gateway's bare 504. Nothing was stored, so the question can simply be asked again.
+            raise HTTPException(
+                status_code=504,
+                detail=(
+                    f"The reply took longer than {service.ASIDE_DEADLINE_SECONDS} s, so it was stopped "
+                    "and nothing was saved. Try a narrower question, or ask one persona rather than the room."
+                ),
+            ) from exc
         cost = await db.for_owner(user).thread_cost(thread_id)
         return {"thread_id": thread_id, "reply": reply, "total_cost_usd": cost}
 

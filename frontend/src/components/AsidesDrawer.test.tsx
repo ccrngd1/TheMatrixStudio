@@ -75,3 +75,12 @@ describe('AsidesDrawer', () => {
     })
   })
 })
+
+describe('asideError', () => {
+  it('explains a bare gateway timeout and leaves an explained error alone', async () => {
+    const { asideError } = await import('./AsidesDrawer')
+    expect(asideError('504: Gateway Timeout')).toMatch(/took too long.*nothing was saved/)
+    expect(asideError('504: The reply took longer than 24 s')).toBe('504: The reply took longer than 24 s')
+    expect(asideError('404: Thread not found')).toBe('404: Thread not found')
+  })
+})

@@ -20,6 +20,7 @@ generated ANALYSIS of the transcript, not ground truth or canonical persona
 statements — callers label them as such.
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -348,8 +349,16 @@ _ASIDE_FRAMING = (
     "The group conversation has already FINISHED. You are now reflecting on it "
     "afterwards in a private side-discussion with a reviewer. Your reply here "
     "does NOT continue or change the original conversation and the other "
-    "participants will not see it."
+    "participants will not see it. Keep your reply under about 200 words unless "
+    "the reviewer asks for more detail."
 )
+
+#: The output budget for one aside reply. Asides used to fall back to the SUMMARY budget (8,000
+#: tokens), and a reply is generated inside the HTTP request, which the deployed API cuts off at 30 s:
+#: a persona aside timed out at 30 s on 2026-09-28 (a 504 in the UI) and no persona aside had ever
+#: returned on the deployed stack. Measured: a 15-turn transcript and a one-paragraph question took
+#: 8.3 s for 275 output tokens, so ~700 tokens is ~20 s at worst and a readable reply at best.
+ASIDE_MAX_TOKENS = 700
 
 
 def _history_messages(
@@ -386,7 +395,7 @@ async def analyst_reply(
     messages = [{"role": "system", "content": system}]
     messages.extend(_history_messages(thread_history))
     messages.append({"role": "user", "content": user_message})
-    result = await _acompletion(messages, model=model, temperature=0.4)
+    result = await _acompletion(messages, model=model, temperature=0.4, max_tokens=ASIDE_MAX_TOKENS)
     return {"speaker": "analyst", **result}
 
 
@@ -415,7 +424,7 @@ async def persona_reply(
     messages = [{"role": "system", "content": system}]
     messages.extend(_history_messages(thread_history))
     messages.append({"role": "user", "content": user_message})
-    result = await _acompletion(messages, model=model, temperature=0.6)
+    result = await _acompletion(messages, model=model, temperature=0.6, max_tokens=ASIDE_MAX_TOKENS)
     return {"speaker": persona_name, **result}
 
 
@@ -437,26 +446,24 @@ async def room_reply(
     ``content`` is a combined transcript-style rendering for storage/display.
     """
     selected = cast[:MAX_ROOM_PERSONAS]
-    replies: List[Dict[str, Any]] = []
-    total_in = total_out = 0
-    total_cost = 0.0
-
-    for persona in selected:
-        name = persona.get("name", "?")
-        text = persona.get("persona", "")
-        one = await persona_reply(
+    # CONCURRENTLY. One after another, six personas at ~8 s each could never finish inside the
+    # deployed API's 30 s limit; together the room takes about as long as its slowest reply. Order is
+    # the cast's, as before, because gather preserves it.
+    replies: List[Dict[str, Any]] = list(await asyncio.gather(*(
+        persona_reply(
             user_message=user_message,
-            persona_name=name,
-            persona_text=text,
+            persona_name=persona.get("name", "?"),
+            persona_text=persona.get("persona", ""),
             conversation=conversation,
             topic=topic,
             thread_history=thread_history,
             model=model,
         )
-        replies.append(one)
-        total_in += one["tokens_in"]
-        total_out += one["tokens_out"]
-        total_cost += one["cost_usd"]
+        for persona in selected
+    )))
+    total_in = sum(r["tokens_in"] for r in replies)
+    total_out = sum(r["tokens_out"] for r in replies)
+    total_cost = sum(r["cost_usd"] for r in replies)
 
     combined = "\n\n".join(f"{r['speaker']}: {r['content']}" for r in replies)
     return {

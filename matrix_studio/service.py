@@ -13,6 +13,7 @@ mutates a run's recorded cost. Analysis token/cost is persisted to the new
 tables and reported separately from the canonical run cost.
 """
 
+import asyncio
 import json
 import logging
 import uuid
@@ -257,51 +258,18 @@ async def post_aside_message(
     # Persist the user turn first so it is part of the history for THIS call's
     # follow-ups (but not passed as the current user_message again).
     history = await db.get_thread_messages(thread["id"])
+    # Generate FIRST, store after. The user's message used to be stored before the reply was generated,
+    # so a reply that timed out left the question unanswered in the thread for good (seen 2026-09-28).
+    reply = await asyncio.wait_for(
+        _aside_reply(run, thread, user_message, conversation, topic, history, resolved_model),
+        timeout=ASIDE_DEADLINE_SECONDS,
+    )
     await db.add_thread_message(
         thread_id=thread["id"],
         role="user",
         speaker="user",
         content=user_message,
     )
-
-    target = thread["target"]
-    if target == "analyst":
-        reply = await analysis.analyst_reply(
-            user_message=user_message,
-            conversation=conversation,
-            topic=topic,
-            thread_history=history,
-            model=resolved_model,
-        )
-    elif target == "persona":
-        cast = _load_cast(run)
-        persona = next(
-            (c for c in cast if c.get("name") == thread["persona_name"]), None
-        )
-        if persona is None:
-            raise ValueError("Persona no longer present in run cast")
-        reply = await analysis.persona_reply(
-            user_message=user_message,
-            persona_name=persona["name"],
-            persona_text=persona.get("persona", ""),
-            conversation=conversation,
-            topic=topic,
-            thread_history=history,
-            model=resolved_model,
-        )
-    elif target == "room":
-        cast = _load_cast(run)
-        reply = await analysis.room_reply(
-            user_message=user_message,
-            cast=cast,
-            conversation=conversation,
-            topic=topic,
-            thread_history=history,
-            model=resolved_model,
-        )
-    else:  # pragma: no cover - guarded at creation
-        raise ValueError(f"Unknown target: {target}")
-
     stored = await db.add_thread_message(
         thread_id=thread["id"],
         role="target",
@@ -316,3 +284,52 @@ async def post_aside_message(
     if "replies" in reply:
         stored["replies"] = reply["replies"]
     return stored
+
+
+#: The server's own deadline for generating an aside reply. The deployed API gives a request 30 s in
+#: total, including any cold start, so the reply must finish well inside that — or fail with a clear
+#: message instead of the gateway's bare 504.
+ASIDE_DEADLINE_SECONDS = 24
+
+
+async def _aside_reply(
+    run: Dict[str, Any], thread: Dict[str, Any], user_message: str,
+    conversation: List[Dict[str, Any]], topic: str, history: List[Dict[str, Any]],
+    resolved_model: Optional[str],
+) -> Dict[str, Any]:
+    """The target's reply to one aside message. Pure generation: stores nothing."""
+    target = thread["target"]
+    if target == "analyst":
+        return await analysis.analyst_reply(
+            user_message=user_message,
+            conversation=conversation,
+            topic=topic,
+            thread_history=history,
+            model=resolved_model,
+        )
+    if target == "persona":
+        cast = _load_cast(run)
+        persona = next(
+            (c for c in cast if c.get("name") == thread["persona_name"]), None
+        )
+        if persona is None:
+            raise ValueError("Persona no longer present in run cast")
+        return await analysis.persona_reply(
+            user_message=user_message,
+            persona_name=persona["name"],
+            persona_text=persona.get("persona", ""),
+            conversation=conversation,
+            topic=topic,
+            thread_history=history,
+            model=resolved_model,
+        )
+    if target == "room":
+        return await analysis.room_reply(
+            user_message=user_message,
+            cast=_load_cast(run),
+            conversation=conversation,
+            topic=topic,
+            thread_history=history,
+            model=resolved_model,
+        )
+    raise ValueError(f"Unknown target: {target}")  # pragma: no cover - guarded at creation
