@@ -133,6 +133,36 @@ a baseline its design did not reproduce, so the primary criterion here is on the
 false positive (P2 "citation gate false-positive rate"). The judgement is made by the assistant, not a
 human, and is labelled so.
 
-## Result — comparison 2
+## Result — comparison 2 (2026-09-28)
 
-*(Not yet run.)*
+Runs: off `849574ce`, `c4350cbb`; on `4ad4cd8a`, `f9ee3339`. All complete, 40 turns each. Scored by
+`scripts/analyse_cite_inline.py --comparison 2`.
+
+| | off | on |
+|---|---|---|
+| in-view messages | 80 | 80 |
+| **cite rate** | **0.00** | **0.26** (21/80) |
+| attributive citations, unverified | 0, — | 23, 1 (0.04) |
+| median words per message | 152 | 138 (−9%) |
+| in-run cost, both runs | $2.37 | $2.25 |
+| `citation_integrity` rejections | 0 | 2 — one turn, rejected then flagged (2.5 per 100 turns) |
+
+- **Primary: MISSED.** On − off = 0.26, short of 0.40; the on arm is also under 0.50.
+- **Guardrails 1–3: met** — few unverified citations, messages slightly shorter, no extra cost.
+- **Pre-registered decision: recommend reverting the default to off.** That recommendation goes to the
+  operator, who set the default; nothing is changed by this result on its own.
+
+**What it shows.** Without the rule, a realistic cast cites nothing (0/80, matching the 0/816 of the
+stored runs). With it, about a quarter of messages cite — against every message on the short probe.
+Every bracketed citation was recognised (22 of 22 messages with a bracket), so the shortfall is in what
+personas write, not in detection. This definition also runs cognition (JSON utterances) and structured
+personas; the probe ran neither, and a much longer prompt is the likeliest reason one instruction
+carries less weight. That is an explanation, not a finding — it was not tested.
+
+**The gate activation — judged a false positive (assistant judgement).** A persona cited passage #0 of
+its own source; that turn it had retrieved only #10, but it had retrieved #0 on turn 7. The gate treats
+only the current turn's passages as read, so it rejected a legitimate recall, regenerated the turn, and
+flagged the second attempt. The rule is deliberate — "a chunk the speaker never saw" catches invented
+content — so it is not loosened here; the fix is for first-hand to mean "retrieved by this speaker
+earlier in the run", which needs the per-speaker retrieval history rebuilt on resume the way the
+citation ledger is. Recorded as open.
