@@ -3025,6 +3025,25 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         cost = await db.for_owner(user).thread_cost(thread_id)
         return {**thread, "messages": messages, "total_cost_usd": cost}
 
+    @app.get("/api/warm")
+    async def warm(user: str = Depends(current_user)) -> Dict[str, Any]:
+        """Load the model client on this container before a user waits on it.
+
+        The aside drawer calls this when it opens. Measured on the deployed API: the first aside on a
+        cold container took ~25 s against ~9 s for the next one, because the deferred litellm import
+        (and its Bedrock module) is paid by the first model call — inside a request the gateway cuts off
+        at 30 s. Imports only; no model call, nothing written, nothing charged.
+        """
+        started = time.monotonic()
+        from matrix_studio.lazy_litellm import litellm
+
+        getattr(litellm, "acompletion")  # resolves the deferred import
+        try:
+            import litellm.llms.bedrock.chat  # noqa: F401  the provider module the first call loads
+        except Exception:  # noqa: BLE001 — a different layout in another litellm version is not an error
+            pass
+        return {"warm": True, "seconds": round(time.monotonic() - started, 2)}
+
     @app.post("/api/threads/{thread_id}/messages", status_code=201)
     async def post_thread_message(
         thread_id: str, body: ThreadMessageModel,

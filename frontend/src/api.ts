@@ -581,6 +581,9 @@ export const api = {
     }>('/api/documents/extract', { method: 'POST', body: form, headers: {} })
   },
 
+  /** Load the model client on the API container ahead of an aside (no model call, nothing charged). */
+  warm: () => jsonFetch<{ warm: boolean; seconds: number }>('/api/warm'),
+
   listPersonaPacks: () =>
     jsonFetch<{ packs: PersonaPack[] }>('/api/persona-packs').then((r) => r.packs),
 

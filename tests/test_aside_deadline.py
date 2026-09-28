@@ -79,3 +79,10 @@ def test_a_normal_reply_still_stores_question_and_answer(client):
     assert r.status_code == 201, r.text
     roles = [m["role"] for m in client.get(f"/api/threads/{tid}").json()["messages"]]
     assert roles == ["user", "target"]
+
+
+def test_warm_loads_the_model_client_and_needs_a_caller(client):
+    r = client.get("/api/warm")
+    assert r.status_code == 200 and r.json()["warm"] is True
+    from matrix_studio.lazy_litellm import litellm
+    assert object.__getattribute__(litellm, "_module") is not None, "the deferred import did not run"

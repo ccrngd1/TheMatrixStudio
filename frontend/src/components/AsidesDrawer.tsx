@@ -39,6 +39,9 @@ export function AsidesDrawer({ runId, cast, turnCount, model, models = [], onBra
 
   const loadThreads = () =>
     api.listThreads(runId).then(setThreads).catch(() => setThreads([]))
+    // Warm the API container while the user reads and types: the first aside on a cold container
+    // otherwise pays for loading the model client inside a request the gateway cuts off at 30 s.
+    Promise.resolve().then(() => api.warm()).catch(() => {})
 
   useEffect(() => {
     loadThreads()

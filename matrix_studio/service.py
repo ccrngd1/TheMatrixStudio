@@ -289,7 +289,7 @@ async def post_aside_message(
 #: The server's own deadline for generating an aside reply. The deployed API gives a request 30 s in
 #: total, including any cold start, so the reply must finish well inside that — or fail with a clear
 #: message instead of the gateway's bare 504.
-ASIDE_DEADLINE_SECONDS = 24
+ASIDE_DEADLINE_SECONDS = 26
 
 
 async def _aside_reply(
