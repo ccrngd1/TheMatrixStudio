@@ -73,6 +73,18 @@ ACCOMMODATION = [
     r"\bi'?m not going to argue\b",
     r"\bi don'?t disagree\b",
     r"\byou'?re not wrong\b",
+    # Added after HAND-LABELLING Sonnet 5 output (docs/labels/sonnet-labels.json). The list above,
+    # validated on Haiku, matched 0 of the 10 accommodating turns in 60 Sonnet turns: Sonnet concedes
+    # by aligning with a named argument rather than with "you're right". Patched on two runs only
+    # (327167c9, 486c6dbb) and checked on the other two, held out.
+    r"\b(?!(?:it|what|there|here|who)'s\b)\w+'s right\b",
+    r"\b(?:is|was) the right (?:instinct|gate|call|question|answer)\b",
+    r"\b(?:doesn'?t|does not|don'?t|do not) conflict with (?:my|mine)\b",
+    r"\b(?:reinforces|sharpens|strengthens) (?:mine|my (?:point|bar|case))\b",
+    r"\bmakes my (?:life|job) easier\b",
+    r"\bconverges with\b",
+    r"\bbetter (?:answer|idea|option|version) than (?:the|what|mine)\b",
+    r"\b(?:exactly|precisely) (?:the|what) (?:[\w-]+ ){0,2}i care about\b",
 ]
 
 # Phrases where a speaker explicitly refuses to weigh something. This is the
@@ -98,6 +110,14 @@ DISMISSAL = [
     r"\bnot mine\b",
     r"\btheir (job|problem|call) to (own|solve|answer|make)\b",
     r"\byour call to make\b",
+    # Added after HAND-LABELLING Sonnet 5 output (docs/labels/sonnet-labels.json): on Sonnet the list
+    # above found 5 of arm B's 14 dismissals. Sonnet declines by naming the concern as someone else's
+    # FIGHT or by not caring WHETHER — idioms the Haiku runs never produced. Patched on two runs,
+    # checked on two held out.
+    r"\bmine to (?:weigh|judge|referee)\b",
+    r"\b(?:isn'?t|is not|aren'?t|are not) my (?:fight|problem|call|concern|gate|question|job)\b",
+    r"\bi'?ll leave (?:that|those|this|it|both(?: of those)?)(?: \w+)? (?:fights?|questions?|calls?) to\b",
+    r"\bi don'?t care (?:whether|if)\b",
 ]
 
 # Evidence the speaker is pointing at a real artefact rather than asserting.

@@ -307,6 +307,12 @@ dismissal criterion was set at 15 turns and should not be applied to 30-turn run
 The within-experiment comparisons above are unaffected: both arms are the same model,
 same length, same lists.
 
+**Update 2026-09-28 — the lists were re-validated on Sonnet 5 at 15 turns** (`docs/labels/sonnet-labels.json`).
+Before the patch they matched 0 of 10 hand-labelled accommodating turns and 5 of arm B's 14 dismissals, so
+the Sonnet rates in the table above are under-counts from the old lists and should not be quoted. The
+patched lists matched 12 of 13 labelled turns on held-out runs with no false positives. The turn-count
+caveat still stands: nothing here makes a 30-turn rate comparable to a 15-turn one.
+
 ## What this leaves open
 
 - **More runs on `requires-escalation`.** The one finding worth chasing.

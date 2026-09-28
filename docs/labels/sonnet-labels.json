@@ -1,0 +1,159 @@
+{
+ "what": "Hand labels, per turn, for DISMISSAL (explicitly declining to weigh a concern that belongs to someone else) and ACCOMMODATION (conceding ground to, or aligning with, another participant) on SONNET 5 output at 15 turns \u2014 the re-validation the backlog required before any Sonnet rate is compared to a Haiku one.",
+ "why": "ACCOMMODATION and DISMISSAL in scripts/score_validation.py were validated against Haiku 4.5 at 15 turns; the default model is now Sonnet 5.",
+ "labeller": "assistant, reading every full turn BEFORE running the patterns; borderline cases recorded as 'soft' and not counted in the hand rate",
+ "date": "2026-09-28",
+ "model": "Sonnet 5 (deployment default)",
+ "turns_per_run": 15,
+ "runs": {
+  "327167c9": {
+   "arm": "arm-b-structured",
+   "dismissal": {
+    "clear": [
+     3,
+     4,
+     7,
+     8,
+     9,
+     10,
+     12,
+     14
+    ],
+    "soft": [
+     11,
+     13
+    ]
+   },
+   "accommodation": {
+    "clear": [
+     11
+    ],
+    "soft": [
+     8,
+     14
+    ]
+   }
+  },
+  "bc73fe52": {
+   "arm": "arm-b-structured",
+   "dismissal": {
+    "clear": [
+     3,
+     6,
+     9,
+     10,
+     12,
+     13
+    ],
+    "soft": [
+     2,
+     7
+    ]
+   },
+   "accommodation": {
+    "clear": [
+     11,
+     12
+    ],
+    "soft": [
+     2,
+     3,
+     5,
+     13
+    ]
+   }
+  },
+  "486c6dbb": {
+   "arm": "arm-d-shipped",
+   "dismissal": {
+    "clear": [
+     8,
+     10,
+     15
+    ],
+    "soft": [
+     3,
+     6,
+     9
+    ]
+   },
+   "accommodation": {
+    "clear": [
+     10,
+     11,
+     13,
+     14
+    ],
+    "soft": [
+     2,
+     3,
+     9,
+     15
+    ]
+   }
+  },
+  "d87b1b6d": {
+   "arm": "arm-d-shipped",
+   "dismissal": {
+    "clear": [
+     10,
+     11
+    ],
+    "soft": [
+     15
+    ]
+   },
+   "accommodation": {
+    "clear": [
+     8,
+     10,
+     12
+    ],
+    "soft": [
+     9,
+     11
+    ]
+   }
+  }
+ },
+ "result": {
+  "before_patch": {
+   "arm-b-structured": {
+    "dismissal": {
+     "hand": "14/30 = 0.467",
+     "regex": "5/30 = 0.167"
+    },
+    "accommodation": {
+     "hand": "3/30 = 0.100",
+     "regex": "0/30"
+    }
+   },
+   "arm-d-shipped": {
+    "dismissal": {
+     "hand": "5/30 = 0.167",
+     "regex": "4/30 = 0.133"
+    },
+    "accommodation": {
+     "hand": "7/30 = 0.233",
+     "regex": "0/30"
+    }
+   }
+  },
+  "patch": "Patterns added to ACCOMMODATION (8) and DISMISSAL (4) in scripts/score_validation.py, written against runs 327167c9 and 486c6dbb only.",
+  "held_out": {
+   "runs": [
+    "bc73fe52",
+    "d87b1b6d"
+   ],
+   "hand_clear": 13,
+   "matched": 12,
+   "false_positives": 0,
+   "missed": [
+    "bc73fe52 t12 \u2014 \"not one I'm equipped to referee\", left unpatterned on purpose"
+   ]
+  },
+  "haiku_regression": "Every clear quote in docs/labels/dismissal-labels.json still matches DISMISSAL; neither soft quote does.",
+  "finding": "Before the patch the lists made arm B and arm D look alike on dismissal (0.167 vs 0.133) and showed NO accommodation on Sonnet at all. By hand the B-vs-D dismissal gap is large and in the same direction as on Haiku (0.467 vs 0.167 here; 0.400 vs 0.200 on Haiku), and arm D accommodates more than arm B (0.233 vs 0.100). No Sonnet rate computed with the pre-patch lists should be quoted.",
+  "scope": "15 turns, one cast, two arms, n=2 runs each. It re-validates the lists at the length they were built for; it does not make 30-turn rates comparable to 15-turn ones."
+ }
+}
