@@ -39,7 +39,7 @@ import random
 import sys
 from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -262,6 +262,35 @@ def apply_floor(pick: str, kw: Dict[str, Any]) -> Tuple[str, bool]:
 # --------------------------------------------------------------------------- #
 
 
+#: Extra attempts after a failed selection call, and the base of the jittered backoff between them.
+#: Observed 2026-09-15: six concurrent replays drew intermittent 404s from bedrock-runtime (a model
+#: endpoint error, not a throttle); with no retry each one killed its invocation and discarded every
+#: transcript already scored — 6 of 24 paid passes lost.
+SELECT_RETRIES = 2
+RETRY_BASE_SECONDS = 1.5
+
+#: Retries spent in this process, so a report can say transient errors happened rather than hide them.
+RETRIES_USED = 0
+
+
+async def _with_retry(call: Callable[[], Awaitable[Any]]) -> Any:
+    """Run `call`, retrying up to `SELECT_RETRIES` times with jittered exponential backoff.
+
+    Retries ANY exception: a provider error arrives under several litellm types (and the observed one
+    was a masked 404), and a selection call has no side effects, so re-asking cannot double-count
+    anything. The last failure is re-raised — a persistent error still stops the replay, loudly.
+    """
+    global RETRIES_USED
+    for attempt in range(SELECT_RETRIES + 1):
+        try:
+            return await call()
+        except Exception:  # noqa: BLE001
+            if attempt == SELECT_RETRIES:
+                raise
+            RETRIES_USED += 1
+            await asyncio.sleep(RETRY_BASE_SECONDS * (2 ** attempt) * (0.5 + random.random()))
+
+
 async def select(prompt: str, cast_names: List[str], model: str) -> Tuple[Optional[str], str]:
     """One selection call. Returns `(name or None, raw)`; None means unresolvable."""
     from matrix_studio.lazy_litellm import litellm
@@ -271,12 +300,12 @@ async def select(prompt: str, cast_names: List[str], model: str) -> Tuple[Option
     # output tokens on the `counts` prompt, and a reply that hits the cap returns EMPTY
     # content, so 43% of its picks were scored as unresolvable when the model had in fact
     # answered. See `docs/SELECTION-MODEL-DEFAULT.md` §6.
-    response = await litellm.acompletion(
+    response = await _with_retry(lambda: litellm.acompletion(
         model=model,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.3,
         response_format={"type": "json_object"},
-    )
+    ))
     raw = (response.choices[0].message.content or "").strip()
     parsed = extract_json_object(raw)
     # An EXPLICIT null is intervention H's verdict; a missing key is a malformed reply. The
@@ -527,11 +556,20 @@ async def main() -> int:
               f"{'closed' if args.closed_loop else 'open'} loop\n")
         header = f"{'run':<12} {'arm':<22} {'gini':>5} {'min':>4} {'max':>4} {'dyad':>5} {'cover':>6} {'self':>5} {'last2':>6} {'unres':>6} {'floor':>6} {'decl':>5} {'stop@':>6}"
         print(header); print("-" * len(header))
+        failed = []
         for run_id in args.run:
             for arm in arms:
-                s = await replay(
-                    bound, run_id, arm, args.model, args.floor, args.closed_loop,
-                )
+                # One replay failing — after its retries — must not cost the others: each row is
+                # printed as it finishes, and a failure is a row of its own, not the end of the pass.
+                try:
+                    s = await replay(
+                        bound, run_id, arm, args.model, args.floor, args.closed_loop,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    failed.append((run_id, arm))
+                    print(f"{run_id[:11]:<12} {arm:<22} FAILED after {SELECT_RETRIES} retries: "
+                          f"{type(exc).__name__}: {str(exc)[:120]}")
+                    continue
                 print(f"{run_id[:11]:<12} {arm:<22} {s['gini']:>5.2f} {s['min_turns']:>4} "
                       f"{s['max_turns']:>4} {s['dyad_chain']:>5} "
                       f"{str(s['coverage_turn']):>6} {s['self_repeats']:>5} "
@@ -539,6 +577,13 @@ async def main() -> int:
                       f"{s['declines']:>5} {str(s['declined_at']):>6}")
                 if s["never_spoke"]:
                     print(f"{'':<27}never spoke: {', '.join(s['never_spoke'])}")
+        if RETRIES_USED:
+            print(f"\n{RETRIES_USED} selection call(s) were retried after a transient error; "
+                  "the scores above include the retried answers.")
+        if failed:
+            print(f"{len(failed)} replay(s) FAILED and are not scored: "
+                  + ", ".join(f"{r[:8]}/{a}" for r, a in failed))
+            return 1
         return 0
     finally:
         await db.close()
