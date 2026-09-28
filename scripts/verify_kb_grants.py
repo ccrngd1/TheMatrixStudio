@@ -108,6 +108,29 @@ async def searchable(db: Database, run: Dict[str, Any], persona: Optional[str], 
     return await searchable_for_turn(db.for_owner(sub), run, persona, sub, groups)
 
 
+async def _cleanup(db: Database, kb_id: Optional[str], runs: List[Any]) -> None:
+    from scripts.delete_runs import delete_one  # noqa: PLC0415
+
+    print("\nCleaning up")
+    for owner, rid in runs:
+        if not rid:
+            continue
+        try:
+            run = await db.for_owner(owner).get_run(rid)
+            if run:
+                counts = await delete_one(db, {**run, "owner_sub": owner}, True)
+                print(f"  removed run {rid}: {dict(counts)}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"  ! run {rid}: {exc}")
+    if kb_id:
+        for principal in ({"user": GRANTEE}, {"group": "verify-kb-team"}):
+            try:
+                await db.for_owner(OWNER).revoke_kb(kb_id, **principal)
+                print(f"  revoked {principal}")
+            except Exception as exc:  # noqa: BLE001 — already revoked is fine
+                print(f"  - {principal}: {type(exc).__name__}")
+
+
 async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--region", default="us-east-1")
@@ -130,6 +153,9 @@ async def main() -> int:
     # merely harmless. The runs keep their timestamps because `create_run` refuses a
     # duplicate name outright, which would make a second run of this script fail.
     stamp = int(time.time())
+    # Known before the try, so the cleanup in `finally` removes exactly what was created, however far it got.
+    kb_id: Optional[str] = None
+    run_id = second_id = owner_run_id = None
     try:
         print("Seeding one shared knowledge base with one real vector …")
         kb_id = await seed_kb(db, "verify-kb-shared", "the shared passage", unit())
@@ -246,6 +272,10 @@ async def main() -> int:
         check("and not for a caller with no groups at all", no_groups == [], f"{no_groups}")
 
     finally:
+        # Remove what this invocation created — its runs and its group grant — and say so for each. The
+        # shared KB and its vector index are REUSED on purpose (see above) and stay: that is what stops
+        # an index leaking per run against the 10,000 ceiling. Loud on failure, never fatal.
+        await _cleanup(db, kb_id, [(GRANTEE, run_id), (GRANTEE, second_id), (OWNER, owner_run_id)])
         await db.close()
 
     print(f"\n{len(PASSED)}/{len(PASSED) + len(FAILED)} checks passed")

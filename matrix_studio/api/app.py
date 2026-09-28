@@ -23,6 +23,7 @@ Keys never touch the browser — the model list and all provider credentials com
 from server-side settings/env (Phase 0 .env). Full BYO-key browser UX is Phase 3.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -2035,7 +2036,8 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
                 else:
                     texts[document_id] = {}
             got = texts[document_id]
-            if got is None:
+            if got is None or ordinal < 0:
+                # ordinal < 0 is the prefetch: load the document (or learn it is out of reach), nothing more.
                 return None
             if ordinal not in got and document_id not in whole:
                 doc = await owned.find_document(document_id)
@@ -2046,7 +2048,24 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         quotes: Dict[str, List[Dict[str, Any]]] = {}
         parked: Dict[tuple, List[Dict[str, Any]]] = {}
         with_sources = 0
-        for row in await owned.get_events(run["id"]):
+        events = await owned.get_events(run["id"])
+
+        # Every document the run retrieved, read CONCURRENTLY before the walk. Read one at a time inside
+        # it, a 40-turn run took 5–15 s; the walk below then only hits the cache.
+        doc_ids = set()
+        for row in events:
+            if row["event_type"] == "document.retrieved":
+                p = row["payload"]
+                p = json.loads(p) if isinstance(p, str) else (p or {})
+                doc_ids.update(str(x.get("document_id")) for x in p.get("passages") or [] if x.get("document_id"))
+        async def _warm(doc_id: str) -> None:
+            try:
+                await chunk(doc_id, -1)
+            except Exception:  # noqa: BLE001 — a failed read is retried (and degrades) in the walk
+                texts.pop(doc_id, None)
+        await asyncio.gather(*(_warm(d) for d in doc_ids))
+
+        for row in events:
             payload = row["payload"]
             if isinstance(payload, str):
                 try:
