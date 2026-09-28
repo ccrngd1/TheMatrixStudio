@@ -60,6 +60,13 @@ async def test_the_block_lists_consultants_and_disappears_when_the_cap_is_spent(
     assert ex.consultants_block([ADA], 0) == "" and ex.consultants_block([], 3) == ""
 
 
+async def test_the_block_says_what_each_consultant_holds():
+    [e] = ex.from_config({"experts": [{"name": "Ada", "expertise": "costs", "knowledge_bases": ["k1"],
+                                       "document_texts": [{"title": "Cost observations", "text": "x"}]}]})
+    block = ex.consultants_block([e], 2)
+    assert 'holds: "Cost observations", 1 knowledge base(s)' in block
+
+
 async def test_consults_are_counted_from_the_conversation():
     conv = [{"speaker": "Dana", "content": "x"}, {"speaker": "Ada (consultant)", "content": "y", "consultant": True}]
     assert ex.consults_used(conv) == 1

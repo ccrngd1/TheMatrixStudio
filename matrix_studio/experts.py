@@ -42,6 +42,11 @@ ASK_RE = re.compile(r"^[ \t>*_-]*ASK[ \t]+([^:\n]{1,80}?)[ \t]*:[ \t]*(\S.{2,600
 class Expert:
     name: str
     expertise: str
+    #: Titles of the consultant's pasted documents, and how many knowledge bases it holds. Listed in the
+    #: persona's prompt: on the first live run, with no titles shown, all four questions asked for things
+    #: the sources did not contain, and all four answers were "That isn't in my sources."
+    sources: Tuple[str, ...] = ()
+    collections: int = 0
 
     @property
     def speaker(self) -> str:
@@ -53,7 +58,14 @@ def from_config(config: Optional[Dict[str, Any]]) -> List[Expert]:
     out: List[Expert] = []
     for raw in (config or {}).get("experts") or []:
         if isinstance(raw, dict) and str(raw.get("name") or "").strip():
-            out.append(Expert(str(raw["name"]).strip(), str(raw.get("expertise") or "").strip()))
+            titles = tuple(
+                str(d.get("title") or "").strip() for d in raw.get("document_texts") or []
+                if isinstance(d, dict) and str(d.get("title") or "").strip()
+            )
+            out.append(Expert(
+                str(raw["name"]).strip(), str(raw.get("expertise") or "").strip(),
+                sources=titles, collections=len(raw.get("knowledge_bases") or []),
+            ))
     return out
 
 
@@ -72,14 +84,20 @@ def consultants_block(experts: Sequence[Expert], remaining: int) -> str:
     """The prompt block that tells a persona who can be asked and how. Empty when nobody can be."""
     if not experts or remaining <= 0:
         return ""
-    lines = "\n".join(f"- {e.name}: {e.expertise or 'a subject-matter expert'}" for e in experts)
+    def holds(e: Expert) -> str:
+        parts = [f'"{t}"' for t in e.sources]
+        if e.collections:
+            parts.append(f"{e.collections} knowledge base(s)")
+        return f" — holds: {', '.join(parts)}" if parts else ""
+
+    lines = "\n".join(f"- {e.name}: {e.expertise or 'a subject-matter expert'}{holds(e)}" for e in experts)
     return (
         "\n\nConsultants you may ask (they are NOT in this conversation, hold no position, and answer "
         f"only from their own sources):\n{lines}\n"
         "If a specific fact from one of them would change this discussion, end your message with one "
         "line exactly like:\nASK <consultant name>: <one specific, answerable question>\n"
-        "Ask only when the answer matters; the room can ask only a limited number of questions "
-        f"({remaining} left). Do not answer on their behalf."
+        "Ask only when the answer matters and is the kind of thing their sources would contain; the "
+        f"room can ask only a limited number of questions ({remaining} left). Do not answer on their behalf."
     )
 
 

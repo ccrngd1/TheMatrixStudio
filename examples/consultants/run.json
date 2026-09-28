@@ -1,0 +1,46 @@
+{
+  "topic": "We need to decide how retrieval should be stored: SQLite FTS5, an embedded vector index, or a separate vector service. Reach a recommendation the team can act on.",
+  "name": "consultants-smoke",
+  "config": {
+    "max_messages": 12,
+    "generate_avatars": false,
+    "retrieval": {
+      "enabled": true,
+      "k": 3,
+      "max_chars": 1200
+    },
+    "experts": [
+      {
+        "name": "Rowan",
+        "expertise": "the project's recorded install constraints and measured costs",
+        "document_texts": [
+          {
+            "title": "Distribution constraints",
+            "text": "# Distribution & Packaging Constraints\n\n## Install story (decided)\n\nThe tool ships two ways and only two ways: a Python project installable with\n`pip install .`, and a Docker container image. Both must reach a working run in\nunder five minutes on a clean machine.\n\n## Storage\n\nState lives in a single embedded SQLite database at `./data/matrix_studio.db`.\nThis was chosen over Postgres and flat event-log files because it ships easily\nand needs no external service for a distributable single-node tool.\n\n## Why additional services are resisted\n\nA quickstart that requires standing up a separate service loses users before they\never see the product work. Every additional process in the install path becomes a\nsupport burden owned by whoever ships the container. Historical evidence: a prior\nproduct whose quickstart required a standalone vector database saw adoption stall\nat the install step, with support tickets almost entirely environment setup.\n\n## Acceptable dependency shapes\n\nIn descending order of preference: something already built into SQLite; a single\nfile alongside the database; a loadable extension with prebuilt wheels; a\nseparate process (last resort, opt-in only, never in the quickstart).\n"
+          },
+          {
+            "title": "Cost observations",
+            "text": "# Cost & Token Observations\n\n## Measured baseline\n\nA one-turn simulation on Claude Haiku 4.5 via Bedrock costs approximately\n$0.0006 in total. A fifteen-turn run with five personas measured at $0.053.\n\n## Cognition overhead\n\nEnabling cognition mode raises token usage by roughly 20 to 40 percent. It uses\nstructured JSON output (one call per turn rather than plain text), adds memory\nretrieval to every prompt, and triggers periodic reflection calls.\n\n## The demonstration risk\n\nStakeholders watch the cost meter live during demonstrations. The absolute number\nis rarely the problem; an unexplained jump mid-demonstration is. A feature whose\ncost was never measured is the actual hazard, not a feature that costs more.\n\n## Requirement before enabling any retrieval by default\n\nA measured net token delta on a realistic run: the embedding and retrieval\noverhead must cost less than the prompt tokens saved by not placing the whole\ndocument in context. Measured on a real document at realistic conversation\nlength, not estimated.\n"
+          }
+        ]
+      }
+    ],
+    "consult_limit": 4
+  },
+  "cast": [
+    {
+      "name": "Dana",
+      "persona": "A platform engineer who owns packaging and installation.",
+      "goals": [
+        "Keep the install story simple"
+      ]
+    },
+    {
+      "name": "Marcus",
+      "persona": "A finance-minded engineering manager who tracks running costs.",
+      "goals": [
+        "Keep the monthly bill predictable"
+      ]
+    }
+  ]
+}
