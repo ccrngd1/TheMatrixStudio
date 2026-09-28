@@ -409,3 +409,74 @@ def test_new_runs_default_to_citing_inline_but_a_stored_config_without_it_does_n
     assert RetrievalConfig.from_config({"retrieval": {"enabled": True}}).cite_inline is False
     off = RunConfigModel(retrieval={"enabled": True, "cite_inline": False}).model_dump(exclude_none=True)
     assert RetrievalConfig.from_config(off).cite_inline is False
+
+
+# --------------------------------------------------------------------------- #
+# Recalling a passage read on an earlier turn is first-hand
+# --------------------------------------------------------------------------- #
+
+
+def test_recalling_a_passage_read_on_an_earlier_turn_is_first_hand():
+    """Observed 2026-09-28: a persona cited #0 of its own source, retrieved #10 that turn and #0 on
+    turn 7. It was rejected, regenerated and flagged — a legitimate recall of something it had read."""
+    from matrix_studio.citations import CitationContext, analyse_citations
+
+    ctx = CitationContext.build(
+        own_passages=[_P("Source material — Casey", 10)],
+        earlier=[("Source material — Casey", 0)],
+    )
+    [c] = analyse_citations("As I said [Source material — Casey #0].", "Casey", ["Casey"], ctx)
+    assert c.kind == "firsthand"
+
+
+def test_a_document_read_only_on_an_earlier_turn_is_still_first_hand():
+    from matrix_studio.citations import CitationContext, analyse_citations
+
+    ctx = CitationContext.build(own_passages=[], earlier=[("Cost observations", 1)])
+    [c] = analyse_citations("It must be measured [Cost observations #1].", "Dana", ["Dana"], ctx)
+    assert c.kind == "firsthand"
+
+
+def test_a_chunk_never_retrieved_at_any_turn_is_still_unverified():
+    """The rule that catches invented content is unchanged: never seen means never seen."""
+    from matrix_studio.citations import CitationContext, analyse_citations
+
+    ctx = CitationContext.build(
+        own_passages=[_P("Source material — Casey", 10)], earlier=[("Source material — Casey", 0)],
+    )
+    [c] = analyse_citations("Per [Source material — Casey #7].", "Casey", ["Casey"], ctx)
+    assert c.kind == "unverified" and "retrieved only [0, 10]" in c.reason
+
+
+def test_another_speaker_s_earlier_reads_are_not_first_hand_for_this_one():
+    from matrix_studio.citations import CitationContext, analyse_citations
+
+    # Casey's context carries only Casey's earlier reads; Avery's are not in it.
+    ctx = CitationContext.build(own_passages=[], earlier=[])
+    cites = analyse_citations("It requires an exam [Cost observations #1].", "Casey", ["Casey", "Avery"], ctx)
+    assert all(c.kind != "firsthand" for c in cites)
+
+
+async def test_rebuild_read_before_from_the_event_log():
+    import json as _json
+    from matrix_studio.engine.simulator import rebuild_read_before
+
+    class FakeDB:
+        async def get_events(self, run_id, to_turn=None):
+            rows = [
+                {"turn": 3, "event_type": "document.retrieved", "agent_name": "Casey",
+                 "payload": _json.dumps({"speaker": "Casey", "passages": [{"title": "T", "ordinal": 0}]})},
+                {"turn": 5, "event_type": "agent.response", "agent_name": "Casey", "payload": "{}"},
+                {"turn": 9, "event_type": "document.retrieved", "agent_name": "Avery",
+                 "payload": {"speaker": "Avery", "passages": [{"title": "U", "ordinal": 2}]}},
+            ]
+            return [r for r in rows if to_turn is None or r["turn"] <= to_turn]
+
+    assert await rebuild_read_before(FakeDB(), "r1", 5) == {"Casey": {("T", 0)}}
+    assert await rebuild_read_before(FakeDB(), "r1", 9) == {"Casey": {("T", 0)}, "Avery": {("U", 2)}}
+
+    class Broken:
+        async def get_events(self, *a, **k):
+            raise RuntimeError("down")
+
+    assert await rebuild_read_before(Broken(), "r1", 5) == {}

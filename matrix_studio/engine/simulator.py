@@ -18,7 +18,7 @@ import re
 import time
 import uuid
 from collections import Counter
-from typing import Any, Awaitable, Callable, Dict, List, NamedTuple, Optional
+from typing import Any, Awaitable, Callable, Dict, List, NamedTuple, Optional, Set, Tuple
 
 # Deferred: importing litellm costs 1.7 s of the API Lambda's 1.9 s import, which
 # pushed its init phase past Lambda's hard 10 s limit. The proxy also applies
@@ -1443,6 +1443,32 @@ async def _reflect(
         return None
 
 
+async def rebuild_read_before(db: Any, run_id: str, up_to_turn: int) -> Dict[str, Set[Tuple[str, int]]]:
+    """Each speaker's retrieved ``(title, ordinal)`` pairs up to and including ``up_to_turn``, from the
+    run's own ``document.retrieved`` events. A read failure returns {}, which is the old "this turn
+    only" behaviour — a missed recall, never a wrongly accepted citation."""
+    out: Dict[str, Set[Tuple[str, int]]] = {}
+    try:
+        rows = await db.get_events(run_id, to_turn=up_to_turn)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not rebuild earlier retrievals for %s: %s", run_id, exc)
+        return out
+    for row in rows:
+        if row.get("event_type") != "document.retrieved":
+            continue
+        payload = row.get("payload")
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except json.JSONDecodeError:
+                continue
+        who = (payload or {}).get("speaker") or row.get("agent_name")
+        for p in (payload or {}).get("passages") or []:
+            if who and p.get("title") is not None and p.get("ordinal") is not None:
+                out.setdefault(who, set()).add((str(p["title"]), int(p["ordinal"])))
+    return out
+
+
 async def _run_turns(
     *,
     run_id: str,
@@ -1516,6 +1542,14 @@ async def _run_turns(
     # every legitimate second-hand credit as unverifiable. See
     # `SimSnapshot.firsthand_citations` for why that matters more under Phase 5.
     ledger: List[list] = [list(pair) for pair in (firsthand_citations or [])]
+    # What each speaker has retrieved so far, as (title, ordinal): what they have READ, so recalling
+    # it later is first-hand (`CitationContext.earlier`). Rebuilt from the run's own event log rather
+    # than carried in the snapshot — one read per call, and correct for a resumed run and for a branch,
+    # whose parent's events are copied up to the fork. Filled only when retrieval can run.
+    read_before: Dict[str, Set[Tuple[str, int]]] = (
+        await rebuild_read_before(db, run_id, start_turn)
+        if retrieval and retrieval.enabled and db is not None else {}
+    )
 
     # How many turns THIS call may generate, as distinct from `max_messages`, which is
     # the run's total budget. `None` means "as many as the run's budget allows", which
@@ -1894,10 +1928,15 @@ async def _run_turns(
             # byte-for-byte pre-4a behavior (regression-locked by test).
             citation_ctx = (
                 CitationContext.build(
-                    own_passages=passages, prior_firsthand=ledger
+                    own_passages=passages, prior_firsthand=ledger,
+                    earlier=read_before.get(speaker_name, ()),
                 )
                 if retrieval_on else None
             )
+            if retrieval_on and passages:
+                read_before.setdefault(speaker_name, set()).update(
+                    (str(p.title), int(p.ordinal)) for p in passages
+                )
 
             if settings.validation_enabled:
                 attempt = 0

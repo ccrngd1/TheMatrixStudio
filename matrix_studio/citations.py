@@ -137,12 +137,18 @@ class CitationContext:
     own: Set[str] = field(default_factory=set)
     own_ordinals: Set[Tuple[str, int]] = field(default_factory=set)
     by_speaker: Dict[str, Set[str]] = field(default_factory=dict)
+    #: What THIS speaker retrieved on EARLIER turns, as ``(title, ordinal)``. First-hand too: they read
+    #: it. Without this, recalling a passage read twenty turns ago was rejected as "never retrieved",
+    #: regenerated and flagged — observed 2026-09-28 (docs/CITE-INLINE.md, comparison 2). Kept apart
+    #: from ``own`` so a caller can still tell "in front of them now" from "read before".
+    earlier: Set[Tuple[str, int]] = field(default_factory=set)
 
     @classmethod
     def build(
         cls,
         own_passages: Iterable[Any] = (),
         prior_firsthand: Iterable[Tuple[str, str]] = (),
+        earlier: Iterable[Tuple[str, int]] = (),
     ) -> "CitationContext":
         """Build from this turn's passages and prior ``(speaker, title)`` pairs."""
         own: Set[str] = set()
@@ -161,7 +167,10 @@ class CitationContext:
         by_speaker: Dict[str, Set[str]] = {}
         for speaker, title in prior_firsthand:
             by_speaker.setdefault(str(title).lower(), set()).add(speaker)
-        return cls(own=own, own_ordinals=own_ordinals, by_speaker=by_speaker)
+        return cls(
+            own=own, own_ordinals=own_ordinals, by_speaker=by_speaker,
+            earlier={(str(t).lower(), int(o)) for t, o in earlier},
+        )
 
 
 def _window(text: str, start: int, end: int, size: int = CUE_WINDOW) -> str:
@@ -204,7 +213,10 @@ def _citation_spans(utterance: str, context: "CitationContext") -> List[Tuple[st
         raw = m.group("ordinal")
         spans.append((m.group("title").strip().lower(), int(raw) if raw is not None else None,
                       m.start(), m.end()))
-    known = sorted(set(context.own) | set(context.by_speaker), key=len, reverse=True)
+    known = sorted(
+        set(context.own) | set(context.by_speaker) | {t for t, _ in context.earlier},
+        key=len, reverse=True,
+    )
     if known:
         pattern = re.compile(
             "(" + "|".join(re.escape(t) for t in known) + r")(?:\s*#\s*(\d+))?", re.IGNORECASE,
@@ -250,14 +262,16 @@ def analyse_citations(
         )
         attributive = asserted and not disclaimed
 
-        # First-hand: the speaker actually retrieved this document this turn.
-        if title in context.own:
-            if ordinal is not None and context.own_ordinals and (title, ordinal) not in context.own_ordinals:
+        # First-hand: the speaker retrieved this document — this turn, or an earlier one.
+        earlier_titles = {t for t, _ in context.earlier}
+        if title in context.own or title in earlier_titles:
+            read = context.own_ordinals | context.earlier
+            if ordinal is not None and read and (title, ordinal) not in read:
                 out.append(Citation(
                     title, ordinal, attributive, "unverified",
                     reason=(
                         f"cites {title} #{ordinal} but retrieved only "
-                        f"{sorted(o for t, o in context.own_ordinals if t == title)}"
+                        f"{sorted(o for t, o in read if t == title)}"
                     ),
                 ))
             else:
