@@ -1058,6 +1058,14 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
     # Cast templates
     # ------------------------------------------------------------------ #
 
+    @app.get("/api/persona-packs")
+    async def list_persona_packs(user: str = Depends(current_user)) -> Dict[str, Any]:
+        """Ready-made persona archetypes (`matrix_studio/persona_packs.py`), each labelled "not yet
+        qualified". Static: the same for every caller, and nothing in them is per-user."""
+        from matrix_studio import persona_packs
+
+        return {"packs": persona_packs.list_packs(), "qualification": persona_packs.QUALIFICATION}
+
     @app.get("/api/cast-templates")
     async def list_cast_templates(user: str = Depends(current_user)) -> Dict[str, Any]:
         rows = await db.for_owner(user).list_cast_templates()

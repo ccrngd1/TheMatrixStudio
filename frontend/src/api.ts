@@ -265,6 +265,15 @@ export interface Forecast {
   budget: { cap: number; spent: number; remaining: number } | null
 }
 
+/** A ready-made persona archetype (`matrix_studio/persona_packs.py`). Labelled with its qualification. */
+export interface PersonaPack {
+  id: string
+  label: string
+  summary: string
+  qualification: string
+  persona: CreateRunBody['cast'][number]
+}
+
 /** A saved cast, as listed. */
 export interface CastTemplateSummary {
   name: string
@@ -571,6 +580,9 @@ export const api = {
       stored: boolean
     }>('/api/documents/extract', { method: 'POST', body: form, headers: {} })
   },
+
+  listPersonaPacks: () =>
+    jsonFetch<{ packs: PersonaPack[] }>('/api/persona-packs').then((r) => r.packs),
 
   // ----------------------------- Cast templates ----------------------------- //
 

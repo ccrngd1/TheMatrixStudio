@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { api, type Forecast } from '../api'
 import { CostForecast } from '../components/CostForecast'
 import { CastTemplates } from '../components/CastTemplates'
+import { PersonaLibrary } from '../components/PersonaLibrary'
 import { Hint } from '../components/Hint'
 import { buildStructured } from '../lib/convictions'
 import { parseSetup, parseSetupObject, ImportError } from '../lib/importSetup'
@@ -1217,12 +1218,24 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
       <div className="mt-5">
         <div className="mb-2 flex items-center justify-between">
           <h2 className="text-sm font-semibold text-slate-300">Cast</h2>
-          <button
-            onClick={() => setCast((p) => [...p, blankPersona()])}
-            className="rounded border border-matrix-border px-2 py-1 text-xs hover:border-matrix-accent"
-          >
-            + Add persona
-          </button>
+          <div className="flex items-center gap-2">
+            <PersonaLibrary
+              taken={cast.map((c) => c.name)}
+              onAdd={(persona) =>
+                // Replaces the form's untouched starting row rather than leaving an empty one above it.
+                setCast((prev) => {
+                  const blank = (c: DraftPersona) => !c.name.trim() && !c.persona.trim()
+                  return prev.length === 1 && blank(prev[0]) ? [persona] : [...prev, persona]
+                })
+              }
+            />
+            <button
+              onClick={() => setCast((p) => [...p, blankPersona()])}
+              className="rounded border border-matrix-border px-2 py-1 text-xs hover:border-matrix-accent"
+            >
+              + Add persona
+            </button>
+          </div>
         </div>
         <CastTemplates
           getCast={buildCast}
