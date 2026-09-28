@@ -447,6 +447,12 @@ class PersonaConfig(BaseModel):
         description="Dismissal rule wording: mandatory | retuned | blunt | off (bool accepted)",
     )
 
+    # docs/EVIDENCE-LEAN.md: a persona asking for evidence must also say what it expects the evidence to
+    # show and which way it leans today. Off until the pre-registered comparison says otherwise.
+    evidence_lean: bool = Field(
+        default=False, description="Require a best guess and a current lean with every evidence request"
+    )
+
     @field_validator("dismissal_rule", mode="before")
     @classmethod
     def _check_dismissal_rule(cls, v: Any) -> str:

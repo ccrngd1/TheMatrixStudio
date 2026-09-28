@@ -1,0 +1,60 @@
+# A best guess and a current lean with every evidence request — pre-registration
+
+**Status:** pre-registered 2026-09-28, before any run. The criteria below are not to be edited after the
+runs start; a result section is appended afterwards.
+
+## Why
+
+Owner-reported: 40-turn conversations end in "I'd want to see evidence before deciding", which leaves
+the reader with the question they started with. Stage 1 (`evidence_plan` in the summary,
+`scripts/measure_evidence_plan.py`) measured 8 stored runs of 34–47 turns: 43 evidence requests, and
+for every one the transcript named the data needed and the result that would move the persona — the
+holding rule's "what would change your mind" list makes them say it. What was missing:
+
+| column | stated |
+|---|---|
+| data, who asked, decision it unlocks, result that moves them | 1.00 |
+| **what they expect it to show (best guess)** | **0.58** |
+| cheapest way to get it | 0.44 |
+
+and a current lean could be stated in only **2 of 8** runs. A request for evidence gave the room
+nothing to act on in the meantime.
+
+## The intervention
+
+`personas.evidence_lean: true` appends one clause to the holding rule
+(`personas.EVIDENCE_LEAN_RULE`): when a persona says it needs evidence before deciding, it MUST say in
+the same message what it expects the evidence to show and which way that makes it lean today; a guess
+is not evidence, and the position still moves only when something on its list turns up. Worded as a
+required utterance because the dismissal retune found that a permission goes to zero through the
+persona renderer (`docs/PHASE6-DISMISSAL-RETUNE.md`). Off by default.
+
+## Design
+
+Two arms, identical except for `personas.evidence_lean`: the operator's six-persona renewal brief
+(private definitions, the same one the cite-inline default and Stage 1 runs used), 40 turns, deployment
+default models, structured personas and cognition on. **Three runs per arm.** Launched together.
+
+Scored by `scripts/analyse_evidence_lean.py`, written and committed with this document. The primary
+metrics are the Stage 1 scorer applied per run, unchanged: the analyst (a model, labelled as such)
+extracts the evidence plan with every unsupplied column written as `not stated`.
+
+## Criteria — decided before running
+
+- **Primary 1 — best guesses.** Pooled share of evidence requests whose best guess is stated.
+  **Success: on ≥ 0.80 and on − off ≥ 0.20.**
+- **Primary 2 — a current lean.** Runs whose conditional recommendation states a lean (does not
+  contain "not stated"). **Success: at least 2 of the 3 on runs.**
+- **Guardrail 1 — no new route to capitulation.** Mean standing dissenters in each run's automatic
+  summary: on ≥ off − 1. Pushing toward a lean is pressure toward resolution, which Phase 6 exists to
+  resist; a room that stops objecting has not been improved.
+- **Guardrail 2 — it does not take over the speech.** Median words per message within ±25% of off.
+- **Guardrail 3 — cost.** On-arm total cost ≤ 1.15 × off.
+- **Decision.** Both primaries and all guardrails met → recommend making it the default (the operator
+  decides). A primary met and a guardrail missed → keep it opt-in and say which. Both primaries
+  missed → keep it off; the wording does not work.
+
+**What n = 3 can say.** Whether the wording moves these rates a lot or not. It cannot estimate them
+precisely, and guardrail 1 is a coarse proxy for capitulation — the study's `docs/CAPITULATION-STUDY.md`
+showed the deterministic lists recall 0.41 on this brief, so a folded/settled reading of the on arm's
+position changes is worth doing by hand if the primaries pass, and is not part of the verdict.

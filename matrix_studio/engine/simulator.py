@@ -540,6 +540,7 @@ async def _generate_response(
         # and have tested nothing. Caught by
         # test_the_rule_variant_reaches_the_prompt.
         dismissal_rule=personas.dismissal_rule if personas else "mandatory",
+        evidence_lean=bool(personas.evidence_lean) if personas else False,
     )
 
     # Build context for the agent
@@ -1028,6 +1029,7 @@ async def begin_run(
                     "structured": payload,
                     "withhold_concerns": personas_cfg.withhold_concerns,
                     "dismissal_rule": personas_cfg.dismissal_rule,
+                    "evidence_lean": personas_cfg.evidence_lean,
                 },
             )
 

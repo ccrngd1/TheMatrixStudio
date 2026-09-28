@@ -249,6 +249,8 @@ class PersonaConfigModel(BaseModel):
     # Typed loosely here and validated by PersonaConfig, so an unknown name is a
     # 422 rather than a silent fallback to the default wording.
     dismissal_rule: Any = "mandatory"
+    # docs/EVIDENCE-LEAN.md. Off by default until its pre-registered comparison is scored.
+    evidence_lean: bool = False
 
 
 class ExpertModel(BaseModel):

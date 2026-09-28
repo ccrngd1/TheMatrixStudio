@@ -227,7 +227,8 @@ class StructuredPersona(BaseModel):
     # ------------------------------------------------------------------
 
     def render_private(
-        self, *, withhold_concerns: bool = True, dismissal_rule: Any = "mandatory"
+        self, *, withhold_concerns: bool = True, dismissal_rule: Any = "mandatory",
+        evidence_lean: bool = False,
     ) -> str:
         """The block appended to this persona's OWN system prompt.
 
@@ -295,7 +296,7 @@ class StructuredPersona(BaseModel):
                         "you do not have."
                     )
             parts.append("Positions you hold:\n" + "\n".join(lines))
-            parts.append(_HOLDING_RULE)
+            parts.append(_HOLDING_RULE + ("\n" + EVIDENCE_LEAN_RULE if evidence_lean else ""))
 
         # The withheld concern. Rendered LAST and with its own instruction, so
         # the "do not volunteer this" framing is the nearest context to the
@@ -369,6 +370,24 @@ _HOLDING_RULE = (
     "concede. If the room decides against it, do not agree — say plainly that you "
     "will have to take it further, and say who to.\n"
     "- Never claim to have changed your mind while restating the same position."
+)
+
+
+# Stage 2 of "conversations end in 'it depends'" (docs/EVIDENCE-LEAN.md). Measured on 8 stored runs:
+# personas already name the data they need and the result that would move them (the holding rule makes
+# them) — 100% of 43 requests — but only 58% said what they EXPECTED it to show, and 2 of 8 runs let
+# the analyst state a current lean. So a request for evidence left the room with nothing to act on
+# meanwhile. This clause asks for exactly the missing part and nothing else.
+#
+# Worded as a REQUIRED utterance, per the dismissal finding below: a permission goes to zero through
+# this renderer. And it says outright that a guess is not evidence, because the risk is a new route to
+# capitulation — a persona talking itself across the line on its own estimate.
+EVIDENCE_LEAN_RULE = (
+    "- When you say you need evidence, data or a result before you can decide, you MUST say in "
+    "the same message what you expect it to show — your best guess, as a number or a concrete "
+    "outcome — and which way that guess makes you lean TODAY: \"If <result>, I'm in; I expect "
+    "<guess>, so for now I'm <for/against>.\" This is not optional. A guess is not evidence: your "
+    "position still moves only when something on your list actually turns up."
 )
 
 
@@ -541,6 +560,7 @@ def effective_persona(
     enabled: bool = True,
     withhold_concerns: bool = True,
     dismissal_rule: Any = "mandatory",
+    evidence_lean: bool = False,
 ) -> str:
     """The persona text for a speaker's own system prompt.
 
@@ -550,7 +570,8 @@ def effective_persona(
     if not enabled or structured is None:
         return prose
     block = structured.render_private(
-        withhold_concerns=withhold_concerns, dismissal_rule=dismissal_rule
+        withhold_concerns=withhold_concerns, dismissal_rule=dismissal_rule,
+        evidence_lean=evidence_lean,
     )
     return f"{prose}{block}" if prose else block.lstrip("\n")
 
