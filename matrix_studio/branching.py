@@ -157,7 +157,8 @@ async def reconstruct_at_turn(
     for event in events:
         etype = event["event_type"]
         if etype not in (
-            "agent.response", "thread.opened", "thread.resolved", "thread.abandoned"
+            "agent.response", "thread.opened", "thread.resolved", "thread.abandoned",
+            "expert.answered",
         ):
             continue
         payload = event.get("payload")
@@ -187,6 +188,20 @@ async def reconstruct_at_turn(
             if thread is not None:
                 thread.status = "resolved" if etype == "thread.resolved" else "abandoned"
                 thread.resolved_turn = int(payload.get("resolved_turn") or event["turn"])
+            continue
+
+        # A consultant's answer is part of the conversation later speakers read, but the consultant is
+        # not a participant: it is appended exactly as the engine appended it, and never becomes an agent.
+        if etype == "expert.answered":
+            conversation.append({
+                "speaker": payload.get("speaker") or f"{payload.get('expert')} (consultant)",
+                "content": payload.get("answer", ""), "turn": event["turn"], "consultant": True,
+                "expert": payload.get("expert"), "asked_by": payload.get("asked_by"),
+                "question": payload.get("question"),
+            })
+            for cite in payload.get("citation_provenance") or []:
+                if cite.get("kind") == "firsthand" and (cite.get("title") or cite.get("label")):
+                    firsthand_citations.append([payload.get("expert"), str(cite.get("title") or cite.get("label"))])
             continue
 
         speaker = payload.get("speaker") or event.get("agent_name")

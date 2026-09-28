@@ -110,3 +110,25 @@ describe('document.retrieved folds onto the message it fed', () => {
     expect(s.feed[0]).toEqual({ turn: 1, seq: 1, speaker: 'Ada', content: 'hi' })
   })
 })
+
+describe('a consultant answer joins the feed but is not a participant', () => {
+  const ev = (seq: number, event_type: string, payload: Record<string, unknown>, agent = 'Ada') =>
+    ({ run_id: 'r1', turn: 2, seq, event_type, agent_name: agent, payload }) as never
+
+  it('adds the answer with its question and sources, and no agent', () => {
+    const s = deriveState(initialState([]), [
+      ev(1, 'document.retrieved', { speaker: 'Ada', passages: [{ chunk_id: 5, document_id: 'd', title: 'note', ordinal: 0 }] }),
+      ev(2, 'expert.answered', {
+        expert: 'Ada', speaker: 'Ada (consultant)', asked_by: 'Dana', question: 'q?',
+        answer: 'It says so [note #0].', document_refs: [5], cost_usd: 0.002,
+      }),
+    ])
+    expect(s.feed[0]).toMatchObject({
+      speaker: 'Ada (consultant)', content: 'It says so [note #0].',
+      consultant: { expert: 'Ada', askedBy: 'Dana', question: 'q?' },
+    })
+    expect(s.feed[0].sources?.[0].chunk_id).toBe(5)
+    expect(s.agents['Ada']).toBeUndefined()
+    expect(s.totalCost).toBeCloseTo(0.002)
+  })
+})

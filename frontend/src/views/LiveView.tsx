@@ -363,7 +363,8 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh }: Props) {
                   the question this answers ("who actually spoke, and when?") is one asked
                   of a transcript rather than of a conversation in progress. */}
               <ParticipationPanel
-                feed={state.feed}
+                // Consultants answer questions; they are not a share of the conversation.
+                feed={state.feed.filter((m) => !m.consultant)}
                 order={state.order}
                 onJump={(seq) => setJumpTo({ seq, nonce: Date.now() })}
               />

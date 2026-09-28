@@ -246,6 +246,18 @@ class PersonaConfigModel(BaseModel):
     dismissal_rule: Any = "mandatory"
 
 
+class ExpertModel(BaseModel):
+    """A consultant (`matrix_studio/experts.py`): outside the room, asked by the personas, answering only
+    from its own documents and knowledge bases. Never a speaker."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=60)
+    expertise: str = Field(default="", max_length=300)
+    knowledge_bases: List[str] = Field(default_factory=list)
+    document_texts: List["InlineDocumentModel"] = Field(default_factory=list)
+
+
 class RunConfigModel(BaseModel):
     # UNKNOWN KEYS ARE REFUSED, not dropped. Pydantic ignores undeclared fields by default, and for
     # a run's config that default is a silent failure: `config.model` was undeclared, so every run
@@ -294,6 +306,10 @@ class RunConfigModel(BaseModel):
     # place, and `ModelSet.from_config` warns about an unrecognised name rather than
     # dropping it silently or refusing the whole request.
     models: Optional[Dict[str, str]] = None
+    # Consultants the personas may ask (`matrix_studio/experts.py`). Omitted -> none, and the prompts
+    # are exactly what they were. `consult_limit` bounds consultations per run; each is a model call.
+    experts: List[ExpertModel] = Field(default_factory=list, max_length=5)
+    consult_limit: Optional[int] = Field(default=None, ge=0, le=20)
 
 
 class SummaryConfigModel(BaseModel):
@@ -316,6 +332,21 @@ class SuggestPersonasModel(BaseModel):
     model: Optional[str] = None
 
 
+def _check_expert_names(cast: List["PersonaModel"], config: "RunConfigModel") -> None:
+    """A consultant shares a name with nobody: retrieval and bindings resolve a speaker's sources BY NAME,
+    so a clash would hand a persona the consultant's collections, or the reverse."""
+    if config.experts and not (config.retrieval and config.retrieval.enabled):
+        # A consultant answers only from its sources, and sources are only reached through retrieval.
+        raise ValueError("consultants need retrieval on: set config.retrieval.enabled")
+    names = {c.name.strip().lower() for c in cast}
+    seen: set = set()
+    for e in config.experts:
+        key = e.name.strip().lower()
+        if key in names or key in seen:
+            raise ValueError(f"consultant name {e.name!r} is already used by a persona or another consultant")
+        seen.add(key)
+
+
 class CreateRunModel(BaseModel):
     @model_validator(mode="after")
     def _one_model(self) -> "CreateRunModel":
@@ -328,6 +359,7 @@ class CreateRunModel(BaseModel):
                 f"model is set twice and differently: top-level {self.model!r} and config.model "
                 f"{inner!r}. Set one."
             )
+        _check_expert_names(self.cast, self.config)
         return self
 
     topic: str
@@ -391,6 +423,11 @@ class CreateEnsembleModel(BaseModel):
     description: Optional[str] = None
     summary: Optional[SummaryConfigModel] = None
     cells: Optional[List[EnsembleCellModel]] = None
+
+    @model_validator(mode="after")
+    def _experts(self) -> "CreateEnsembleModel":
+        _check_expert_names(self.cast, self.config)
+        return self
 
 
 class SummaryRequestModel(BaseModel):
@@ -2055,8 +2092,12 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         kb: Optional[Dict[str, Any]] = None
         if kb_id:
             reachable = set(bound_kbs(run, None))
-            for member in _cast(run):
-                reachable.update(bound_kbs(run, str(member.get("name") or "")))
+            # Consultants' collections are reachable too: the source viewer must open what a
+            # consultant cited, exactly as it opens what a persona retrieved.
+            from matrix_studio.bindings import _config as _run_config
+            for member in _cast(run) + list(_run_config(run).get("experts") or []):
+                if isinstance(member, dict):
+                    reachable.update(bound_kbs(run, str(member.get("name") or "")))
             if kb_id not in reachable or not await owned.may_read_kb(kb_id, user, groups):
                 return None
             kb = await owned.get_knowledge_base(kb_id)

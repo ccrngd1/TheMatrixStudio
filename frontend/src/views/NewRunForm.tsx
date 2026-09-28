@@ -4,6 +4,7 @@ import { api, type Forecast } from '../api'
 import { CostForecast } from '../components/CostForecast'
 import { CastTemplates } from '../components/CastTemplates'
 import { PersonaLibrary } from '../components/PersonaLibrary'
+import { ConsultantsEditor, consultantsConfig, type DraftConsultant } from '../components/ConsultantsEditor'
 import { Hint } from '../components/Hint'
 import { buildStructured } from '../lib/convictions'
 import { parseSetup, parseSetupObject, ImportError } from '../lib/importSetup'
@@ -76,6 +77,9 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
   const [research, setResearch] = useState(false)
   // Ask personas to cite each passage they rely on, inline. On by default (docs/CITE-INLINE.md).
   const [citeInline, setCiteInline] = useState(true)
+  // Experts outside the room (matrix_studio/experts.py).
+  const [consultants, setConsultants] = useState<DraftConsultant[]>([])
+  const [consultLimit, setConsultLimit] = useState(6)
   const [researchShared, setResearchShared] = useState(true)
   const [researchPersonas, setResearchPersonas] = useState(true)
   // Sources taken per query. The one genuine dial: it decides how wide the search goes.
@@ -339,6 +343,7 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
   const anyDocuments = cast.some((c) => c.documents.some((d) => d.text.trim()))
   const anyKnowledgeBases =
     runKbs.length > 0 || cast.some((c) => c.knowledgeBases.length > 0)
+  const experts = consultantsConfig(consultants)
 
   // How many collections a research pass would build: the shared one, plus one per persona
   // who actually has a viewpoint to research. §7 asks for this on the button — research is
@@ -434,8 +439,10 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
         // be there, complete, and invisible — which is the failure this project keeps
         // finding. `authority_floor` rides along because a floor of 0 is off, and a run
         // that went looking for statutes should not then let them lose every slot.
+        // Consultants turn retrieval on too: they answer only from their sources, and the server
+        // refuses consultants with retrieval off rather than run ones that have nothing to read.
         retrieval:
-          anyDocuments || anyKnowledgeBases || research
+          anyDocuments || anyKnowledgeBases || research || experts.length > 0
             ? {
                 enabled: true,
                 ...(research ? { authority_floor: 1 } : {}),
@@ -454,6 +461,7 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
             }
           : undefined,
         ...(runKbs.length ? { knowledge_bases: runKbs } : {}),
+        ...(experts.length ? { experts, consult_limit: consultLimit } : {}),
       },
       model: model || undefined,
       name: name.trim() || undefined,
@@ -501,6 +509,12 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
         body: {
           ...built.body,
           cast: built.body.cast.map(({ document_texts: _docs, ...c }) => c),
+          config: {
+            ...built.body.config,
+            ...(built.body.config.experts
+              ? { experts: built.body.config.experts.map(({ document_texts: _d, ...e }) => e) }
+              : {}),
+          },
           ...(runType === 'ensemble' ? { cells: built.cells } : {}),
         },
       })
@@ -1534,6 +1548,13 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
           </label>
         )}
       </div>
+
+      <ConsultantsEditor
+        consultants={consultants}
+        onChange={setConsultants}
+        limit={consultLimit}
+        onLimit={setConsultLimit}
+      />
 
       {/* Research sits next to the KB pickers on purpose: it is a knowledge-base AUTHORING
           step, and the bindings it produces are the same bindings chosen above. */}

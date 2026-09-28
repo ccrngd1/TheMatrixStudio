@@ -148,6 +148,35 @@ export function applyEvent(prev: SimState, e: SimEvent): SimState {
       }
       break
     }
+    case 'expert.answered': {
+      // A consultant's answer joins the feed so it is read in place, but the consultant is not a
+      // participant: no agent, no turn count, no participation share. Its cost is counted above.
+      const expert = e.payload.expert ?? e.agent_name ?? 'consultant'
+      const key = `${e.turn}|${expert}`
+      const parked = state.retrieved[key]
+      const refs: unknown = e.payload.document_refs
+      const sources = parked
+        ? Array.isArray(refs) ? parked.filter((p) => refs.includes(p.chunk_id)) : parked
+        : undefined
+      if (parked) {
+        const { [key]: _claimed, ...rest } = state.retrieved
+        state.retrieved = rest
+      }
+      const citations = Array.isArray(e.payload.citation_provenance) ? e.payload.citation_provenance : undefined
+      state.feed = [
+        ...state.feed,
+        {
+          turn: e.turn,
+          seq: e.seq,
+          speaker: e.payload.speaker ?? `${expert} (consultant)`,
+          content: e.payload.answer ?? '',
+          consultant: { expert, askedBy: e.payload.asked_by ?? '', question: e.payload.question ?? '' },
+          ...(sources && sources.length ? { sources } : {}),
+          ...(citations && citations.length ? { citations } : {}),
+        },
+      ]
+      break
+    }
     case 'agent.response': {
       const name = e.payload.speaker ?? e.agent_name
       if (name) {

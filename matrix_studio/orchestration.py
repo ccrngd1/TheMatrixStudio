@@ -635,6 +635,9 @@ async def prepare_run(db: Database, run_id: str) -> Dict[str, Any]:
         ),
         personas_cfg=PersonaConfig.from_config(cfg),
         retrieval=RetrievalConfig.from_config(cfg),
+        # The deployed path. Missing here would ingest consultants' documents locally and never in
+        # production — the difference between the two paths that has shipped features inert before.
+        experts=cfg.get("experts") or [],
     )
     fresh = await db.get_run(run_id) or run
     return _payload(run_id, "running", fresh, 0)

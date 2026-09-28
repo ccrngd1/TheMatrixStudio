@@ -25,6 +25,8 @@ export interface SimEvent {
     | 'sim.capped'
     // Phase 5: the passages a speaker's turn retrieved, just before that speaker's message.
     | 'document.retrieved'
+    // A consultant's answer to a persona's question (matrix_studio/experts.py). Not a participant's turn.
+    | 'expert.answered'
     | 'error'
   agent_name: string | null
   payload: Record<string, any>
@@ -328,6 +330,8 @@ export interface FeedMessage {
   sources?: SourcePassage[]
   /** The citations the engine found in the text, with their provenance. */
   citations?: CitationMark[]
+  /** Set when this is a consultant's answer, not a participant's turn. */
+  consultant?: { expert: string; askedBy: string; question: string }
 }
 
 // -------- Phase 2c: cognition / introspection -------- //

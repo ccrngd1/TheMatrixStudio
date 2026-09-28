@@ -170,6 +170,16 @@ async def run_model(db: Any, run: Dict[str, Any]) -> Dict[str, Any]:
                 "message": str(p.get("message") or ""),
                 "passages": retrieved.get((e.get("turn"), speaker), []),
             })
+        elif e["event_type"] == "expert.answered":
+            # A consultant's answer is part of what the room read, so it is part of the record — marked
+            # as a consultant's, with the question it answered, so no reader mistakes it for a participant.
+            expert = str(p.get("expert") or e.get("agent_name") or "")
+            transcript.append({
+                "turn": e.get("turn"),
+                "speaker": str(p.get("speaker") or f"{expert} (consultant)"),
+                "message": f"Asked by {p.get('asked_by')}: \u201c{p.get('question')}\u201d\n\n{p.get('answer') or ''}",
+                "passages": retrieved.get((e.get("turn"), expert), []),
+            })
         elif e["event_type"] == "sim.completed" and p.get("converged"):
             converged = {"at_turn": p.get("converged_at_turn"), "reason": p.get("converged_reason")}
 

@@ -83,7 +83,8 @@ export function ConversationFeed({
           // had heard the first — which is precisely what did not happen. So a turn with
           // more than one message is drawn as a round: a divider naming it, and every
           // message after the first marked "at the same time".
-          const roundSize = feed.filter((x) => x.turn === m.turn).length
+          // Consultants' answers share their question's turn but are not part of any round.
+          const roundSize = feed.filter((x) => x.turn === m.turn && !x.consultant).length
           const opensRound = roundSize > 1 && feed[i - 1]?.turn !== m.turn
           return (
             <div key={`${m.seq}`} className="space-y-3">
@@ -97,6 +98,8 @@ export function ConversationFeed({
               <div
                 id={`turn-${m.seq}`}
                 className={`flex gap-3 rounded transition-colors ${
+                  m.consultant ? 'ml-10 border-l-2 border-amber-500/40 pl-3 ' : ''
+                }${
                   highlight === m.seq ? 'bg-matrix-accent/10 ring-1 ring-matrix-accent/60' : ''
                 }`}
               >
@@ -105,11 +108,25 @@ export function ConversationFeed({
                 <div className="min-w-0 flex-1">
                   <div className="flex items-baseline gap-2">
                     <span className="font-semibold text-slate-200">{m.speaker}</span>
-                    <span className="text-[11px] text-slate-500">turn {m.turn}</span>
+                    {m.consultant ? (
+                      <span
+                        className="rounded bg-amber-900/40 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-200"
+                        title="Not a participant: answers only from its own sources, when asked"
+                      >
+                        consultant
+                      </span>
+                    ) : (
+                      <span className="text-[11px] text-slate-500">turn {m.turn}</span>
+                    )}
                     {roundSize > 1 && !opensRound && (
                       <span className="text-[11px] text-slate-600">· at the same time</span>
                     )}
                   </div>
+                  {m.consultant && (
+                    <p className="text-[11px] italic text-slate-400">
+                      {m.consultant.askedBy} asked: “{m.consultant.question}”
+                    </p>
+                  )}
                   <MessageBody
                     m={m}
                     index={sourceIndex}

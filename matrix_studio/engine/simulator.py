@@ -26,6 +26,7 @@ from typing import Any, Awaitable, Callable, Dict, List, NamedTuple, Optional, S
 # depended on import order. See matrix_studio/lazy_litellm.py.
 from matrix_studio.lazy_litellm import litellm
 from matrix_studio.models import ModelSet, model_for
+from matrix_studio import experts as experts_mod
 
 # Type alias for the Phase 1 live-emit callback. It receives one structured
 # event dict (same shape as a persisted row) for each event the engine emits.
@@ -469,6 +470,7 @@ async def _generate_response(
     disclose_unsupported: bool = False,
     personas: Optional[PersonaConfig] = None,
     cite_inline: bool = False,
+    consultants: str = "",
 ) -> Dict[str, Any]:
     """
     Generate a response from the selected speaker.
@@ -561,6 +563,9 @@ async def _generate_response(
         documents_block = format_unsupported_block()
     else:
         documents_block = ""
+    # Consultants the persona may ask (matrix_studio/experts.py). "" when there are none, so a run
+    # without them is byte-identical to before.
+    documents_block += consultants
 
     if cognition_on:
         # Compose the JSON schema from the enabled cognition sub-features so the
@@ -933,6 +938,9 @@ async def begin_run(
     generate_avatars_flag: bool,
     personas_cfg: PersonaConfig,
     retrieval: RetrievalConfig,
+    # Consultants' definitions (config["experts"]): their pasted documents are ingested here, scoped
+    # to the consultant's name, so they exist before the first question is asked.
+    experts: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, AgentState]:
     """Everything a run does at turn 0, before any turn is generated.
 
@@ -1038,7 +1046,11 @@ async def begin_run(
     # I/O only (no LLM, no network) and a failure never fails the run — the
     # persona simply has no background material, which the prompt states honestly.
     if db and retrieval.enabled:
-        await _ingest_cast_documents(run_id, cast, db, emit, next_seq)
+        # Consultants' pasted documents are ingested exactly like a persona's, scoped to the consultant's name.
+        await _ingest_cast_documents(
+            run_id, list(cast) + [e for e in (experts or []) if isinstance(e, dict)],
+            db, emit, next_seq,
+        )
         # Phase 5f: embed the freshly ingested chunks when a vector mode is on.
         # Done once here rather than lazily per turn so the per-turn hot path
         # only pays for the query embedding.
@@ -1207,6 +1219,7 @@ async def run_simulation(
         generate_avatars_flag=generate_avatars_flag,
         personas_cfg=personas_cfg,
         retrieval=retrieval,
+        experts=config.get("experts") or [],
     )
 
     # Fresh start: no prior turns, no seed conversation.
@@ -1238,6 +1251,8 @@ async def run_simulation(
         personas=personas_cfg,
         selection=selection_cfg,
         should_stop=should_stop,
+        experts=experts_mod.from_config(config),
+        consult_limit=experts_mod.consult_limit(config),
     )
 
 
@@ -1443,6 +1458,72 @@ async def _reflect(
         return None
 
 
+async def _consult(
+    expert: Any, question: str, asked_by: str, turn: int, topic: str,
+    conversation: List[Dict[str, Any]], *, run_id: str, db: Any, retrieval: Any, model: Any,
+    settings: Any, emit: Callable[..., Awaitable[None]], next_seq: Callable[[], int],
+    ledger: List[list], names: List[str],
+) -> None:
+    """Answer one consultation and put the answer on the record (matrix_studio/experts.py).
+
+    Retrieval runs over the CONSULTANT's own sources — resolved by name, like a persona's — with the
+    question as the query. The answer is recorded as `expert.answered` and appended to the conversation
+    as the consultant's message, so later speakers read it and may credit it. Never raises.
+    """
+    passages: List[Any] = []
+    query = question
+    try:
+        passages, query, _floor, _failures = await retrieve_for_turn(
+            db, run_id, expert.name, "", [{"speaker": asked_by, "content": question}],
+            k=retrieval.k, max_chars=retrieval.max_chars, recent_turns=1,
+            term_limit=retrieval.term_limit, max_df_ratio=retrieval.max_df_ratio,
+            score_ratio=retrieval.score_ratio, mode=retrieval.mode,
+            embedding_model=retrieval.embedding_model, rrf_k=retrieval.rrf_k,
+            min_similarity=retrieval.min_similarity,
+        )
+    except Exception as exc:  # noqa: BLE001 — a failed lookup is answered as "not in my sources"
+        logger.warning("Consultant %s retrieval failed on %s: %s", expert.name, run_id, exc)
+    if passages:
+        await emit(
+            turn=turn, seq=next_seq(), event_type="document.retrieved", agent_name=expert.name,
+            payload={
+                "speaker": expert.name, "query": query, "consultant": True,
+                "passages": [
+                    {"chunk_id": p.chunk_id, "document_id": p.document_id, "title": p.title,
+                     "ordinal": p.ordinal, "score": round(p.score, 4), "chars": len(p.content),
+                     **({"authority": p.authority} if p.authority else {}),
+                     **({"origin": p.origin} if p.origin else {})}
+                    for p in passages
+                ],
+                "total_chars": sum(len(p.content) for p in passages),
+            },
+        )
+    result = await experts_mod.answer(
+        expert, question, asked_by, topic, passages,
+        model=model_for(model, "voice") or settings.litellm_model, settings=settings,
+    )
+    cites = analyse_citations(result["answer"], expert.name, names, CitationContext.build(own_passages=passages))
+    for c in cites:
+        if c.kind == "firsthand":
+            ledger.append([expert.name, c.title])
+    await emit(
+        turn=turn, seq=next_seq(), event_type="expert.answered", agent_name=expert.name,
+        payload={
+            "expert": expert.name, "speaker": expert.speaker, "asked_by": asked_by,
+            "question": question, "answer": result["answer"],
+            "document_refs": [p.chunk_id for p in passages],
+            **({"citation_provenance": provenance_payload(cites)} if cites else {}),
+            "tokens_in": result["tokens_in"], "tokens_out": result["tokens_out"],
+            "cost_usd": result["cost_usd"],
+            **({"error": result["error"]} if result["error"] else {}),
+        },
+    )
+    conversation.append({
+        "speaker": expert.speaker, "content": result["answer"], "turn": turn,
+        "consultant": True, "expert": expert.name, "asked_by": asked_by, "question": question,
+    })
+
+
 async def rebuild_read_before(db: Any, run_id: str, up_to_turn: int) -> Dict[str, Set[Tuple[str, int]]]:
     """Each speaker's retrieved ``(title, ordinal)`` pairs up to and including ``up_to_turn``, from the
     run's own ``document.retrieved`` events. A read failure returns {}, which is the old "this turn
@@ -1491,6 +1572,9 @@ async def _run_turns(
     should_stop: Optional[Callable[[], bool]] = None,
     firsthand_citations: Optional[List[List[str]]] = None,
     turn_budget: Optional[int] = None,
+    # Consultants (matrix_studio/experts.py) and the run's consultation cap. Empty = none.
+    experts: Optional[List[Any]] = None,
+    consult_limit: int = 0,
     # Intervention H's streak, carried in because ONE TURN PER CALL is what ships: a
     # counter local to this function is reset on every turn under Step Functions, which
     # made the two-declines-in-a-row guard unsatisfiable in production while passing every
@@ -1808,6 +1892,12 @@ async def _run_turns(
             # entirely (zero queries, zero prompt change) when disabled.
             retrieval_on = bool(retrieval and retrieval.enabled and db is not None)
             passages: List[Any] = []
+            # Consultants need retrieval (they answer from their sources) and the run's remaining cap.
+            consult_remaining = (consult_limit - experts_mod.consults_used(conversation)) if experts else 0
+            consult_prompt = (
+                experts_mod.consultants_block(experts, consult_remaining)
+                if (experts and retrieval_on) else ""
+            )
             if retrieval_on:
                 passages, doc_query, floor_rejected, kb_failures = await retrieve_for_turn(
                     db, run_id, speaker_name, topic, conversation,
@@ -1917,6 +2007,7 @@ async def _run_turns(
                 allow_pass=rounds_now,
                 closing=in_closing,
                 cite_inline=bool(retrieval_on and retrieval.cite_inline),
+                consultants=consult_prompt,
             )
 
             # Phase 4a: pre-emit priority-hierarchy validation gate. The
@@ -1949,7 +2040,7 @@ async def _run_turns(
                     verdict = await validate_utterance(
                         candidate,
                         speaker_name,
-                        list(agents.keys()),
+                        list(agents.keys()) + [e.name for e in (experts or [])],
                         conversation,
                         settings,
                         model=model,
@@ -2028,6 +2119,7 @@ async def _run_turns(
                         disclose_unsupported=disclose,
                         personas=personas,
                         cite_inline=bool(retrieval_on and retrieval.cite_inline),
+                        consultants=consult_prompt,
                     )
 
             # A pass never reaches the transcript. Emitted, so the run can say who was
@@ -2081,6 +2173,14 @@ async def _run_turns(
                         )
                         break
                 continue
+
+            # A consultation request is an instruction to the engine, not speech: strip it from the
+            # message before it is recorded, and answer it after the message is on the record.
+            ask = None
+            if consult_prompt and consult_remaining > 0:
+                cleaned, ask = experts_mod.parse_ask(response_data["content"], experts)
+                if ask:
+                    response_data["content"] = cleaned
 
             # Update conversation
             message = {
@@ -2143,7 +2243,7 @@ async def _run_turns(
             if citation_ctx is not None:
                 cites = analyse_citations(
                     response_data["content"], speaker_name,
-                    list(agents.keys()), citation_ctx,
+                    list(agents.keys()) + [e.name for e in (experts or [])], citation_ctx,
                 )
                 if cites:
                     response_payload["citation_provenance"] = provenance_payload(cites)
@@ -2157,6 +2257,14 @@ async def _run_turns(
                 agent_name=speaker_name,
                 payload=response_payload,
             )
+
+            if ask:
+                await _consult(
+                    ask[0], ask[1], speaker_name, turn, topic, conversation,
+                    run_id=run_id, db=db, retrieval=retrieval, model=model, settings=settings,
+                    emit=emit, next_seq=next_seq, ledger=ledger,
+                    names=list(agents.keys()) + [e.name for e in experts],
+                )
 
             # Phase 2c: form new memories AFTER the turn and append them to the
             # speaker's memory_stream (rides the per-turn snapshot). Each formed
@@ -3007,6 +3115,19 @@ async def resume_simulation(
         effective_max,
     )
 
+    # Consultants come from the run's STORED config, not from a caller parameter: three callers resume
+    # a run (branch, resume, the orchestrator's slice), and a setting each had to remember to pass is
+    # the shape of bug that has shipped features inert here before. One read per call.
+    expert_list: List[Any] = []
+    limit = 0
+    if db is not None:
+        try:
+            row = await db.get_run(run_id)
+            cfg = json.loads((row or {}).get("config_json") or "{}")
+            expert_list, limit = experts_mod.from_config(cfg), experts_mod.consult_limit(cfg)
+        except Exception as exc:  # noqa: BLE001 — no consultants rather than a failed turn
+            logger.warning("Could not read consultants for %s: %s", run_id, exc)
+
     return await _run_turns(
         run_id=run_id,
         topic=topic,
@@ -3028,5 +3149,7 @@ async def resume_simulation(
         personas=personas,
         selection=selection,
         decline_streak=decline_streak,
+        experts=expert_list,
+        consult_limit=limit,
         should_stop=should_stop,
     )

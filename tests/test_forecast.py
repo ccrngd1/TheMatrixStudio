@@ -141,6 +141,14 @@ class TestForecastRun:
         f = fc.forecast_run(_req(), _history(_row(), _row(), _row()), **KW)
         assert "conversation" not in f["thin"]
 
+    def test_consultations_are_unpriced_until_a_run_has_consulted(self):
+        req = _req(experts=[{"name": "Ada"}], consult_limit=3)
+        part = _part(fc.forecast_run(req, _history(_row()), **KW), "consultations")
+        assert part["measured"] is False and "up to 3" in part["basis"]
+        h = _history(_row()); h.consult_costs = [0.004, 0.01]
+        part = _part(fc.forecast_run(req, h, **KW), "consultations")
+        assert (part["low"], part["high"]) == (0.0, 0.01)
+
     def test_no_moderation_part_when_nobody_is_selected(self):
         f = fc.forecast_run(_req(max_messages=8, selection={"method": "simultaneous"}), _history(_row()), **KW)
         assert all(p["part"] != "speaker selection and checks" for p in f["parts"])

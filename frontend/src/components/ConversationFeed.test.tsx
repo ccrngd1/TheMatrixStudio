@@ -137,3 +137,17 @@ describe('ConversationFeed quotes', () => {
     expect(screen.getAllByRole('button', { name: 'Iowa Admin Code Ch. 811 #4' }).length).toBeGreaterThan(0)
   })
 })
+
+describe('ConversationFeed consultants', () => {
+  it('marks a consultant answer and shows what was asked', () => {
+    const msg: FeedMessage[] = [
+      { turn: 1, seq: 2, speaker: 'Dana', content: 'I need the number.' },
+      { turn: 1, seq: 3, speaker: 'Ada (consultant)', content: 'It is $0.02.', consultant: { expert: 'Ada', askedBy: 'Dana', question: 'What does it cost?' } },
+    ]
+    render(<ConversationFeed feed={msg} agents={agents} activeSpeaker={null} thinking={false} />)
+    expect(screen.getByText('consultant')).toBeInTheDocument()
+    expect(screen.getByText(/Dana asked: “What does it cost\?”/)).toBeInTheDocument()
+    // Two messages on one turn, but the consultant is not a round.
+    expect(screen.queryByText(/spoke at once/)).not.toBeInTheDocument()
+  })
+})

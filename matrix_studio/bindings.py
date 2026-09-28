@@ -85,8 +85,10 @@ def bound_kbs(run: Dict[str, Any], persona_name: Optional[str] = None) -> List[s
     kbs = _clean(_config(run).get("knowledge_bases"))
     if persona_name is None:
         return kbs
-    for member in _cast(run):
-        if str(member.get("name") or "") != persona_name:
+    # A consultant resolves exactly like a persona: its own collections, plus the run's. Retrieval asks by
+    # name, so this is the one place that has to know consultants exist (`matrix_studio/experts.py`).
+    for member in _cast(run) + list(_config(run).get("experts") or []):
+        if not isinstance(member, dict) or str(member.get("name") or "") != persona_name:
             continue
         kbs = kbs + [k for k in _clean(member.get("knowledge_bases")) if k not in kbs]
         break
@@ -163,7 +165,7 @@ def declared_kbs(request: Dict[str, Any]) -> List[str]:
     config = request.get("config") or {}
     out = _clean(config.get("knowledge_bases"))
     seen = set(out)
-    for member in request.get("cast") or []:
+    for member in list(request.get("cast") or []) + list(config.get("experts") or []):
         if not isinstance(member, dict):
             continue
         for kb_id in _clean(member.get("knowledge_bases")):

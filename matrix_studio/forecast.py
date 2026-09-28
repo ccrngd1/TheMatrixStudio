@@ -107,6 +107,8 @@ class History:
     research_per_collection: List[float] = field(default_factory=list)
     #: Ensemble report cost per member it covered.
     report_per_member: List[float] = field(default_factory=list)
+    #: A run's total consultation spend (`expert.answered`), from runs that consulted anyone.
+    consult_costs: List[float] = field(default_factory=list)
 
 
 def _json(value: Any, default: Any) -> Any:
@@ -181,6 +183,10 @@ async def load_history(store: Any, default_max: int) -> History:
     for i in range(0, len(runs), 16):
         costs += await asyncio.gather(*(summary_cost(r["id"]) for r in runs[i:i + 16]))
     for run, cost in zip(runs, costs):
+        # A run's total consultation spend (the stats hold the kind's sum, not a count).
+        consult_sum = float((run.get("cost_by_kind") or {}).get("expert.answered") or 0.0)
+        if consult_sum > 0:
+            history.consult_costs.append(consult_sum)
         obs = observe(run, cost, default_max)
         if obs:
             history.runs.append(obs)
@@ -352,6 +358,28 @@ def forecast_run(
             parts.append(_part(
                 "speaker selection and checks", None, None,
                 "not yet measured — no run since 2026-09-26 has recorded it",
+            ))
+
+    experts = [e for e in (config.get("experts") or []) if isinstance(e, dict)]
+    if experts:
+        from matrix_studio.experts import consult_limit
+
+        limit = consult_limit(config)
+        seen = [o for o in history.consult_costs if o > 0]
+        if seen and limit:
+            # Per RUN, not per consultation: the stats hold the kind's total, not a count. Low is 0 —
+            # personas may ask nobody.
+            r = _spread(seen)
+            parts.append(_part(
+                "consultations", 0.0, r["high"],
+                f"up to {limit} consultation(s); past runs that consulted spent "
+                f"${r['low']:.4f}–{r['high']:.4f} on them ({len(seen)} run(s))",
+                typical=r["typical"], based_on=len(seen),
+            ))
+        else:
+            parts.append(_part(
+                "consultations", None, None,
+                f"up to {limit} consultation(s); not yet measured — no run has consulted anyone",
             ))
 
     if config.get("generate_avatars", avatars_default):
