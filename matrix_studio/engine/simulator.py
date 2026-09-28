@@ -449,6 +449,29 @@ _CLOSING = (
 )
 
 
+#: Quote pairs a model wraps a whole reply in: straight, curly, and mixed (it opens curly, closes straight).
+_QUOTE_OPEN = "\"\u201c"
+_QUOTE_CLOSE = "\"\u201d"
+
+
+def unwrap_quoted(content: str) -> str:
+    """Remove a quote pair that encloses the WHOLE message, and nothing else.
+
+    Sonnet occasionally returns a turn as a quoted string, which renders as a transcription artefact.
+    Measured on 2,365 stored messages: 4 were wrapped like that — and 4 more OPEN with a quote that is
+    correct, a persona quoting a phrase ('"Continuation, not creation" is a nice phrase but…'). So only
+    a wrapper is removed: first and last characters a quote pair, and no quote mark between them, which
+    is what tells a wrapper from a message that happens to start or end with a quotation.
+    """
+    text = (content or "").strip()
+    if len(text) < 3 or text[0] not in _QUOTE_OPEN or text[-1] not in _QUOTE_CLOSE:
+        return content
+    inner = text[1:-1]
+    if any(q in inner for q in _QUOTE_OPEN + _QUOTE_CLOSE):
+        return content
+    return inner.strip()
+
+
 async def _generate_response(
     speaker_name: str,
     agent: AgentState,
@@ -882,7 +905,7 @@ Respond naturally as this character. Keep responses conversational (2-4 sentence
             cost_usd = response._hidden_params["response_cost"]
 
         result: Dict[str, Any] = {
-            "content": content,
+            "content": unwrap_quoted(content),
             "tokens_in": tokens_in,
             "tokens_out": tokens_out,
             "cost_usd": cost_usd,

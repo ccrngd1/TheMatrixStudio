@@ -480,3 +480,25 @@ async def test_rebuild_read_before_from_the_event_log():
             raise RuntimeError("down")
 
     assert await rebuild_read_before(Broken(), "r1", 5) == {}
+
+
+# --------------------------------------------------------------------------- #
+# A reply wrapped in quotation marks
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ('"Casey just made the whole case."', "Casey just made the whole case."),
+    ("“Curly wrapped reply.”", "Curly wrapped reply."),
+    ('“Mixed wrapper."', "Mixed wrapper."),
+    # A persona quoting a phrase is speech, not a wrapper: left exactly as written.
+    ('"Continuation, not creation" is a nice phrase but it does not answer the question.',
+     '"Continuation, not creation" is a nice phrase but it does not answer the question.'),
+    ('He said "no" and I said "yes"', 'He said "no" and I said "yes"'),
+    ('"Two" quoted "phrases"', '"Two" quoted "phrases"'),
+    ("Plain reply.", "Plain reply."),
+])
+def test_only_a_whole_message_wrapper_is_removed(raw, expected):
+    from matrix_studio.engine.simulator import unwrap_quoted
+
+    assert unwrap_quoted(raw) == expected
