@@ -210,6 +210,16 @@ export interface SummaryPayload {
   dissenters?: { speaker: string; position: string }[]
   key_ideas?: string[]
   open_questions?: string[]
+  // One row per evidence request. A column the conversation never supplied is "not stated".
+  evidence_plan?: {
+    data: string
+    asked_by: string
+    decision: string
+    moves_them: string
+    best_guess: string
+    cheapest_way: string
+  }[]
+  conditional_recommendation?: string
   overview?: string
 }
 

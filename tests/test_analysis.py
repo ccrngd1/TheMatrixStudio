@@ -245,3 +245,34 @@ async def test_generate_summary_default_instructions_persist_as_none(monkeypatch
     assert analysis.DEFAULT_SUMMARY_INSTRUCTIONS in captured["system"]
     # None (NULL) signals "the default framing was used" so the UI falls back.
     assert result["instructions"] is None
+
+
+# --------------------------------------------------------------------------- #
+# The evidence plan (BACKLOG "Conversations end in 'it depends'", Stage 1)
+# --------------------------------------------------------------------------- #
+
+
+def test_the_prompt_asks_for_an_evidence_plan_and_forbids_filling_gaps():
+    prompt = analysis._summary_system_prompt(list(analysis.DEFAULT_SUMMARY_FIELDS), focus=None)
+    assert '"evidence_plan"' in prompt and '"conditional_recommendation"' in prompt
+    assert f'exactly "{analysis.NOT_STATED}"' in prompt and "never fill a gap yourself" in prompt
+
+
+def test_a_missing_evidence_column_reads_not_stated_and_a_row_without_data_is_dropped():
+    out = analysis._coerce_summary({
+        "evidence_plan": [
+            {"data": "pilot churn", "asked_by": "Dana", "moves_them": "under 5% and I'm in", "best_guess": ""},
+            {"asked_by": "Marcus"},
+            "not a row",
+        ],
+        "conditional_recommendation": "If churn is under 5%, launch; if not, hold.",
+    }, ["evidence_plan", "conditional_recommendation"])
+    [row] = out["evidence_plan"]
+    assert row["data"] == "pilot churn" and row["moves_them"] == "under 5% and I'm in"
+    assert row["best_guess"] == row["decision"] == row["cheapest_way"] == analysis.NOT_STATED
+    assert out["conditional_recommendation"].startswith("If churn")
+
+
+def test_an_empty_summary_has_an_empty_plan():
+    empty = analysis._empty_summary(list(analysis.DEFAULT_SUMMARY_FIELDS))
+    assert empty["evidence_plan"] == [] and empty["conditional_recommendation"] == ""

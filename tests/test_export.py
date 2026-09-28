@@ -308,3 +308,15 @@ def test_single_run_conclusions_are_separated_from_recurring_ones():
     assert rec < one
     assert out.index("exclude net-new") < one < out.index("file Ohio certification today")
     assert "rare, not findings" in out
+
+
+@pytest.mark.parametrize("fmt", ["md", "html"])
+def test_the_report_carries_the_full_evidence_plan(fmt):
+    row = {"data": "pilot churn", "asked_by": "Dana", "decision": "launch or hold",
+           "moves_them": "under 5%", "best_guess": "not stated", "cheapest_way": "a 2-week pilot"}
+    m = _run_model(summary={"overview": "o", "evidence_plan": [row],
+                            "conditional_recommendation": "If under 5%, launch."})
+    out = ex.render(m, fmt)
+    assert "What would settle it" in out and "If under 5%, launch." in out
+    # The report has every column, including the two the one-page brief leaves out.
+    assert "launch or hold" in out and "a 2-week pilot" in out and "not stated" in out

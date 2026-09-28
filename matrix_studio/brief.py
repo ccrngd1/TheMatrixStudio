@@ -40,6 +40,17 @@ MAX_CONCLUSIONS = 5
 MAX_AGREED = 4
 MAX_OPEN = 4
 MAX_DISSENT = 3
+#: Evidence requests shown, one clipped line each. The full table (with what each unlocks and the
+#: cheapest way to get it) is in the report; here it has to share one page.
+MAX_EVIDENCE = 3
+MAX_EVIDENCE_CHARS = 150
+#: Open questions and objections shown when there IS an evidence plan. The plan is the specific form
+#: of what is open — which data, what result, what to do meanwhile — and restates much of what the
+#: objections turn on, so the vaguer lists give up space to it. Measured: without this, a brief at
+#: every cap grew from 629 to 730 words, past one printed page.
+MAX_OPEN_WITH_PLAN = 1
+MAX_DISSENT_WITH_PLAN = 2
+MAX_CONDITIONAL_CHARS = 260
 MAX_QUESTION_CHARS = 320
 #: Per-item and bottom-line ceilings. Measured: an Opus brainstorm's brief was 812 words with
 #: whole-paragraph dissents — past one page. A clipped item ends in "…", so it never reads as
@@ -48,6 +59,9 @@ MAX_ITEM_CHARS = 170
 MAX_BOTTOM_LINE_CHARS = 600
 
 NOT_MEASURED = "not yet measured"
+
+#: `analysis.NOT_STATED`, repeated rather than imported so the brief does not pull in the model layer.
+NOT_STATED = "not stated"
 
 #: The brief's own analysis label. The export's says "the transcript(s) above", which a brief does
 #: not have, so it would point a reader at text that is not there.
@@ -94,10 +108,18 @@ def run_brief(model: Dict[str, Any]) -> Dict[str, Any]:
     """The brief for ONE conversation, from `export.run_model`'s output."""
     s = model.get("summary") or {}
     agreed, agreed_more = _cap([_clip(_text(x)) for x in s.get("consensus") or []], MAX_AGREED)
-    open_, open_more = _cap([_clip(_text(x)) for x in s.get("open_questions") or []], MAX_OPEN)
+    plan = [row for row in s.get("evidence_plan") or [] if isinstance(row, dict) and row.get("data")]
+    open_, open_more = _cap([_clip(_text(x)) for x in s.get("open_questions") or []],
+                            MAX_OPEN_WITH_PLAN if plan else MAX_OPEN)
     dissent, dissent_more = _cap(
         [_clip(f"{d.get('speaker')}: {d.get('position')}") for d in s.get("dissenters") or []
-         if isinstance(d, dict)], MAX_DISSENT)
+         if isinstance(d, dict)], MAX_DISSENT_WITH_PLAN if plan else MAX_DISSENT)
+    evidence, evidence_more = _cap([
+        _clip(f"{row.get('data')} ({row.get('asked_by') or NOT_STATED}) — moves them: "
+              f"{row.get('moves_them') or NOT_STATED}; best guess: {row.get('best_guess') or NOT_STATED}",
+              MAX_EVIDENCE_CHARS)
+        for row in plan
+    ], MAX_EVIDENCE)
     converged = model.get("converged")
     return {
         "kind": "run",
@@ -109,6 +131,10 @@ def run_brief(model: Dict[str, Any]) -> Dict[str, Any]:
         "agreed": agreed, "agreed_more": agreed_more,
         "open": open_, "open_more": open_more,
         "dissent": dissent, "dissent_more": dissent_more,
+        # What would settle it, and what to do until then. Built from what the cast said; a column
+        # they never supplied reads "not stated", which is the gap worth seeing.
+        "evidence": evidence, "evidence_more": evidence_more,
+        "conditional": _clip(s.get("conditional_recommendation"), MAX_CONDITIONAL_CHARS),
         # Never a percentage. One conversation is one draw.
         "confidence": (
             f"{NOT_MEASURED} — this is one conversation, and one run cannot say which of its "
@@ -225,6 +251,12 @@ def render_markdown(b: Dict[str, Any]) -> str:
         out += _more(b.get("open_more", 0)) + [""]
     if b.get("dissent"):
         out += ["## Standing objections", ""] + [f"- {x}" for x in b["dissent"]] + _more(b["dissent_more"]) + [""]
+    if b.get("conditional") or b.get("evidence"):
+        out += ["## What would settle it", ""]
+        if b.get("conditional"):
+            out += [f"**Meanwhile:** {b['conditional']}", ""]
+        if b.get("evidence"):
+            out += [f"- {x}" for x in b["evidence"]] + _more(b.get("evidence_more", 0)) + [""]
 
     out += ["## How much to trust this", "", f"**Confidence:** {b.get('confidence', NOT_MEASURED)}", ""]
     out += [f"<sub>{' · '.join(b['facts'])} · `{b['id']}` · created {ex._when(b.get('created_at'))} · "
@@ -306,6 +338,12 @@ def render_html(b: Dict[str, Any]) -> str:
         body += ["<h2>Still open</h2>", _ul(items, b.get("open_more", 0))]
     if b.get("dissent"):
         body += ["<h2>Standing objections</h2>", _ul(b["dissent"], b.get("dissent_more", 0))]
+    if b.get("conditional") or b.get("evidence"):
+        body.append("<h2>What would settle it</h2>")
+        if b.get("conditional"):
+            body.append(f"<p><strong>Meanwhile:</strong> {e(b['conditional'])}</p>")
+        if b.get("evidence"):
+            body.append(_ul(b["evidence"], b.get("evidence_more", 0)))
 
     body += ["<h2>How much to trust this</h2>",
              f"<div class=\"trust\"><strong>Confidence:</strong> {e(b.get('confidence', NOT_MEASURED))}</div>",

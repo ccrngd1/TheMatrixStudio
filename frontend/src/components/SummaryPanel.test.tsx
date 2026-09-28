@@ -38,6 +38,41 @@ const imported: StoredSummary = {
 }
 
 describe('SummaryPanel', () => {
+  it('shows what would settle it, with unstated columns marked as gaps', () => {
+    const withPlan: StoredSummary = {
+      ...generated,
+      payload: {
+        ...generated.payload,
+        conditional_recommendation: 'If churn is under 5%, launch; if not, hold. Lean hold.',
+        evidence_plan: [
+          {
+            data: 'Pilot churn',
+            asked_by: 'Dana',
+            decision: 'launch or hold',
+            moves_them: 'under 5%',
+            best_guess: 'not stated',
+            cheapest_way: 'a two-week pilot',
+          },
+        ],
+      },
+    }
+    render(
+      <SummaryPanel
+        runId="r1"
+        generated={withPlan}
+        imported={null}
+        defaultInstructions={DEFAULT_INSTRUCTIONS}
+        canGenerate
+        onUpdated={() => {}}
+      />,
+    )
+    expect(screen.getByText('What would settle it')).toBeInTheDocument()
+    expect(screen.getByText(/Lean hold/)).toBeInTheDocument()
+    expect(screen.getByText('Pilot churn')).toBeInTheDocument()
+    expect(screen.getByText('a two-week pilot')).toBeInTheDocument()
+    expect(screen.getByText('not stated')).toHaveClass('italic')
+  })
+
   it('renders structured fields and labels analysis as model-generated', () => {
     render(
       <SummaryPanel

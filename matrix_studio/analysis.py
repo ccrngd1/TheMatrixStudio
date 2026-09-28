@@ -43,8 +43,18 @@ DEFAULT_SUMMARY_FIELDS = [
     "dissenters",
     "key_ideas",
     "open_questions",
+    "evidence_plan",
+    "conditional_recommendation",
     "overview",
 ]
+
+#: What the analyst writes in an evidence-plan column the conversation never supplied. Fixed wording,
+#: because counting it is the measurement: how often a persona asks for evidence without saying what
+#: result would move them, or what they expect it to show (BACKLOG "Conversations end in 'it depends'").
+NOT_STATED = "not stated"
+
+#: The evidence-plan columns, in the order the brief shows them.
+EVIDENCE_PLAN_KEYS = ("data", "asked_by", "decision", "moves_them", "best_guess", "cheapest_way")
 
 # Max personas contacted for a room aside, to keep a single aside turn bounded
 # and its cost predictable (asides cost money — see the honesty gate).
@@ -163,6 +173,20 @@ def _summary_system_prompt(
         "dissenters": '"dissenters": [ {"speaker": "name", "position": "what they objected to"}, ... ]',
         "key_ideas": '"key_ideas": [ "interesting idea / fact / novel framing surfaced", ... ]',
         "open_questions": '"open_questions": [ "unresolved thread worth pursuing", ... ]',
+        "evidence_plan": (
+            '"evidence_plan": [ {"data": "the specific data or evidence someone said they needed", '
+            '"asked_by": "who asked for it", "decision": "the decision it would unlock", '
+            '"moves_them": "the result that would move them, each way", '
+            '"best_guess": "what anyone in the conversation expected it to show", '
+            '"cheapest_way": "the cheapest way to get it that was mentioned"}, ... ]  '
+            f'(one row per distinct evidence request; any value the conversation did not supply is '
+            f'exactly "{NOT_STATED}" — never fill a gap yourself)'
+        ),
+        "conditional_recommendation": (
+            '"conditional_recommendation": "If <the result>, do <A>; if not, do <B>. The cast\'s best '
+            'guess is <guess>, so lean <A or B>." — built only from the evidence plan; where no '
+            f'best guess was stated say the lean is {NOT_STATED}; empty string if nobody asked for evidence'
+        ),
         "overview": '"overview": "a 2-4 sentence plain-English overview"',
     }
     requested = [field_specs[f] for f in fields if f in field_specs]
@@ -192,7 +216,7 @@ def _summary_system_prompt(
 def _empty_summary(fields: List[str]) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
     for f in fields:
-        out[f] = "" if f == "overview" else []
+        out[f] = "" if f in ("overview", "conditional_recommendation") else []
     return out
 
 
@@ -203,8 +227,14 @@ def _coerce_summary(obj: Dict[str, Any], fields: List[str]) -> Dict[str, Any]:
         if f not in obj:
             continue
         val = obj[f]
-        if f == "overview":
+        if f in ("overview", "conditional_recommendation"):
             out[f] = val if isinstance(val, str) else json.dumps(val)
+        elif f == "evidence_plan":
+            out[f] = [
+                {k: (str(it.get(k) or "").strip() or NOT_STATED) for k in EVIDENCE_PLAN_KEYS}
+                for it in (val if isinstance(val, list) else [])
+                if isinstance(it, dict) and str(it.get("data") or "").strip()
+            ]
         elif f == "dissenters":
             items = []
             if isinstance(val, list):

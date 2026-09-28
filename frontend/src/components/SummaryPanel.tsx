@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 import { api } from '../api'
 import type { StoredSummary } from '../types'
 
@@ -202,6 +202,35 @@ export function SummaryPanel({
               <List items={p.open_questions} />
             </Block>
           )}
+          {(p.conditional_recommendation || (p.evidence_plan?.length ?? 0) > 0) && (
+            <Block title="What would settle it">
+              {p.conditional_recommendation && (
+                <p className="mb-2 text-sm text-slate-300">
+                  <span className="font-semibold text-slate-200">Meanwhile: </span>
+                  {p.conditional_recommendation}
+                </p>
+              )}
+              {(p.evidence_plan ?? []).length > 0 && (
+                <ul className="space-y-2 text-sm text-slate-300">
+                  {(p.evidence_plan ?? []).map((row, i) => (
+                    <li key={i} className="rounded border border-matrix-border p-2">
+                      <div className="font-semibold text-slate-200">{row.data}</div>
+                      <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-2 text-xs">
+                        {EVIDENCE_LABELS.map(([key, label]) => (
+                          <Fragment key={key}>
+                            <dt className="text-slate-500">{label}</dt>
+                            <dd className={row[key] === NOT_STATED ? 'italic text-amber-400/80' : ''}>
+                              {row[key]}
+                            </dd>
+                          </Fragment>
+                        ))}
+                      </dl>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Block>
+          )}
           {generated && (
             <p className="text-[11px] text-slate-500">
               Analysis cost ${generated.cost_usd.toFixed(4)} ·{' '}
@@ -214,6 +243,16 @@ export function SummaryPanel({
     </section>
   )
 }
+
+// Mirrors `analysis.NOT_STATED`: a column the conversation never supplied, shown as the gap it is.
+const NOT_STATED = 'not stated'
+const EVIDENCE_LABELS = [
+  ['asked_by', 'asked by'],
+  ['decision', 'unlocks'],
+  ['moves_them', 'moves them'],
+  ['best_guess', 'best guess'],
+  ['cheapest_way', 'cheapest way'],
+] as const
 
 function Block({ title, children }: { title: string; children: React.ReactNode }) {
   return (

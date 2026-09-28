@@ -355,6 +355,14 @@ def _md_cell(text: Any) -> str:
     return str(text if text is not None else "").replace("|", "\\|").replace("\n", " ").strip()
 
 
+#: The summary's evidence-plan columns (`analysis.EVIDENCE_PLAN_KEYS`) and their headings.
+EVIDENCE_COLUMNS = (
+    ("data", "data needed"), ("asked_by", "asked by"), ("decision", "unlocks"),
+    ("moves_them", "result that moves them"), ("best_guess", "best guess"),
+    ("cheapest_way", "cheapest way"),
+)
+
+
 def _md_summary(summary: Dict[str, Any]) -> List[str]:
     out = ["## Summary", "", f"> *{ANALYSIS_LABEL}*", ""]
     if summary.get("overview"):
@@ -369,6 +377,16 @@ def _md_summary(summary: Dict[str, Any]) -> List[str]:
         out += ["### Dissent", ""]
         out += [f"- **{d.get('speaker')}**: {d.get('position')}" for d in dissent if isinstance(d, dict)]
         out.append("")
+    plan = [r for r in summary.get("evidence_plan") or [] if isinstance(r, dict)]
+    if summary.get("conditional_recommendation") or plan:
+        out += ["### What would settle it", ""]
+        if summary.get("conditional_recommendation"):
+            out += [f"**Meanwhile:** {summary['conditional_recommendation']}", ""]
+        if plan:
+            out += ["| " + " | ".join(h for _k, h in EVIDENCE_COLUMNS) + " |",
+                    "|" + "---|" * len(EVIDENCE_COLUMNS)]
+            out += ["| " + " | ".join(_md_cell(r.get(k)) for k, _h in EVIDENCE_COLUMNS) + " |" for r in plan]
+            out.append("")
     return out
 
 
@@ -607,6 +625,15 @@ def render_html(model: Dict[str, Any]) -> str:
             b.append("<h3>Dissent</h3><ul>" + "".join(
                 f"<li><strong>{_e(d.get('speaker'))}</strong>: {_e(d.get('position'))}</li>" for d in dissent
             ) + "</ul>")
+        plan = [r for r in s.get("evidence_plan") or [] if isinstance(r, dict)]
+        if s.get("conditional_recommendation") or plan:
+            b.append("<h3>What would settle it</h3>")
+            if s.get("conditional_recommendation"):
+                b.append(f"<p><strong>Meanwhile:</strong> {_e(s['conditional_recommendation'])}</p>")
+            if plan:
+                b.append("<table><tr>" + "".join(f"<th>{_e(h)}</th>" for _k, h in EVIDENCE_COLUMNS) + "</tr>"
+                         + "".join("<tr>" + "".join(f"<td>{_e(r.get(k))}</td>" for k, _h in EVIDENCE_COLUMNS)
+                                   + "</tr>" for r in plan) + "</table>")
         b.append("</div>")
     return _doc(m["name"], b)
 

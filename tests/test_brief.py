@@ -160,3 +160,48 @@ def test_structured_key_ideas_and_consensus_items_render_as_text():
 def test_filenames_say_it_is_a_brief():
     assert br.filename(br.run_brief(_run_model()), "md") == "renewal-take-2-run-brief.md"
     assert br.filename(br.ensemble_brief(_ensemble_model()), "html") == "renewal-cells-ensemble-brief.html"
+
+
+# --------------------------------------------------------------------------- #
+# What would settle it: the evidence plan and the conditional recommendation
+# --------------------------------------------------------------------------- #
+
+_PLAN_ROW = {"data": "pilot churn", "asked_by": "Dana", "decision": "launch or hold",
+             "moves_them": "under 5% and I'm in", "best_guess": "about 7%", "cheapest_way": "a 2-week pilot"}
+
+
+@pytest.mark.parametrize("fmt", ["md", "html"])
+def test_the_brief_says_what_would_settle_it(fmt):
+    m = _run_model(summary={"overview": "o", "consensus": [], "open_questions": [], "key_ideas": [],
+                            "dissenters": [], "evidence_plan": [_PLAN_ROW],
+                            "conditional_recommendation": "If churn is under 5%, launch; if not, hold. Lean hold."})
+    out = br.render(br.run_brief(m), fmt)
+    assert "What would settle it" in out and "Lean hold" in out
+    assert "pilot churn" in out and "about 7%" in out and "under 5%" in out
+
+
+def test_no_plan_means_no_section():
+    out = br.render_markdown(br.run_brief(_run_model()))
+    assert "What would settle it" not in out
+
+
+def test_a_plan_gives_the_vaguer_lists_room_and_the_brief_stays_one_page():
+    long = "a considered, specific sentence that a persona might well say in a long debate " * 4
+    row = {k: long for k in _PLAN_ROW}
+    m = _run_model(topic=long * 3, summary={
+        "overview": long * 4, "consensus": [long] * 10, "open_questions": [long] * 10, "key_ideas": [],
+        "dissenters": [{"speaker": "P", "position": long}] * 10,
+        "evidence_plan": [row] * 10, "conditional_recommendation": long * 4})
+    b = br.run_brief(m)
+    assert len(b["evidence"]) == br.MAX_EVIDENCE and b["evidence_more"] == 10 - br.MAX_EVIDENCE
+    assert len(b["open"]) == br.MAX_OPEN_WITH_PLAN and len(b["dissent"]) == br.MAX_DISSENT_WITH_PLAN
+    assert len(br.render_markdown(b).split()) < 650
+
+
+def test_plan_text_is_escaped():
+    hostile = "<script>alert(1)</script>"
+    m = _run_model(summary={"overview": "o", "consensus": [], "open_questions": [], "key_ideas": [],
+                            "dissenters": [], "evidence_plan": [{**_PLAN_ROW, "data": hostile}],
+                            "conditional_recommendation": hostile})
+    out = br.render_html(br.run_brief(m))
+    assert "<script>alert" not in out
