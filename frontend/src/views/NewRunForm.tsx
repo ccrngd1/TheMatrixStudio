@@ -77,6 +77,9 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
   const [research, setResearch] = useState(false)
   // Ask personas to cite each passage they rely on, inline. On by default (docs/CITE-INLINE.md).
   const [citeInline, setCiteInline] = useState(true)
+  // A best guess and a current lean with every evidence request (docs/EVIDENCE-LEAN.md). Opt-in: its
+  // pre-registered comparison met one primary and missed the other.
+  const [evidenceLean, setEvidenceLean] = useState(false)
   // Experts outside the room (matrix_studio/experts.py).
   const [consultants, setConsultants] = useState<DraftConsultant[]>([])
   const [consultLimit, setConsultLimit] = useState(6)
@@ -416,7 +419,9 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
         // plain run's config stays as small as it was before these features
         // existed. Enabling a feature nobody configured would cost tokens for
         // an empty prompt block.
-        personas: anyConvictions ? { enabled: true } : undefined,
+        personas: anyConvictions
+          ? { enabled: true, ...(evidenceLean ? { evidence_lean: true } : {}) }
+          : undefined,
         // Only sent when asked for: it defaults off server-side while it is being
         // validated, and an absent block means "use the deployment default".
         // Sent only when it differs from the server's default, so a plain run's config
@@ -1512,6 +1517,27 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
             </div>
           ))}
         </div>
+        {anyConvictions && (
+          <label className="mt-3 flex items-center gap-2 text-xs text-slate-300">
+            <input
+              type="checkbox"
+              checked={evidenceLean}
+              onChange={(e) => setEvidenceLean(e.target.checked)}
+            />
+            When a persona asks for evidence, make it say what it expects and which way it leans
+            <Hint label="evidence lean">
+              Personas already say what evidence would change their mind. With this on, they must
+              also say what they expect it to show and how that makes them lean today — "I expect
+              about 7%, so for now I'm against" — so a run that ends waiting on data still ends with
+              a lean. A guess never counts as the evidence itself.
+              <br />
+              <br />
+              Measured (docs/EVIDENCE-LEAN.md, 3 runs each way): runs stating a lean rose from 1 of 3
+              to 2 of 3, guesses from 36% to 57% of requests, with standing objections, length and
+              cost unchanged or up. It missed its bar for guesses, so it is off by default.
+            </Hint>
+          </label>
+        )}
       </div>
 
       <div className="mt-6 rounded-lg border border-matrix-border bg-matrix-panel p-4">

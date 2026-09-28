@@ -196,6 +196,24 @@ describe('NewRunForm option hints', () => {
     expect(body.cast[0].structured).toBeUndefined()
   })
 
+  it('sends evidence_lean only when the operator ticks it', () => {
+    renderForm()
+    fireEvent.change(screen.getByPlaceholderText(/What should the cast discuss/i), { target: { value: 'a topic' } })
+    fireEvent.change(screen.getByPlaceholderText('Name'), { target: { value: 'Ada' } })
+    fireEvent.change(screen.getByPlaceholderText(/Persona description/), {
+      target: { value: 'an ethicist' },
+    })
+    fireEvent.click(screen.getByText(/Convictions & background documents/))
+    fireEvent.change(screen.getByPlaceholderText(/No feature may add an external service/), {
+      target: { value: '[firm] consent comes first -> a signed waiver' },
+    })
+    fireEvent.click(screen.getByLabelText(/make it say what it expects/))
+    fireEvent.click(screen.getByRole('button', { name: /Run simulation/ }))
+
+    const body = (api.createRun as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]
+    expect(body.config.personas).toEqual({ enabled: true, evidence_lean: true })
+  })
+
   it('sends convictions and turns the personas feature on when authored', () => {
     renderForm()
     fireEvent.change(screen.getByPlaceholderText(/What should the cast discuss/i), { target: { value: 'a topic' } })
