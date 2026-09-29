@@ -3056,6 +3056,38 @@ async def _apply_branch_mutation(
         await _save_mutation_snapshot(db, run_id, from_turn, topic, agents, conversation, pending_threads)
         return from_turn, max_messages
 
+    if kind in ("replace_assumption", "withdraw_assumption"):
+        # Working assumptions (matrix_studio/assumptions.py). The branch copied its parent's log up to the
+        # fork, so the ledger there is read from it; the change is ONE event at the fork, and every turn
+        # after reads the ledger with it applied (`assumptions.from_events`: a later event with the same
+        # id replaces, a withdrawal removes). No persona line is rewritten — the reason assumptions are
+        # events and not speech.
+        aid = str(mutation.get("assumption_id") or "").strip()
+        ledger = assumptions_mod.from_events(
+            await db.get_events(run_id, to_turn=from_turn) if db is not None else []
+        )
+        current = next((a for a in ledger if a.id == aid), None)
+        if current is None:
+            raise BranchMutationError(
+                f"{kind}: no assumption {aid!r} is in force at turn {from_turn}"
+                + (f" (in force: {', '.join(a.id for a in ledger)})" if ledger else "")
+            )
+        if kind == "withdraw_assumption":
+            await emit(turn=from_turn, seq=next_seq(), event_type="assumption.withdrawn", agent_name=None,
+                       payload={"id": aid, "statement": current.statement, "turn": from_turn})
+            return from_turn, max_messages
+        statement = " ".join(str(mutation.get("statement") or "").split())[:assumptions_mod.MAX_STATEMENT_CHARS]
+        if not statement:
+            raise BranchMutationError("replace_assumption.statement is required")
+        replaced = assumptions_mod.Assumption(
+            aid, statement, " ".join(str(mutation.get("basis") or "").split())[:assumptions_mod.MAX_BASIS_CHARS],
+            assumptions_mod.OPERATOR, from_turn,
+        )
+        await emit(turn=from_turn, seq=next_seq(), event_type="assumption.made", agent_name=None,
+                   payload={**replaced.payload(), "replaces": current.statement,
+                            "replaced_source": current.source})
+        return from_turn, max_messages
+
     raise BranchMutationError(f"unknown branch mutation kind: {kind!r}")
 
 
@@ -3245,9 +3277,15 @@ async def resume_simulation(
             # The ledger as of the fork, from the run's own events: the operator's (turn 0) and any the
             # moderator made since. A branch copied its parent's log, so it inherits them — and a
             # later event with the same id is how a fork replaces one.
-            assumption_list = assumptions_mod.from_events(
-                await db.get_events(run_id, to_turn=effective_from_turn)
-            ) or assumptions_mod.from_config(cfg)
+            # Config only when the log holds no assumption events at all (a run from before they were
+            # recorded). An EMPTY ledger from the log is an answer — a fork withdrew the last one — and
+            # falling back then would put the withdrawn assumption straight back.
+            logged = await db.get_events(run_id, to_turn=effective_from_turn)
+            assumption_list = (
+                assumptions_mod.from_events(logged)
+                if any(str(e.get("event_type", "")).startswith("assumption.") for e in logged)
+                else assumptions_mod.from_config(cfg)
+            )
             dynamic = assumptions_mod.dynamic_from_config(cfg)
         except Exception as exc:  # noqa: BLE001 — no consultants rather than a failed turn
             logger.warning("Could not read consultants for %s: %s", run_id, exc)

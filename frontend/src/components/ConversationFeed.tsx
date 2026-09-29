@@ -20,11 +20,15 @@ interface Props {
   quotes?: Record<string, Quote[]>
   /** Working assumptions, each shown where it was made (turn 0: above the first message). */
   assumptions?: WorkingAssumption[]
+  /** Fork the run at the assumption's turn with it replaced (a statement) or withdrawn (null). */
+  onForkAssumption?: (a: WorkingAssumption, statement: string | null) => Promise<void>
 }
 
 export function ConversationFeed({
   feed, agents, activeSpeaker, thinking, jumpTo, runId, sourceIndex = {}, quotes = {}, assumptions = [],
+  onForkAssumption,
 }: Props) {
+  const card = (a: WorkingAssumption) => <AssumptionCard key={a.id} a={a} onFork={onForkAssumption} />
   // A claim is checked where it is read. The source viewer was reachable only from a persona's
   // dossier, so checking a sentence meant knowing who said it, opening their panel and finding the
   // turn; the message now links to the passage it drew on.
@@ -93,7 +97,7 @@ export function ConversationFeed({
           const madeHere = assumptions.filter((a) => a.turn < m.turn && a.turn >= prevTurn)
           return (
             <div key={`${m.seq}`} className="space-y-3">
-              {madeHere.map((a) => <AssumptionCard key={a.id} a={a} />)}
+              {madeHere.map(card)}
               {opensRound && (
                 <div className="flex items-center gap-2 pt-1 text-[11px] text-slate-500">
                   <span className="h-px flex-1 bg-matrix-border" />
@@ -147,7 +151,7 @@ export function ConversationFeed({
         {/* Made after the last message so far — or before any message, which is every operator one. */}
         {assumptions
           .filter((a) => feed.length === 0 || a.turn >= feed[feed.length - 1].turn)
-          .map((a) => <AssumptionCard key={a.id} a={a} />)}
+          .map(card)}
         {thinking && activeSpeaker && (
           <div className="flex items-center gap-3 text-slate-400">
             <AvatarBadge name={activeSpeaker} portrait={agents[activeSpeaker]?.portrait ?? null}
@@ -258,7 +262,33 @@ function MessageBody({
   )
 }
 
-function AssumptionCard({ a }: { a: WorkingAssumption }) {
+function AssumptionCard({
+  a,
+  onFork,
+}: {
+  a: WorkingAssumption
+  onFork?: (a: WorkingAssumption, statement: string | null) => Promise<void>
+}) {
+  const [editing, setEditing] = useState(false)
+  const [value, setValue] = useState(a.statement)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const fork = async (statement: string | null) => {
+    if (!onFork) return
+    setBusy(true)
+    setError(null)
+    try {
+      await onFork(a, statement)
+    } catch (e) {
+      setError((e as Error).message)
+      setBusy(false)
+    }
+  }
+  const origin = a.replaces
+    ? `replaced at turn ${a.turn} (was: ${a.replaces})`
+    : a.source === 'operator' && a.turn === 0
+      ? 'set before the run'
+      : `made at turn ${a.turn} by the ${a.source}`
   return (
     <div
       className="rounded border border-dashed border-sky-500/40 bg-sky-950/20 px-3 py-2 text-xs text-slate-300"
@@ -269,9 +299,47 @@ function AssumptionCard({ a }: { a: WorkingAssumption }) {
       </span>
       {a.statement}
       <span className="ml-1 text-slate-500">
-        — {a.source === 'operator' ? 'set before the run' : `made at turn ${a.turn} by the ${a.source}`}
+        — {origin}
         {a.basis ? `; basis: ${a.basis}` : ''}
       </span>
+      {onFork && !editing && (
+        <button
+          onClick={() => setEditing(true)}
+          className="ml-2 text-sky-300 underline-offset-2 hover:underline"
+        >
+          Fork with a different assumption
+        </button>
+      )}
+      {onFork && editing && (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <input
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            maxLength={300}
+            aria-label={`New value for ${a.id}`}
+            className="min-w-0 flex-1 rounded border border-matrix-border bg-matrix-bg p-1.5 text-xs"
+          />
+          <button
+            onClick={() => fork(value.trim())}
+            disabled={busy || !value.trim() || value.trim() === a.statement}
+            className="rounded bg-sky-800/60 px-2 py-1 text-sky-100 disabled:opacity-40"
+          >
+            {busy ? 'Forking…' : `Fork from turn ${a.turn}`}
+          </button>
+          <button onClick={() => fork(null)} disabled={busy} className="text-slate-400 hover:text-rose-300">
+            Withdraw it instead
+          </button>
+          <button onClick={() => setEditing(false)} disabled={busy} className="text-slate-500">
+            Cancel
+          </button>
+          <span className="w-full text-[11px] text-slate-500">
+            A new run replays this one to turn {a.turn} and continues with {a.id} changed; this run is not
+            touched. Everything after turn {a.turn} is generated again, so the later the assumption, the
+            cheaper the fork.
+          </span>
+          {error && <span className="w-full text-rose-300">{error}</span>}
+        </div>
+      )}
     </div>
   )
 }

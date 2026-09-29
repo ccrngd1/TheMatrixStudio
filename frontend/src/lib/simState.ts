@@ -158,9 +158,14 @@ export function applyEvent(prev: SimState, e: SimEvent): SimState {
         const a: WorkingAssumption = {
           id: String(p.id), statement: String(p.statement), basis: String(p.basis ?? ''),
           source: String(p.source ?? 'operator'), turn: Number(p.turn ?? e.turn ?? 0),
+          ...(p.replaces ? { replaces: String(p.replaces) } : {}),
         }
         state.assumptions = [...state.assumptions.filter((x) => x.id !== a.id), a]
       }
+      break
+    }
+    case 'assumption.withdrawn': {
+      state.assumptions = state.assumptions.filter((x) => x.id !== String(e.payload.id))
       break
     }
     case 'expert.answered': {

@@ -335,3 +335,67 @@ async def test_a_discarded_proposal_is_recorded_with_its_reason(db):
     [c] = await _events(db, "dy6", "assumption.checked")
     assert c["proposed"] is False and "0 message(s)" in c["rejected"]
     assert c["proposal"]["statement"] == "The plan will work"
+
+
+# --------------------------------------------------------------------------- #
+# Slice C: fork with a different assumption, or with it withdrawn
+# --------------------------------------------------------------------------- #
+
+
+async def _parent_and_branch(db, mutation, *, parent="fk-parent"):
+    from matrix_studio import branching
+
+    req = _request([{"statement": "Pilot churn is about 7%"}])
+    req["config"]["max_messages"] = 3
+    await db.create_run(run_id=parent, topic=req["topic"], cast=req["cast"], config=req["config"])
+    log = []
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake(log)):
+        await orchestration.prepare_run(db, parent)
+        for t in range(3):
+            await orchestration.execute_slice(db, parent, turn=t, turn_budget=1)
+        meta = await branching.create_branch_run(db, await db.get_run(parent), from_turn=1, mutation=mutation)
+        bid = meta["run_id"]
+        log.clear()
+        payload = await orchestration.prepare(db, bid, mode="branch", parent_run_id=parent, from_turn=1,
+                                              mutation=mutation)
+        while not payload["done"]:
+            payload = await orchestration.execute_slice(db, bid, turn=payload["turn"], turn_budget=1)
+    return bid, log
+
+
+async def test_a_fork_replaces_the_assumption_for_every_turn_after_it(db):
+    bid, log = await _parent_and_branch(
+        db, {"kind": "replace_assumption", "assumption_id": "A1", "statement": "Pilot churn is about 12%"})
+    assert log and all("A1: Pilot churn is about 12%" in p and "7%" not in p for p in log)
+    made = await _events(db, bid, "assumption.made")
+    assert made[-1]["statement"] == "Pilot churn is about 12%" and made[-1]["replaces"] == "Pilot churn is about 7%"
+    # The parent is untouched.
+    assert [m["statement"] for m in await _events(db, "fk-parent", "assumption.made")] == ["Pilot churn is about 7%"]
+    # The record shows the one the branch actually used.
+    from matrix_studio import export as ex
+    model = await ex.run_model(db, await db.get_run(bid))
+    assert [a.statement for a in am.from_events(await db.get_events(bid))] == ["Pilot churn is about 12%"]
+    assert "12%" in ex.render(model, "md")
+
+
+async def test_a_fork_can_withdraw_it(db):
+    bid, log = await _parent_and_branch(
+        db, {"kind": "withdraw_assumption", "assumption_id": "A1"}, parent="fk-parent-2")
+    assert log and all("Working assumptions" not in p for p in log)
+    assert am.from_events(await db.get_events(bid)) == []
+
+
+async def test_forking_an_assumption_that_is_not_in_force_is_refused(db):
+    from matrix_studio.engine.simulator import BranchMutationError
+
+    with pytest.raises(BranchMutationError, match="no assumption 'A9'"):
+        await _parent_and_branch(
+            db, {"kind": "replace_assumption", "assumption_id": "A9", "statement": "x"}, parent="fk-parent-3")
+
+
+async def test_the_api_normalises_the_two_kinds():
+    from matrix_studio.api.app import BranchMutationModel, _SUPPORTED_MUTATION_KINDS
+
+    assert {"replace_assumption", "withdraw_assumption"} <= _SUPPORTED_MUTATION_KINDS
+    m = BranchMutationModel(kind="replace_assumption", assumption_id="A1", statement="  Churn  is 12% ")
+    assert m.statement.strip() == "Churn  is 12%"

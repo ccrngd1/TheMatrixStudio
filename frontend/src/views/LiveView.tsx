@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { useEffect, useState } from 'react'
 import { api } from '../api'
-import type { Persona, Quote, RunDetail } from '../types'
+import type { Persona, Quote, RunDetail, WorkingAssumption } from '../types'
 import { useRunStream } from '../hooks/useRunStream'
 import { isLive, isResumable, isTerminal } from '../lib/runStatus'
 import { CastBoard } from '../components/CastBoard'
@@ -167,6 +167,21 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh }: Props) {
     } finally {
       setBranching(false)
     }
+  }
+
+  // Fork at an assumption's turn with it replaced or withdrawn (matrix_studio/assumptions.py). Throws so
+  // the card that asked can show the error where the operator is looking.
+  const forkAssumption = async (a: WorkingAssumption, statement: string | null) => {
+    const res = await api.branchRun(runId, a.turn, {
+      ...(analysisModel ? { model: analysisModel } : {}),
+      description:
+        statement === null ? `${a.id} withdrawn at turn ${a.turn}` : `${a.id}: ${a.statement} → ${statement}`,
+      mutation:
+        statement === null
+          ? { kind: 'withdraw_assumption', assumption_id: a.id }
+          : { kind: 'replace_assumption', assumption_id: a.id, statement },
+    })
+    if (onOpenRun) onOpenRun(res.run_id)
   }
 
   return (
@@ -402,6 +417,7 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh }: Props) {
             sourceIndex={state.sourceIndex}
             quotes={quotes}
             assumptions={state.assumptions}
+            onForkAssumption={state.status !== 'running' && state.status !== 'idle' ? forkAssumption : undefined}
           />
         </main>
       </div>

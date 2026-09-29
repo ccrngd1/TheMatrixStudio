@@ -16,6 +16,8 @@ const MUTATION_LABELS: Record<string, string> = {
   add_persona: '➕ add persona',
   remove_persona: '➖ remove persona',
   promote_aside: '⤴ promote aside',
+  replace_assumption: '≈ different assumption',
+  withdraw_assumption: '≈ assumption withdrawn',
 }
 
 const STATUS_DOT: Record<string, string> = {

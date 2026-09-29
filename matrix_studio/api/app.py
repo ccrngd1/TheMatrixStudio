@@ -521,6 +521,10 @@ class BranchMutationModel(BaseModel):
     # promote_aside
     thread_id: Optional[str] = None
     message_id: Optional[int] = None
+    # replace_assumption / withdraw_assumption (matrix_studio/assumptions.py): the id, e.g. "A3"
+    assumption_id: Optional[str] = None
+    statement: Optional[str] = Field(default=None, max_length=300)
+    basis: Optional[str] = Field(default=None, max_length=300)
 
 
 class BranchModel(BaseModel):
@@ -736,7 +740,7 @@ def _ensemble_progress(members: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
-_SUPPORTED_MUTATION_KINDS = {"inject_message", "continue", "edit_goal", "add_persona", "remove_persona", "promote_aside", "adaptive_pressure"}
+_SUPPORTED_MUTATION_KINDS = {"inject_message", "continue", "edit_goal", "add_persona", "remove_persona", "promote_aside", "adaptive_pressure", "replace_assumption", "withdraw_assumption"}
 
 
 # Friendly labels for the model dropdown. Exact known ids map to clean names;
@@ -845,6 +849,17 @@ def _validate_branch_mutation(
         if message_id is None:
             raise HTTPException(status_code=422, detail="promote_aside.message_id is required")
         return {"kind": "promote_aside", "thread_id": thread_id, "message_id": int(message_id)}
+    if kind in ("replace_assumption", "withdraw_assumption"):
+        aid = (mutation.assumption_id or "").strip()
+        if not aid:
+            raise HTTPException(status_code=422, detail=f"{kind}.assumption_id is required")
+        if kind == "withdraw_assumption":
+            return {"kind": kind, "assumption_id": aid}
+        statement = " ".join((mutation.statement or "").split())
+        if not statement:
+            raise HTTPException(status_code=422, detail="replace_assumption.statement is required")
+        return {"kind": kind, "assumption_id": aid, "statement": statement,
+                "basis": " ".join((mutation.basis or "").split())}
     # remove_persona
     name = (mutation.persona_name or mutation.name or "").strip()
     if not name:

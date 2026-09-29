@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Working assumptions: folded out of the event stream, shown where they were made, never as speech.
 import { describe, expect, it, vi } from 'vitest'
-import { render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { ConversationFeed } from './ConversationFeed'
 import { assumptionsConfig } from './AssumptionsEditor'
 import { deriveState, initialState } from '../lib/simState'
@@ -59,5 +59,44 @@ describe('working assumptions', () => {
       { statement: '  ', basis: 'x' },
       { statement: 'Fixed date', basis: 'plan' },
     ])).toEqual([{ statement: 'Churn is 7%' }, { statement: 'Fixed date', basis: 'plan' }])
+  })
+
+  it('fork from the assumption\'s own turn with the new value, or withdrawn', async () => {
+    const onFork = vi.fn().mockResolvedValue(undefined)
+    render(
+      <ConversationFeed
+        feed={[{ turn: 1, seq: 2, speaker: 'Ada', content: 'first' }]}
+        agents={{ Ada: agent('Ada') }}
+        activeSpeaker={null}
+        thinking={false}
+        assumptions={[{ id: 'A1', statement: 'Churn is 7%', basis: '', source: 'operator', turn: 0 }]}
+        onForkAssumption={onFork}
+      />,
+    )
+    fireEvent.click(screen.getByText('Fork with a different assumption'))
+    fireEvent.change(screen.getByLabelText('New value for A1'), { target: { value: 'Churn is 12%' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Fork from turn 0' }))
+    await waitFor(() => expect(onFork).toHaveBeenCalledWith(expect.objectContaining({ id: 'A1' }), 'Churn is 12%'))
+    // Once forked the card stays busy: the view is about to move to the new run.
+    expect(screen.getByText('Withdraw it instead')).toBeDisabled()
+  })
+
+  it('withdraw forks with no value', async () => {
+    const onFork = vi.fn().mockResolvedValue(undefined)
+    render(
+      <ConversationFeed feed={[]} agents={{}} activeSpeaker={null} thinking={false} onForkAssumption={onFork}
+        assumptions={[{ id: 'A1', statement: 'Churn is 7%', basis: '', source: 'operator', turn: 0 }]} />,
+    )
+    fireEvent.click(screen.getByText('Fork with a different assumption'))
+    fireEvent.click(screen.getByText('Withdraw it instead'))
+    await waitFor(() => expect(onFork).toHaveBeenCalledWith(expect.objectContaining({ id: 'A1' }), null))
+  })
+
+  it('offer no fork while the run is live', () => {
+    render(
+      <ConversationFeed feed={[]} agents={{}} activeSpeaker={null} thinking={false}
+        assumptions={[{ id: 'A1', statement: 'Churn is 7%', basis: '', source: 'operator', turn: 0 }]} />,
+    )
+    expect(screen.queryByText('Fork with a different assumption')).not.toBeInTheDocument()
   })
 })

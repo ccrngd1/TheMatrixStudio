@@ -29,6 +29,7 @@ export interface SimEvent {
     | 'expert.answered'
     // A working assumption the room reasons from (matrix_studio/assumptions.py). Not speech.
     | 'assumption.made'
+    | 'assumption.withdrawn'
     | 'error'
   agent_name: string | null
   payload: Record<string, any>
@@ -250,6 +251,8 @@ export interface WorkingAssumption {
   basis: string
   source: string
   turn: number
+  /** Set when a fork replaced an earlier assumption with this id: what it said before. */
+  replaces?: string
 }
 
 export interface SummaryResponse {
