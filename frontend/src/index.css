@@ -1,8 +1,16 @@
 /* SPDX-License-Identifier: Apache-2.0 */
+@import './styles/command.css';
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+/* The Tailwind bridge (docs/MOBILE-UI.md §7): today's `matrix-*` colours read the active theme, as RGB
+   channels so opacity modifiers (`bg-matrix-accent/20`) keep working. Every screen not yet restyled
+   re-themes with the rest of the app instead of staying the old palette. `border` is the theme's line
+   colour pre-mixed onto the panel, because a channel value cannot carry the alpha `--line` has. */
+:root, [data-theme=holo] { --rgb-bg:6 16 32; --rgb-panel:10 20 34; --rgb-border:16 70 87; --rgb-accent:34 211 238; --rgb-accent2:167 139 250; --rgb-live:52 245 160; --rgb-inject:255 197 61; --rgb-shift:183 148 255; --rgb-danger:255 77 120; --rgb-t1:232 246 255; --rgb-t2:163 183 204; --rgb-t3:118 144 171; }
+[data-theme=matrix] { --rgb-bg:1 12 6; --rgb-panel:3 18 10; --rgb-border:2 80 48; --rgb-accent:0 255 156; --rgb-accent2:125 255 207; --rgb-live:0 255 156; --rgb-inject:230 255 92; --rgb-shift:195 166 255; --rgb-danger:255 95 95; --rgb-t1:220 255 236; --rgb-t2:148 201 170; --rgb-t3:98 151 122; }
+[data-theme=neon] { --rgb-bg:16 5 30; --rgb-panel:20 10 36; --rgb-border:87 25 95; --rgb-accent:255 61 242; --rgb-accent2:0 229 255; --rgb-live:0 255 163; --rgb-inject:255 230 0; --rgb-shift:0 229 255; --rgb-danger:255 77 77; --rgb-t1:253 238 255; --rgb-t2:199 172 217; --rgb-t3:154 128 179; }
 html,
 body,
 #root {
@@ -11,5 +19,5 @@ body,
 
 body {
   @apply bg-matrix-bg text-slate-100 antialiased;
-  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-family: var(--sans);
 }

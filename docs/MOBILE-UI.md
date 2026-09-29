@@ -406,6 +406,9 @@ The options, in the order to try them:
    (`86d0a58`). It needs a pre-registered measurement against hand labels before any surface
    presents it as fact.
 
+**DECIDED 2026-09-29 by the owner: option 1.** Stance is computed after a run ends, from the dissenter list
+and position shifts; a live run shows turn and spend but no stance. No classifier.
+
 The prototype's own rule is: latest lean or shift wins, and a non-soft persona who has spoken
 without either is *holding out*. That last clause is a guess. It must not ship.
 
@@ -417,6 +420,10 @@ are two options. Label the map *sequence* rather than *exchanges* (cheap, and ho
 attribution, which is a new signal carrying the same measurement burden as §6.1.
 
 ### 6.3 The ensemble verdict overclaims at n = 3
+
+**DECIDED 2026-09-29 by the owner: the prototype's verdict wording is not used.** The ensemble view keeps the
+report's own per-group wording.
+
 
 "The working assumption changes the outcome" is drawn from each group's *leading* conclusion. At
 three replicates per group, 3/3 against 1/3 is suggestive, not established, and
