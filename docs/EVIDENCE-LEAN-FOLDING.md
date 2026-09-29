@@ -43,3 +43,6 @@ before the key is opened.
 
 **What n = 6 can say.** Only whether folding is common in one arm and rare in the other; a one-run
 difference is noise.
+
+**Labels recorded before the key was opened:** SHA-256
+`9e81afb7a0ca6e4515cd0c833f91e87a6b5a12ae6d1be7ae6e14f58319e89030`.
