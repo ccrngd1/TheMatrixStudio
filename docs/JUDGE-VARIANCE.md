@@ -42,3 +42,33 @@ For each transcript, `spread = max − min` of `distinct_positions` over its fiv
 
 **What four transcripts × five repeats can say.** Whether the judge disagrees with itself by as much as the
 effect being claimed. Not the exact variance of any field.
+
+## Result — 2026-09-29
+
+Four transcripts × five judgements, twice: once before the output-budget fix below and once after
+($0.16 + $0.31). `private/docs/judge-variance.json`, `-fixed.json`.
+
+| | spread of `distinct_positions` over 5 judgements |
+|---|---|
+| all four transcripts, before and after the fix | **0** (every judgement 5) |
+
+- **Criterion: the metric is stable enough at one judgement per run.** Every spread is 0, not merely ≤ 1, at
+  the temperature the default model forces. So the judge is not the source of the Phase 6 instability
+  (`5,5,5` vs `5,3,3` vs `5,5,3` vs `2,2,5`): those numbers differ because the *runs* differ, the question
+  stands as stated, and the next step on it is more runs rather than more judgements.
+- **Other fields are nearly as stable**, and the exceptions are worth knowing: `positions_citing_a_named_source`
+  moved by up to 2 and `participants_who_changed_position`, `position_changes_justified_by_new_evidence`,
+  `talking_past_each_other` and `specificity` by 1. A claim resting on a gap of 1 in any of those is inside
+  the judge's own noise; `distinct_positions` is not.
+- **Caveat.** Four transcripts of one 15-turn brief, all judged 5 as it happens — a corpus where the count is
+  easy. It does not show the judge is stable where the answer is genuinely ambiguous.
+
+**Two defects found by trying to run this, both fixed, neither a result:**
+
+1. **`--judge` could not run at all against the default model.** It asks for `temperature=0`; Sonnet 5 permits
+   only 1, and litellm raised `UnsupportedParamsError`. Fixed with `drop_params=True` (`65978de`).
+2. **Then 5 of 20 judgements came back empty** — `finish_reason="length"` against a 900-token cap, because
+   Sonnet 5 spends most of an output budget reasoning. Each landed as `{"error": "unparseable"}`, which the
+   scoring report renders as an arm with no numbers rather than as a failure. The cap is now 8,000 (the size
+   `research.ASK_MAX_TOKENS` settled on for the same reason) and the error carries `finish_reason`, so "wrote
+   prose" and "ran out of room" are distinguishable. After the fix: 20 of 20 parsed.

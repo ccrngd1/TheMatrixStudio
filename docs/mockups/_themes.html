@@ -3,3 +3,4 @@
 <div class="r"><div><p class="l">// HOLO</p><iframe src="prototype.html?noboot&theme=holo#/runs"></iframe></div>
 <div><p class="l">// MATRIX</p><iframe src="prototype.html?noboot&theme=matrix#/runs"></iframe></div>
 <div><p class="l">// NEON</p><iframe src="prototype.html?noboot&theme=neon#/runs"></iframe></div></div>
+<script>const still=(w)=>w.document.head.insertAdjacentHTML('beforeend','<style>*,*::before,*::after{animation:none!important;transition:none!important}</style>');document.querySelectorAll('iframe').forEach(f=>f.onload=()=>{still(f.contentWindow);setTimeout(()=>f.contentWindow.eval('render()'),800)})</script>

@@ -441,13 +441,22 @@ async def judge_arm(label: str, conv: List[Dict[str, Any]], model: str) -> Dict[
         # for it, and on one that does not the judge runs at the only temperature it has — which is why
         # its variance has to be measured rather than assumed.
         temperature=0,
-        max_tokens=900,
+        # Sized for the model's REASONING, not for the ~250-token answer. Measured 2026-09-29
+        # (docs/JUDGE-VARIANCE.md): at 900 tokens, 5 of 20 judge calls on Sonnet 5 came back with
+        # `finish_reason="length"` and EMPTY content — a 25% silent failure rate, each one landing as
+        # an arm with no numbers rather than an error. The same failure `research.ASK_MAX_TOKENS`
+        # records, arrived at independently here.
+        max_tokens=8000,
         drop_params=True,
     )
-    raw = resp.choices[0].message.content.strip()
+    raw = (resp.choices[0].message.content or "").strip()
     m = re.search(r"\{.*\}", raw, re.DOTALL)
     if not m:
-        return {"error": "unparseable judge response", "raw": raw[:400]}
+        # `finish_reason` is reported because "the model wrote prose" and "the model ran out of room
+        # and wrote nothing" need opposite fixes, and the second is invisible without it.
+        return {"error": "unparseable judge response",
+                "finish_reason": getattr(resp.choices[0], "finish_reason", None),
+                "raw": raw[:400]}
     out = json.loads(m.group(0))
     out["_judge_cost_usd"] = round(litellm.completion_cost(resp) or 0.0, 6)
     return out

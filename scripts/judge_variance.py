@@ -44,15 +44,24 @@ async def main() -> int:
         conv = entry["conversation"]
         judged = await asyncio.gather(*(judge_arm("transcript_1", conv, model) for _ in range(args.repeats)))
         cost += sum(j.get("_judge_cost_usd", 0.0) for j in judged)
+        failed = [j for j in judged if "distinct_positions" not in j]
+        if failed:
+            # A judgement that did not parse is reported, never averaged around: a spread computed over
+            # four of five repeats is a different measurement from the one pre-registered.
+            print(f"{rid}  {len(failed)} of {args.repeats} judgements FAILED: "
+                  f"{failed[0].get('error') or str(failed[0])[:120]}")
+        judged = [j for j in judged if "distinct_positions" in j]
         rows[rid] = judged
+        if not judged:
+            continue
         ints = {k for j in judged for k, v in j.items() if isinstance(v, int) and not k.startswith("_")}
         spreads = {k: max(j.get(k, 0) for j in judged) - min(j.get(k, 0) for j in judged) for k in sorted(ints)}
         dp = [j.get("distinct_positions") for j in judged]
         print(f"{rid}  distinct_positions {dp} spread {max(dp) - min(dp)}")
         print(f"          other spreads {spreads}")
-    dps = {rid: [j.get("distinct_positions") for j in judged] for rid, judged in rows.items()}
+    dps = {rid: [j["distinct_positions"] for j in judged] for rid, judged in rows.items() if judged}
     spreads = {rid: max(v) - min(v) for rid, v in dps.items()}
-    worst = max(spreads.values())
+    worst = max(spreads.values(), default=-1)
     Path(args.out).write_text(json.dumps({"repeats": args.repeats, "model": model,
                                           "distinct_positions": dps, "spreads": spreads,
                                           "cost_usd": round(cost, 4), "judgements": rows}, indent=1))

@@ -4,7 +4,7 @@ const q = new URLSearchParams(location.search)
 const f = document.createElement('iframe')
 f.style.width = (q.get('w') || 390) + 'px'; f.style.height = (q.get('h') || 844) + 'px'
 f.src = q.get('src')
-f.onload = () => { const steps = (q.get('do') || '').split('||').filter(Boolean); let t = 200
-  for (const s of steps) { const [ms, code] = s.split('@@'); t += +ms; setTimeout(() => f.contentWindow.eval(code), t) } }
+f.onload = () => { const still=(w)=>w.document.head.insertAdjacentHTML('beforeend','<style>*,*::before,*::after{animation:none!important;transition:none!important}</style>'); still(f.contentWindow); const steps = (q.get('do') || '').split('||').filter(Boolean); let t = 200
+  for (const s of steps) { const [ms, code] = s.split('@@'); t += +ms; setTimeout(() => { f.contentWindow.eval(code); still(f.contentWindow) }, t) } }
 document.body.appendChild(f)
 </script>
