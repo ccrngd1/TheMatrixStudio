@@ -199,6 +199,15 @@ export function applyEvent(prev: SimState, e: SimEvent): SimState {
     }
     case 'agent.response': {
       const name = e.payload.speaker ?? e.agent_name
+      // An injected voice outside the cast (a customer, a letter) is part of the feed, not a participant:
+      // no card, no share of the conversation. Branch and scheduled injections alike.
+      if (name && e.payload.injected && !state.agents[name]) {
+        state.feed = [
+          ...state.feed,
+          { turn: e.turn, seq: e.seq, speaker: name, content: e.payload.message ?? '', injected: true },
+        ]
+        break
+      }
       if (name) {
         ensureAgent(state, name)
         const a = state.agents[name]
@@ -237,6 +246,7 @@ export function applyEvent(prev: SimState, e: SimEvent): SimState {
             seq: e.seq,
             speaker: name,
             content: e.payload.message ?? e.payload.content ?? '',
+            ...(e.payload.injected ? { injected: true } : {}),
             ...(sources && sources.length ? { sources } : {}),
             ...(citations && citations.length ? { citations } : {}),
           },

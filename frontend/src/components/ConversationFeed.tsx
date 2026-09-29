@@ -94,7 +94,7 @@ export function ConversationFeed({
           // more than one message is drawn as a round: a divider naming it, and every
           // message after the first marked "at the same time".
           // Consultants' answers share their question's turn but are not part of any round.
-          const roundSize = feed.filter((x) => x.turn === m.turn && !x.consultant).length
+          const roundSize = feed.filter((x) => x.turn === m.turn && !x.consultant && !x.injected).length
           const opensRound = roundSize > 1 && feed[i - 1]?.turn !== m.turn
           // An assumption made at turn t is shown before the first message of a later turn.
           const prevTurn = i === 0 ? -Infinity : feed[i - 1].turn
@@ -122,6 +122,14 @@ export function ConversationFeed({
                 <div className="min-w-0 flex-1">
                   <div className="flex items-baseline gap-2">
                     <span className="font-semibold text-slate-200">{m.speaker}</span>
+                    {m.injected && (
+                      <span
+                        className="rounded bg-fuchsia-900/40 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-fuchsia-200"
+                        title="Put into the conversation by the operator, not generated"
+                      >
+                        injected
+                      </span>
+                    )}
                     {m.consultant ? (
                       <span
                         className="rounded bg-amber-900/40 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-200"

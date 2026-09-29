@@ -54,6 +54,18 @@ CELL_OVERRIDES: Dict[str, str] = {
         "How long the blind opening lasts before hybrid switches to moderated. Only "
         "meaningful alongside method=hybrid."
     ),
+    "injections": (
+        "An operator message at a fixed turn (matrix_studio/injections.py): what the room has SEEN, "
+        "like method, and the only way to attribute its effect — the same message in every "
+        "replicate of a cell, against replicates without it. A single branch injection is one draw. "
+        "Refused when it speaks as a cast member: words put in a persona's mouth are a persona "
+        "instruction, which the personas prefix refuses."
+    ),
+    "assumptions": (
+        "What the room is told to reason from (matrix_studio/assumptions.py). Varying one across "
+        "cells measures what that assumption was worth over replicates, which a fork with a "
+        "different value — one draw each — cannot."
+    ),
 }
 
 #: Keys that are tempting, plausible, and wrong — each with the reason, because a bare

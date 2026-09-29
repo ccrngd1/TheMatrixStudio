@@ -28,6 +28,7 @@ from matrix_studio.lazy_litellm import litellm
 from matrix_studio.models import ModelSet, model_for
 from matrix_studio import assumptions as assumptions_mod
 from matrix_studio import experts as experts_mod
+from matrix_studio import injections as injections_mod
 
 # Type alias for the Phase 1 live-emit callback. It receives one structured
 # event dict (same shape as a persisted row) for each event the engine emits.
@@ -1293,6 +1294,7 @@ async def run_simulation(
         consult_limit=experts_mod.consult_limit(config),
         assumptions=assumptions_mod.from_config(config),
         dynamic_assumptions=assumptions_mod.dynamic_from_config(config),
+        injections=injections_mod.from_config(config),
     )
 
 
@@ -1670,6 +1672,8 @@ async def _run_turns(
     assumptions: Optional[List[Any]] = None,
     # Whether, and how often, the moderator may add one when a gap blocks the room. None = never.
     dynamic_assumptions: Optional[Any] = None,
+    # Operator messages scheduled in the config (matrix_studio/injections.py). Empty = none.
+    injections: Optional[List[Any]] = None,
     # Intervention H's streak, carried in because ONE TURN PER CALL is what ships: a
     # counter local to this function is reset on every turn under Step Functions, which
     # made the two-declines-in-a-row guard unsatisfiable in production while passing every
@@ -1857,6 +1861,24 @@ async def _run_turns(
                 turn += 1
                 generated += 1
             blind = rounds_now and round_blind
+
+            # Scheduled operator messages (matrix_studio/injections.py), delivered at the start of a
+            # moderated turn or a round, after the turn they were scheduled to follow — before selection,
+            # so the moderator and the next speaker both read them.
+            if injections and (starting_round or not rounds_now):
+                for inj in injections_mod.due(injections, turn - 1, conversation):
+                    message = {"speaker": inj.speaker, "content": inj.content, "turn": turn - 1,
+                               "injection": inj.key}
+                    conversation.append(message)
+                    if inj.speaker in agents:
+                        agents[inj.speaker].conversation_history.append(message)
+                    await emit(
+                        turn=turn - 1, seq=next_seq(), event_type="agent.response", agent_name=inj.speaker,
+                        payload={"speaker": inj.speaker, "message": inj.content, "tokens_in": 0,
+                                 "tokens_out": 0, "cost_usd": 0.0, "injected": True,
+                                 "source": injections_mod.OPERATOR, "injection": inj.key,
+                                 "scheduled_after_turn": inj.after_turn},
+                    )
 
             # Working assumptions made by the moderator (matrix_studio/assumptions.py), checked at the
             # start of a moderated turn or a round, never inside one and never in the closing round.
@@ -3278,6 +3300,7 @@ async def resume_simulation(
     expert_list: List[Any] = []
     assumption_list: List[Any] = []
     dynamic = None
+    scheduled: List[Any] = []
     limit = 0
     if db is not None:
         try:
@@ -3297,6 +3320,7 @@ async def resume_simulation(
                 else assumptions_mod.from_config(cfg)
             )
             dynamic = assumptions_mod.dynamic_from_config(cfg)
+            scheduled = injections_mod.from_config(cfg)
         except Exception as exc:  # noqa: BLE001 — no consultants rather than a failed turn
             logger.warning("Could not read consultants for %s: %s", run_id, exc)
 
@@ -3325,5 +3349,6 @@ async def resume_simulation(
         consult_limit=limit,
         assumptions=assumption_list,
         dynamic_assumptions=dynamic,
+        injections=scheduled,
         should_stop=should_stop,
     )

@@ -253,6 +253,16 @@ class PersonaConfigModel(BaseModel):
     evidence_lean: bool = False
 
 
+class InjectionModel(BaseModel):
+    """An operator message scheduled in the config (`matrix_studio/injections.py`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    after_turn: int = Field(ge=0)
+    speaker: str = Field(min_length=1, max_length=60)
+    content: str = Field(min_length=1, max_length=2000)
+
+
 class AssumptionModel(BaseModel):
     """One working assumption (`matrix_studio/assumptions.py`): not a fact, a thing to reason from."""
 
@@ -342,6 +352,20 @@ class RunConfigModel(BaseModel):
     # The moderator may add assumptions when a gap blocks the room, without approval — each is marked
     # in the transcript and can be forked with a different value. Omitted -> never.
     dynamic_assumptions: Optional[DynamicAssumptionsModel] = None
+    # Operator messages entering the run after a given turn, recorded as injected. Omitted -> none.
+    injections: List[InjectionModel] = Field(default_factory=list, max_length=5)
+
+    @model_validator(mode="after")
+    def _injections_inside_the_run(self) -> "RunConfigModel":
+        # One scheduled after the last turn would never be delivered, and nothing would say so.
+        limit = self.max_messages
+        for inj in self.injections:
+            if limit is not None and inj.after_turn >= limit:
+                raise ValueError(
+                    f"an injection after turn {inj.after_turn} would never be delivered: the run has "
+                    f"{limit} turns, so the last one it can follow is turn {limit - 1}"
+                )
+        return self
 
 
 class SummaryConfigModel(BaseModel):
@@ -459,6 +483,17 @@ class CreateEnsembleModel(BaseModel):
     @model_validator(mode="after")
     def _experts(self) -> "CreateEnsembleModel":
         _check_expert_names(self.cast, self.config)
+        # An ensemble cell may vary `injections` (ensemble_spec.CELL_OVERRIDES), but not as a cast member:
+        # words in a persona's mouth are a persona instruction, which an ensemble must not vary.
+        names = {c.name.strip().lower() for c in self.cast}
+        for cell in self.cells or []:
+            for inj in (cell.overrides or {}).get("injections") or []:
+                who = str((inj or {}).get("speaker") or "").strip() if isinstance(inj, dict) else ""
+                if who.lower() in names:
+                    raise ValueError(
+                        f"cell {cell.label!r} injects as {who!r}, a cast member. An ensemble may vary what "
+                        "the room hears, not what a persona says; use a voice outside the cast."
+                    )
         return self
 
 

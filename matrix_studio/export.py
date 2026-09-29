@@ -189,6 +189,9 @@ async def run_model(db: Any, run: Dict[str, Any]) -> Dict[str, Any]:
                 "speaker": speaker,
                 "message": str(p.get("message") or ""),
                 "passages": retrieved.get((e.get("turn"), speaker), []),
+                # Put in by the operator (a branch or a scheduled message), so no reader takes it for
+                # something the persona chose to say.
+                **({"injected": True} if p.get("injected") else {}),
             })
         elif e["event_type"] == "expert.answered":
             # A consultant's answer is part of what the room read, so it is part of the record — marked
@@ -459,7 +462,8 @@ def render_markdown(model: Dict[str, Any]) -> str:
 
     out += ["## Transcript", ""]
     for t in m["transcript"]:
-        out += [f"**Turn {t['turn']} — {t['speaker']}**", "", t["message"], ""]
+        who = f"{t['speaker']} *(injected by the operator)*" if t.get("injected") else t["speaker"]
+        out += [f"**Turn {t['turn']} — {who}**", "", t["message"], ""]
         if t["passages"]:
             refs = []
             for p in t["passages"]:
@@ -645,7 +649,8 @@ def render_html(model: Dict[str, Any]) -> str:
                 refs.append(f"<span class=\"{cls}\">{_e(p.get('title'))} #{_e(p.get('ordinal'))}"
                             f"{_e(tag)}{_e(tier)}</span>")
             src = "<div class=\"src\">Sources in front of them: " + "; ".join(refs) + "</div>"
-        b.append(f"<div class=\"turn\"><div class=\"who\">Turn {_e(t['turn'])} — {_e(t['speaker'])}</div>"
+        who = _e(t["speaker"]) + (" <em>(injected by the operator)</em>" if t.get("injected") else "")
+        b.append(f"<div class=\"turn\"><div class=\"who\">Turn {_e(t['turn'])} — {who}</div>"
                  f"<div class=\"msg\">{_e(t['message'])}</div>{src}</div>")
 
     s = m.get("summary")

@@ -272,3 +272,41 @@ describe('NewRunForm run type', () => {
     expect(avatarBox().checked).toBe(false)
   })
 })
+
+describe('scheduled messages in an ensemble', () => {
+  const addLetter = () => {
+    fireEvent.click(screen.getByRole('button', { name: /Add message/ }))
+    fireEvent.change(screen.getByLabelText('Message 1 after turn'), { target: { value: '3' } })
+    fireEvent.change(screen.getByLabelText('Message 1 from'), { target: { value: 'Regulator' } })
+    fireEvent.change(screen.getByLabelText('Message 1 text'), { target: { value: 'A letter.' } })
+  }
+
+  it('compared: only the second group hears the message, and the base config has none', async () => {
+    await form()
+    chooseEnsemble()
+    addLetter()
+    fireEvent.click(screen.getByText(/Also compare with and without the scheduled messages/).closest('label')!
+      .querySelector('input[type="checkbox"]') as HTMLInputElement)
+    fireEvent.click(screen.getByRole('button', { name: /Run \d+ simulations|Run simulation/i }))
+    await waitFor(() => expect(mocked.createEnsemble).toHaveBeenCalled())
+    const calls = mocked.createEnsemble.mock.calls
+    const body = calls[calls.length - 1][0]
+    expect(body.config.injections).toBeUndefined()
+    expect(body.cells[body.cells.length - 1]).toEqual({
+      label: 'with-message', n: 3,
+      overrides: { injections: [{ after_turn: 3, speaker: 'Regulator', content: 'A letter.' }] },
+    })
+  })
+
+  it('not compared: every run hears it', async () => {
+    await form()
+    chooseEnsemble()
+    addLetter()
+    fireEvent.click(screen.getByRole('button', { name: /Run \d+ simulations|Run simulation/i }))
+    await waitFor(() => expect(mocked.createEnsemble).toHaveBeenCalled())
+    const calls = mocked.createEnsemble.mock.calls
+    const body = calls[calls.length - 1][0]
+    expect(body.config.injections).toEqual([{ after_turn: 3, speaker: 'Regulator', content: 'A letter.' }])
+    expect(body.cells.map((c: { label: string }) => c.label)).toEqual(['base'])
+  })
+})

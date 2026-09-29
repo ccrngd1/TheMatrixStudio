@@ -6,6 +6,7 @@ import { CastTemplates } from '../components/CastTemplates'
 import { PersonaLibrary } from '../components/PersonaLibrary'
 import { ConsultantsEditor, consultantsConfig, type DraftConsultant } from '../components/ConsultantsEditor'
 import { AssumptionsEditor, assumptionsConfig, type DraftAssumption } from '../components/AssumptionsEditor'
+import { InjectionsEditor, injectionsConfig, type DraftInjection } from '../components/InjectionsEditor'
 import { Hint } from '../components/Hint'
 import { buildStructured } from '../lib/convictions'
 import { parseSetup, parseSetupObject, ImportError } from '../lib/importSetup'
@@ -87,6 +88,10 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
   // Working assumptions (matrix_studio/assumptions.py).
   const [assumptions, setAssumptions] = useState<DraftAssumption[]>([])
   const [dynamicAssumptions, setDynamicAssumptions] = useState(false)
+  // Scheduled operator messages (matrix_studio/injections.py), and whether an ensemble compares with/without.
+  const [injections, setInjections] = useState<DraftInjection[]>([])
+  const [compareInjections, setCompareInjections] = useState(false)
+  const [injectionReplicates, setInjectionReplicates] = useState(3)
   const [researchShared, setResearchShared] = useState(true)
   const [researchPersonas, setResearchPersonas] = useState(true)
   const [researchConsultants, setResearchConsultants] = useState(true)
@@ -478,6 +483,10 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
         ...(experts.length ? { experts, consult_limit: consultLimit } : {}),
         ...(assumptionsConfig(assumptions).length ? { assumptions: assumptionsConfig(assumptions) } : {}),
         ...(dynamicAssumptions ? { dynamic_assumptions: { enabled: true } } : {}),
+        // In an ensemble comparing with and without them, they belong to the compared group ONLY.
+        ...(injectionsConfig(injections).length && !(runType === 'ensemble' && compareInjections)
+          ? { injections: injectionsConfig(injections) }
+          : {}),
       },
       model: model || undefined,
       name: name.trim() || undefined,
@@ -510,6 +519,11 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
               },
             },
           ]
+        : []),
+      // Same message, same turn, in every run of this group; none in the base group. The server refuses
+      // it as a cast member's words — that would be varying a persona, not what the room hears.
+      ...(compareInjections && injectionsConfig(injections).length
+        ? [{ label: 'with-message', n: injectionReplicates, overrides: { injections: injectionsConfig(injections) } }]
         : []),
     ]
     return { body, cells }
@@ -808,6 +822,38 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
                 </Hint>
               </span>
             </label>
+            {injectionsConfig(injections).length > 0 && (
+              <label className="flex items-start gap-2 text-sm text-slate-300">
+                <input
+                  type="checkbox"
+                  className="mt-1"
+                  checked={compareInjections}
+                  onChange={(e) => setCompareInjections(e.target.checked)}
+                />
+                <span>
+                  Also compare with and without the scheduled messages
+                  <Hint label="compare with and without the scheduled messages">
+                    The base group runs without them; a second group hears them at the same turn in
+                    every run. The report counts each group separately, so a conclusion that appears
+                    only after the message is attributable to it. The messages must come from a voice
+                    outside the cast.
+                  </Hint>
+                </span>
+              </label>
+            )}
+            {compareInjections && injectionsConfig(injections).length > 0 && (
+              <label className="flex items-center gap-2 pl-6 text-sm text-slate-300">
+                Runs with the messages
+                <input
+                  type="number"
+                  min={MIN_REPLICATES}
+                  max={MAX_MEMBERS}
+                  value={injectionReplicates}
+                  onChange={(e) => setInjectionReplicates(Number(e.target.value))}
+                  className="w-16 rounded border border-matrix-border bg-matrix-bg p-1 text-sm"
+                />
+              </label>
+            )}
             {compareHybrid && (
               <label className="flex items-center gap-2 pl-6 text-sm text-slate-300">
                 Hybrid runs
@@ -825,7 +871,8 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
               </label>
             )}
             <p className="text-[11px] text-slate-500">
-              {replicates + (compareHybrid ? hybridReplicates : 0)} conversations, each up to{' '}
+              {replicates + (compareHybrid ? hybridReplicates : 0) +
+                (compareInjections && injectionsConfig(injections).length ? injectionReplicates : 0)} conversations, each up to{' '}
               {maxMessages} turns.
               {compareHybrid
                 ? ' Only the speaker method differs between the two groups.'
@@ -1592,6 +1639,8 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
         limit={consultLimit}
         onLimit={setConsultLimit}
       />
+
+      <InjectionsEditor injections={injections} onChange={setInjections} maxTurns={maxMessages} />
 
       <AssumptionsEditor
         assumptions={assumptions}

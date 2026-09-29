@@ -212,7 +212,17 @@ async def reconstruct_at_turn(
             content = payload.get("content", "")
 
         message = {"speaker": speaker, "content": content, "turn": event["turn"]}
+        if payload.get("injection"):
+            # A scheduled injection's key (matrix_studio/injections.py): without it a run resumed from this
+            # rebuild would deliver the same injection a second time.
+            message["injection"] = payload["injection"]
         conversation.append(message)
+
+        # An injected voice that is not in the cast — a customer, a regulator's letter — is part of the
+        # transcript and NOT a participant. Adding it as an agent put it in the speaker pool of every
+        # branch rebuilt from the log, with a blank persona.
+        if payload.get("injected") and speaker not in agents:
+            continue
 
         # A speaker may not be in the declared cast for legacy data; add it so
         # the reconstructed state stays faithful to the transcript.

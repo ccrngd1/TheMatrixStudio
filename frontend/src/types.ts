@@ -360,6 +360,8 @@ export interface FeedMessage {
   citations?: CitationMark[]
   /** Set when this is a consultant's answer, not a participant's turn. */
   consultant?: { expert: string; askedBy: string; question: string }
+  /** Put into the conversation by the operator (a branch or a scheduled message), not generated. */
+  injected?: boolean
 }
 
 // -------- Phase 2c: cognition / introspection -------- //
