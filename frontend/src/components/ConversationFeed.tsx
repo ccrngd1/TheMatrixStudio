@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import { useEffect, useRef, useState } from 'react'
-import type { AgentView, FeedMessage, Quote, SourcePassage, WorkingAssumption } from '../types'
+import type { AgentView, FeedMessage, PositionShift, Quote, SourcePassage, WorkingAssumption } from '../types'
 import { AvatarBadge } from './AvatarBadge'
 import { SourceViewer } from './SourceViewer'
 import { citeSegments, unsourcedCitations } from '../lib/citeText'
@@ -149,6 +149,7 @@ export function ConversationFeed({
                       {m.consultant.askedBy} asked: “{m.consultant.question}”
                     </p>
                   )}
+                  {m.shift && <ShiftFlag s={m.shift} speaker={m.speaker} />}
                   <MessageBody
                     m={m}
                     index={sourceIndex}
@@ -353,6 +354,38 @@ function AssumptionCard({
           </span>
           {error && <span className="w-full text-rose-300">{error}</span>}
         </div>
+      )}
+    </div>
+  )
+}
+
+// A persona said its position moved: what it credited, and what it had said would move it. Flag-only — a
+// word match, so it asks the reader to check rather than telling them it was a fold.
+function ShiftFlag({ s, speaker }: { s: PositionShift; speaker: string }) {
+  const credits = s.credits.length
+    ? s.credits.map((c) => `${c.name} (${c.kind})`).join(', ')
+    : 'nobody named'
+  return (
+    <div
+      className={`mb-1 rounded border px-2 py-1 text-[11px] ${
+        s.no_listed_condition ? 'border-amber-500/50 bg-amber-950/30 text-amber-200' : 'border-slate-600/50 text-slate-400'
+      }`}
+      title="Found by matching words, not by judgement. Read the message and decide."
+    >
+      <span className="font-semibold">⚑ {speaker} says their position moved</span> — credits {credits}.
+      {s.conditions.length > 0 && (
+        <>
+          {' '}
+          {s.no_listed_condition ? (
+            <span>None of the conditions {speaker} said would move them appears to be named: </span>
+          ) : (
+            <span>Appears to name a stated condition: </span>
+          )}
+          <span className="italic">
+            {(s.no_listed_condition ? s.conditions.map((c) => c.condition) : s.matched_conditions).join('; ')}
+          </span>
+          .
+        </>
       )}
     </div>
   )

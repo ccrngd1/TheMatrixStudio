@@ -30,6 +30,8 @@ export interface SimEvent {
     // A working assumption the room reasons from (matrix_studio/assumptions.py). Not speech.
     | 'assumption.made'
     | 'assumption.withdrawn'
+    // A persona said its position moved (matrix_studio/shifts.py). Flag-only.
+    | 'position.shift'
     | 'error'
   agent_name: string | null
   payload: Record<string, any>
@@ -362,6 +364,16 @@ export interface FeedMessage {
   consultant?: { expert: string; askedBy: string; question: string }
   /** Put into the conversation by the operator (a branch or a scheduled message), not generated. */
   injected?: boolean
+  /** Set when the persona said its position moved in this message (matrix_studio/shifts.py). */
+  shift?: PositionShift
+}
+
+export interface PositionShift {
+  sentences: string[]
+  credits: { kind: string; name: string }[]
+  conditions: { position: string; firmness: string; condition: string }[]
+  matched_conditions: string[]
+  no_listed_condition: boolean
 }
 
 // -------- Phase 2c: cognition / introspection -------- //

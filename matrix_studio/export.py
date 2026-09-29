@@ -162,6 +162,18 @@ def assumption_line(a: Dict[str, Any]) -> str:
     return line
 
 
+def shift_line(speaker: str, s: Dict[str, Any]) -> str:
+    """One line for a flagged position shift (matrix_studio/shifts.py). A word match, and said to be."""
+    credits = ", ".join(f"{c.get('name')} ({c.get('kind')})" for c in s.get("credits") or []) or "nobody named"
+    line = f"{speaker} says their position moved; credits {credits}."
+    conds = [c.get("condition") for c in s.get("conditions") or []]
+    if conds and s.get("no_listed_condition"):
+        line += " None of their stated conditions appears to be named: " + "; ".join(conds) + "."
+    elif s.get("matched_conditions"):
+        line += " Appears to name a stated condition: " + "; ".join(s["matched_conditions"]) + "."
+    return line + " (Flagged by word match; check the message.)"
+
+
 async def run_model(db: Any, run: Dict[str, Any]) -> Dict[str, Any]:
     """Everything a run export shows, from stored data only. Makes no model call."""
     run_id = str(run["id"])
@@ -203,6 +215,14 @@ async def run_model(db: Any, run: Dict[str, Any]) -> Dict[str, Any]:
                 "message": f"Asked by {p.get('asked_by')}: \u201c{p.get('question')}\u201d\n\n{p.get('answer') or ''}",
                 "passages": retrieved.get((e.get("turn"), expert), []),
             })
+        elif e["event_type"] == "position.shift":
+            # matrix_studio/shifts.py: attached to the message it was found in (same speaker, same turn).
+            speaker = p.get("speaker") or e.get("agent_name")
+            for t in reversed(transcript):
+                if t["speaker"] == speaker and t["turn"] == e.get("turn") and not t.get("injected"):
+                    t["shift"] = {k: p.get(k) for k in ("sentences", "credits", "conditions",
+                                                        "matched_conditions", "no_listed_condition")}
+                    break
         elif e["event_type"] == "sim.completed" and p.get("converged"):
             converged = {"at_turn": p.get("converged_at_turn"), "reason": p.get("converged_reason")}
 
@@ -464,6 +484,8 @@ def render_markdown(model: Dict[str, Any]) -> str:
     for t in m["transcript"]:
         who = f"{t['speaker']} *(injected by the operator)*" if t.get("injected") else t["speaker"]
         out += [f"**Turn {t['turn']} — {who}**", "", t["message"], ""]
+        if t.get("shift"):
+            out += [f"> ⚑ {shift_line(t['speaker'], t['shift'])}", ""]
         if t["passages"]:
             refs = []
             for p in t["passages"]:
@@ -650,6 +672,8 @@ def render_html(model: Dict[str, Any]) -> str:
                             f"{_e(tag)}{_e(tier)}</span>")
             src = "<div class=\"src\">Sources in front of them: " + "; ".join(refs) + "</div>"
         who = _e(t["speaker"]) + (" <em>(injected by the operator)</em>" if t.get("injected") else "")
+        if t.get("shift"):
+            src = f"<div class=\"src\">⚑ {_e(shift_line(t['speaker'], t['shift']))}</div>" + src
         b.append(f"<div class=\"turn\"><div class=\"who\">Turn {_e(t['turn'])} — {who}</div>"
                  f"<div class=\"msg\">{_e(t['message'])}</div>{src}</div>")
 

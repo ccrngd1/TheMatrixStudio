@@ -99,4 +99,20 @@ describe('working assumptions', () => {
     )
     expect(screen.queryByText('Fork with a different assumption')).not.toBeInTheDocument()
   })
+
+  it('a shift flag sits on the message it was found in, and says when no stated condition is named', () => {
+    const ev = (seq: number, turn: number, type: SimEvent['event_type'], payload: any, agent: string | null = null): SimEvent =>
+      ({ run_id: 'r', seq, turn, event_type: type, agent_name: agent, payload }) as any
+    const s = deriveState(initialState([]), [
+      ev(1, 1, 'agent.response', { speaker: 'Theo', message: "Mina drew the line, and I'll give ground on it." }, 'Theo'),
+      ev(2, 1, 'position.shift', { speaker: 'Theo', sentences: ['x'], credits: [{ kind: 'persona', name: 'Mina' }],
+        conditions: [{ position: 'p', firmness: 'firm', condition: 'a regulation' }],
+        matched_conditions: [], no_listed_condition: true }, 'Theo'),
+    ])
+    expect(s.feed[0].shift?.no_listed_condition).toBe(true)
+    render(<ConversationFeed feed={s.feed} agents={{ Theo: agent('Theo') }} activeSpeaker={null} thinking={false} />)
+    expect(screen.getByText(/Theo says their position moved/)).toBeInTheDocument()
+    expect(screen.getByText(/credits Mina \(persona\)/)).toBeInTheDocument()
+    expect(screen.getByText('a regulation')).toBeInTheDocument()
+  })
 })

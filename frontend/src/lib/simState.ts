@@ -164,6 +164,20 @@ export function applyEvent(prev: SimState, e: SimEvent): SimState {
       }
       break
     }
+    case 'position.shift': {
+      // Attached to the message it was found in: the same speaker's latest message on this turn.
+      const who = e.payload.speaker ?? e.agent_name
+      const i = [...state.feed].reverse().findIndex((m) => m.speaker === who && m.turn === e.turn && !m.injected)
+      if (i >= 0) {
+        const at = state.feed.length - 1 - i
+        const p = e.payload
+        state.feed = state.feed.map((m, n) => (n === at ? { ...m, shift: {
+          sentences: p.sentences ?? [], credits: p.credits ?? [], conditions: p.conditions ?? [],
+          matched_conditions: p.matched_conditions ?? [], no_listed_condition: Boolean(p.no_listed_condition),
+        } } : m))
+      }
+      break
+    }
     case 'assumption.withdrawn': {
       state.assumptions = state.assumptions.filter((x) => x.id !== String(e.payload.id))
       break

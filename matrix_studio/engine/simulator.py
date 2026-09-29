@@ -29,6 +29,7 @@ from matrix_studio.models import ModelSet, model_for
 from matrix_studio import assumptions as assumptions_mod
 from matrix_studio import experts as experts_mod
 from matrix_studio import injections as injections_mod
+from matrix_studio import shifts as shifts_mod
 
 # Type alias for the Phase 1 live-emit callback. It receives one structured
 # event dict (same shape as a persisted row) for each event the engine emits.
@@ -2418,6 +2419,18 @@ async def _run_turns(
                 agent_name=speaker_name,
                 payload=response_payload,
             )
+
+            # A persona saying its position moved (matrix_studio/shifts.py): flagged with what it credits and
+            # the conditions it had stated, for the reader. Flag-only — the turn stands as said.
+            shift = shifts_mod.flag(
+                str(response_data.get("content") or ""), speaker=speaker_name, structured=speaker.structured,
+                personas=list(agents.keys()), consultants=[e.name for e in (experts or [])],
+                injected=sorted({m["speaker"] for m in conversation if m.get("injection")}),
+                assumptions=[a.id for a in ledger_assumptions],
+            )
+            if shift is not None:
+                await emit(turn=turn, seq=next_seq(), event_type="position.shift", agent_name=speaker_name,
+                           payload=shift)
 
             if ask:
                 await _consult(

@@ -127,6 +127,7 @@ def run_brief(model: Dict[str, Any]) -> Dict[str, Any]:
         for row in plan
     ], MAX_EVIDENCE)
     converged = model.get("converged")
+    shifts = [t["shift"] for t in model.get("transcript") or [] if t.get("shift")]
     return {
         "kind": "run",
         "id": model["id"],
@@ -160,6 +161,10 @@ def run_brief(model: Dict[str, Any]) -> Dict[str, Any]:
             + (f", converged at turn {converged.get('at_turn')}" if converged else ""),
             *[line for line in model.get("settings") or [] if line.startswith("Personas' voice")],
             f"Cost {ex._money(model.get('cost_usd'))}",
+            # matrix_studio/shifts.py: how often a persona said it moved, and how often with none of its own
+            # stated conditions in sight — the reader's cue to check the full report before trusting a result.
+            *([f"{len(shifts)} position shift(s) flagged, {sum(1 for x in shifts if x.get('no_listed_condition'))}"
+               " naming none of the persona's stated conditions"] if shifts else []),
         ],
         "created_at": model.get("created_at"),
         "exported_at": model.get("exported_at"),
