@@ -1594,6 +1594,28 @@ async def _propose_assumption(
     proposal, why_not = assumptions_mod.parse_proposal(
         parsed, conversation[-assumptions_mod.RECENT_MESSAGES:], ledger,
     )
+    kind: Optional[str] = None
+    if proposal is not None:
+        # The second call (`assumptions.KINDS`): only a FACT is recorded. A failed or unreadable
+        # classification is not a FACT, so it records nothing — the safe direction for a feature whose
+        # measured failure was assuming part of the answer.
+        try:
+            response = await litellm.acompletion(
+                model=model_for(model, "speaker_selection") or settings.litellm_model,
+                messages=assumptions_mod.classify_messages(topic, proposal["statement"]),
+                temperature=0.0,
+                response_format={"type": "json_object"},
+                drop_params=True,
+            )
+            kind, why = assumptions_mod.parse_kind(
+                extract_json_object((response.choices[0].message.content or "").strip())
+            )
+            cost += float((getattr(response, "_hidden_params", None) or {}).get("response_cost") or 0.0)
+        except Exception as exc:  # noqa: BLE001
+            kind, why = "UNKNOWN", f"classification failed: {type(exc).__name__}"
+        if kind != "FACT":
+            why_not = f"classified {kind}: {why}"
+            proposal = None
     raw = (parsed or {}).get("assumption") if isinstance(parsed, dict) else None
     await emit(
         turn=completed_turns, seq=next_seq(), event_type="assumption.checked", agent_name=None,
@@ -1602,6 +1624,7 @@ async def _propose_assumption(
                  # A proposal the engine discarded is recorded with its reason and what it said, so the
                  # trigger rule's false positives are countable rather than invisible.
                  **({"rejected": why_not, "proposal": raw} if proposal is None and isinstance(raw, dict) else {}),
+                 **({"kind": kind} if kind else {}),
                  **({"error": error} if error else {})},
     )
     if proposal is None:

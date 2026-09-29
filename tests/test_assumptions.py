@@ -183,12 +183,14 @@ async def test_the_api_takes_them_and_refuses_an_empty_statement():
 # --------------------------------------------------------------------------- #
 
 
-def _fake_dynamic(log, checks, propose=True):
+def _fake_dynamic(log, checks, propose=True, kind="FACT"):
     state = {"i": 0}
 
     def fake(*_a, **kw):
         msgs = kw["messages"]
         text = " ".join(m["content"] for m in msgs)
+        if "Classify the proposal" in text:
+            return _Resp(json.dumps({"kind": kind, "why": "test"}))
         if "You keep a discussion moving" in text:
             checks.append(text)
             body = ({"assumption": {"statement": "Churn is about 7%", "basis": "both guessed 5-9%",
@@ -472,3 +474,24 @@ async def test_a_repeat_of_an_assumption_in_force_is_rejected_and_a_written_id_i
     ok, _ = am.parse_proposal({"assumption": {"statement": "A3: Records are retrievable in 85% of cases",
                                              "asks": ["what share come from partners"]}}, conv, ledger)
     assert ok["statement"] == "Records are retrievable in 85% of cases"
+
+
+@pytest.mark.parametrize("kind", ["PLAN", "DECISION", "POSITION", "nonsense"])
+async def test_only_a_fact_is_recorded(db, kind):
+    log, checks = [], []
+    with patch("matrix_studio.engine.simulator.litellm.acompletion",
+               side_effect=_fake_dynamic(log, checks, kind=kind)):
+        await run_simulation(_dyn_request(every=1, limit=3, turns=3), db=db, run_id=f"cl-{kind}")
+    assert await _events(db, f"cl-{kind}", "assumption.made") == []
+    checked = await _events(db, f"cl-{kind}", "assumption.checked")
+    last = checked[-1]
+    assert last["proposed"] is False and last["rejected"].startswith("classified ")
+    assert last["kind"] == (kind if kind != "nonsense" else "UNKNOWN")
+
+
+async def test_a_fact_is_recorded_with_its_kind_and_both_calls_are_costed(db):
+    log, checks = [], []
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake_dynamic(log, checks)):
+        await run_simulation(_dyn_request(every=1, limit=1, turns=3), db=db, run_id="cl-fact")
+    made = [c for c in await _events(db, "cl-fact", "assumption.checked") if c["proposed"]]
+    assert made[0]["kind"] == "FACT" and made[0]["cost_usd"] == pytest.approx(0.002)

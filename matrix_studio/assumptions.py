@@ -345,3 +345,41 @@ def usage(assumption_ids: Sequence[str], transcript: Sequence[Dict[str, Any]]) -
                                                  "sentence": sentence.strip()[:300]})
                     break
     return out
+
+
+# --------------------------------------------------------------------------- #
+# Classifying a proposal before it is recorded (docs/MODERATOR-ASSUMPTIONS.md, "next step")
+# --------------------------------------------------------------------------- #
+
+#: Measured: of the nine assumptions the moderator made on three runs, 6 were facts, 2 plans and 1 part of
+#: the answer — the check's own prompt says "never a plan, never the decision" and that was not enough.
+#: A second, narrower call does one job: say what KIND of claim this is. Only FACT is recorded.
+KINDS = ("FACT", "PLAN", "DECISION", "POSITION")
+
+_CLASSIFY_PROMPT = """A discussion is about: {topic}
+
+Someone proposes this as a working assumption the discussion should reason from:
+"{statement}"
+
+Classify the proposal as exactly ONE of:
+  FACT      a claim about the state of the world that could in principle be checked: a number, a rate, a
+            date, what a rule or document says, whether an event has happened, what a system can do today.
+  PLAN      something the participants or their organisation will do or choose: a size, a timeline, a
+            design, a process, what a form or product will include.
+  DECISION  all or part of the answer to the question the discussion is about — including any statement
+            that something will or will not go ahead.
+  POSITION  a participant's view or a value judgement.
+
+If any part of it is a PLAN, DECISION or POSITION, choose that rather than FACT.
+
+Reply with ONLY a JSON object: {{"kind": "FACT|PLAN|DECISION|POSITION", "why": "<under 15 words>"}}"""
+
+
+def classify_messages(topic: str, statement: str) -> List[Dict[str, str]]:
+    return [{"role": "user", "content": _CLASSIFY_PROMPT.format(topic=topic, statement=statement)}]
+
+
+def parse_kind(parsed: Optional[Dict[str, Any]]) -> Tuple[str, str]:
+    """(kind, why). Anything unreadable is "UNKNOWN", which is not FACT and so is not recorded."""
+    kind = str((parsed or {}).get("kind") or "").strip().upper()
+    return (kind if kind in KINDS else "UNKNOWN"), str((parsed or {}).get("why") or "")[:200]
