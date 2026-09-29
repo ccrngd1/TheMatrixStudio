@@ -211,7 +211,7 @@ describe('NewRunForm option hints', () => {
     expect(body.config.dynamic_assumptions).toEqual({ enabled: true })
   })
 
-  it('sends evidence_lean only when the operator ticks it', () => {
+  it('sends evidence_lean on by default and off when the operator unticks it', () => {
     renderForm()
     fireEvent.change(screen.getByPlaceholderText(/What should the cast discuss/i), { target: { value: 'a topic' } })
     fireEvent.change(screen.getByPlaceholderText('Name'), { target: { value: 'Ada' } })
@@ -226,7 +226,7 @@ describe('NewRunForm option hints', () => {
     fireEvent.click(screen.getByRole('button', { name: /Run simulation/ }))
 
     const body = (api.createRun as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]
-    expect(body.config.personas).toEqual({ enabled: true, evidence_lean: true })
+    expect(body.config.personas).toEqual({ enabled: true, evidence_lean: false })
   })
 
   it('sends convictions and turns the personas feature on when authored', () => {
@@ -243,7 +243,7 @@ describe('NewRunForm option hints', () => {
     fireEvent.click(screen.getByRole('button', { name: /Run simulation/ }))
 
     const body = (api.createRun as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]
-    expect(body.config.personas).toEqual({ enabled: true })
+    expect(body.config.personas).toEqual({ enabled: true, evidence_lean: true })
     expect(body.cast[0].structured.viewpoints[0]).toEqual({
       position: 'consent comes first',
       firmness: 'firm',
@@ -349,7 +349,7 @@ describe('NewRunForm option hints', () => {
       // Carried through, not dropped — see the dedicated test below.
       underlying_concern: 'I own it when a customer never gets a working run',
     })
-    expect(body.config.personas).toEqual({ enabled: true })
+    expect(body.config.personas).toEqual({ enabled: true, evidence_lean: true })
   })
 
   it('uses the brief as the topic when the topic is still empty', async () => {

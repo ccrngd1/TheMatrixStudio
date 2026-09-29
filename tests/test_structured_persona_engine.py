@@ -337,7 +337,10 @@ async def test_evidence_lean_reaches_the_prompt_only_when_asked_for(db):
 
     on = "\n".join(_speaker_prompts(
         await _run(db, "leanon", personas={"enabled": True, "evidence_lean": True}), "Dana"))
-    off = "\n".join(_speaker_prompts(await _run(db, "leanoff", personas={"enabled": True}), "Dana"))
+    off = "\n".join(_speaker_prompts(
+        await _run(db, "leanoff", personas={"enabled": True, "evidence_lean": False}), "Dana"))
+    default = "\n".join(_speaker_prompts(await _run(db, "leandef", personas={"enabled": True}), "Dana"))
+    assert EVIDENCE_LEAN_RULE in default, "on by default since docs/EVIDENCE-LEAN-2.md"
     assert EVIDENCE_LEAN_RULE in on and "which way that guess makes you lean TODAY" in on
     assert "lean TODAY" not in off, "off must be byte-identical to the shipped prompt"
 
@@ -349,9 +352,9 @@ def test_the_lean_rule_requires_the_utterance_and_denies_the_guess_is_evidence()
     assert "A guess is not evidence" in EVIDENCE_LEAN_RULE
 
 
-def test_the_api_accepts_evidence_lean_and_defaults_it_off():
+def test_the_api_accepts_evidence_lean_and_defaults_it_on():
     from matrix_studio.api.app import PersonaConfigModel
     from matrix_studio.state import PersonaConfig
 
-    assert PersonaConfigModel().evidence_lean is False and PersonaConfig().evidence_lean is False
+    assert PersonaConfigModel().evidence_lean is True and PersonaConfig().evidence_lean is True
     assert PersonaConfig.from_config({"personas": {"enabled": True, "evidence_lean": True}}).evidence_lean

@@ -249,8 +249,8 @@ class PersonaConfigModel(BaseModel):
     # Typed loosely here and validated by PersonaConfig, so an unknown name is a
     # 422 rather than a silent fallback to the default wording.
     dismissal_rule: Any = "mandatory"
-    # docs/EVIDENCE-LEAN.md. Off by default until its pre-registered comparison is scored.
-    evidence_lean: bool = False
+    # docs/EVIDENCE-LEAN.md. On by default since 2026-09-29 (docs/EVIDENCE-LEAN-2.md, operator decision).
+    evidence_lean: bool = True
 
 
 class InjectionModel(BaseModel):

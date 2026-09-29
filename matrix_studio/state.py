@@ -448,9 +448,10 @@ class PersonaConfig(BaseModel):
     )
 
     # docs/EVIDENCE-LEAN.md: a persona asking for evidence must also say what it expects the evidence to
-    # show and which way it leans today. Off until the pre-registered comparison says otherwise.
+    # show and which way it leans today. ON by default since 2026-09-29, by operator decision after
+    # docs/EVIDENCE-LEAN-2.md met its pre-registered criterion (lean 3/3 vs 0/3).
     evidence_lean: bool = Field(
-        default=False, description="Require a best guess and a current lean with every evidence request"
+        default=True, description="Require a best guess and a current lean with every evidence request"
     )
 
     @field_validator("dismissal_rule", mode="before")

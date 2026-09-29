@@ -59,3 +59,6 @@ Runs: off `cbff706b` `b315d8d8` `ba6ddca6` ; on `d689b591` `54e3c278` `9e3da26d`
 **Read with the first comparison.** Both now point the same way on the lean: 2 of 3 vs 1 of 3 on one
 pass, 8 of 9 vs 4 of 9 passes on re-analysis, and 9 of 9 vs 1 of 9 here, on fresh runs with the measure
 fixed in advance. One brief throughout, so nothing here speaks to other kinds of topic.
+
+**Operator decision, 2026-09-29:** `personas.evidence_lean` is **on by default** for new runs. A run can
+still turn it off, and the new-run form sends the choice explicitly either way.

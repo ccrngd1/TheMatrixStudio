@@ -79,9 +79,9 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
   const [research, setResearch] = useState(false)
   // Ask personas to cite each passage they rely on, inline. On by default (docs/CITE-INLINE.md).
   const [citeInline, setCiteInline] = useState(true)
-  // A best guess and a current lean with every evidence request (docs/EVIDENCE-LEAN.md). Opt-in: its
-  // pre-registered comparison met one primary and missed the other.
-  const [evidenceLean, setEvidenceLean] = useState(false)
+  // A best guess and a current lean with every evidence request. On by default since 2026-09-29
+  // (docs/EVIDENCE-LEAN-2.md); sent explicitly either way, so the run records what was chosen.
+  const [evidenceLean, setEvidenceLean] = useState(true)
   // Experts outside the room (matrix_studio/experts.py).
   const [consultants, setConsultants] = useState<DraftConsultant[]>([])
   const [consultLimit, setConsultLimit] = useState(6)
@@ -431,7 +431,7 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
         // existed. Enabling a feature nobody configured would cost tokens for
         // an empty prompt block.
         personas: anyConvictions
-          ? { enabled: true, ...(evidenceLean ? { evidence_lean: true } : {}) }
+          ? { enabled: true, evidence_lean: evidenceLean }
           : undefined,
         // Only sent when asked for: it defaults off server-side while it is being
         // validated, and an absent block means "use the deployment default".
@@ -1587,9 +1587,10 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
               a lean. A guess never counts as the evidence itself.
               <br />
               <br />
-              Measured (docs/EVIDENCE-LEAN.md, 3 runs each way): runs stating a lean rose from 1 of 3
-              to 2 of 3, guesses from 36% to 57% of requests, with standing objections, length and
-              cost unchanged or up. It missed its bar for guesses, so it is off by default.
+              Measured twice (docs/EVIDENCE-LEAN.md, EVIDENCE-LEAN-2.md): on fresh runs scored three
+              times each, every run with this on ended with a stated lean (3 of 3, 9 of 9 passes)
+              against none without it (0 of 3), with objections, length and cost within bounds. On by
+              default; untick it to compare against how personas speak without it.
             </Hint>
           </label>
         )}
