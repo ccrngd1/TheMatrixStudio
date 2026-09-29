@@ -116,3 +116,23 @@ written it would record nothing on this brief — the feature made inert rather 
 committed above, the prompt was not re-tuned against these nine; the classifier was **reverted** and
 never deployed. A second attempt needs its own labelled proposals from new runs, or it would be fitted
 to the labels it is judged by.
+
+## Addendum 2 — fresh proposals for a second classifier attempt (protocol set 2026-09-29, before collection)
+
+**Collection.** `scripts/shadow_assumption_checks.py` runs the moderator's check, unchanged, on stored
+40-turn transcripts at every point it would have fired live (after every 4th completed turn), using each
+run's own moderator model. Nothing is recorded to the runs and nobody reacts to a proposal. Proposals
+that pass the verbatim-asks and repeat checks join a shadow ledger for that run, as they would live; the
+cap of 3 is lifted so the set is larger. Source runs, fixed now: the eight Stage 1 runs
+(`private/docs/evidence-plan-stage1.json`) and the six EVIDENCE-LEAN runs — none had assumptions on.
+
+**Labels.** Every proposal that passes those checks is labelled FACT / PLAN / DECISION / POSITION by the
+assistant under the Labelling definitions above, before any classifier sees it. The SHA-256 of the
+labels file is committed before the classifier is run.
+
+**Split.** A proposal's key is `<run8>:<after_turn>`. `int(sha1(key), 16) % 2 == 0` → **working half**
+(the classifier prompt may be revised against it, any number of times); otherwise → **held-out half**
+(the chosen prompt is run on it exactly once).
+
+**Bar, on the held-out half:** rejects **every** non-fact, and keeps **at least 80%** of the facts. Met →
+the classifier goes in (still under the opt-in flag). Missed → it does not, and the miss is recorded.
