@@ -99,12 +99,3 @@ assumptions were labelled before the effects pass.
   scored them the day before. So the reported evidence-plan comparison (on 0.33 vs off 0.50; lean 0 vs 2)
   is within that noise and supports nothing, and the EVIDENCE-LEAN result should be read with the same
   caveat.
-
-## Addendum — the classifier, checked offline (criterion set 2026-09-29, before it ran)
-
-The next step named above is built: after the verbatim-asks check, a second small call
-(`assumptions.KINDS`, `_CLASSIFY_PROMPT`, the moderator's model, temperature 0) labels the proposal and
-only a FACT is recorded. Before running it on anything, its bar against the nine labelled assumptions
-above: **it rejects all three non-facts (two PLAN, one DECISION) and keeps at least five of the six
-FACTs.** The prompt is not to be edited after this check runs; a miss is reported, not tuned away.
-The labels are the assistant's (see Labelling), which this check inherits.
