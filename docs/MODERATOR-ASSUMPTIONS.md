@@ -62,3 +62,40 @@ with `--labels`.
 **What n = 3 can say.** Roughly how often it fires and whether what it assumes is usually the right
 kind of thing. With about three checks' worth of assumptions per run at most, "80%" rests on perhaps
 3–9 items; the verdict is labelled with that count.
+
+## Result — 2026-09-29
+
+On arm `8d9916d9`, `2b3e9978`, `2c000a87` (all complete, 40 turns, launched together after `48659af`);
+control as declared. Scored by `scripts/analyse_moderator_assumptions.py` as committed; the nine
+assumptions were labelled before the effects pass.
+
+| | on | off (control) |
+|---|---|---|
+| checks / made / rejected by the asks check | 17 / 9 / 8 | — |
+| labels of the 9 made | FACT 6, PLAN 2, **DECISION 1** | — |
+| runs making at least one | 3 of 3 | — |
+| mean standing dissenters | 2.7 | 2.0 |
+| median words per message | 148.5 | 137 |
+| total cost | $3.63 | $3.33 |
+
+- **Primary 1: MISSED** — 0.67 FACT (6 of 9), and one DECISION: an assumption that ended "…and this
+  launch proceeds without that measurement", which asserts part of the answer.
+- **Primary 2: met** — it fired in every run; roughly half its proposals were rejected by the verbatim-asks
+  check (8 of 17 checks), and it still made the full cap of three in each run.
+- **Guardrails: met.** Dissent up, speech +8%, cost +9%.
+- **Decision, as pre-registered:** stays opt-in. The next step named here — classifying a proposal
+  before it is recorded — is what primary 1 calls for.
+
+**Also found, not part of the verdict:**
+
+- **Two of the nine were verbatim repeats** of an assumption already in force (A3 = A2, in two runs),
+  despite the prompt's "do not repeat". A defect in the check, fixed after this result: a proposal whose
+  statement matches one in force is now rejected by the engine.
+- **The personas rarely used them:** 7 of 9 were never cited by id. An assumption the room does not
+  reason from costs a check and changes nothing; whether that is the wording of the block or the moment
+  they arrive (mid-argument, in a six-persona room) is not separable at this n.
+- **The analyst's evidence-plan scores are unstable on identical transcripts.** The same three control
+  runs scored best-guess 0.50 and a lean in 2 of 3 here, and 0.36 and 1 of 3 when `docs/EVIDENCE-LEAN.md`
+  scored them the day before. So the reported evidence-plan comparison (on 0.33 vs off 0.50; lean 0 vs 2)
+  is within that noise and supports nothing, and the EVIDENCE-LEAN result should be read with the same
+  caveat.

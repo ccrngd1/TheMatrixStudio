@@ -1592,7 +1592,7 @@ async def _propose_assumption(
         logger.warning("Assumption check after turn %d failed: %s", completed_turns, exc)
         error = str(exc)[:300]
     proposal, why_not = assumptions_mod.parse_proposal(
-        parsed, conversation[-assumptions_mod.RECENT_MESSAGES:],
+        parsed, conversation[-assumptions_mod.RECENT_MESSAGES:], ledger,
     )
     raw = (parsed or {}).get("assumption") if isinstance(parsed, dict) else None
     await emit(

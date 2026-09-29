@@ -461,3 +461,14 @@ async def test_on_a_run_with_consultants_the_check_really_receives_them(db):
     with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake_dynamic(log, checks)):
         await run_simulation(req, db=db, run_id="dy7")
     assert checks and "Ada: the churn records" in checks[0] and "the room should ask" in checks[0]
+
+
+async def test_a_repeat_of_an_assumption_in_force_is_rejected_and_a_written_id_is_dropped():
+    ledger = [am.Assumption("A2", "Of the 900 weekly signups, 60-70% arrive from the partner channel", source=am.MODERATOR, turn=16)]
+    conv = [{"speaker": "A", "content": "what share come from partners?"}, {"speaker": "B", "content": "what share come from partners?"}]
+    dup, why = am.parse_proposal({"assumption": {"statement": "A3: Of the 900 weekly signups, 60-70% arrive from the partner channel.",
+                                                "asks": ["what share come from partners"]}}, conv, ledger)
+    assert dup is None and why == "repeats A2, already in force"
+    ok, _ = am.parse_proposal({"assumption": {"statement": "A3: Records are retrievable in 85% of cases",
+                                             "asks": ["what share come from partners"]}}, conv, ledger)
+    assert ok["statement"] == "Records are retrievable in 85% of cases"

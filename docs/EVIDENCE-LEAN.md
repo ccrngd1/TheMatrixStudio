@@ -91,3 +91,10 @@ its position instead of the guess. A wording that asked for the guess *even
 when the expected answer is "none exists"* is the obvious next variant; it would need its own
 pre-registration. The off-arm baseline (0.36) is also below Stage 1's 0.58 on stored runs, so the
 Stage 1 figure is not a stable baseline at n = 3.
+
+**Caveat added 2026-09-29.** Re-scoring the same three off-arm runs a day later
+(`docs/MODERATOR-ASSUMPTIONS.md`) gave best guess 0.50 and a lean in 2 of 3, against 0.36 and 1 of 3
+here. The analyst that extracts the evidence plan is not stable on identical transcripts, so the
+differences above (0.57 vs 0.36; 2 of 3 vs 1 of 3) are within its noise. The verdict is unchanged — the
+flag stays opt-in — but it should not be read as evidence the wording works. Scoring each run several
+times, or a deterministic measure, would be needed before running this comparison again.

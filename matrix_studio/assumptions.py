@@ -24,6 +24,7 @@ recorded as an `assumption.made` event at turn 0, so the transcript shows it and
 
 from __future__ import annotations
 
+import re as _re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -250,16 +251,42 @@ def verified_asks(asks: Any, conversation: Sequence[Dict[str, Any]]) -> Tuple[Li
     return found, len(where)
 
 
+#: Word overlap at which a proposal counts as repeating an assumption already in force. Measured
+#: (docs/MODERATOR-ASSUMPTIONS.md): 2 of 9 made were verbatim repeats despite "do not repeat" in the prompt.
+REPEAT_OVERLAP = 0.8
+
+
+def _words(text: str) -> set:
+    return set(_norm(text).replace(",", " ").replace(".", " ").split())
+
+
+def repeats(statement: str, ledger: Sequence[Assumption]) -> Optional[str]:
+    """The id of an assumption in force that this statement repeats, or None."""
+    mine = _words(statement)
+    for a in ledger:
+        theirs = _words(a.statement)
+        if mine and theirs and len(mine & theirs) / len(mine | theirs) >= REPEAT_OVERLAP:
+            return a.id
+    return None
+
+
 def parse_proposal(parsed: Optional[Dict[str, Any]],
-                   conversation: Sequence[Dict[str, Any]] = ()) -> Tuple[Optional[Dict[str, Any]], str]:
+                   conversation: Sequence[Dict[str, Any]] = (),
+                   ledger: Sequence[Assumption] = ()) -> Tuple[Optional[Dict[str, Any]], str]:
     """(the proposed assumption or None, why not). Anything malformed is None: a missing assumption costs
     a turn of "show me"; an invented one would steer the whole run."""
     raw = (parsed or {}).get("assumption")
     if not isinstance(raw, dict):
         return None, "no gap"
-    statement = " ".join(str(raw.get("statement") or "").split())[:MAX_STATEMENT_CHARS]
+    # The model sometimes writes the id it expects into the statement ("A3: Of the 1,260…"); the engine
+    # assigns ids, so a leading one is dropped rather than shown twice.
+    statement = _re.sub(r"^\s*A\d+\s*[:.)\-]\s*", "", " ".join(str(raw.get("statement") or "").split()))
+    statement = statement[:MAX_STATEMENT_CHARS]
     if not statement:
         return None, "no statement"
+    same = repeats(statement, ledger)
+    if same:
+        return None, f"repeats {same}, already in force"
     asks, messages = verified_asks(raw.get("asks"), conversation)
     if messages < MIN_ASKS:
         return None, f"the quoted asks occur in {messages} message(s) of the conversation; {MIN_ASKS} needed"
@@ -278,7 +305,6 @@ def next_id(ledger: Sequence[Assumption]) -> str:
 # Used and disputed: what the room did with each assumption
 # --------------------------------------------------------------------------- #
 
-import re as _re
 
 #: Words that, in the same sentence as an assumption's id, mark the sentence as disputing it. A heuristic
 #: — personas are told to dispute an assumption "plainly, by its id", which is what makes one workable —
