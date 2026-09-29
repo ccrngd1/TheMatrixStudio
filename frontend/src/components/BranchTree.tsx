@@ -63,7 +63,6 @@ function TreeNode({
         className={`flex cursor-pointer items-start gap-2 rounded px-2 py-1 hover:bg-matrix-panel/80 ${isCurrent ? 'border border-matrix-accent/50 bg-matrix-panel' : ''}`}
         style={{ paddingLeft: `${8 + depth * 16}px` }}
         onClick={() => onOpenRun?.(node.id)}
-        title={node.id}
       >
         {/* connector line indicator */}
         {depth > 0 && (

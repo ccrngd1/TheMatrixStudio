@@ -159,6 +159,10 @@ _RUN_FIELDS = (
     # into the config would make that a read-modify-write on a JSON blob. It is also a
     # different KIND of fact — the config is what was ASKED for, and this is what happened.
     "research_json",
+    # Where each persona ended (`stance.py`), written when the summary is generated. On the row so the
+    # run list can draw it without reading every run's summary and event log. Absent until then, and
+    # for every run summarised before the field existed.
+    "stance_json",
 )
 _ENSEMBLE_FIELDS = (
     "id", "owner_sub", "topic", "name", "description", "slug", "status", "created_at",
@@ -1134,6 +1138,34 @@ class DynamoStorage:
                 "Nothing was written — the corpus, if any, is still in the knowledge base.",
                 run_id, owner_sub,
             )
+            return False
+
+    async def set_run_stance(
+        self,
+        run_id: str,
+        stance: Optional[Dict[str, str]],
+        *,
+        owner_sub: Optional[str] = None,
+    ) -> bool:
+        """Record each persona's end stance (`stance.py`), or clear it with None. Returns whether it stuck.
+
+        Conditional on the run existing, for the reason `set_run_research` gives: `UpdateItem` upserts, and
+        a write to a missing run would manufacture a phantom row in the owner's history.
+        """
+        owner_sub = self._owner(owner_sub)
+        try:
+            await self._call(
+                self._table("runs").update_item,
+                Key={"pk": _user_pk(owner_sub), "sk": _run_sk(run_id)},
+                UpdateExpression="SET stance_json = :v",
+                ExpressionAttributeValues={":v": json.dumps(stance) if stance is not None else None},
+                ConditionExpression="attribute_exists(sk)",
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001
+            if "ConditionalCheckFailed" not in str(exc):
+                raise
+            logger.warning("Ignored a stance for run %s, which does not exist under owner %s.", run_id, owner_sub)
             return False
 
     # ------------------------------------------------------------------ #

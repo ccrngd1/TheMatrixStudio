@@ -61,6 +61,8 @@ export interface RunSummary {
   // For the run cards: the turn ceiling (for `LIVE 06/12`) and the cast (one hex token per persona).
   max_messages?: number | null
   cast_names?: string[]
+  /** Where each persona ended (`matrix_studio/stance.py`): set once the run is summarised, never while live. */
+  stance?: Record<string, 'support' | 'unstated' | 'holding'> | null
 }
 
 export interface AgentResult {

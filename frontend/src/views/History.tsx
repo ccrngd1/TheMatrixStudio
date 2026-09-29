@@ -5,8 +5,9 @@ import type { RunSummary } from '../types'
 import { isStalled } from '../lib/runStatus'
 import { Icon } from '../ui/icons'
 import {
-  Btn, Chip, Hex, HudCell, HudStrip, Panel, PanelButton, Tag, Ticks, identityOf, type RunState,
+  Btn, Chip, Hex, HudCell, HudStrip, Panel, PanelButton, STANCE_COLOR, Tag, Ticks, identityOf, type RunState,
 } from '../ui/primitives'
+import { StanceCounts } from '../components/run/Stance'
 
 // How long a load may take before the view says why it is still waiting.
 //
@@ -418,10 +419,17 @@ function RunCard({
       {!cell && r.description && <p className="cc-muted truncate">{r.topic}</p>}
       {live && r.max_messages ? <Ticks n={r.turn_count} max={r.max_messages} live /> : null}
       <div className="cc-meta flex items-center justify-between gap-2">
-        <span className="flex gap-[3px]">
+        <span className="flex items-center gap-[3px]">
+          {/* Ringed by end stance once the run is summarised (§6.1); the counts beside say it in glyphs. */}
           {cast.slice(0, 8).map((name) => (
-            <Hex key={name} name={name} slot={identityOf(name, cast)} size="xs" />
+            <Hex key={name} name={name} slot={identityOf(name, cast)} size="xs"
+              ring={r.stance?.[name] ? STANCE_COLOR[r.stance[name]] : undefined} />
           ))}
+          {r.stance && (
+            <span className="ml-1.5">
+              <StanceCounts stance={r.stance} among={cast} />
+            </span>
+          )}
         </span>
         <span className="cc-num">
           {r.turn_count} turns · ${(r.total_cost_usd ?? 0).toFixed(4)}

@@ -19,6 +19,7 @@ import { BranchTree } from '../components/BranchTree'
 import { Scrubber } from '../components/Scrubber'
 import type { StoredSummary } from '../types'
 import { FaceStrip, RunHud, RunStatusTag, RunTabs } from '../components/run/RunChrome'
+import { RoomCell, RoomMap, StanceCounts, StanceDial } from '../components/run/Stance'
 import { Hint } from '../components/Hint'
 import { TopBar } from './Shell'
 import { navigate, type RunTab } from '../lib/route'
@@ -325,10 +326,25 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh, tab = 'conver
     </div>
   )
 
+  // Where each persona ended (`matrix_studio/stance.py`). Only once the run is summarised: a live run has no
+  // stance (§6.1), so every surface below draws without one until then.
+  const stance = completed ? (detail?.stance ?? null) : null
+  const spoke = state.order.filter((n) => state.feed.some((m) => m.speaker === n && !m.consultant && !m.injected))
+
   const castPane = (
     <div className="cc-pane">
       <div className="cc-scroll">
-        <CastBoard state={state} onSelect={setSelected} />
+        <Panel>
+          <div className="flex items-center justify-between gap-2">
+            <Label>Room map</Label>
+            {stance && <StanceCounts stance={stance} among={spoke} />}
+          </div>
+          <RoomMap order={state.order} feed={state.feed} stance={stance} next={next} onOpen={setSelected} />
+          <p className="cc-legend justify-center text-center">
+            node size = turns · line = spoke one after the other (sequence, not replies) · ring = end stance
+          </p>
+        </Panel>
+        <CastBoard state={state} onSelect={setSelected} stance={stance} />
       </div>
     </div>
   )
@@ -352,6 +368,18 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh, tab = 'conver
           </Panel>
         ) : (
           <>
+            {stance ? (
+              <Panel>
+                <Label>Where the room ended</Label>
+                <StanceDial stance={stance} among={spoke} />
+                <p className="cc-muted mt-1.5">
+                  Holding out: named among the summary's dissenters. Support: not a dissenter, and a position shift
+                  was flagged for them. Not stated: neither. Read from the summary and the shift flags, not judged.
+                </p>
+              </Panel>
+            ) : (
+              <p className="cc-muted">Generate the summary to see where each persona ended.</p>
+            )}
             <SummaryPanel
               runId={runId}
               generated={generated}
@@ -359,7 +387,11 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh, tab = 'conver
               defaultInstructions={defaultInstructions}
               canGenerate={completed}
               model={analysisModel || undefined}
-              onUpdated={setGenerated}
+              onUpdated={(g) => {
+                setGenerated(g)
+                // A new summary rewrites the stances server-side; re-read them without restarting the stream.
+                api.getRun(runId).then(setDetail).catch(() => {})
+              }}
             />
             {/* Renders nothing unless this run researched, so it adds no section to the
                 conversations that did not. §5.3: nobody watches the pass, so this is
@@ -403,6 +435,7 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh, tab = 'conver
             cost={state.totalCost}
             tokensIn={state.totalTokensIn}
             tokensOut={state.totalTokensOut}
+            room={stance ? <RoomCell stance={stance} order={spoke} /> : undefined}
           />
           {lineageRow}
           {alerts.map((a) => (

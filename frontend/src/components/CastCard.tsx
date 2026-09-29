@@ -3,7 +3,8 @@
 // the run so far. The whole row opens the dossier. The persona text is clamped rather than truncated to a
 // tooltip: a tooltip is hover-only, and the dossier one tap away has all of it.
 import type { AgentView } from '../types'
-import { Hex, PanelButton } from '../ui/primitives'
+import { Hex, PanelButton, STANCE_COLOR, type Stance } from '../ui/primitives'
+import { StanceTag } from './run/Stance'
 
 interface Props {
   agent: AgentView
@@ -12,13 +13,15 @@ interface Props {
   onClick: () => void
   /** The identity slot (`identityOf`), so the row matches the feed. */
   slot?: string
+  /** Where they ended, once the run is summarised. */
+  stance?: Stance
 }
 
-export function CastCard({ agent, active, thinking, onClick, slot = 'a0' }: Props) {
+export function CastCard({ agent, active, thinking, onClick, slot = 'a0', stance }: Props) {
   const n = agent.messageCount
   return (
     <PanelButton className="cc-prow" onClick={onClick} aria-label={`${agent.name}: open dossier`}>
-      <Hex name={agent.name} slot={slot} active={active} />
+      <Hex name={agent.name} slot={slot} active={active} ring={stance ? STANCE_COLOR[stance] : undefined} />
       <div className="cc-grow min-w-0">
         <b>{agent.name}</b>
         <div className="cc-muted line-clamp-2">{agent.persona || '—'}</div>
@@ -29,6 +32,7 @@ export function CastCard({ agent, active, thinking, onClick, slot = 'a0' }: Prop
           {agent.costUsd.toFixed(4)}
         </div>
       </div>
+      {stance && <StanceTag stance={stance} />}
     </PanelButton>
   )
 }

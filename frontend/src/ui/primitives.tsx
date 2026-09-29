@@ -160,13 +160,12 @@ export function Meter({ value, warn }: { value: number; warn?: boolean }) {
 
 /** A persona's hex token. `ring` is a stance or identity colour; `active` glows green (the next speaker). */
 export function Hex({
-  name, slot, size, ring, active, title,
-}: { name?: string; slot: string; size?: 'xs' | 'sm' | 'lg'; ring?: string; active?: boolean; title?: string }) {
+  name, slot, size, ring, active,
+}: { name?: string; slot: string; size?: 'xs' | 'sm' | 'lg'; ring?: string; active?: boolean }) {
   return (
     <span
       className={cx('cc-hx', size && `cc-${size}`, active && 'cc-active')}
       style={{ '--ring': ring ?? 'var(--line-hi)', ...(active ? { '--ph': phase() } : {}) } as Css}
-      title={title}
       aria-label={name}
     >
       <i className={`cc-${name ? slot : 'a0'}`}>{name ? initials(name) : '◆'}</i>

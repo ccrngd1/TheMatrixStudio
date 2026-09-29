@@ -713,7 +713,16 @@ def _card_fields(run: Dict[str, Any]) -> Dict[str, Any]:
         cast = []
     names = [str(m.get("name")) for m in cast if isinstance(m, dict) and m.get("name")] if isinstance(cast, list) else []
     max_messages = cfg.get("max_messages") if isinstance(cfg, dict) else None
-    return {"max_messages": max_messages if isinstance(max_messages, int) else None, "cast_names": names}
+    # Where each persona ended (`stance.py`); None until the run is summarised, and on every live run.
+    try:
+        stance = json.loads(run.get("stance_json") or "null")
+    except (TypeError, ValueError):
+        stance = None
+    return {
+        "max_messages": max_messages if isinstance(max_messages, int) else None,
+        "cast_names": names,
+        "stance": stance if isinstance(stance, dict) else None,
+    }
 
 
 #: Run statuses that mean the engine will send nothing more for that run.

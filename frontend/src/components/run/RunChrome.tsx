@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // What sits around a run's panes (docs/MOBILE-UI.md §4.2): the status tag, the HUD, the tabs and the face
-// strip. The HUD's third cell, the room, waits for stage 5 (§6.1): stance is only known once a run ends.
+// strip. The HUD's third cell, the room, is passed in once the run has a stance (§6.1: post-run only).
 import type { ReactNode } from 'react'
 import { hrefOf, type RunTab } from '../../lib/route'
 import { Hex, HudCell, HudStrip, Meter, Tag, Ticks, identityOf } from '../../ui/primitives'
@@ -39,8 +39,8 @@ export function RunStatusTag({
 
 /** Turn and spend, the first two things a watcher asks (§2 rule 3). */
 export function RunHud({
-  turn, max, live, cost, tokensIn, tokensOut,
-}: { turn: number; max?: number; live: boolean; cost: number; tokensIn: number; tokensOut: number }) {
+  turn, max, live, cost, tokensIn, tokensOut, room,
+}: { turn: number; max?: number; live: boolean; cost: number; tokensIn: number; tokensOut: number; room?: ReactNode }) {
   const k = (n: number) => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n))
   return (
     <HudStrip className="cc-runhud">
@@ -56,6 +56,7 @@ export function RunHud({
         {max ? <Ticks n={Math.min(turn, max)} max={max} live={live} /> : <Meter value={0} />}
       </HudCell>
       <HudCell label="Spend" value={`$${cost.toFixed(cost < 1 ? 4 : 2)}`} sub={`${k(tokensIn)} in / ${k(tokensOut)} out`} />
+      {room}
     </HudStrip>
   )
 }

@@ -372,5 +372,9 @@ def test_the_run_list_carries_the_card_fields():
            "cast_json": '[{"name": "Ana"}, {"name": "Bo"}, {"persona": "no name"}]'}
     s = _run_summary(row)
     assert s["max_messages"] == 12 and s["cast_names"] == ["Ana", "Bo"]
-    bad = _run_summary({"id": "r2", "topic": "t", "config_json": "not json", "cast_json": None})
-    assert bad["max_messages"] is None and bad["cast_names"] == []
+    assert s["stance"] is None, "no stance until the run is summarised"
+    bad = _run_summary({"id": "r2", "topic": "t", "config_json": "not json", "cast_json": None,
+                        "stance_json": "not json"})
+    assert bad["max_messages"] is None and bad["cast_names"] == [] and bad["stance"] is None
+    done = _run_summary({**row, "stance_json": '{"Ana": "holding", "Bo": "support"}'})
+    assert done["stance"] == {"Ana": "holding", "Bo": "support"}

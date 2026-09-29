@@ -119,7 +119,7 @@ export function ParticipationPanel({ feed: all, order, onJump }: Props) {
                     key={m.seq}
                     type="button"
                     onClick={() => onJump(m.seq)}
-                    title={`Turn ${m.turn} — ${name}: ${m.content.slice(0, 80)}`}
+                    aria-description={`${m.content.slice(0, 80)}`}
                     aria-label={`Jump to turn ${m.turn}, ${name}`}
                     className="h-3 min-w-[3px] flex-1 rounded-sm opacity-80 transition hover:opacity-100 hover:ring-1 hover:ring-matrix-accent"
                     style={{ backgroundColor: colorForName(name) }}

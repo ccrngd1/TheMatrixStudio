@@ -145,6 +145,9 @@ async def generate_and_store_summary(
     conversation = await _load_conversation(db, run)
     topic = run.get("topic", "")
     from matrix_studio import assumptions as assumptions_mod
+    from matrix_studio import stance as stance_mod
+
+    events = await db.get_events(run["id"])
 
     result = await analysis.generate_summary(
         conversation=conversation,
@@ -153,7 +156,7 @@ async def generate_and_store_summary(
         focus=focus,
         model=resolve_model(run, model),
         instructions=instructions,
-        context=assumptions_mod.summary_note(assumptions_mod.from_events(await db.get_events(run["id"]))),
+        context=assumptions_mod.summary_note(assumptions_mod.from_events(events)),
     )
     saved = await db.save_summary(
         run_id=run["id"],
@@ -165,6 +168,19 @@ async def generate_and_store_summary(
         instructions=result["instructions"],
     )
     saved["parsed"] = result["parsed"]
+    # Where each persona ended (docs/MOBILE-UI.md §6.1), from this summary's dissenters and the run's
+    # flagged shifts. Written every time, None included, so a regenerated summary that lost its
+    # dissenter list does not leave the previous one's stances standing. Best-effort: a stance is a view
+    # of the summary, and failing to store it must not lose the summary itself.
+    try:
+        by_persona = stance_mod.stances(
+            [m.get("name") for m in _load_cast(run) if isinstance(m, dict)],
+            result["payload"] if result.get("parsed") else None,
+            stance_mod.shifted_speakers(events),
+        )
+        await db.set_run_stance(run["id"], by_persona, owner_sub=run.get("owner_sub"))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not record stances for run %s: %s", run.get("id"), exc)
     # Charged to the owner's month, here rather than in the auto-summary path, because every
     # summary is generated through this function — including a regenerate from the UI, which is
     # a real model call over the whole transcript. It was charged to nobody: measured on
