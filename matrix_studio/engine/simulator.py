@@ -2180,6 +2180,11 @@ async def _run_turns(
                     if not verdict["ok"]:
                         checked_payload["principle"] = verdict["principle"]
                         checked_payload["reason"] = verdict["reason"]
+                        # The text the gate rejected. Without it no rejection can be judged after the
+                        # fact: the false-positive rate of the citation gate was unmeasurable from 98
+                        # stored runs because only the reason survived. Capped; it is transcript text
+                        # the run's owner already holds.
+                        checked_payload["rejected_text"] = str(response_data.get("content") or "")[:1500]
                     # What this check cost, including — when it rejects and a regeneration
                     # follows — the attempt it threw away. Both were already added to the
                     # speaker's snapshot total below, and neither was on any EVENT, so the UI

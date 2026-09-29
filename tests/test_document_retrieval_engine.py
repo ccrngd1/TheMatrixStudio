@@ -608,6 +608,8 @@ async def test_gate_rejects_citing_a_document_the_speaker_never_held(db, tmp_pat
     assert violations, "the gate did not reject the illegitimate citation"
     assert violations[0]["payload"]["principle"] == "citation_integrity"
     assert "marcus.md" in violations[0]["payload"]["reason"]
+    # The rejected text is kept, so a rejection can be judged afterwards (a false positive or not).
+    assert "marcus.md" in violations[0]["payload"]["rejected_text"]
 
     responses = await _events(db, "cite-gate", "agent.response")
     assert "marcus.md" not in responses[0]["payload"]["message"], (
