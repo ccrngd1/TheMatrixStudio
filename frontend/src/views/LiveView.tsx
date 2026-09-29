@@ -383,19 +383,17 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh, tab = 'conver
     <>
       {header}
       {scrubbing ? (
-        <div className="cc-legacy">
-          <Scrubber
-            runId={runId}
-            maxTurn={maxTurn}
-            cast={cast}
-            defaultBudget={maxMessages ?? maxTurn}
-            models={models}
-            defaultModel={analysisModel}
-            onBranch={branchFrom}
-            branching={branching}
-            onStartFresh={onStartFresh ? () => onStartFresh(runId) : undefined}
-          />
-        </div>
+        <Scrubber
+          runId={runId}
+          maxTurn={maxTurn}
+          cast={cast}
+          defaultBudget={maxMessages ?? maxTurn}
+          models={models}
+          defaultModel={analysisModel}
+          onBranch={branchFrom}
+          branching={branching}
+          onStartFresh={onStartFresh ? () => onStartFresh(runId) : undefined}
+        />
       ) : (
         <>
           <RunHud

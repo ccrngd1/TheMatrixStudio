@@ -393,3 +393,14 @@ option { background:var(--panel); }
 /* The form's selects carry long option labels; on a phone they wrap under their label instead of running off. */
 .cc-wizard label { max-width:100%; flex-wrap:wrap; }
 .cc-wizard select, .cc-wizard input:not([type=checkbox]):not([type=radio]) { max-width:100%; min-width:0; }
+/* The scrubber: timeline and fork controls, then the transcript as of the cursor. Columns from 768 px. */
+.cc-scrub { flex:1; min-height:0; display:flex; flex-direction:column; }
+.cc-scrub-controls { flex:none; max-height:58%; overflow-y:auto; display:flex; flex-direction:column; gap:10px; padding:10px 14px; }
+.cc-scrub-feed { flex:1; min-height:0; display:flex; flex-direction:column; border-top:1px solid var(--line); }
+.cc-wave i { cursor:pointer; }
+.cc-ctl { min-width:44px; min-height:44px; }
+@media (min-width: 768px) {
+.cc-scrub { display:grid; grid-template-columns:460px 1fr; }
+.cc-scrub-controls { max-height:none; }
+.cc-scrub-feed { border-top:none; border-left:1px solid var(--line); }
+}

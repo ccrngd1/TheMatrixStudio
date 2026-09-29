@@ -23,12 +23,14 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../api'
 import type { KnowledgeBaseDetail, KnowledgeBase } from '../types'
+import { Panel, Tag } from '../ui/primitives'
 
 interface Props {
   onBack: () => void
 }
 
-export function KnowledgeBases({ onBack }: Props) {
+// `onBack` is kept for callers outside the shell; inside it the dock is the way out.
+export function KnowledgeBases(_props: Props) {
   const [rows, setRows] = useState<KnowledgeBase[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -72,41 +74,33 @@ export function KnowledgeBases({ onBack }: Props) {
   }
 
   return (
-    <div className="mx-auto max-w-4xl p-6">
-      <div className="mb-4 flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-slate-100">Knowledge bases</h1>
-        <button
-          onClick={onBack}
-          className="rounded border border-matrix-border px-3 py-1 text-sm text-slate-400 hover:text-slate-100"
-        >
-          ← Back
-        </button>
-      </div>
-
-      <p className="mb-4 text-sm text-slate-400">
+    <div className="flex flex-col gap-3">
+      <p className="cc-muted">
         A collection of documents, indexed once and searchable from any conversation that
         binds it. Share one and the recipient can search it without a copy being made.
       </p>
 
-      <div className="mb-5 flex gap-2">
+      <div className="flex gap-2">
         <input
           value={newName}
           onChange={(e) => setNewName(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && void create()}
           placeholder="New collection name…"
-          className="flex-1 rounded-lg border border-matrix-border bg-matrix-panel p-2 text-sm"
+          aria-label="New collection name"
+          className="cc-field min-w-0 flex-1"
         />
         <button
+          type="button"
           onClick={() => void create()}
           disabled={creating || !newName.trim()}
-          className="rounded-lg bg-matrix-accent px-4 py-2 text-sm font-semibold text-matrix-bg disabled:opacity-40"
+          className="cc-btn cc-primary"
         >
           Create
         </button>
       </div>
 
       {error && (
-        <div className="mb-4 rounded-lg border border-red-900/60 bg-red-900/20 p-3">
+        <div className="cc-card" role="alert">
           <p className="text-sm text-red-300">{error}</p>
           <button
             onClick={load}
@@ -118,47 +112,47 @@ export function KnowledgeBases({ onBack }: Props) {
       )}
 
       {loading ? (
-        <p className="text-slate-500">Loading…</p>
+        <p className="cc-empty">Loading…</p>
       ) : rows.length === 0 && !error ? (
-        <p className="text-slate-500">
+        <p className="cc-empty">
           No collections yet. Create one above, then add documents to it.
         </p>
       ) : (
-        <div className="space-y-2">
+        <div className="cc-list">
           {rows.map((kb) => (
-            <div
-              key={kb.id}
-              className="rounded-lg border border-matrix-border bg-matrix-panel"
-            >
+            <Panel key={kb.id} className={selected === kb.id ? 'cc-kb-open' : undefined}>
               <button
+                type="button"
                 onClick={() => setSelected(selected === kb.id ? null : kb.id)}
-                className="flex w-full items-center justify-between p-3 text-left"
+                aria-expanded={selected === kb.id}
+                className="flex w-full items-start justify-between gap-3 text-left"
               >
                 <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="font-semibold text-matrix-accent">{kb.name}</span>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="cc-code">{kb.name}</span>
                     {kb.shared && (
-                      <span
-                        title="Someone else owns this and shared it with you. You can search it; you cannot change it."
-                        className="rounded bg-matrix-border px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-300"
-                      >
-                        shared with you
-                      </span>
+                      <>
+                        <Tag tone="ens">shared with you</Tag>
+                        <span className="sr-only">
+                          Someone else owns this and shared it with you. You can search it; you cannot change it.
+                        </span>
+                      </>
                     )}
+                    <Tag>
+                      {kb.document_count ?? 0} doc{kb.document_count === 1 ? '' : 's'}
+                    </Tag>
                   </div>
-                  {kb.description && (
-                    <p className="truncate text-sm text-slate-400">{kb.description}</p>
-                  )}
+                  {kb.description && <p className="cc-topic">{kb.description}</p>}
+                  <p className="cc-meta">
+                    <code>{kb.id}</code>
+                  </p>
                 </div>
-                <div className="ml-3 whitespace-nowrap text-right text-xs text-slate-500">
-                  <div>{kb.document_count ?? 0} document(s)</div>
-                  <code className="text-[10px]">{kb.id}</code>
-                </div>
+                <span aria-hidden="true" className="cc-caret">{selected === kb.id ? '▾' : '▸'}</span>
               </button>
               {selected === kb.id && (
                 <KbPanel kbId={kb.id} onChanged={load} />
               )}
-            </div>
+            </Panel>
           ))}
         </div>
       )}
@@ -227,7 +221,7 @@ function KbPanel({ kbId, onChanged }: { kbId: string; onChanged: () => void }) {
                     }}
                     disabled={busy}
                     className="text-red-400 hover:text-red-300 disabled:opacity-40"
-                    title="Remove from this collection, including its embeddings"
+                    aria-description="Remove from this collection, including its embeddings"
                   >
                     remove
                   </button>
@@ -399,7 +393,7 @@ function Sharing({
                   }
                 }}
                 className="ml-3 text-xs text-red-400 hover:text-red-300"
-                title="Takes effect on the next turn of any conversation using it"
+                aria-description="Takes effect on the next turn of any conversation using it"
               >
                 revoke
               </button>

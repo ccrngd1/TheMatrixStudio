@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { api } from '../api'
 import type { Persona, SimEvent } from '../types'
 import { deriveState, initialState } from '../lib/simState'
 import { Hint } from './Hint'
 import { describeFork, forkEstimate } from '../lib/forkCost'
-import { CastBoard } from './CastBoard'
 import { ConversationFeed } from './ConversationFeed'
+import { Icon } from '../ui/icons'
+import { HudCell, HudStrip, Label, Panel, Tag, identityColor, identityOf } from '../ui/primitives'
+
+type Css = CSSProperties & Record<`--${string}`, string>
 
 interface Props {
   runId: string
@@ -125,33 +128,102 @@ export function Scrubber({ runId, maxTurn, cast, defaultBudget, models = [], def
     mutKind === 'replace_assumption' && (!chosen || !(assumptionText || '').trim() ||
       (assumptionText || '').trim() === chosen.statement)
 
+  // The waveform (docs/MOBILE-UI.md §4.6) reads the WHOLE run, not the state at the cursor: it is the map
+  // you move the cursor over. One bar per turn in the speaker's colour, taller where a position moved.
+  const whole = useMemo(() => deriveState(initialState(cast), events), [events, cast])
+  const order = whole.order
+  const bars = useMemo(() => {
+    const out: { t: number; speaker: string | null; shift: boolean; injected: boolean }[] = []
+    for (let t = 1; t <= maxTurn; t++) {
+      const here = whole.feed.filter((m) => m.turn === t && !m.consultant)
+      const spoke = here.find((m) => !m.injected)
+      out.push({
+        t,
+        speaker: spoke?.speaker ?? null,
+        shift: here.some((m) => m.shift),
+        injected: here.some((m) => m.injected),
+      })
+    }
+    return out
+  }, [whole, maxTurn])
+  const upto = bars.filter((x) => x.t <= turn)
+  const shifts = upto.filter((x) => x.shift).length
+  const injections = upto.filter((x) => x.injected).length
+  const pad = (n: number) => String(n).padStart(2, '0')
+
   return (
-    <div className="flex h-full flex-col">
-      <div className="border-b border-matrix-border bg-matrix-panel px-4 py-3">
-        <div className="mb-1 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold text-slate-200">Checkpoint scrubber</span>
-            <span className="rounded bg-matrix-border px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-400">read-only</span>
+    <div className="cc-scrub">
+      <div className="cc-scrub-controls">
+        <Panel>
+          <div className="flex items-center justify-between gap-2">
+            <span className="flex items-center gap-2">
+              <Label>Timeline</Label>
+              <Tag>read-only</Tag>
+            </span>
+            <span className="cc-readout" style={{ fontSize: 18 }}>
+              #{pad(turn)}
+              <small>/{pad(maxTurn)}</small>
+              <span className="sr-only">turn {turn} / {maxTurn}</span>
+            </span>
           </div>
-          <span className="text-xs text-slate-400">turn {turn} / {maxTurn}</span>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
+          <div className="cc-wave" aria-hidden="true">
+            {bars.map((x) => {
+              const slot = x.speaker ? identityOf(x.speaker, order) : 'a0'
+              return (
+                <i
+                  key={x.t}
+                  className={`${x.t <= turn ? 'cc-on' : ''} ${x.t === turn ? 'cc-cur' : ''}`}
+                  style={{ '--wc': identityColor(slot), height: `${x.speaker ? (x.shift ? 100 : 45) : 12}%` } as Css}
+                  onClick={() => setTurn(x.t)}
+                />
+              )
+            })}
+            {bars
+              .filter((x) => x.injected)
+              .map((x) => (
+                <span key={`i${x.t}`} className="cc-inj" style={{ left: `${((x.t - 0.5) * 100) / Math.max(1, maxTurn)}%` }} />
+              ))}
+          </div>
           <input type="range" min={0} max={maxTurn} value={turn} aria-label="checkpoint turn"
             onChange={(e) => setTurn(Number(e.target.value))}
-            className="flex-1 min-w-[120px] accent-matrix-accent" />
-          <button onClick={handleBranch} disabled={branching || unchangedAssumption}
-            title={changing
-              ? 'Fork a new run from this turn with your change applied — this run is never modified'
-              : 'Fork a new run from this turn, unchanged — this run is never modified'}
-            className="whitespace-nowrap rounded bg-matrix-accent px-3 py-1 text-sm font-semibold text-matrix-bg hover:bg-sky-400 disabled:opacity-40">
-            {branching ? 'Branching…' : changing ? '⑂ Branch with change' : '⑂ Branch from here'}
-          </button>
-        </div>
+            className="cc-range" />
+          <div className="mt-1 flex items-center justify-between gap-2">
+            <div className="cc-legend">
+              <span>bar = one turn, speaker colour</span>
+              <span className="text-cc-inject">▍ injection</span>
+              <span>taller = shift</span>
+            </div>
+            <span className="flex gap-1.5">
+              <button type="button" className="cc-ctl" aria-label="Previous turn" disabled={turn <= 0}
+                onClick={() => setTurn((t) => Math.max(0, t - 1))}><Icon name="back" size={16} /></button>
+              <button type="button" className="cc-ctl" aria-label="Next turn" disabled={turn >= maxTurn}
+                onClick={() => setTurn((t) => Math.min(maxTurn, t + 1))}><Icon name="back" size={16} style={{ transform: 'scaleX(-1)' }} /></button>
+            </span>
+          </div>
+        </Panel>
 
+        <HudStrip>
+          {/* The transcript beside this ends at the cursor, and shows the assumptions in force there. */}
+          <HudCell label="Turn" value={pad(turn)} />
+          <HudCell label="Shifts" value={<span className="text-cc-shift">{pad(shifts)}</span>} sub="so far" />
+          <HudCell label="Injections" value={<span className="text-cc-inject">{pad(injections)}</span>} sub="so far" />
+        </HudStrip>
+
+        <Panel>
+          <div className="flex items-center justify-between gap-2">
+            <Label>Fork from #{pad(turn)}</Label>
+            <button onClick={handleBranch} disabled={branching || unchangedAssumption}
+              aria-description={changing
+                ? 'Fork a new run from this turn with your change applied — this run is never modified'
+                : 'Fork a new run from this turn, unchanged — this run is never modified'}
+              className="cc-btn cc-primary cc-sm">
+              <Icon name="branch" size={14} /> {branching ? 'Branching…' : changing ? 'Branch with change' : 'Branch from here'}
+            </button>
+          </div>
         {/* Always shown. There is no separate "intervene" mode: a branch either
             carries a change or it does not, and hiding the selector behind a second
             button made them look like rival actions. */}
-        <div className="mt-3 rounded border border-matrix-border bg-matrix-bg p-3 text-sm space-y-2">
+        <div className="mt-2 space-y-2 text-sm">
             <div className="flex flex-wrap items-center gap-2">
               {/* htmlFor/id rather than a wrapping label: the select sits outside the
                   label so the Hint can follow the text, and without the association it
@@ -173,7 +245,7 @@ export function Scrubber({ runId, maxTurn, cast, defaultBudget, models = [], def
               </label>
               <select id="scrubber-change-kind" value={mutKind}
                 onChange={(e) => setMutKind(e.target.value)}
-                className="rounded border border-matrix-border bg-matrix-panel px-2 py-1 text-xs text-slate-200">
+                className="cc-field">
                 <option value="none">— none (fork unchanged) —</option>
                 <option value="inject_message">💬 Inject message</option>
                 <option value="continue">▶ Continue (+N turns)</option>
@@ -210,8 +282,8 @@ export function Scrubber({ runId, maxTurn, cast, defaultBudget, models = [], def
                 <>
                   <label className="ml-auto text-xs text-slate-400">Model</label>
                   <select value={branchModel} onChange={(e) => setBranchModel(e.target.value)}
-                    title="Model the branched discussion generates with (defaults to the page's model)"
-                    className="max-w-[12rem] rounded border border-matrix-border bg-matrix-panel px-2 py-1 text-xs text-slate-200">
+                    aria-label="Model" aria-description="Model the branched discussion generates with (defaults to the page's model)"
+                    className="cc-field max-w-[12rem]">
                     {models.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
                   </select>
                 </>
@@ -221,16 +293,16 @@ export function Scrubber({ runId, maxTurn, cast, defaultBudget, models = [], def
             {mutKind === 'inject_message' && (<>
               <input placeholder="Speaker name (can be new, e.g. Moderator)"
                 value={injectSpeaker} onChange={(e) => setInjectSpeaker(e.target.value)}
-                className="w-full rounded border border-matrix-border bg-matrix-bg px-2 py-1 text-xs text-slate-200" />
+                className="cc-field" />
               <textarea placeholder="Message content…" value={injectContent} rows={3}
                 onChange={(e) => setInjectContent(e.target.value)}
-                className="w-full rounded border border-matrix-border bg-matrix-bg px-2 py-1 text-xs text-slate-200" />
+                className="cc-field" />
               <div className="flex items-center gap-2">
                 <label className="text-xs text-slate-400">New discussion turns</label>
                 <input type="number" min={1} value={injectTurns}
                   onChange={(e) => setInjectTurns(Number(e.target.value))}
-                  title="How many turns the group talks after your injected message (defaults to the original run's budget)"
-                  className="w-24 rounded border border-matrix-border bg-matrix-bg px-2 py-1 text-xs text-slate-200" />
+                  aria-description="How many turns the group talks after your injected message (defaults to the original run's budget)"
+                  className="cc-field w-24" />
                 <span className="text-[10px] text-slate-500">default = original budget</span>
               </div>
             </>)}
@@ -240,35 +312,35 @@ export function Scrubber({ runId, maxTurn, cast, defaultBudget, models = [], def
                 <label className="text-xs text-slate-400">Add turns</label>
                 <input type="number" min={1} value={addBudget}
                   onChange={(e) => setAddBudget(Number(e.target.value))}
-                  className="w-24 rounded border border-matrix-border bg-matrix-bg px-2 py-1 text-xs text-slate-200" />
+                  className="cc-field w-24" />
               </div>
             )}
 
             {mutKind === 'edit_goal' && (<>
               <select value={editPersona} onChange={(e) => setEditPersona(e.target.value)}
-                className="w-full rounded border border-matrix-border bg-matrix-panel px-2 py-1 text-xs text-slate-200">
+                className="cc-field">
                 <option value="">Select persona…</option>
                 {castNames.map((n) => <option key={n} value={n}>{n}</option>)}
               </select>
               <textarea placeholder="New goals, one per line" value={editGoals} rows={3}
                 onChange={(e) => setEditGoals(e.target.value)}
-                className="w-full rounded border border-matrix-border bg-matrix-bg px-2 py-1 text-xs text-slate-200" />
+                className="cc-field" />
             </>)}
 
             {mutKind === 'add_persona' && (<>
               <input placeholder="Name" value={addName} onChange={(e) => setAddName(e.target.value)}
-                className="w-full rounded border border-matrix-border bg-matrix-bg px-2 py-1 text-xs text-slate-200" />
+                className="cc-field" />
               <textarea placeholder="Persona description" value={addPersonaText} rows={2}
                 onChange={(e) => setAddPersonaText(e.target.value)}
-                className="w-full rounded border border-matrix-border bg-matrix-bg px-2 py-1 text-xs text-slate-200" />
+                className="cc-field" />
               <textarea placeholder="Goals, one per line (optional)" value={addGoals} rows={2}
                 onChange={(e) => setAddGoals(e.target.value)}
-                className="w-full rounded border border-matrix-border bg-matrix-bg px-2 py-1 text-xs text-slate-200" />
+                className="cc-field" />
             </>)}
 
             {mutKind === 'remove_persona' && (
               <select value={removePersona} onChange={(e) => setRemovePersona(e.target.value)}
-                className="w-full rounded border border-matrix-border bg-matrix-panel px-2 py-1 text-xs text-slate-200">
+                className="cc-field">
                 <option value="">Select persona to remove…</option>
                 {castNames.map((n) => <option key={n} value={n}>{n}</option>)}
               </select>
@@ -277,16 +349,16 @@ export function Scrubber({ runId, maxTurn, cast, defaultBudget, models = [], def
             {assumptionKind && chosen && (<>
               <select value={chosen.id} onChange={(e) => pickAssumption(e.target.value)}
                 aria-label="Assumption to change"
-                className="w-full rounded border border-matrix-border bg-matrix-panel px-2 py-1 text-xs text-slate-200">
+                className="cc-field">
                 {inForce.map((a) => <option key={a.id} value={a.id}>{a.id}: {a.statement}</option>)}
               </select>
               {mutKind === 'replace_assumption' && (<>
                 <input value={assumptionText || chosen.statement} maxLength={300}
                   onChange={(e) => setAssumptionText(e.target.value)} aria-label="New value"
-                  className="w-full rounded border border-matrix-border bg-matrix-bg px-2 py-1 text-xs text-slate-200" />
+                  className="cc-field" />
                 <input placeholder="Basis (optional)" value={assumptionBasis} maxLength={300}
                   onChange={(e) => setAssumptionBasis(e.target.value)}
-                  className="w-full rounded border border-matrix-border bg-matrix-bg px-2 py-1 text-xs text-slate-200" />
+                  className="cc-field" />
               </>)}
               <p className="text-[11px] text-slate-500">
                 {chosen.id} was {chosen.turn === 0 && chosen.source === 'operator'
@@ -303,22 +375,23 @@ export function Scrubber({ runId, maxTurn, cast, defaultBudget, models = [], def
               </p>
               <input placeholder="Optional focus, e.g. “escalate the audit dilemma”"
                 value={pressureFocus} onChange={(e) => setPressureFocus(e.target.value)}
-                className="w-full rounded border border-matrix-border bg-matrix-bg px-2 py-1 text-xs text-slate-200" />
+                className="cc-field" />
             </>)}
 
         </div>
+        </Panel>
 
         {/* A different operation, so it is separated from the branch controls rather
             than sitting beside them: it ignores the selected turn entirely and keeps
             none of the transcript. Grouping it with the mutation kinds would imply it
             is one more variation on "fork from turn N". */}
         {onStartFresh && (
-          <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-matrix-border pt-3">
+          <div className="cc-card flex flex-wrap items-center gap-2">
             {/* Wrapped rather than passed directly: onClick would hand the click
                 event to a callback declared to take none, which would land in any
                 parameter added later. */}
             <button onClick={() => onStartFresh()}
-              title="Open the new-conversation form filled in with this run's topic, cast, convictions and documents"
+              aria-description="Open the new-conversation form filled in with this run's topic, cast, convictions and documents"
               className="whitespace-nowrap rounded border border-matrix-accent/60 px-3 py-1 text-sm font-semibold text-matrix-accent hover:bg-matrix-accent/10">
               ✎ Start over with this setup
             </button>
@@ -344,7 +417,7 @@ export function Scrubber({ runId, maxTurn, cast, defaultBudget, models = [], def
           </div>
         )}
 
-        <p className="mt-1 text-[11px] text-slate-500">
+        <p className="cc-muted">
           Viewing state as of turn {turn}. Branching always forks a NEW run that replays to
           here and then generates forward — this run is never modified. A branch from turn {turn}
           costs {describeFork(forkEstimate(events, turn))}. With no change it
@@ -353,15 +426,13 @@ export function Scrubber({ runId, maxTurn, cast, defaultBudget, models = [], def
         </p>
       </div>
 
-      <div className="grid flex-1 grid-cols-1 gap-4 overflow-hidden p-4 lg:grid-cols-[300px_1fr]">
-        <aside className="overflow-y-auto">
-          {loading ? <p className="text-sm text-slate-500">Loading checkpoints…</p>
-            : <CastBoard state={state} onSelect={() => {}} />}
-        </aside>
-        <main className="overflow-hidden rounded-lg border border-matrix-border bg-matrix-panel">
+      <div className="cc-scrub-feed">
+        {loading ? (
+          <p className="cc-empty">Loading checkpoints…</p>
+        ) : (
           <ConversationFeed feed={state.feed} agents={state.agents} activeSpeaker={null} thinking={false}
             assumptions={state.assumptions} />
-        </main>
+        )}
       </div>
     </div>
   )
