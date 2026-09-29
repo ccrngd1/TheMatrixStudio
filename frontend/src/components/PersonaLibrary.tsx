@@ -40,16 +40,16 @@ export function PersonaLibrary({ taken, onAdd }: Props) {
   }
 
   return (
-    <span className="flex items-center gap-1">
+    <span className="flex min-w-0 items-center gap-1">
       <select
         aria-label="Add a persona from the library"
         value=""
         onChange={(e) => add(e.target.value)}
-        className="rounded border border-matrix-border bg-matrix-bg px-2 py-1 text-xs"
+        className="min-w-0 max-w-full rounded border border-matrix-border bg-matrix-bg px-2 py-1 text-xs"
       >
         <option value="">+ Add from library…</option>
         {packs.map((p) => (
-          <option key={p.id} value={p.id} title={p.summary}>
+          <option key={p.id} value={p.id}>
             {p.label} ({p.qualification})
           </option>
         ))}
@@ -61,6 +61,15 @@ export function PersonaLibrary({ taken, onAdd }: Props) {
         <br />
         <strong>Not yet qualified:</strong> none has been measured in an ensemble to check that it
         holds its positions and moves only on its stated conditions. Edit freely once added.
+        {packs.length > 0 && (
+          <span className="mt-2 block">
+            {packs.map((p) => (
+              <span key={p.id} className="mt-1 block">
+                <strong>{p.label}:</strong> {p.summary}
+              </span>
+            ))}
+          </span>
+        )}
       </Hint>
     </span>
   )

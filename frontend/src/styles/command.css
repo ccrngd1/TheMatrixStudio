@@ -383,3 +383,13 @@ option { background:var(--panel); }
 /* The message the participation panel jumped to. */
 .cc-jumped { outline:1px solid var(--accent); outline-offset:3px; box-shadow:0 0 18px color-mix(in srgb,var(--accent) 30%,transparent); }
 .cc-faces button { min-width:44px; min-height:44px; display:grid; place-items:center; }
+/* The new-run wizard: steps stay mounted, and the ones not shown are out of layout and the a11y tree. */
+.cc-step { display:flex; flex-direction:column; gap:12px; }
+.cc-step-off { display:none; }
+.cc-stepper .cc-sn { min-height:44px; justify-content:flex-start; padding-top:3px; }
+.cc-stepper { margin:8px 14px 0; }
+.cc-wizard { padding-bottom:18px; }
+.cc-sticky .cc-btn { min-height:44px; }
+/* The form's selects carry long option labels; on a phone they wrap under their label instead of running off. */
+.cc-wizard label { max-width:100%; flex-wrap:wrap; }
+.cc-wizard select, .cc-wizard input:not([type=checkbox]):not([type=radio]) { max-width:100%; min-width:0; }

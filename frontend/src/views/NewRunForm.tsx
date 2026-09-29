@@ -15,6 +15,9 @@ import {
   type DraftDoc, type DraftPersona, type Method, type RunType,
 } from './newRunTypes'
 import { KbPicker } from '../components/KbPicker'
+import { LaunchReview, Step, Stepper, WIZARD_STEPS, type ReviewRow, type WizardStep } from '../components/wizard/Wizard'
+import { TopBar } from './Shell'
+import { Btn } from '../ui/primitives'
 
 interface Props {
   onStarted: (runId: string) => void
@@ -33,6 +36,9 @@ interface Props {
    * source run is not touched.
    */
   fromRunId?: string
+  /** The wizard step, 1–5, when the caller routes it. */
+  step?: number
+  onStep?: (step: WizardStep) => void
 }
 
 const EXAMPLE = {
@@ -53,7 +59,12 @@ const EXAMPLE = {
   ],
 }
 
-export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }: Props) {
+export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId, step: routeStep, onStep }: Props) {
+  // The step lives in the URL when the app routes it (`#/new/3`), so the back button steps back; standalone
+  // (the tests, a caller without a router) the form keeps it itself.
+  const [ownStep, setOwnStep] = useState<WizardStep>(1)
+  const step = (routeStep ?? ownStep) as WizardStep
+  const goStep = (s: WizardStep) => (onStep ? onStep(s) : setOwnStep(s))
   const [topic, setTopic] = useState('')
   // One conversation, or the same brief several times. A run TYPE rather than another
   // speaker method: a method decides who talks inside one conversation, this decides how
@@ -611,1198 +622,1253 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
     }
   }
 
+  const reviewRows: ReviewRow[] = [
+    { step: 1, label: 'Topic', value: topic.trim() ? (topic.length > 160 ? topic.slice(0, 160) + '…' : topic) : <i>not set</i> },
+    { step: 1, label: 'Name', value: name || 'auto-generated' },
+    {
+      step: 1,
+      label: 'Type',
+      value: runType === 'ensemble' ? `ensemble · ${replicates + (compareHybrid ? hybridReplicates : 0)} runs` : 'single run',
+    },
+    { step: 1, label: 'Method', value: method },
+    { step: 1, label: 'Turns', value: stopWhenConverged ? `up to ${maxMessages}, ending when finished` : maxMessages },
+    { step: 1, label: 'Cognition', value: cognitionEnabled ? 'on' : 'off' },
+    { step: 2, label: 'Cast', value: cast.map((p) => p.name || 'unnamed').join(' · ') },
+    { step: 2, label: 'Consultants', value: consultants.length || 'none' },
+    { step: 2, label: 'Evidence lean', value: evidenceLean ? 'on' : 'off' },
+    { step: 3, label: 'Collections', value: runKbs.length ? `${runKbs.length} for the whole cast` : 'none for the whole cast' },
+    { step: 3, label: 'Research', value: research ? 'before starting' : 'off' },
+    { step: 4, label: 'Assumptions', value: assumptions.filter((a) => a.statement.trim()).length || 'none' },
+    { step: 4, label: 'Scheduled messages', value: injections.length || 'none' },
+  ]
+
   return (
-    <div className="mx-auto max-w-3xl p-6">
-      <div className="mb-4 flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-slate-100">
-          {fromRunId ? 'New simulation from an existing setup' : 'New simulation'}
-        </h1>
-        <div className="flex gap-2">
-          <button onClick={loadExample} className="rounded border border-matrix-border px-3 py-1 text-sm hover:border-matrix-accent">
+    <>
+      <TopBar
+        title={fromRunId ? 'New run from a setup' : 'New run'}
+        back={onCancel}
+        right={
+          <button type="button" onClick={loadExample} className="cc-btn cc-sm">
             Load example
           </button>
-          <button onClick={onCancel} className="rounded border border-matrix-border px-3 py-1 text-sm hover:border-matrix-accent">
-            Cancel
-          </button>
-        </div>
-      </div>
-
-      {prefilling && (
-        <p className="mb-3 rounded border border-matrix-border bg-matrix-panel p-2 text-sm text-slate-300">
-          Loading the setup from that conversation…
-        </p>
-      )}
-
-      {prefilledFrom && !prefilling && (
-        <p className="mb-3 rounded border border-matrix-accent/40 bg-matrix-accent/10 p-2 text-sm text-slate-200">
-          Prefilled from <strong>{prefilledFrom}</strong>. Edit anything below — the
-          topic, the cast, their convictions, documents. Starting this creates a
-          brand-new conversation; the original is untouched and nothing from its
-          transcript carries over.
-        </p>
-      )}
-
-      {error && <p className="mb-3 rounded bg-red-950/50 p-2 text-sm text-red-300">{error}</p>}
-
-      <label className="block text-sm font-semibold text-slate-300">Topic</label>
-      <textarea
-        value={topic}
-        onChange={(e) => setTopic(e.target.value)}
-        rows={2}
-        className="mt-1 w-full rounded border border-matrix-border bg-matrix-bg p-2 text-sm"
-        placeholder="What should the cast discuss?"
+        }
       />
+      <Stepper step={step} onStep={goStep} />
+      <div className="cc-scroll cc-wizard">
 
-      <div className="mt-4 grid grid-cols-1 gap-3 rounded-lg border border-matrix-border p-3 sm:grid-cols-[1fr_auto]">
-        <div>
-          <label className="block text-sm font-semibold text-slate-300">Run name (codename)</label>
-          <div className="mt-1 flex gap-2">
-            <input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              className="w-full rounded border border-matrix-border bg-matrix-bg p-2 text-sm"
-              placeholder="auto-generated (editable)"
-            />
-            <button
-              onClick={suggest}
-              disabled={suggesting || !topic.trim()}
-              className="whitespace-nowrap rounded bg-matrix-accent/20 px-3 py-1 text-sm text-matrix-accent hover:bg-matrix-accent/30 disabled:opacity-40"
-              title="Generate a topical codename"
-            >
-              {suggesting ? '…' : '🎲 Re-roll'}
-            </button>
+        {prefilling && (
+          <p className="mb-3 rounded border border-matrix-border bg-matrix-panel p-2 text-sm text-slate-300">
+            Loading the setup from that conversation…
+          </p>
+        )}
+
+        {prefilledFrom && !prefilling && (
+          <p className="mb-3 rounded border border-matrix-accent/40 bg-matrix-accent/10 p-2 text-sm text-slate-200">
+            Prefilled from <strong>{prefilledFrom}</strong>. Edit anything below — the
+            topic, the cast, their convictions, documents. Starting this creates a
+            brand-new conversation; the original is untouched and nothing from its
+            transcript carries over.
+          </p>
+        )}
+
+        {error && <p className="mb-3 rounded bg-red-950/50 p-2 text-sm text-red-300">{error}</p>}
+
+        <Step n={1} step={step}>
+          <label className="block text-sm font-semibold text-slate-300">Topic</label>
+          <textarea
+            value={topic}
+            onChange={(e) => setTopic(e.target.value)}
+            rows={2}
+            className="mt-1 w-full rounded border border-matrix-border bg-matrix-bg p-2 text-sm"
+            placeholder="What should the cast discuss?"
+          />
+
+          <div className="mt-4 grid grid-cols-1 gap-3 rounded-lg border border-matrix-border p-3 sm:grid-cols-[1fr_auto]">
+            <div>
+              <label className="block text-sm font-semibold text-slate-300">Run name (codename)</label>
+              <div className="mt-1 flex gap-2">
+                <input
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  className="w-full rounded border border-matrix-border bg-matrix-bg p-2 text-sm"
+                  placeholder="auto-generated (editable)"
+                />
+                <button
+                  onClick={suggest}
+                  disabled={suggesting || !topic.trim()}
+                  className="whitespace-nowrap rounded bg-matrix-accent/20 px-3 py-1 text-sm text-matrix-accent hover:bg-matrix-accent/30 disabled:opacity-40"
+                  aria-description="Generate a topical codename"
+                >
+                  {suggesting ? '…' : '🎲 Re-roll'}
+                </button>
+              </div>
+              <input
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                className="mt-2 w-full rounded border border-matrix-border bg-matrix-bg p-2 text-sm"
+                placeholder="one-line description (auto-suggested, editable)"
+              />
+            </div>
           </div>
-          <input
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            className="mt-2 w-full rounded border border-matrix-border bg-matrix-bg p-2 text-sm"
-            placeholder="one-line description (auto-suggested, editable)"
-          />
-        </div>
-      </div>
 
-      <div className="mt-4 flex flex-wrap items-center gap-4">
-        <label className="flex items-center gap-2 text-sm text-slate-300">
-          {stopWhenConverged ? 'Turn ceiling' : 'Max messages'}
-          <Hint label={stopWhenConverged ? 'turn ceiling' : 'max messages'}>
-            {stopWhenConverged ? (
-              <>
-                A safety net, not a target. The run ends when the moderator judges the
-                discussion finished, so this only stops a conversation that never gets
-                there. Leave it high.
-                <br />
-                <br />
-                You are still billed for the turns actually generated, so a run that
-                converges at 32 costs 32 turns — but a run that never converges costs the
-                whole ceiling, which is why there is one.
-              </>
-            ) : (
-              <>
-                Turn budget for the run. Cost scales roughly linearly with it — one turn is
-                two model calls. With five personas, 15 turns gives each about three turns,
-                which is often too few for a position to be challenged and held; 30 gives
-                about six. Longer runs also make rate-style measurements more meaningful,
-                since a single turn is a smaller fraction of the total.
-              </>
-            )}
-          </Hint>
-          <input
-            type="number"
-            min={1}
-            max={stopWhenConverged ? 300 : 100}
-            value={maxMessages}
-            onChange={(e) => setMaxMessages(Number(e.target.value))}
-            className="w-20 rounded border border-matrix-border bg-matrix-bg p-1 text-sm"
-          />
-        </label>
-        <label className="flex items-center gap-2 text-sm text-slate-300">
-          Run
-          <Hint label="run type">
-            <strong>Once</strong> — one conversation, one transcript.
-            <br />
-            <br />
-            <strong>Several times</strong> — the same brief run N times with{' '}
-            <em>nothing varied</em>, then a report over all of them saying which conclusions
-            held in every run and which appeared in only one.
-            <br />
-            <br />
-            Running the same thing repeatedly sounds pointless and is the most useful mode.
-            Six existing conversations were compared as three pairs with byte-identical
-            settings, and two of the pairs disagreed on the biggest questions in the brief —
-            one pair diverged on whether the work's scope expanded, another on whether the
-            central legal question was ever settled. Nothing was varied to cause that, so it
-            is the brief's own ambiguity. A single run hands you either answer with equal
-            confidence.
-            <br />
-            <br />
-            Replicates are also the only way to read the comparison below: a difference
-            between two settings means nothing unless you know how much each setting varies
-            on its own.
-            <br />
-            <br />
-            Costs N times one conversation. The report adds one model call per run plus one
-            over all of them.
-          </Hint>
-          <select
-            value={runType}
-            onChange={(e) => {
-              const next = e.target.value as RunType
-              setRunType(next)
-              // Avatars OFF by default for an ensemble. They are generated per run, so the
-              // same cast's faces would be drawn N times over — and image spend is not
-              // counted in a run's reported cost, only voice calls are, so it would be both
-              // multiplied and invisible. Nothing is confounded either way: every member
-              // still gets the same config as every other.
-              //
-              // A default, not a hardcode: the checkbox still shows and still works, which is
-              // the rule the avatar toggle already follows.
-              if (next === 'ensemble') {
-                setAvatarsBeforeEnsemble(avatars)
-                setAvatars(false)
-              } else if (avatarsBeforeEnsemble !== null) {
-                setAvatars(avatarsBeforeEnsemble)
-              }
-            }}
-            className="rounded border border-matrix-border bg-matrix-bg p-1 text-sm"
-          >
-            <option value="single">Once — a single conversation</option>
-            <option value="ensemble">Several times — same brief, then a report</option>
-          </select>
-        </label>
-        {runType === 'ensemble' && (
-          <div className="ml-6 space-y-2 border-l border-matrix-border pl-4">
+          <div className="mt-4 flex flex-wrap items-center gap-4">
             <label className="flex items-center gap-2 text-sm text-slate-300">
-              How many times
-              <Hint label="replicates">
-                Five by default. That supports three coarse verdicts per conclusion —
-                held in every run, split, or raised only once — and nothing finer. It will not
-                support reading 3-of-5 against 2-of-5 as a difference, and the report says so
-                in its own body rather than letting you infer precision that is not there.
-                <br />
-                <br />
-                Two is the minimum: with one run a group has no internal variation, and that
-                variation is the only thing separating a real finding from a coin flip.
+              {stopWhenConverged ? 'Turn ceiling' : 'Max messages'}
+              <Hint label={stopWhenConverged ? 'turn ceiling' : 'max messages'}>
+                {stopWhenConverged ? (
+                  <>
+                    A safety net, not a target. The run ends when the moderator judges the
+                    discussion finished, so this only stops a conversation that never gets
+                    there. Leave it high.
+                    <br />
+                    <br />
+                    You are still billed for the turns actually generated, so a run that
+                    converges at 32 costs 32 turns — but a run that never converges costs the
+                    whole ceiling, which is why there is one.
+                  </>
+                ) : (
+                  <>
+                    Turn budget for the run. Cost scales roughly linearly with it — one turn is
+                    two model calls. With five personas, 15 turns gives each about three turns,
+                    which is often too few for a position to be challenged and held; 30 gives
+                    about six. Longer runs also make rate-style measurements more meaningful,
+                    since a single turn is a smaller fraction of the total.
+                  </>
+                )}
               </Hint>
               <input
                 type="number"
-                min={MIN_REPLICATES}
-                max={MAX_MEMBERS}
-                value={replicates}
-                onChange={(e) => setReplicates(Number(e.target.value))}
-                className="w-16 rounded border border-matrix-border bg-matrix-bg p-1 text-sm"
+                min={1}
+                max={stopWhenConverged ? 300 : 100}
+                value={maxMessages}
+                onChange={(e) => setMaxMessages(Number(e.target.value))}
+                className="w-20 rounded border border-matrix-border bg-matrix-bg p-1 text-sm"
               />
             </label>
-            <label className="flex items-start gap-2 text-sm text-slate-300">
-              <input
-                type="checkbox"
-                className="mt-1"
-                checked={compareHybrid}
-                onChange={(e) => setCompareHybrid(e.target.checked)}
-              />
-              <span>
-                Also compare against hybrid
-                <Hint label="compare against hybrid">
-                  Adds a second group that differs in <em>one</em> thing: the speaker method.
-                  Everything else — turn count, fairness, the cast, the brief — is held
-                  identical, and the report counts each group separately rather than pooling
-                  them.
-                  <br />
-                  <br />
-                  Separate counts are the point. A conclusion that holds in every moderated
-                  run and in no hybrid run is a strong, method-dependent finding; pooled, the
-                  same numbers read as a weak half-and-half split. Those call for opposite
-                  decisions.
-                  <br />
-                  <br />
-                  Hybrid is the comparison worth making because blind opening rounds change
-                  what a persona has <em>seen</em> when they speak, so they can reach a
-                  conclusion that hearing someone else first would have suppressed. Turn count
-                  and fairness are deliberately not offered: a shorter run does not disagree,
-                  it just never arrives, and fairness is already settled.
-                </Hint>
-              </span>
-            </label>
-            {injectionsConfig(injections).length > 0 && (
-              <label className="flex items-start gap-2 text-sm text-slate-300">
-                <input
-                  type="checkbox"
-                  className="mt-1"
-                  checked={compareInjections}
-                  onChange={(e) => setCompareInjections(e.target.checked)}
-                />
-                <span>
-                  Also compare with and without the scheduled messages
-                  <Hint label="compare with and without the scheduled messages">
-                    The base group runs without them; a second group hears them at the same turn in
-                    every run. The report counts each group separately, so a conclusion that appears
-                    only after the message is attributable to it. The messages must come from a voice
-                    outside the cast.
-                  </Hint>
-                </span>
-              </label>
-            )}
-            {compareInjections && injectionsConfig(injections).length > 0 && (
-              <label className="flex items-center gap-2 pl-6 text-sm text-slate-300">
-                Runs with the messages
-                <input
-                  type="number"
-                  min={MIN_REPLICATES}
-                  max={MAX_MEMBERS}
-                  value={injectionReplicates}
-                  onChange={(e) => setInjectionReplicates(Number(e.target.value))}
-                  className="w-16 rounded border border-matrix-border bg-matrix-bg p-1 text-sm"
-                />
-              </label>
-            )}
-            {compareHybrid && (
-              <label className="flex items-center gap-2 pl-6 text-sm text-slate-300">
-                Hybrid runs
-                <input
-                  type="number"
-                  min={MIN_REPLICATES}
-                  max={MAX_MEMBERS}
-                  value={hybridReplicates}
-                  onChange={(e) => setHybridReplicates(Number(e.target.value))}
-                  className="w-16 rounded border border-matrix-border bg-matrix-bg p-1 text-sm"
-                />
-                <span className="text-[11px] text-slate-500">
-                  (uses the opening-round count below)
-                </span>
-              </label>
-            )}
-            <p className="text-[11px] text-slate-500">
-              {replicates + (compareHybrid ? hybridReplicates : 0) +
-                (compareInjections && injectionsConfig(injections).length ? injectionReplicates : 0)} conversations, each up to{' '}
-              {maxMessages} turns.
-              {compareHybrid
-                ? ' Only the speaker method differs between the two groups.'
-                : ' Nothing differs between them.'}
-            </p>
-          </div>
-        )}
-        <label className="flex items-center gap-2 text-sm text-slate-300">
-          Conversation method
-          <Hint label="conversation method">
-            <strong>Moderated</strong> — a model reads the room each turn and picks one
-            speaker. One voice call per turn; who speaks is a judgement, and everything in
-            docs/SPEAKER-SELECTION-EVALUATION.md is about making that judgement fairer.
-            <br />
-            <br />
-            <strong>Rotation</strong> — everyone speaks once per round, in order, each one
-            seeing what the earlier speakers in that round said. Turn share is equal by
-            construction rather than by prompt, and the conversation stays cumulative
-            because nobody is blind.
-            <br />
-            <br />
-            <strong>All talk</strong> — everyone is asked every round against the state as it
-            stood when the round OPENED, so none of them can see the others' contributions
-            that round. Genuinely concurrent, and measurably more parallel: the one live run
-            has four personas opening a round by answering the same question, none of them
-            acknowledging the others.
-            <br />
-            <br />
-            <strong>Hybrid</strong> — all-talk rounds to open, then moderated. The two live
-            runs failed in opposite directions: all-talk opened superbly and degenerated into
-            restatement by round 3, while moderated takes 8–11 turns to introduce the cast but
-            stays cumulative.
-            <br />
-            <br />
-            In every method except moderated, anyone with nothing to add passes and a pass
-            never reaches the transcript, and a round where everybody passes ends the run.
-            Rounds cost N voice calls instead of one, and the cost per surviving turn RISES as
-            the room quietens — a round where five of six pass still costs six calls. Only
-            moderated has numbers behind it; the rest are new.
-          </Hint>
-          <select
-            value={method}
-            onChange={(e) => setMethod(e.target.value as Method)}
-            className="rounded border border-matrix-border bg-matrix-bg p-1 text-sm"
-          >
-            <option value="moderated">Moderated — a model picks one speaker per turn</option>
-            <option value="rotation">Rotation — everyone once per round, in order</option>
-            <option value="simultaneous">All talk — everyone at once, blind to each other</option>
-            <option value="hybrid">Hybrid — all talk to open, then moderated</option>
-          </select>
-        </label>
-        {method === 'hybrid' && (
-          <label className="flex items-center gap-2 pl-6 text-sm text-slate-300">
-            Opening rounds
-            <Hint label="opening rounds">
-              How many all-talk rounds before the moderator takes over. Two by default,
-              from the one live all-talk run: round 1 put every position on the table,
-              round 2 was the strongest of the eight, and the parallel restatement — four
-              personas answering the same question — starts at round 3.
-              <br />
-              <br />
-              The moderator inherits those turns, so when it takes over everyone already
-              has an equal share on the board, which is the state the fairness prompt
-              spends tokens trying to reach.
-            </Hint>
-            <input
-              type="number"
-              min={1}
-              max={10}
-              value={openingRounds}
-              onChange={(e) => setOpeningRounds(Number(e.target.value))}
-              className="w-16 rounded border border-matrix-border bg-matrix-bg p-1 text-sm"
-            />
-          </label>
-        )}
-        <label className="flex items-center gap-2 text-sm text-slate-300">
-          <input
-            type="checkbox"
-            checked={closingRound}
-            onChange={(e) => setClosingRound(e.target.checked)}
-          />
-          Closing round when the ceiling is reached
-          <Hint label="closing round">
-            A run that hits its turn ceiling stops mid-argument. With this on it gets one
-            extra round — asked of everybody at once, in either method — for final positions.
-            <br />
-            <br />
-            It asks each persona to state where they now stand, what they can accept from
-            what others proposed, and what they cannot accept and why. It deliberately does
-            NOT ask them to reach a consensus: the Phase 6 work measured the same sentence
-            moving a persona's behaviour from 0.000 to 0.333 on framing alone, so an
-            instruction to agree would produce agreement every time and nothing would
-            separate a real resolution from a manufactured one.
-            <br />
-            <br />
-            Costs one extra round. Never runs after a conversation that ended on its own —
-            everyone had already said they had nothing to add.
-          </Hint>
-        </label>
-        <label className="flex items-center gap-2 text-sm text-slate-300">
-          <input
-            type="checkbox"
-            checked={stopWhenConverged}
-            disabled={method === 'rotation' || method === 'simultaneous'}
-            onChange={(e) => {
-              const on = e.target.checked
-              setStopWhenConverged(on)
-              if (on) {
-                setTurnsBeforeCeiling(maxMessages)
-                if (maxMessages < CEILING_TURNS) setMaxMessages(CEILING_TURNS)
-              } else if (turnsBeforeCeiling !== null) {
-                setMaxMessages(turnsBeforeCeiling)
-              }
-            }}
-          />
-          End when the conversation is finished
-          {(method === 'rotation' || method === 'simultaneous') && (
-            <span className="text-[11px] text-slate-500">
-              (automatic — a round where everyone passes ends the run)
-            </span>
-          )}
-          <Hint label="stop when converged">
-            The moderator picks the next speaker every turn; with this on it may also say
-            nobody has anything substantive left, which ends the run. Measured on one run:
-            32 turns of a 40 ceiling, zero turns of "confirmed, nothing to add", 23% cheaper
-            than the same conversation padded to 40.
-            <br />
-            <br />
-            Two guards, because stopping early is worse than stopping late: it cannot fire
-            until every persona has spoken at least once, and it needs the moderator to
-            decline twice in a row.
-            <br />
-            <br />
-            Still being validated — one live run on one cast — so it is off by default and
-            the turn ceiling is what stops a run that never converges.
-          </Hint>
-        </label>
-        <label className="flex items-center gap-2 text-sm text-slate-300">
-          <input type="checkbox" checked={avatars} onChange={(e) => setAvatars(e.target.checked)} />
-          Generate avatars
-          {runType === 'ensemble' && !avatars && (
-            <span className="text-[11px] text-slate-500">
-              (off for ensembles — they would be redrawn once per conversation)
-            </span>
-          )}
-          <Hint label="generate avatars">
-            Anime-style portraits for each persona, generated once before the run via
-            Stability SD3.5 on Bedrock. Purely cosmetic and entirely optional: it adds an
-            image call per persona, and if it fails or no image provider is configured the
-            cards fall back to initials without affecting the run.
-            <br />
-            <br />
-            <strong>Off by default for an ensemble.</strong> Avatars are generated per run, so
-            the same cast's faces would be drawn once for every conversation — and image spend
-            is not counted in a run's reported cost, only voice calls are, so it would be both
-            multiplied and invisible. Still switchable: turning it on applies to every member
-            equally, so nothing about the comparison changes either way.
-          </Hint>
-        </label>
-        {models.length > 0 && (
-          <label className="flex items-center gap-2 text-sm text-slate-300">
-            Model
-            <Hint label="model">
-              Which model drives every persona, the moderator and the analyst. This is not
-              only a cost/quality dial — models differ in ways that change behaviour, and
-              measured differences here have been large. Worth re-checking a run's
-              behaviour after switching rather than assuming it carries over.
-            </Hint>
-            <select
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              className="rounded border border-matrix-border bg-matrix-bg p-1 text-sm"
-            >
-              {models.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.label}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
-      </div>
-
-      <div className="mt-4 rounded-lg border border-matrix-border p-3">
-        <button
-          type="button"
-          onClick={() => setSummaryOpen((o) => !o)}
-          className="flex w-full items-center justify-between text-left text-sm font-semibold text-slate-300"
-        >
-          <span className="flex items-center gap-2">
-            Summary options
-            <Hint label="summary options">
-              A post-run analyst pass over the finished transcript: consensus, dissenters,
-              key ideas, open questions. Useful when you care about the conclusions more
-              than the conversation. Costs one extra call at the end, and you can always
-              generate it later from the run page instead.
-            </Hint>
-          </span>
-          <span className="text-xs text-slate-500">
-            {summaryEnabled ? 'auto-summary on' : 'auto-summary off'} {summaryOpen ? '▲' : '▼'}
-          </span>
-        </button>
-        {summaryOpen && (
-          <div className="mt-3 space-y-2">
-            <p className="text-[11px] text-slate-500">
-              When the run completes, generate a structured analyst summary (consensus,
-              dissenters, key ideas, open questions, overview). Model-generated analysis — you
-              can also generate it later on the run page.
-            </p>
             <label className="flex items-center gap-2 text-sm text-slate-300">
-              <input
-                type="checkbox"
-                checked={summaryEnabled}
-                onChange={(e) => setSummaryEnabled(e.target.checked)}
-              />
-              Auto-generate summary at completion
+              Run
+              <Hint label="run type">
+                <strong>Once</strong> — one conversation, one transcript.
+                <br />
+                <br />
+                <strong>Several times</strong> — the same brief run N times with{' '}
+                <em>nothing varied</em>, then a report over all of them saying which conclusions
+                held in every run and which appeared in only one.
+                <br />
+                <br />
+                Running the same thing repeatedly sounds pointless and is the most useful mode.
+                Six existing conversations were compared as three pairs with byte-identical
+                settings, and two of the pairs disagreed on the biggest questions in the brief —
+                one pair diverged on whether the work's scope expanded, another on whether the
+                central legal question was ever settled. Nothing was varied to cause that, so it
+                is the brief's own ambiguity. A single run hands you either answer with equal
+                confidence.
+                <br />
+                <br />
+                Replicates are also the only way to read the comparison below: a difference
+                between two settings means nothing unless you know how much each setting varies
+                on its own.
+                <br />
+                <br />
+                Costs N times one conversation. The report adds one model call per run plus one
+                over all of them.
+              </Hint>
+              <select
+                value={runType}
+                onChange={(e) => {
+                  const next = e.target.value as RunType
+                  setRunType(next)
+                  // Avatars OFF by default for an ensemble. They are generated per run, so the
+                  // same cast's faces would be drawn N times over — and image spend is not
+                  // counted in a run's reported cost, only voice calls are, so it would be both
+                  // multiplied and invisible. Nothing is confounded either way: every member
+                  // still gets the same config as every other.
+                  //
+                  // A default, not a hardcode: the checkbox still shows and still works, which is
+                  // the rule the avatar toggle already follows.
+                  if (next === 'ensemble') {
+                    setAvatarsBeforeEnsemble(avatars)
+                    setAvatars(false)
+                  } else if (avatarsBeforeEnsemble !== null) {
+                    setAvatars(avatarsBeforeEnsemble)
+                  }
+                }}
+                className="rounded border border-matrix-border bg-matrix-bg p-1 text-sm"
+              >
+                <option value="single">Once — a single conversation</option>
+                <option value="ensemble">Several times — same brief, then a report</option>
+              </select>
             </label>
-            <input
-              value={summaryFocus}
-              onChange={(e) => setSummaryFocus(e.target.value)}
-              disabled={!summaryEnabled}
-              placeholder="Optional focus (e.g. emphasize legal and ethical risk)"
-              className="w-full rounded border border-matrix-border bg-matrix-bg p-2 text-sm disabled:opacity-40"
-            />
-          </div>
-        )}
-      </div>
-
-      <div className="mt-4 rounded-lg border border-matrix-border p-3">
-        <button
-          type="button"
-          onClick={() => setCognitionOpen((o) => !o)}
-          className="flex w-full items-center justify-between text-left text-sm font-semibold text-slate-300"
-        >
-          <span className="flex items-center gap-2">
-            Cognition (introspectable engine)
-            <Hint label="cognition">
-              Turn this on when you want to know <em>why</em> an agent said something, not
-              just what it said. Each turn additionally produces a first-person rationale
-              and the goal it served, which is what powers the dossier and the "why did it
-              say that?" trace. Costs roughly 20-40% more tokens per turn, and measurably
-              shortens turns (agents spend fewer characters on the utterance itself). Leave
-              it off for a fast, cheap conversation.
-            </Hint>
-          </span>
-          <span className="text-xs text-slate-500">
-            {cognitionEnabled ? 'on' : 'off'} {cognitionOpen ? '▲' : '▼'}
-          </span>
-        </button>
-        {cognitionOpen && (
-          <div className="mt-3 space-y-2">
-            <p className="text-[11px] text-slate-500">
-              When on, each agent produces a genuine per-turn rationale, forms a memory
-              stream, and (optionally) reflects, evolves goals, and tracks relationships —
-              enabling the per-agent dossier and the “why did it say that?” trace. This adds
-              tokens/cost per turn. Model-generated introspection, not ground truth.
-            </p>
-            <label className="flex items-center gap-2 text-sm text-slate-300">
-              <input
-                type="checkbox"
-                checked={cognitionEnabled}
-                onChange={(e) => setCognitionEnabled(e.target.checked)}
-              />
-              Enable cognition
-            </label>
-            <div className="grid grid-cols-2 gap-2 pl-6">
-              <label className="flex items-center gap-2 text-sm text-slate-300">
-                <input type="checkbox" checked={cogMemory} disabled={!cognitionEnabled}
-                  onChange={(e) => setCogMemory(e.target.checked)} />
-                Memory stream
-                <Hint label="memory stream">
-                  Each agent records what it just learned or decided, and its most relevant
-                  memories are fed back into later turns. This is what gives an agent
-                  continuity — it can refer to what someone committed to eight turns ago
-                  instead of starting fresh each time. Expect roughly one memory per turn.
-                </Hint>
-              </label>
-              <label className="flex items-center gap-2 text-sm text-slate-300">
-                <input type="checkbox" checked={cogReflect} disabled={!cognitionEnabled}
-                  onChange={(e) => setCogReflect(e.target.checked)} />
-                Reflection (every 4 turns)
-                <Hint label="reflection">
-                  Every fourth turn, the speaker condenses its recent memories into a
-                  higher-level belief. Measured effect: reflections tend to <em>harden</em> a
-                  position rather than erode it, so this is worth enabling when you want
-                  participants who dig in rather than drift toward agreement. Costs one
-                  extra call each time it fires.
-                </Hint>
-              </label>
-              <label className="flex items-center gap-2 text-sm text-slate-300">
-                <input type="checkbox" checked={cogGoals} disabled={!cognitionEnabled}
-                  onChange={(e) => setCogGoals(e.target.checked)} />
-                Dynamic goals
-                <Hint label="dynamic goals">
-                  Lets an agent rewrite its own goal list mid-run when the conversation
-                  genuinely changes what it wants. Enable it to watch priorities shift under
-                  pressure; leave it off if you need each agent to keep pursuing the same
-                  thing so runs stay comparable.
-                </Hint>
-              </label>
-              <label className="flex items-center gap-2 text-sm text-slate-300">
-                <input type="checkbox" checked={cogRelationships} disabled={!cognitionEnabled}
-                  onChange={(e) => setCogRelationships(e.target.checked)} />
-                Relationships
-                <Hint label="relationships">
-                  Each agent maintains a one-line stance toward every other participant, and
-                  updates it as the conversation goes. Useful when the interpersonal dynamic
-                  is the thing you are studying — who trusts whom, who has written whom off.
-                  Shown in the dossier.
-                </Hint>
-              </label>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Import a setup file. Above the wizard and the cast, since it replaces both. */}
-      <div className="mt-5 rounded-lg border border-matrix-border p-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <h2 className="text-sm font-semibold text-slate-300">Import a setup</h2>
-          <Hint label="import a setup">
-            Load a conversation from a JSON file. The format is exactly what the run API
-            accepts — <code>{'{ "topic": ..., "cast": [{ "name", "persona", "goals" }] }'}</code>
-            — so anything you can run, a file can describe. Optional per persona:{' '}
-            <code>structured</code> for convictions and <code>document_texts</code> for
-            background. Optional at the top level: <code>config</code>,{' '}
-            <code>name</code>, <code>description</code>.
-            <br />
-            <br />
-            It loads into this form so you can add convictions or turn on cognition
-            before running. Replaces the topic and the whole cast.
-          </Hint>
-          <label className="ml-auto cursor-pointer rounded border border-matrix-border px-3 py-1 text-xs hover:border-matrix-accent">
-            Choose file…
-            <input
-              type="file"
-              accept=".json,application/json"
-              className="hidden"
-              onChange={(e) => {
-                void onFile(e.target.files?.[0])
-                // Cleared so choosing the SAME file twice re-fires change; otherwise a
-                // re-import after editing the form silently does nothing.
-                e.target.value = ''
-              }}
-            />
-          </label>
-        </div>
-        <textarea
-          onPaste={(e) => {
-            const text = e.clipboardData.getData('text')
-            if (text.trim().startsWith('{')) {
-              e.preventDefault()
-              applySetup(text)
-            }
-          }}
-          placeholder="…or paste the JSON here"
-          rows={2}
-          className="mt-2 w-full rounded border border-matrix-border bg-matrix-bg p-2 font-mono text-xs"
-        />
-        {importError && <p className="mt-2 text-xs text-red-400">{importError}</p>}
-        {importWarnings.length > 0 && (
-          // Shown rather than swallowed: an operator who pasted eight personas and got
-          // seven needs to know which one vanished and why.
-          <ul className="mt-2 list-inside list-disc text-xs text-amber-500/90">
-            {importWarnings.map((w, i) => (
-              <li key={i}>{w}</li>
-            ))}
-          </ul>
-        )}
-      </div>
-
-      {/* Persona wizard. Sits above the cast because it REPLACES it — putting it
-          below would imply it adds to what you have already typed. */}
-      <div className="mt-5 rounded-lg border border-matrix-accent/30 bg-matrix-accent/5 p-3">
-        <div className="flex items-center gap-2">
-          <h2 className="text-sm font-semibold text-slate-300">Draft a cast for me</h2>
-          <Hint label="draft a cast">
-            Describe the situation in a sentence or two and this drafts a panel of
-            stakeholders who would genuinely disagree — including the convictions,
-            which are the fiddly part to write by hand. It is a <em>draft you edit</em>:
-            nothing runs until you press Run, and every field below stays editable.
-            It deliberately does not make the firmest positions the correct ones, so
-            you cannot win the discussion by agreeing with whoever pushes hardest.
-          </Hint>
-        </div>
-        <textarea
-          value={wizardBrief}
-          onChange={(e) => setWizardBrief(e.target.value)}
-          placeholder="e.g. We're deciding whether to move our on-prem product to a hosted SaaS model next year."
-          rows={2}
-          className="mt-2 w-full rounded border border-matrix-border bg-matrix-bg p-2 text-sm"
-        />
-        <div className="mt-2 flex items-center gap-3">
-          <label className="flex items-center gap-2 text-xs text-slate-400">
-            Stakeholders
-            <input
-              type="number"
-              min={2}
-              max={7}
-              value={wizardCount}
-              onChange={(e) => setWizardCount(Number(e.target.value))}
-              className="w-16 rounded border border-matrix-border bg-matrix-bg p-1 text-xs"
-            />
-          </label>
-          <button
-            type="button"
-            onClick={runWizard}
-            disabled={wizardBusy || !wizardBrief.trim()}
-            className="rounded border border-matrix-accent px-3 py-1 text-xs font-semibold text-matrix-accent hover:bg-matrix-accent/10 disabled:opacity-40"
-          >
-            {wizardBusy ? 'Drafting…' : '✨ Draft cast'}
-          </button>
-          <span className="text-[11px] text-slate-500">Replaces the cast below.</span>
-        </div>
-        {wizardError && (
-          <p className="mt-2 text-xs text-red-400">{wizardError}</p>
-        )}
-      </div>
-
-      <div className="mt-5">
-        <div className="mb-2 flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-slate-300">Cast</h2>
-          <div className="flex items-center gap-2">
-            <PersonaLibrary
-              taken={cast.map((c) => c.name)}
-              onAdd={(persona) =>
-                // Replaces the form's untouched starting row rather than leaving an empty one above it.
-                setCast((prev) => {
-                  const blank = (c: DraftPersona) => !c.name.trim() && !c.persona.trim()
-                  return prev.length === 1 && blank(prev[0]) ? [persona] : [...prev, persona]
-                })
-              }
-            />
-            <button
-              onClick={() => setCast((p) => [...p, blankPersona()])}
-              className="rounded border border-matrix-border px-2 py-1 text-xs hover:border-matrix-accent"
-            >
-              + Add persona
-            </button>
-          </div>
-        </div>
-        <CastTemplates
-          getCast={buildCast}
-          hasCast={cast.some((c) => c.name.trim() || c.persona.trim())}
-          onLoad={(loaded, warnings) => {
-            setCast(loaded)
-            setImportWarnings(warnings)
-          }}
-        />
-        <div className="space-y-3">
-          {cast.map((p, i) => (
-            <div key={i} className="rounded-lg border border-matrix-border p-3">
-              <div className="flex items-center gap-2">
-                <input
-                  value={p.name}
-                  onChange={(e) => updatePersona(i, { name: e.target.value })}
-                  placeholder="Name"
-                  className="w-40 rounded border border-matrix-border bg-matrix-bg p-2 text-sm"
-                />
-                {cast.length > 1 && (
-                  <button
-                    onClick={() => setCast((prev) => prev.filter((_, idx) => idx !== i))}
-                    className="ml-auto text-xs text-slate-500 hover:text-red-400"
-                  >
-                    remove
-                  </button>
-                )}
-              </div>
-              <textarea
-                value={p.persona}
-                onChange={(e) => updatePersona(i, { persona: e.target.value })}
-                placeholder="Persona description"
-                rows={2}
-                className="mt-2 w-full rounded border border-matrix-border bg-matrix-bg p-2 text-sm"
-              />
-              <textarea
-                value={p.goals}
-                onChange={(e) => updatePersona(i, { goals: e.target.value })}
-                placeholder="Goals (one per line)"
-                rows={2}
-                className="mt-2 w-full rounded border border-matrix-border bg-matrix-bg p-2 text-sm"
-              />
-
-              {/* Phase 6 convictions and Phase 5 documents. Both optional and both
-                  collapsed, because a two-persona coffee-shop chat should not have to
-                  scroll past them — but discoverable, which they were not at all
-                  before: they existed only in hand-written config files. */}
-              <details className="mt-2 rounded border border-matrix-border/60 p-2">
-                <summary className="cursor-pointer text-xs font-semibold text-slate-400">
-                  Convictions &amp; background documents{' '}
-                  <span className="font-normal text-slate-600">(optional)</span>
-                </summary>
-
-                <label className="mt-2 flex items-center gap-2 text-xs text-slate-400">
-                  Positions this persona defends
-                  <Hint label="positions">
-                    Goals are <em>satisfiable</em> — an agent will accept any plan that meets
-                    one. Convictions are <em>defended</em>. One per line. Optionally prefix{' '}
-                    <code>[firm]</code>, <code>[non-negotiable]</code> or{' '}
-                    <code>[requires-escalation]</code>, and add{' '}
-                    <code>-&gt; what would change their mind</code>. Without a firmness tag a
-                    position is negotiable and will shift on a good argument.
-                  </Hint>
-                </label>
-                <textarea
-                  value={p.positions}
-                  onChange={(e) => updatePersona(i, { positions: e.target.value })}
-                  placeholder={'[firm] No feature may add an external service -> an embedded index that is a file\nShip this quarter'}
-                  rows={3}
-                  className="mt-1 w-full rounded border border-matrix-border bg-matrix-bg p-2 font-mono text-xs"
-                />
-                {!research && experts.length === 0 && outsideEvidenceConditions(p.positions).length > 0 && (
-                  <p className="mt-1 text-[11px] text-amber-400/90">
-                    Nobody in the room can produce{' '}
-                    <span className="italic">{outsideEvidenceConditions(p.positions).join('; ')}</span>. Personas
-                    whose conditions only outside evidence can meet have been seen to move without them. Turn on
-                    research below, or add a consultant who holds it, so the condition can actually turn up.
-                  </p>
-                )}
-
-                <label className="mt-2 flex items-center gap-2 text-xs text-amber-500/80">
-                  What is really behind them — withheld
-                  <Hint label="withheld concerns">
-                    The real worry under each position, usually personal stakes: what it
-                    costs <em>them</em> if they are wrong. One per line,{' '}
-                    <strong>matched to the positions above by line number</strong>.
+            {runType === 'ensemble' && (
+              <div className="ml-6 space-y-2 border-l border-matrix-border pl-4">
+                <label className="flex items-center gap-2 text-sm text-slate-300">
+                  How many times
+                  <Hint label="replicates">
+                    Five by default. That supports three coarse verdicts per conclusion —
+                    held in every run, split, or raised only once — and nothing finer. It will not
+                    support reading 3-of-5 against 2-of-5 as a difference, and the report says so
+                    in its own body rather than letting you infer precision that is not there.
                     <br />
                     <br />
-                    The persona knows this and it shapes what it argues for, but it will
-                    not volunteer it — it comes out only if someone asks why it holds the
-                    position. Drawing it out is the exercise, which is why it never
-                    appears in the moderator's view, the event log or the dossier.
+                    Two is the minimum: with one run a group has no internal variation, and that
+                    variation is the only thing separating a real finding from a coin flip.
                   </Hint>
+                  <input
+                    type="number"
+                    min={MIN_REPLICATES}
+                    max={MAX_MEMBERS}
+                    value={replicates}
+                    onChange={(e) => setReplicates(Number(e.target.value))}
+                    className="w-16 rounded border border-matrix-border bg-matrix-bg p-1 text-sm"
+                  />
                 </label>
-                <textarea
-                  value={p.concerns}
-                  onChange={(e) => updatePersona(i, { concerns: e.target.value })}
-                  placeholder={'I own the failure when a customer never reaches a working run'}
-                  rows={2}
-                  className="mt-1 w-full rounded border border-amber-600/30 bg-matrix-bg p-2 text-xs"
-                />
-
-                <label className="mt-2 flex items-center gap-2 text-xs text-slate-400">
-                  Will not weigh
-                  <Hint label="will not weigh">
-                    Concerns this persona declines to <em>weigh</em> — not to engage with. It
-                    still has to answer the substance of a challenge, then say once that the
-                    concern is not its to weigh. This is what stops five personas politely
-                    agreeing with each other; measured as the highest-value field of the lot.
-                    One per line.
-                  </Hint>
-                </label>
-                <textarea
-                  value={p.dismisses}
-                  onChange={(e) => updatePersona(i, { dismisses: e.target.value })}
-                  placeholder={'retrieval answer quality\nshipping schedule'}
-                  rows={2}
-                  className="mt-1 w-full rounded border border-matrix-border bg-matrix-bg p-2 text-xs"
-                />
-
-                <div className="mt-3 flex items-center gap-2">
-                  <span className="text-xs font-semibold text-slate-400">
-                    Background documents
+                <label className="flex items-start gap-2 text-sm text-slate-300">
+                  <input
+                    type="checkbox"
+                    className="mt-1"
+                    checked={compareHybrid}
+                    onChange={(e) => setCompareHybrid(e.target.checked)}
+                  />
+                  <span>
+                    Also compare against hybrid
+                    <Hint label="compare against hybrid">
+                      Adds a second group that differs in <em>one</em> thing: the speaker method.
+                      Everything else — turn count, fairness, the cast, the brief — is held
+                      identical, and the report counts each group separately rather than pooling
+                      them.
+                      <br />
+                      <br />
+                      Separate counts are the point. A conclusion that holds in every moderated
+                      run and in no hybrid run is a strong, method-dependent finding; pooled, the
+                      same numbers read as a weak half-and-half split. Those call for opposite
+                      decisions.
+                      <br />
+                      <br />
+                      Hybrid is the comparison worth making because blind opening rounds change
+                      what a persona has <em>seen</em> when they speak, so they can reach a
+                      conclusion that hearing someone else first would have suppressed. Turn count
+                      and fairness are deliberately not offered: a shorter run does not disagree,
+                      it just never arrives, and fairness is already settled.
+                    </Hint>
                   </span>
-                  <Hint label="background documents">
-                    This persona's knowledge base: material only it can draw on. Upload a
-                    file or paste text. It is indexed and retrieved a few passages at a
-                    time, so a long document does not sit in the prompt on every call —
-                    that context budget is the whole point of the feature. The persona
-                    cites what it actually retrieved, and the dossier shows which passages
-                    it used.
-                    <br />
-                    <br />
-                    Uploaded files are <strong>read and converted to text</strong>, not
-                    stored — so what you see below is exactly what the persona will have.
-                    Worth a glance for PDFs, where extraction quality varies and a scanned
-                    page yields no text at all.
-                    {usableFormats.length > 0 && (
-                      <>
-                        <br />
-                        <br />
-                        Accepted here: {usableFormats.join(', ')}
-                        {maxUploadBytes > 0 &&
-                          `, up to ${Math.round(maxUploadBytes / (1024 * 1024))} MB each`}
-                        .
-                      </>
-                    )}
-                  </Hint>
-                  <label
-                    className="ml-auto cursor-pointer rounded border border-matrix-border px-2 py-0.5 text-[11px] hover:border-matrix-accent"
-                    title={`Upload a knowledge-base file for ${p.name || 'this persona'}`}
-                  >
-                    {uploading === i ? 'reading…' : '⬆ upload file'}
-                    {/* A real file input, kept visually hidden rather than replaced by a
-                        button + click(): it stays keyboard-reachable and the label's text
-                        is its accessible name. */}
+                </label>
+                {injectionsConfig(injections).length > 0 && (
+                  <label className="flex items-start gap-2 text-sm text-slate-300">
                     <input
-                      type="file"
-                      multiple
-                      className="sr-only"
-                      accept={usableFormats.join(',') || undefined}
-                      disabled={uploading !== null}
-                      onChange={(e) => {
-                        void uploadDocuments(i, e.target.files)
-                        // Cleared so choosing the same file twice fires onChange again.
-                        e.target.value = ''
-                      }}
+                      type="checkbox"
+                      className="mt-1"
+                      checked={compareInjections}
+                      onChange={(e) => setCompareInjections(e.target.checked)}
+                    />
+                    <span>
+                      Also compare with and without the scheduled messages
+                      <Hint label="compare with and without the scheduled messages">
+                        The base group runs without them; a second group hears them at the same turn in
+                        every run. The report counts each group separately, so a conclusion that appears
+                        only after the message is attributable to it. The messages must come from a voice
+                        outside the cast.
+                      </Hint>
+                    </span>
+                  </label>
+                )}
+                {compareInjections && injectionsConfig(injections).length > 0 && (
+                  <label className="flex items-center gap-2 pl-6 text-sm text-slate-300">
+                    Runs with the messages
+                    <input
+                      type="number"
+                      min={MIN_REPLICATES}
+                      max={MAX_MEMBERS}
+                      value={injectionReplicates}
+                      onChange={(e) => setInjectionReplicates(Number(e.target.value))}
+                      className="w-16 rounded border border-matrix-border bg-matrix-bg p-1 text-sm"
                     />
                   </label>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      updatePersona(i, {
-                        documents: [...p.documents, { title: '', text: '' }],
-                      })
-                    }
-                    className="rounded border border-matrix-border px-2 py-0.5 text-[11px] hover:border-matrix-accent"
-                  >
-                    + paste text
-                  </button>
+                )}
+                {compareHybrid && (
+                  <label className="flex items-center gap-2 pl-6 text-sm text-slate-300">
+                    Hybrid runs
+                    <input
+                      type="number"
+                      min={MIN_REPLICATES}
+                      max={MAX_MEMBERS}
+                      value={hybridReplicates}
+                      onChange={(e) => setHybridReplicates(Number(e.target.value))}
+                      className="w-16 rounded border border-matrix-border bg-matrix-bg p-1 text-sm"
+                    />
+                    <span className="text-[11px] text-slate-500">
+                      (uses the opening-round count below)
+                    </span>
+                  </label>
+                )}
+                <p className="text-[11px] text-slate-500">
+                  {replicates + (compareHybrid ? hybridReplicates : 0) +
+                    (compareInjections && injectionsConfig(injections).length ? injectionReplicates : 0)} conversations, each up to{' '}
+                  {maxMessages} turns.
+                  {compareHybrid
+                    ? ' Only the speaker method differs between the two groups.'
+                    : ' Nothing differs between them.'}
+                </p>
+              </div>
+            )}
+            <label className="flex items-center gap-2 text-sm text-slate-300">
+              Conversation method
+              <Hint label="conversation method">
+                <strong>Moderated</strong> — a model reads the room each turn and picks one
+                speaker. One voice call per turn; who speaks is a judgement, and everything in
+                docs/SPEAKER-SELECTION-EVALUATION.md is about making that judgement fairer.
+                <br />
+                <br />
+                <strong>Rotation</strong> — everyone speaks once per round, in order, each one
+                seeing what the earlier speakers in that round said. Turn share is equal by
+                construction rather than by prompt, and the conversation stays cumulative
+                because nobody is blind.
+                <br />
+                <br />
+                <strong>All talk</strong> — everyone is asked every round against the state as it
+                stood when the round OPENED, so none of them can see the others' contributions
+                that round. Genuinely concurrent, and measurably more parallel: the one live run
+                has four personas opening a round by answering the same question, none of them
+                acknowledging the others.
+                <br />
+                <br />
+                <strong>Hybrid</strong> — all-talk rounds to open, then moderated. The two live
+                runs failed in opposite directions: all-talk opened superbly and degenerated into
+                restatement by round 3, while moderated takes 8–11 turns to introduce the cast but
+                stays cumulative.
+                <br />
+                <br />
+                In every method except moderated, anyone with nothing to add passes and a pass
+                never reaches the transcript, and a round where everybody passes ends the run.
+                Rounds cost N voice calls instead of one, and the cost per surviving turn RISES as
+                the room quietens — a round where five of six pass still costs six calls. Only
+                moderated has numbers behind it; the rest are new.
+              </Hint>
+              <select
+                value={method}
+                onChange={(e) => setMethod(e.target.value as Method)}
+                className="rounded border border-matrix-border bg-matrix-bg p-1 text-sm"
+              >
+                <option value="moderated">Moderated — a model picks one speaker per turn</option>
+                <option value="rotation">Rotation — everyone once per round, in order</option>
+                <option value="simultaneous">All talk — everyone at once, blind to each other</option>
+                <option value="hybrid">Hybrid — all talk to open, then moderated</option>
+              </select>
+            </label>
+            {method === 'hybrid' && (
+              <label className="flex items-center gap-2 pl-6 text-sm text-slate-300">
+                Opening rounds
+                <Hint label="opening rounds">
+                  How many all-talk rounds before the moderator takes over. Two by default,
+                  from the one live all-talk run: round 1 put every position on the table,
+                  round 2 was the strongest of the eight, and the parallel restatement — four
+                  personas answering the same question — starts at round 3.
+                  <br />
+                  <br />
+                  The moderator inherits those turns, so when it takes over everyone already
+                  has an equal share on the board, which is the state the fairness prompt
+                  spends tokens trying to reach.
+                </Hint>
+                <input
+                  type="number"
+                  min={1}
+                  max={10}
+                  value={openingRounds}
+                  onChange={(e) => setOpeningRounds(Number(e.target.value))}
+                  className="w-16 rounded border border-matrix-border bg-matrix-bg p-1 text-sm"
+                />
+              </label>
+            )}
+            <label className="flex items-center gap-2 text-sm text-slate-300">
+              <input
+                type="checkbox"
+                checked={closingRound}
+                onChange={(e) => setClosingRound(e.target.checked)}
+              />
+              Closing round when the ceiling is reached
+              <Hint label="closing round">
+                A run that hits its turn ceiling stops mid-argument. With this on it gets one
+                extra round — asked of everybody at once, in either method — for final positions.
+                <br />
+                <br />
+                It asks each persona to state where they now stand, what they can accept from
+                what others proposed, and what they cannot accept and why. It deliberately does
+                NOT ask them to reach a consensus: the Phase 6 work measured the same sentence
+                moving a persona's behaviour from 0.000 to 0.333 on framing alone, so an
+                instruction to agree would produce agreement every time and nothing would
+                separate a real resolution from a manufactured one.
+                <br />
+                <br />
+                Costs one extra round. Never runs after a conversation that ended on its own —
+                everyone had already said they had nothing to add.
+              </Hint>
+            </label>
+            <label className="flex items-center gap-2 text-sm text-slate-300">
+              <input
+                type="checkbox"
+                checked={stopWhenConverged}
+                disabled={method === 'rotation' || method === 'simultaneous'}
+                onChange={(e) => {
+                  const on = e.target.checked
+                  setStopWhenConverged(on)
+                  if (on) {
+                    setTurnsBeforeCeiling(maxMessages)
+                    if (maxMessages < CEILING_TURNS) setMaxMessages(CEILING_TURNS)
+                  } else if (turnsBeforeCeiling !== null) {
+                    setMaxMessages(turnsBeforeCeiling)
+                  }
+                }}
+              />
+              End when the conversation is finished
+              {(method === 'rotation' || method === 'simultaneous') && (
+                <span className="text-[11px] text-slate-500">
+                  (automatic — a round where everyone passes ends the run)
+                </span>
+              )}
+              <Hint label="stop when converged">
+                The moderator picks the next speaker every turn; with this on it may also say
+                nobody has anything substantive left, which ends the run. Measured on one run:
+                32 turns of a 40 ceiling, zero turns of "confirmed, nothing to add", 23% cheaper
+                than the same conversation padded to 40.
+                <br />
+                <br />
+                Two guards, because stopping early is worse than stopping late: it cannot fire
+                until every persona has spoken at least once, and it needs the moderator to
+                decline twice in a row.
+                <br />
+                <br />
+                Still being validated — one live run on one cast — so it is off by default and
+                the turn ceiling is what stops a run that never converges.
+              </Hint>
+            </label>
+            <label className="flex items-center gap-2 text-sm text-slate-300">
+              <input type="checkbox" checked={avatars} onChange={(e) => setAvatars(e.target.checked)} />
+              Generate avatars
+              {runType === 'ensemble' && !avatars && (
+                <span className="text-[11px] text-slate-500">
+                  (off for ensembles — they would be redrawn once per conversation)
+                </span>
+              )}
+              <Hint label="generate avatars">
+                Anime-style portraits for each persona, generated once before the run via
+                Stability SD3.5 on Bedrock. Purely cosmetic and entirely optional: it adds an
+                image call per persona, and if it fails or no image provider is configured the
+                cards fall back to initials without affecting the run.
+                <br />
+                <br />
+                <strong>Off by default for an ensemble.</strong> Avatars are generated per run, so
+                the same cast's faces would be drawn once for every conversation — and image spend
+                is not counted in a run's reported cost, only voice calls are, so it would be both
+                multiplied and invisible. Still switchable: turning it on applies to every member
+                equally, so nothing about the comparison changes either way.
+              </Hint>
+            </label>
+            {models.length > 0 && (
+              <label className="flex items-center gap-2 text-sm text-slate-300">
+                Model
+                <Hint label="model">
+                  Which model drives every persona, the moderator and the analyst. This is not
+                  only a cost/quality dial — models differ in ways that change behaviour, and
+                  measured differences here have been large. Worth re-checking a run's
+                  behaviour after switching rather than assuming it carries over.
+                </Hint>
+                <select
+                  value={model}
+                  onChange={(e) => setModel(e.target.value)}
+                  className="rounded border border-matrix-border bg-matrix-bg p-1 text-sm"
+                >
+                  {models.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+          </div>
+
+          <div className="mt-4 rounded-lg border border-matrix-border p-3">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setSummaryOpen((o) => !o)}
+                className="flex flex-1 items-center justify-between text-left text-sm font-semibold text-slate-300"
+              >
+                <span>Summary options</span>
+              <span className="text-xs text-slate-500">
+                {summaryEnabled ? 'auto-summary on' : 'auto-summary off'} {summaryOpen ? '▲' : '▼'}
+              </span>
+              </button>
+              <Hint label="summary options">
+                A post-run analyst pass over the finished transcript: consensus, dissenters,
+                key ideas, open questions. Useful when you care about the conclusions more
+                than the conversation. Costs one extra call at the end, and you can always
+                generate it later from the run page instead.
+              </Hint>
+            </div>
+            {summaryOpen && (
+              <div className="mt-3 space-y-2">
+                <p className="text-[11px] text-slate-500">
+                  When the run completes, generate a structured analyst summary (consensus,
+                  dissenters, key ideas, open questions, overview). Model-generated analysis — you
+                  can also generate it later on the run page.
+                </p>
+                <label className="flex items-center gap-2 text-sm text-slate-300">
+                  <input
+                    type="checkbox"
+                    checked={summaryEnabled}
+                    onChange={(e) => setSummaryEnabled(e.target.checked)}
+                  />
+                  Auto-generate summary at completion
+                </label>
+                <input
+                  value={summaryFocus}
+                  onChange={(e) => setSummaryFocus(e.target.value)}
+                  disabled={!summaryEnabled}
+                  placeholder="Optional focus (e.g. emphasize legal and ethical risk)"
+                  className="w-full rounded border border-matrix-border bg-matrix-bg p-2 text-sm disabled:opacity-40"
+                />
+              </div>
+            )}
+          </div>
+
+          <div className="mt-4 rounded-lg border border-matrix-border p-3">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setCognitionOpen((o) => !o)}
+                className="flex flex-1 items-center justify-between text-left text-sm font-semibold text-slate-300"
+              >
+                <span>Cognition (introspectable engine)</span>
+              <span className="text-xs text-slate-500">
+                {cognitionEnabled ? 'on' : 'off'} {cognitionOpen ? '▲' : '▼'}
+              </span>
+              </button>
+              <Hint label="cognition">
+                Turn this on when you want to know <em>why</em> an agent said something, not
+                just what it said. Each turn additionally produces a first-person rationale
+                and the goal it served, which is what powers the dossier and the "why did it
+                say that?" trace. Costs roughly 20-40% more tokens per turn, and measurably
+                shortens turns (agents spend fewer characters on the utterance itself). Leave
+                it off for a fast, cheap conversation.
+              </Hint>
+            </div>
+            {cognitionOpen && (
+              <div className="mt-3 space-y-2">
+                <p className="text-[11px] text-slate-500">
+                  When on, each agent produces a genuine per-turn rationale, forms a memory
+                  stream, and (optionally) reflects, evolves goals, and tracks relationships —
+                  enabling the per-agent dossier and the “why did it say that?” trace. This adds
+                  tokens/cost per turn. Model-generated introspection, not ground truth.
+                </p>
+                <label className="flex items-center gap-2 text-sm text-slate-300">
+                  <input
+                    type="checkbox"
+                    checked={cognitionEnabled}
+                    onChange={(e) => setCognitionEnabled(e.target.checked)}
+                  />
+                  Enable cognition
+                </label>
+                <div className="grid grid-cols-2 gap-2 pl-6">
+                  <label className="flex items-center gap-2 text-sm text-slate-300">
+                    <input type="checkbox" checked={cogMemory} disabled={!cognitionEnabled}
+                      onChange={(e) => setCogMemory(e.target.checked)} />
+                    Memory stream
+                    <Hint label="memory stream">
+                      Each agent records what it just learned or decided, and its most relevant
+                      memories are fed back into later turns. This is what gives an agent
+                      continuity — it can refer to what someone committed to eight turns ago
+                      instead of starting fresh each time. Expect roughly one memory per turn.
+                    </Hint>
+                  </label>
+                  <label className="flex items-center gap-2 text-sm text-slate-300">
+                    <input type="checkbox" checked={cogReflect} disabled={!cognitionEnabled}
+                      onChange={(e) => setCogReflect(e.target.checked)} />
+                    Reflection (every 4 turns)
+                    <Hint label="reflection">
+                      Every fourth turn, the speaker condenses its recent memories into a
+                      higher-level belief. Measured effect: reflections tend to <em>harden</em> a
+                      position rather than erode it, so this is worth enabling when you want
+                      participants who dig in rather than drift toward agreement. Costs one
+                      extra call each time it fires.
+                    </Hint>
+                  </label>
+                  <label className="flex items-center gap-2 text-sm text-slate-300">
+                    <input type="checkbox" checked={cogGoals} disabled={!cognitionEnabled}
+                      onChange={(e) => setCogGoals(e.target.checked)} />
+                    Dynamic goals
+                    <Hint label="dynamic goals">
+                      Lets an agent rewrite its own goal list mid-run when the conversation
+                      genuinely changes what it wants. Enable it to watch priorities shift under
+                      pressure; leave it off if you need each agent to keep pursuing the same
+                      thing so runs stay comparable.
+                    </Hint>
+                  </label>
+                  <label className="flex items-center gap-2 text-sm text-slate-300">
+                    <input type="checkbox" checked={cogRelationships} disabled={!cognitionEnabled}
+                      onChange={(e) => setCogRelationships(e.target.checked)} />
+                    Relationships
+                    <Hint label="relationships">
+                      Each agent maintains a one-line stance toward every other participant, and
+                      updates it as the conversation goes. Useful when the interpersonal dynamic
+                      is the thing you are studying — who trusts whom, who has written whom off.
+                      Shown in the dossier.
+                    </Hint>
+                  </label>
                 </div>
+              </div>
+            )}
+          </div>
 
-                {missingFormats.length > 0 && (
-                  <p className="mt-1 text-[11px] text-amber-400">
-                    {missingFormats.map((f) => f.suffix).join(' and ')} upload needs{' '}
-                    {[...new Set(missingFormats.map((f) => f.needs))].join(' and ')} on the
-                    server (<code>pip install 'matrix-sim-studio[documents]'</code>). Paste
-                    the text instead until then.
-                  </p>
-                )}
 
-                {uploadError && (
-                  <p className="mt-1 rounded bg-red-950/50 p-1 text-[11px] text-red-300">
-                    {uploadError}
-                  </p>
-                )}
-                {p.documents.map((d, di) => (
-                  <div key={di} className="mt-2 rounded border border-matrix-border/60 p-2">
-                    <div className="flex items-center gap-2">
-                      <input
-                        value={d.title}
-                        onChange={(e) =>
-                          updatePersona(i, {
-                            documents: p.documents.map((x, xi) =>
-                              xi === di ? { ...x, title: e.target.value } : x,
-                            ),
-                          })
-                        }
-                        placeholder="title (e.g. distribution-constraints.md)"
-                        className="w-full rounded border border-matrix-border bg-matrix-bg p-1 text-xs"
-                      />
+          {/* Import a setup file. Above the wizard and the cast, since it replaces both. */}
+          <div className="mt-5 rounded-lg border border-matrix-border p-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-sm font-semibold text-slate-300">Import a setup</h2>
+              <Hint label="import a setup">
+                Load a conversation from a JSON file. The format is exactly what the run API
+                accepts — <code>{'{ "topic": ..., "cast": [{ "name", "persona", "goals" }] }'}</code>
+                — so anything you can run, a file can describe. Optional per persona:{' '}
+                <code>structured</code> for convictions and <code>document_texts</code> for
+                background. Optional at the top level: <code>config</code>,{' '}
+                <code>name</code>, <code>description</code>.
+                <br />
+                <br />
+                It loads into this form so you can add convictions or turn on cognition
+                before running. Replaces the topic and the whole cast.
+              </Hint>
+              <label className="ml-auto cursor-pointer rounded border border-matrix-border px-3 py-1 text-xs hover:border-matrix-accent">
+                Choose file…
+                <input
+                  type="file"
+                  accept=".json,application/json"
+                  className="hidden"
+                  onChange={(e) => {
+                    void onFile(e.target.files?.[0])
+                    // Cleared so choosing the SAME file twice re-fires change; otherwise a
+                    // re-import after editing the form silently does nothing.
+                    e.target.value = ''
+                  }}
+                />
+              </label>
+            </div>
+            <textarea
+              onPaste={(e) => {
+                const text = e.clipboardData.getData('text')
+                if (text.trim().startsWith('{')) {
+                  e.preventDefault()
+                  applySetup(text)
+                }
+              }}
+              placeholder="…or paste the JSON here"
+              rows={2}
+              className="mt-2 w-full rounded border border-matrix-border bg-matrix-bg p-2 font-mono text-xs"
+            />
+            {importError && <p className="mt-2 text-xs text-red-400">{importError}</p>}
+            {importWarnings.length > 0 && (
+              // Shown rather than swallowed: an operator who pasted eight personas and got
+              // seven needs to know which one vanished and why.
+              <ul className="mt-2 list-inside list-disc text-xs text-amber-500/90">
+                {importWarnings.map((w, i) => (
+                  <li key={i}>{w}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+        </Step>
+
+        <Step n={2} step={step}>
+          {/* Persona wizard. Sits above the cast because it REPLACES it — putting it
+              below would imply it adds to what you have already typed. */}
+          <div className="mt-5 rounded-lg border border-matrix-accent/30 bg-matrix-accent/5 p-3">
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold text-slate-300">Draft a cast for me</h2>
+              <Hint label="draft a cast">
+                Describe the situation in a sentence or two and this drafts a panel of
+                stakeholders who would genuinely disagree — including the convictions,
+                which are the fiddly part to write by hand. It is a <em>draft you edit</em>:
+                nothing runs until you press Run, and every field below stays editable.
+                It deliberately does not make the firmest positions the correct ones, so
+                you cannot win the discussion by agreeing with whoever pushes hardest.
+              </Hint>
+            </div>
+            <textarea
+              value={wizardBrief}
+              onChange={(e) => setWizardBrief(e.target.value)}
+              placeholder="e.g. We're deciding whether to move our on-prem product to a hosted SaaS model next year."
+              rows={2}
+              className="mt-2 w-full rounded border border-matrix-border bg-matrix-bg p-2 text-sm"
+            />
+            <div className="mt-2 flex items-center gap-3">
+              <label className="flex items-center gap-2 text-xs text-slate-400">
+                Stakeholders
+                <input
+                  type="number"
+                  min={2}
+                  max={7}
+                  value={wizardCount}
+                  onChange={(e) => setWizardCount(Number(e.target.value))}
+                  className="w-16 rounded border border-matrix-border bg-matrix-bg p-1 text-xs"
+                />
+              </label>
+              <button
+                type="button"
+                onClick={runWizard}
+                disabled={wizardBusy || !wizardBrief.trim()}
+                className="rounded border border-matrix-accent px-3 py-1 text-xs font-semibold text-matrix-accent hover:bg-matrix-accent/10 disabled:opacity-40"
+              >
+                {wizardBusy ? 'Drafting…' : '✨ Draft cast'}
+              </button>
+              <span className="text-[11px] text-slate-500">Replaces the cast below.</span>
+            </div>
+            {wizardError && (
+              <p className="mt-2 text-xs text-red-400">{wizardError}</p>
+            )}
+          </div>
+
+          <div className="mt-5">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-sm font-semibold text-slate-300">Cast</h2>
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <PersonaLibrary
+                  taken={cast.map((c) => c.name)}
+                  onAdd={(persona) =>
+                    // Replaces the form's untouched starting row rather than leaving an empty one above it.
+                    setCast((prev) => {
+                      const blank = (c: DraftPersona) => !c.name.trim() && !c.persona.trim()
+                      return prev.length === 1 && blank(prev[0]) ? [persona] : [...prev, persona]
+                    })
+                  }
+                />
+                <button
+                  onClick={() => setCast((p) => [...p, blankPersona()])}
+                  className="rounded border border-matrix-border px-2 py-1 text-xs hover:border-matrix-accent"
+                >
+                  + Add persona
+                </button>
+              </div>
+            </div>
+            <CastTemplates
+              getCast={buildCast}
+              hasCast={cast.some((c) => c.name.trim() || c.persona.trim())}
+              onLoad={(loaded, warnings) => {
+                setCast(loaded)
+                setImportWarnings(warnings)
+              }}
+            />
+            <div className="space-y-3">
+              {cast.map((p, i) => (
+                <div key={i} className="rounded-lg border border-matrix-border p-3">
+                  <div className="flex items-center gap-2">
+                    <input
+                      value={p.name}
+                      onChange={(e) => updatePersona(i, { name: e.target.value })}
+                      placeholder="Name"
+                      className="w-40 rounded border border-matrix-border bg-matrix-bg p-2 text-sm"
+                    />
+                    {cast.length > 1 && (
+                      <button
+                        onClick={() => setCast((prev) => prev.filter((_, idx) => idx !== i))}
+                        className="ml-auto text-xs text-slate-500 hover:text-red-400"
+                      >
+                        remove
+                      </button>
+                    )}
+                  </div>
+                  <textarea
+                    value={p.persona}
+                    onChange={(e) => updatePersona(i, { persona: e.target.value })}
+                    placeholder="Persona description"
+                    rows={2}
+                    className="mt-2 w-full rounded border border-matrix-border bg-matrix-bg p-2 text-sm"
+                  />
+                  <textarea
+                    value={p.goals}
+                    onChange={(e) => updatePersona(i, { goals: e.target.value })}
+                    placeholder="Goals (one per line)"
+                    rows={2}
+                    className="mt-2 w-full rounded border border-matrix-border bg-matrix-bg p-2 text-sm"
+                  />
+
+                  {/* Phase 6 convictions and Phase 5 documents. Both optional and both
+                      collapsed, because a two-persona coffee-shop chat should not have to
+                      scroll past them — but discoverable, which they were not at all
+                      before: they existed only in hand-written config files. */}
+                  <details className="mt-2 rounded border border-matrix-border/60 p-2">
+                    <summary className="cursor-pointer text-xs font-semibold text-slate-400">
+                      Convictions &amp; background documents{' '}
+                      <span className="font-normal text-slate-600">(optional)</span>
+                    </summary>
+
+                    <label className="mt-2 flex items-center gap-2 text-xs text-slate-400">
+                      Positions this persona defends
+                      <Hint label="positions">
+                        Goals are <em>satisfiable</em> — an agent will accept any plan that meets
+                        one. Convictions are <em>defended</em>. One per line. Optionally prefix{' '}
+                        <code>[firm]</code>, <code>[non-negotiable]</code> or{' '}
+                        <code>[requires-escalation]</code>, and add{' '}
+                        <code>-&gt; what would change their mind</code>. Without a firmness tag a
+                        position is negotiable and will shift on a good argument.
+                      </Hint>
+                    </label>
+                    <textarea
+                      value={p.positions}
+                      onChange={(e) => updatePersona(i, { positions: e.target.value })}
+                      placeholder={'[firm] No feature may add an external service -> an embedded index that is a file\nShip this quarter'}
+                      rows={3}
+                      className="mt-1 w-full rounded border border-matrix-border bg-matrix-bg p-2 font-mono text-xs"
+                    />
+                    {!research && experts.length === 0 && outsideEvidenceConditions(p.positions).length > 0 && (
+                      <p className="mt-1 text-[11px] text-amber-400/90">
+                        Nobody in the room can produce{' '}
+                        <span className="italic">{outsideEvidenceConditions(p.positions).join('; ')}</span>. Personas
+                        whose conditions only outside evidence can meet have been seen to move without them. Turn on
+                        research below, or add a consultant who holds it, so the condition can actually turn up.
+                      </p>
+                    )}
+
+                    <label className="mt-2 flex items-center gap-2 text-xs text-amber-500/80">
+                      What is really behind them — withheld
+                      <Hint label="withheld concerns">
+                        The real worry under each position, usually personal stakes: what it
+                        costs <em>them</em> if they are wrong. One per line,{' '}
+                        <strong>matched to the positions above by line number</strong>.
+                        <br />
+                        <br />
+                        The persona knows this and it shapes what it argues for, but it will
+                        not volunteer it — it comes out only if someone asks why it holds the
+                        position. Drawing it out is the exercise, which is why it never
+                        appears in the moderator's view, the event log or the dossier.
+                      </Hint>
+                    </label>
+                    <textarea
+                      value={p.concerns}
+                      onChange={(e) => updatePersona(i, { concerns: e.target.value })}
+                      placeholder={'I own the failure when a customer never reaches a working run'}
+                      rows={2}
+                      className="mt-1 w-full rounded border border-amber-600/30 bg-matrix-bg p-2 text-xs"
+                    />
+
+                    <label className="mt-2 flex items-center gap-2 text-xs text-slate-400">
+                      Will not weigh
+                      <Hint label="will not weigh">
+                        Concerns this persona declines to <em>weigh</em> — not to engage with. It
+                        still has to answer the substance of a challenge, then say once that the
+                        concern is not its to weigh. This is what stops five personas politely
+                        agreeing with each other; measured as the highest-value field of the lot.
+                        One per line.
+                      </Hint>
+                    </label>
+                    <textarea
+                      value={p.dismisses}
+                      onChange={(e) => updatePersona(i, { dismisses: e.target.value })}
+                      placeholder={'retrieval answer quality\nshipping schedule'}
+                      rows={2}
+                      className="mt-1 w-full rounded border border-matrix-border bg-matrix-bg p-2 text-xs"
+                    />
+
+                    <div className="mt-3 flex items-center gap-2">
+                      <span className="text-xs font-semibold text-slate-400">
+                        Background documents
+                      </span>
+                      <Hint label="background documents">
+                        This persona's knowledge base: material only it can draw on. Upload a
+                        file or paste text. It is indexed and retrieved a few passages at a
+                        time, so a long document does not sit in the prompt on every call —
+                        that context budget is the whole point of the feature. The persona
+                        cites what it actually retrieved, and the dossier shows which passages
+                        it used.
+                        <br />
+                        <br />
+                        Uploaded files are <strong>read and converted to text</strong>, not
+                        stored — so what you see below is exactly what the persona will have.
+                        Worth a glance for PDFs, where extraction quality varies and a scanned
+                        page yields no text at all.
+                        {usableFormats.length > 0 && (
+                          <>
+                            <br />
+                            <br />
+                            Accepted here: {usableFormats.join(', ')}
+                            {maxUploadBytes > 0 &&
+                              `, up to ${Math.round(maxUploadBytes / (1024 * 1024))} MB each`}
+                            .
+                          </>
+                        )}
+                      </Hint>
+                      <label
+                        className="ml-auto cursor-pointer rounded border border-matrix-border px-2 py-0.5 text-[11px] hover:border-matrix-accent"
+                        aria-description={`Upload a knowledge-base file for ${p.name || 'this persona'}`}
+                      >
+                        {uploading === i ? 'reading…' : '⬆ upload file'}
+                        {/* A real file input, kept visually hidden rather than replaced by a
+                            button + click(): it stays keyboard-reachable and the label's text
+                            is its accessible name. */}
+                        <input
+                          type="file"
+                          multiple
+                          className="sr-only"
+                          accept={usableFormats.join(',') || undefined}
+                          disabled={uploading !== null}
+                          onChange={(e) => {
+                            void uploadDocuments(i, e.target.files)
+                            // Cleared so choosing the same file twice fires onChange again.
+                            e.target.value = ''
+                          }}
+                        />
+                      </label>
                       <button
                         type="button"
                         onClick={() =>
                           updatePersona(i, {
-                            documents: p.documents.filter((_, xi) => xi !== di),
+                            documents: [...p.documents, { title: '', text: '' }],
                           })
                         }
-                        className="text-[11px] text-slate-500 hover:text-red-400"
+                        className="rounded border border-matrix-border px-2 py-0.5 text-[11px] hover:border-matrix-accent"
                       >
-                        remove
+                        + paste text
                       </button>
                     </div>
-                    <textarea
-                      value={d.text}
-                      onChange={(e) =>
-                        updatePersona(i, {
-                          documents: p.documents.map((x, xi) =>
-                            xi === di ? { ...x, text: e.target.value } : x,
-                          ),
-                        })
-                      }
-                      placeholder="Paste the document text here"
-                      rows={4}
-                      className="mt-1 w-full rounded border border-matrix-border bg-matrix-bg p-2 text-xs"
-                    />
-                  </div>
-                ))}
 
-                <div className="mt-3 flex items-center gap-2">
-                  <span className="text-xs font-semibold text-slate-400">
-                    Knowledge bases — this persona only
-                  </span>
-                  <Hint label="persona knowledge bases">
-                    A collection indexed ONCE and searchable from any conversation that
-                    binds it — unlike the pasted documents above, which belong to this run
-                    alone. Bind one here and only this persona may search it.
-                    <br />
-                    <br />
-                    A collection shared with you is bindable; that is what sharing is for.
-                    If its owner revokes the grant before the run starts, creation is
-                    refused and says which collection — and if they revoke mid-run, the
-                    next turn simply stops searching it.
-                  </Hint>
+                    {missingFormats.length > 0 && (
+                      <p className="mt-1 text-[11px] text-amber-400">
+                        {missingFormats.map((f) => f.suffix).join(' and ')} upload needs{' '}
+                        {[...new Set(missingFormats.map((f) => f.needs))].join(' and ')} on the
+                        server (<code>pip install 'matrix-sim-studio[documents]'</code>). Paste
+                        the text instead until then.
+                      </p>
+                    )}
+
+                    {uploadError && (
+                      <p className="mt-1 rounded bg-red-950/50 p-1 text-[11px] text-red-300">
+                        {uploadError}
+                      </p>
+                    )}
+                    {p.documents.map((d, di) => (
+                      <div key={di} className="mt-2 rounded border border-matrix-border/60 p-2">
+                        <div className="flex items-center gap-2">
+                          <input
+                            value={d.title}
+                            onChange={(e) =>
+                              updatePersona(i, {
+                                documents: p.documents.map((x, xi) =>
+                                  xi === di ? { ...x, title: e.target.value } : x,
+                                ),
+                              })
+                            }
+                            placeholder="title (e.g. distribution-constraints.md)"
+                            className="w-full rounded border border-matrix-border bg-matrix-bg p-1 text-xs"
+                          />
+                          <button
+                            type="button"
+                            onClick={() =>
+                              updatePersona(i, {
+                                documents: p.documents.filter((_, xi) => xi !== di),
+                              })
+                            }
+                            className="text-[11px] text-slate-500 hover:text-red-400"
+                          >
+                            remove
+                          </button>
+                        </div>
+                        <textarea
+                          value={d.text}
+                          onChange={(e) =>
+                            updatePersona(i, {
+                              documents: p.documents.map((x, xi) =>
+                                xi === di ? { ...x, text: e.target.value } : x,
+                              ),
+                            })
+                          }
+                          placeholder="Paste the document text here"
+                          rows={4}
+                          className="mt-1 w-full rounded border border-matrix-border bg-matrix-bg p-2 text-xs"
+                        />
+                      </div>
+                    ))}
+
+                    <div className="mt-3 flex items-center gap-2">
+                      <span className="text-xs font-semibold text-slate-400">
+                        Knowledge bases — this persona only
+                      </span>
+                      <Hint label="persona knowledge bases">
+                        A collection indexed ONCE and searchable from any conversation that
+                        binds it — unlike the pasted documents above, which belong to this run
+                        alone. Bind one here and only this persona may search it.
+                        <br />
+                        <br />
+                        A collection shared with you is bindable; that is what sharing is for.
+                        If its owner revokes the grant before the run starts, creation is
+                        refused and says which collection — and if they revoke mid-run, the
+                        next turn simply stops searching it.
+                      </Hint>
+                    </div>
+                    <div className="mt-1">
+                      <KbPicker
+                        level="persona"
+                        personaName={p.name || `persona ${i + 1}`}
+                        selected={p.knowledgeBases}
+                        onChange={(ids) => updatePersona(i, { knowledgeBases: ids })}
+                      />
+                    </div>
+                  </details>
                 </div>
-                <div className="mt-1">
-                  <KbPicker
-                    level="persona"
-                    personaName={p.name || `persona ${i + 1}`}
-                    selected={p.knowledgeBases}
-                    onChange={(ids) => updatePersona(i, { knowledgeBases: ids })}
-                  />
-                </div>
-              </details>
+              ))}
             </div>
-          ))}
-        </div>
-        {anyConvictions && (
-          <label className="mt-3 flex items-center gap-2 text-xs text-slate-300">
-            <input
-              type="checkbox"
-              checked={evidenceLean}
-              onChange={(e) => setEvidenceLean(e.target.checked)}
-            />
-            When a persona asks for evidence, make it say what it expects and which way it leans
-            <Hint label="evidence lean">
-              Personas already say what evidence would change their mind. With this on, they must
-              also say what they expect it to show and how that makes them lean today — "I expect
-              about 7%, so for now I'm against" — so a run that ends waiting on data still ends with
-              a lean. A guess never counts as the evidence itself.
-              <br />
-              <br />
-              Measured twice (docs/EVIDENCE-LEAN.md, EVIDENCE-LEAN-2.md): on fresh runs scored three
-              times each, every run with this on ended with a stated lean (3 of 3, 9 of 9 passes)
-              against none without it (0 of 3), with objections, length and cost within bounds. On by
-              default; untick it to compare against how personas speak without it.
-            </Hint>
-          </label>
-        )}
-      </div>
-
-      <div className="mt-6 rounded-lg border border-matrix-border bg-matrix-panel p-4">
-        <div className="flex items-center gap-2">
-          <h2 className="text-sm font-semibold text-slate-300">
-            Knowledge bases — the whole cast
-          </h2>
-          <Hint label="run knowledge bases">
-            Bound at run level, so every persona may search these. The effective scope for
-            a speaker is the run's collections plus its own, intersected with what you are
-            actually allowed to read — and that intersection is re-checked on every turn,
-            not just when the run is created.
-          </Hint>
-        </div>
-        <div className="mt-2">
-          <KbPicker level="run" selected={runKbs} onChange={setRunKbs} />
-        </div>
-        {(anyDocuments || anyKnowledgeBases || research) && (
-          <label className="mt-3 flex items-center gap-2 text-xs text-slate-300">
-            <input
-              type="checkbox"
-              checked={citeInline}
-              onChange={(e) => setCiteInline(e.target.checked)}
-            />
-            Ask personas to cite their sources inline
-            <Hint label="inline citations">
-              Each persona ends a sentence that relies on a passage with its label, like
-              [Cost observations #1], and the conversation view links it to the passage. Without
-              this, personas rarely say which source a claim came from, so a claim can be traced
-              only to the passages that were in view.
-              <br />
-              <br />
-              Measured on a small comparison (docs/CITE-INLINE.md): every message with a source in
-              view cited it, none cited a passage it was not given, and messages were no longer.
-              On by default; untick it to compare against how personas speak without it.
-            </Hint>
-          </label>
-        )}
-      </div>
-
-      <ConsultantsEditor
-        consultants={consultants}
-        onChange={setConsultants}
-        limit={consultLimit}
-        onLimit={setConsultLimit}
-      />
-
-      <InjectionsEditor injections={injections} onChange={setInjections} maxTurns={maxMessages} />
-
-      <AssumptionsEditor
-        assumptions={assumptions}
-        onChange={setAssumptions}
-        dynamic={dynamicAssumptions}
-        onDynamic={setDynamicAssumptions}
-      />
-
-      {/* Research sits next to the KB pickers on purpose: it is a knowledge-base AUTHORING
-          step, and the bindings it produces are the same bindings chosen above. */}
-      <div className="mt-6 rounded-lg border border-matrix-border bg-matrix-panel p-4">
-        <label className="flex items-center gap-2 text-sm font-semibold text-slate-300">
-          <input
-            type="checkbox"
-            checked={research}
-            onChange={(e) => setResearch(e.target.checked)}
-          />
-          Research the subject before starting
-          <Hint label="pre-conversation research">
-            Before turn 1, a researcher searches the open web for the AUTHORITIES on your
-            topic — statutes, regulations, board opinions, decided cases — and each persona
-            researches their own position <em>and the evidence they said would change their
-            mind</em>. What it finds is ingested into knowledge bases and bound here, so the
-            conversation reads it like any other collection.
-            <br />
-            <br />
-            This exists because of a measured gap: across five replicate runs of one brief,
-            the room asked for the same missing citation every time and never got it. A
-            conversation cannot answer that from inside itself.
-            <br />
-            <br />
-            Sources are tiered — <strong>controlling</strong> (a statute, a regulation, a
-            board ruling), persuasive, commentary — and a controlling one is given a
-            reserved slot in every prompt, so it cannot be crowded out by a blog post that
-            happens to match your topic's wording more closely.
-            <br />
-            <br />
-            When nothing controlling is found, that is recorded <em>as a finding</em> and
-            ingested too. "Nobody looked" and "we looked and there is nothing" are different
-            facts, and only the second one is reusable.
-            <br />
-            <br />
-            It costs a few minutes and roughly $0.25 for a six-persona cast, before the
-            conversation itself. You are not made to wait on a screen: the run is created
-            immediately and researches before it talks.
-          </Hint>
-        </label>
-
-        {research && (
-          <div className="mt-3 space-y-2 border-l-2 border-matrix-border pl-3">
-            <label className="flex items-center gap-2 text-sm text-slate-300">
-              <input
-                type="checkbox"
-                aria-label="Shared research"
-                checked={researchShared}
-                onChange={(e) => setResearchShared(e.target.checked)}
-              />
-              Shared research — one corpus every persona can search
-            </label>
-            <label className="flex items-center gap-2 text-sm text-slate-300">
-              <input
-                type="checkbox"
-                aria-label="Per-persona research"
-                checked={researchPersonas}
-                onChange={(e) => setResearchPersonas(e.target.checked)}
-              />
-              Per-persona research — their case, and the case against it
-              <Hint label="per-persona research">
-                Two queries per viewpoint: one for the position, one for whatever the persona
-                declared would change their mind. The second is not separately switchable,
-                and that is the point — a persona who only ever sees support for what they
-                already think cannot be moved by evidence, and measuring whether they would
-                be is what this tool is for.
-                <br />
-                <br />
-                A persona with no viewpoints is skipped rather than given an empty
-                collection.
-              </Hint>
-            </label>
-            {experts.length > 0 && (
-              <label className="flex items-center gap-2 text-sm text-slate-300">
+            {anyConvictions && (
+              <label className="mt-3 flex items-center gap-2 text-xs text-slate-300">
                 <input
                   type="checkbox"
-                  aria-label="Consultant research"
-                  checked={researchConsultants}
-                  onChange={(e) => setResearchConsultants(e.target.checked)}
+                  checked={evidenceLean}
+                  onChange={(e) => setEvidenceLean(e.target.checked)}
                 />
-                Consultant research — a library for each consultant
-                <Hint label="consultant research">
-                  Searches the open web for the primary sources each consultant's expertise
-                  covers, within this subject, and stores them in that consultant's own
-                  knowledge base. The consultant then answers from them, with citations, like
-                  any document you attached. Found once before turn 1 and never re-searched, so
-                  a replay or branch reads the same sources.
+                When a persona asks for evidence, make it say what it expects and which way it leans
+                <Hint label="evidence lean">
+                  Personas already say what evidence would change their mind. With this on, they must
+                  also say what they expect it to show and how that makes them lean today — "I expect
+                  about 7%, so for now I'm against" — so a run that ends waiting on data still ends with
+                  a lean. A guess never counts as the evidence itself.
+                  <br />
+                  <br />
+                  Measured twice (docs/EVIDENCE-LEAN.md, EVIDENCE-LEAN-2.md): on fresh runs scored three
+                  times each, every run with this on ended with a stated lean (3 of 3, 9 of 9 passes)
+                  against none without it (0 of 3), with objections, length and cost within bounds. On by
+                  default; untick it to compare against how personas speak without it.
                 </Hint>
               </label>
             )}
-            <label className="flex items-center gap-2 text-sm text-slate-300">
-              Sources per query
-              <input
-                type="number"
-                aria-label="Sources per query"
-                min={1}
-                max={20}
-                value={researchResults}
-                onChange={(e) =>
-                  setResearchResults(Math.max(1, Math.min(20, Number(e.target.value) || 1)))
-                }
-                className="w-16 rounded border border-matrix-border bg-matrix-bg px-2 py-1 text-sm"
-              />
-              <Hint label="sources per query">
-                How wide each search goes. Higher finds more and costs more, in both search
-                calls and the reading that follows.
-                <br />
-                <br />
-                There is deliberately no date filter. A case decided in 2011 is not stale and
-                a blog from 2011 usually is — which is a question about what a source IS, not
-                when it was written, and the authority tiers answer it better than a cutoff
-                would.
+          </div>
+
+
+          <ConsultantsEditor
+            consultants={consultants}
+            onChange={setConsultants}
+            limit={consultLimit}
+            onLimit={setConsultLimit}
+          />
+
+        </Step>
+
+        <Step n={3} step={step}>
+          <div className="mt-6 rounded-lg border border-matrix-border bg-matrix-panel p-4">
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold text-slate-300">
+                Knowledge bases — the whole cast
+              </h2>
+              <Hint label="run knowledge bases">
+                Bound at run level, so every persona may search these. The effective scope for
+                a speaker is the run's collections plus its own, intersected with what you are
+                actually allowed to read — and that intersection is re-checked on every turn,
+                not just when the run is created.
               </Hint>
-            </label>
-            {!researchShared && !researchPersonas && (
-              <p className="text-xs text-amber-400">
-                Both tiers are off, so nothing would be researched.
-              </p>
+            </div>
+            <div className="mt-2">
+              <KbPicker level="run" selected={runKbs} onChange={setRunKbs} />
+            </div>
+            {(anyDocuments || anyKnowledgeBases || research) && (
+              <label className="mt-3 flex items-center gap-2 text-xs text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={citeInline}
+                  onChange={(e) => setCiteInline(e.target.checked)}
+                />
+                Ask personas to cite their sources inline
+                <Hint label="inline citations">
+                  Each persona ends a sentence that relies on a passage with its label, like
+                  [Cost observations #1], and the conversation view links it to the passage. Without
+                  this, personas rarely say which source a claim came from, so a claim can be traced
+                  only to the passages that were in view.
+                  <br />
+                  <br />
+                  Measured on a small comparison (docs/CITE-INLINE.md): every message with a source in
+                  view cited it, none cited a passage it was not given, and messages were no longer.
+                  On by default; untick it to compare against how personas speak without it.
+                </Hint>
+              </label>
             )}
           </div>
-        )}
+
+
+          {/* Research sits next to the KB pickers on purpose: it is a knowledge-base AUTHORING
+              step, and the bindings it produces are the same bindings chosen above. */}
+          <div className="mt-6 rounded-lg border border-matrix-border bg-matrix-panel p-4">
+            <label className="flex items-center gap-2 text-sm font-semibold text-slate-300">
+              <input
+                type="checkbox"
+                checked={research}
+                onChange={(e) => setResearch(e.target.checked)}
+              />
+              Research the subject before starting
+              <Hint label="pre-conversation research">
+                Before turn 1, a researcher searches the open web for the AUTHORITIES on your
+                topic — statutes, regulations, board opinions, decided cases — and each persona
+                researches their own position <em>and the evidence they said would change their
+                mind</em>. What it finds is ingested into knowledge bases and bound here, so the
+                conversation reads it like any other collection.
+                <br />
+                <br />
+                This exists because of a measured gap: across five replicate runs of one brief,
+                the room asked for the same missing citation every time and never got it. A
+                conversation cannot answer that from inside itself.
+                <br />
+                <br />
+                Sources are tiered — <strong>controlling</strong> (a statute, a regulation, a
+                board ruling), persuasive, commentary — and a controlling one is given a
+                reserved slot in every prompt, so it cannot be crowded out by a blog post that
+                happens to match your topic's wording more closely.
+                <br />
+                <br />
+                When nothing controlling is found, that is recorded <em>as a finding</em> and
+                ingested too. "Nobody looked" and "we looked and there is nothing" are different
+                facts, and only the second one is reusable.
+                <br />
+                <br />
+                It costs a few minutes and roughly $0.25 for a six-persona cast, before the
+                conversation itself. You are not made to wait on a screen: the run is created
+                immediately and researches before it talks.
+              </Hint>
+            </label>
+
+            {research && (
+              <div className="mt-3 space-y-2 border-l-2 border-matrix-border pl-3">
+                <label className="flex items-center gap-2 text-sm text-slate-300">
+                  <input
+                    type="checkbox"
+                    aria-label="Shared research"
+                    checked={researchShared}
+                    onChange={(e) => setResearchShared(e.target.checked)}
+                  />
+                  Shared research — one corpus every persona can search
+                </label>
+                <label className="flex items-center gap-2 text-sm text-slate-300">
+                  <input
+                    type="checkbox"
+                    aria-label="Per-persona research"
+                    checked={researchPersonas}
+                    onChange={(e) => setResearchPersonas(e.target.checked)}
+                  />
+                  Per-persona research — their case, and the case against it
+                  <Hint label="per-persona research">
+                    Two queries per viewpoint: one for the position, one for whatever the persona
+                    declared would change their mind. The second is not separately switchable,
+                    and that is the point — a persona who only ever sees support for what they
+                    already think cannot be moved by evidence, and measuring whether they would
+                    be is what this tool is for.
+                    <br />
+                    <br />
+                    A persona with no viewpoints is skipped rather than given an empty
+                    collection.
+                  </Hint>
+                </label>
+                {experts.length > 0 && (
+                  <label className="flex items-center gap-2 text-sm text-slate-300">
+                    <input
+                      type="checkbox"
+                      aria-label="Consultant research"
+                      checked={researchConsultants}
+                      onChange={(e) => setResearchConsultants(e.target.checked)}
+                    />
+                    Consultant research — a library for each consultant
+                    <Hint label="consultant research">
+                      Searches the open web for the primary sources each consultant's expertise
+                      covers, within this subject, and stores them in that consultant's own
+                      knowledge base. The consultant then answers from them, with citations, like
+                      any document you attached. Found once before turn 1 and never re-searched, so
+                      a replay or branch reads the same sources.
+                    </Hint>
+                  </label>
+                )}
+                <label className="flex items-center gap-2 text-sm text-slate-300">
+                  Sources per query
+                  <input
+                    type="number"
+                    aria-label="Sources per query"
+                    min={1}
+                    max={20}
+                    value={researchResults}
+                    onChange={(e) =>
+                      setResearchResults(Math.max(1, Math.min(20, Number(e.target.value) || 1)))
+                    }
+                    className="w-16 rounded border border-matrix-border bg-matrix-bg px-2 py-1 text-sm"
+                  />
+                  <Hint label="sources per query">
+                    How wide each search goes. Higher finds more and costs more, in both search
+                    calls and the reading that follows.
+                    <br />
+                    <br />
+                    There is deliberately no date filter. A case decided in 2011 is not stale and
+                    a blog from 2011 usually is — which is a question about what a source IS, not
+                    when it was written, and the authority tiers answer it better than a cutoff
+                    would.
+                  </Hint>
+                </label>
+                {!researchShared && !researchPersonas && (
+                  <p className="text-xs text-amber-400">
+                    Both tiers are off, so nothing would be researched.
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+
+        </Step>
+
+        <Step n={4} step={step}>
+          <AssumptionsEditor
+            assumptions={assumptions}
+            onChange={setAssumptions}
+            dynamic={dynamicAssumptions}
+            onDynamic={setDynamicAssumptions}
+          />
+
+
+          <InjectionsEditor injections={injections} onChange={setInjections} maxTurns={maxMessages} />
+
+        </Step>
+
+        <Step n={5} step={step}>
+          <LaunchReview rows={reviewRows} onEdit={goStep} />
+        </Step>
       </div>
 
-      <CostForecast forecast={forecast} loading={forecastLoading} error={forecastError} />
-
-      <button
-        onClick={submit}
-        disabled={submitting}
-        className="mt-3 w-full rounded-lg bg-matrix-accent py-3 font-semibold text-matrix-bg hover:bg-sky-400 disabled:opacity-50"
-      >
-        {submitting
-          ? 'Starting…'
-          : runType === 'ensemble'
-            // Names the multiplier on the button itself. Five conversations is five times the
-            // spend, and a button reading "Run simulation" would not say so at the one moment
-            // it matters.
-            ? `▶ Run ${replicates + (compareHybrid ? hybridReplicates : 0)} simulations`
-            // Same principle for research, per §7: it is 1 + N corpora, and the count is the
-            // thing that scales with the cast. "Research 7 collections, then run" is a
-            // sentence an operator can decline; "Run simulation" is not.
-            : research && researchCollections > 0
-              ? `▶ Research ${researchCollections} collection${
-                  researchCollections === 1 ? '' : 's'
-                }, then run simulation`
-              : '▶ Run simulation'}
-      </button>
-    </div>
+      {/* Pinned on every step (§4.9): the forecast updates as you type, wherever you are. */}
+      <div className="cc-sticky">
+        <CostForecast forecast={forecast} loading={forecastLoading} error={forecastError} />
+        <div className="mt-2 flex gap-2">
+          {step > 1 && (
+            <Btn onClick={() => goStep((step - 1) as WizardStep)}>Back: {WIZARD_STEPS[step - 2]}</Btn>
+          )}
+          {step < 5 && (
+            <Btn variant="primary" className="cc-grow" onClick={() => goStep((step + 1) as WizardStep)}>
+              Next: {(WIZARD_STEPS as readonly string[])[step]}
+            </Btn>
+          )}
+          {/* Always in the DOM, shown on Launch: a run can be started from the review, and the button names
+              what it will cost in runs or collections before it is pressed. */}
+          <div className={step === 5 ? 'cc-grow' : 'hidden'}>
+          <button
+            onClick={submit}
+            disabled={submitting}
+            className="cc-btn cc-primary cc-full"
+          >
+            {submitting
+              ? 'Starting…'
+              : runType === 'ensemble'
+                // Names the multiplier on the button itself. Five conversations is five times the
+                // spend, and a button reading "Run simulation" would not say so at the one moment
+                // it matters.
+                ? `▶ Run ${replicates + (compareHybrid ? hybridReplicates : 0)} simulations`
+                // Same principle for research, per §7: it is 1 + N corpora, and the count is the
+                // thing that scales with the cast. "Research 7 collections, then run" is a
+                // sentence an operator can decline; "Run simulation" is not.
+                : research && researchCollections > 0
+                  ? `▶ Research ${researchCollections} collection${
+                      researchCollections === 1 ? '' : 's'
+                    }, then run simulation`
+                  : '▶ Run simulation'}
+          </button>
+          </div>
+        </div>
+      </div>
+    </>
   )
 }

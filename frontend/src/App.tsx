@@ -35,15 +35,15 @@ function Views({ themeState }: { themeState: ReturnType<typeof useThemeState> })
   switch (route.name) {
     case 'new':
       return (
-        <div className="cc-legacy">
-          <NewRunForm
-            key={route.fromRunId ?? 'blank'}
-            fromRunId={route.fromRunId}
-            onStarted={(runId) => go({ name: 'run', runId, tab: 'conversation' })}
-            onEnsembleStarted={(ensembleId) => go({ name: 'ensemble', ensembleId })}
-            onCancel={() => window.history.back()}
-          />
-        </div>
+        <NewRunForm
+          key={route.fromRunId ?? 'blank'}
+          fromRunId={route.fromRunId}
+          step={route.step}
+          onStep={(step) => navigate({ name: 'new', step, fromRunId: route.fromRunId })}
+          onStarted={(runId) => go({ name: 'run', runId, tab: 'conversation' })}
+          onEnsembleStarted={(ensembleId) => go({ name: 'ensemble', ensembleId })}
+          onCancel={() => window.history.back()}
+        />
       )
     case 'run':
     case 'scrub':

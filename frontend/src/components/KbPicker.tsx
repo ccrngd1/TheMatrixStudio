@@ -115,11 +115,12 @@ export function KbPicker({ selected, onChange, level, personaName }: Props) {
           />
           <span className="truncate">{kb.name}</span>
           {kb.shared && (
-            <span
-              title="Someone else owns this and shared it with you. Bindable — but if they revoke the grant before the run starts, creation is refused."
-              className="rounded bg-matrix-border px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-slate-400"
-            >
+            <span className="rounded bg-matrix-border px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-slate-400">
               shared
+              <span className="sr-only">
+                {' '}— someone else owns this and shared it with you. Bindable, but if they revoke the grant before
+                the run starts, creation is refused.
+              </span>
             </span>
           )}
           <span className="ml-auto whitespace-nowrap text-xs text-slate-500">
