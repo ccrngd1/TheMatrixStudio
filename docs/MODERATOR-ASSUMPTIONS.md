@@ -174,3 +174,25 @@ tests whether it generalises — labelled under the same definitions and fingerp
 rejects every non-fact and keeps at least 80% of the facts. Met → it goes in, under the opt-in flag. Missed → it
 does not, and three attempts are recorded as the answer. If fewer than 10 proposals pass the asks check, the
 attempt is reported as not testable rather than run.
+
+**Collected and labelled (2026-09-29, before the classifier saw them):** 54 shadow checks on the six
+EVIDENCE-LEAN-3 runs, **22 proposals** passing the asks and repeat checks, $0.26. Labels: FACT 12, PLAN 9,
+DECISION 1 — **55% facts** (the renewal brief's set was 65%). Labels file SHA-256
+`e442b9c1aba4bcaf124123a9400fcf7a27d442b48686a278136b52c5b105c5a5`.
+
+**Chosen before the held-out run, from the 43 earlier proposals only:** the addendum-2 prompt revised with two
+explicit rules — an estimate of how long work will take or when something will be delivered is a PLAN (what
+something costs remains a FACT), and how a court, board or regulator reads the provision the participants are
+arguing over is a DECISION — run on Sonnet 5 **three times per proposal, kept only if all three calls say FACT**.
+On the 43: non-facts rejected 15 of 15, facts kept 28 of 28, in two consecutive runs (single-call versions of the
+same prompt varied run to run, missing one or two either way). Prompt SHA-256
+`9428e26dc53d0ac3bf084266c12baee0392a76fcf327034db59553c46a3b5be8`.
+
+**Held-out run, once: MISSED.** Non-facts rejected **3 of 10** (bar: all); facts kept 12 of 12; $0.62. Every
+miss was a unanimous FACT call on a claim about how a *proposed* feature would perform, cost or scale — labelled
+PLAN under "describes the proposal being discussed", several of them borderline and labelled PLAN by the
+less-favourable rule. The prompt was tuned on a legal-exposure brief whose non-facts were plans for the proposal's
+paperwork and readings of a statute; on a product brainstorm the dominant non-fact is a performance claim about a
+feature that does not exist yet, which reads to the classifier as a checkable number. The one DECISION here was
+rejected. **Three attempts, three misses** — the answer this addendum said it would record. The feature stays
+opt-in with the asks and repeat checks only, and no classifier goes in.
