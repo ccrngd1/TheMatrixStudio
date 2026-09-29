@@ -100,6 +100,15 @@ assumptions were labelled before the effects pass.
   is within that noise and supports nothing, and the EVIDENCE-LEAN result should be read with the same
   caveat.
 
+## Addendum — the classifier, checked offline (criterion set 2026-09-29, before it ran)
+
+The next step named above was built: after the verbatim-asks check, a second small call labelled the
+proposal FACT / PLAN / DECISION / POSITION (the moderator's model, temperature 0), and only a FACT was
+recorded. Its bar against the nine labelled assumptions above was committed in `e4e2d10` before it ran:
+**reject all three non-facts (two PLAN, one DECISION) and keep at least five of the six FACTs.** The
+prompt was not to be edited after the check; a miss is reported, not tuned away. The labels are the
+assistant's (see Labelling), which this check inherits.
+
 **Result of the offline check: MISSED.** Non-facts rejected 3 of 3; facts kept **0 of 6**. The classifier
 labelled every proposal PLAN, including ones its own prompt lists as FACT ("what a system can do
 today"), apparently because each statement sat inside a discussion of a proposed workflow. Shipped as
