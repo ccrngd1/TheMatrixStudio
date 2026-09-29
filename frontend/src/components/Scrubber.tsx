@@ -51,6 +51,10 @@ export function Scrubber({ runId, maxTurn, cast, defaultBudget, models = [], def
   const [removePersona, setRemovePersona] = useState('')
   // Phase 4c (experimental): optional operator direction for adaptive pressure.
   const [pressureFocus, setPressureFocus] = useState('')
+  // Working assumptions (matrix_studio/assumptions.py): which one, and its new value.
+  const [assumptionId, setAssumptionId] = useState('')
+  const [assumptionText, setAssumptionText] = useState('')
+  const [assumptionBasis, setAssumptionBasis] = useState('')
 
   useEffect(() => {
     setLoading(true)
@@ -64,6 +68,19 @@ export function Scrubber({ runId, maxTurn, cast, defaultBudget, models = [], def
   }, [events, turn, cast])
 
   const castNames = Object.keys(state.agents)
+  // The assumptions in force AT the selected turn: `state` is replayed from events up to it, so one the
+  // moderator made later is not offered, and the server would refuse it anyway.
+  const inForce = state.assumptions
+  const chosen = inForce.find((a) => a.id === assumptionId) ?? inForce[0]
+  const assumptionKind = mutKind === 'replace_assumption' || mutKind === 'withdraw_assumption'
+  // A kind that needs an assumption falls back to a plain fork's selector when the turn has none.
+  useEffect(() => {
+    if (assumptionKind && inForce.length === 0) setMutKind('none')
+  }, [assumptionKind, inForce.length])
+  const pickAssumption = (id: string) => {
+    setAssumptionId(id)
+    setAssumptionText(inForce.find((a) => a.id === id)?.statement ?? '')
+  }
 
   const buildMutation = (): Record<string, unknown> | undefined => {
     if (mutKind === 'none') return undefined
@@ -82,6 +99,14 @@ export function Scrubber({ runId, maxTurn, cast, defaultBudget, models = [], def
       return { kind: 'add_persona', name: addName.trim(), persona: addPersonaText.trim(),
                goals: addGoals.split('\n').map((g) => g.trim()).filter(Boolean) }
     if (mutKind === 'remove_persona') return { kind: 'remove_persona', persona_name: removePersona }
+    if (mutKind === 'replace_assumption' && chosen)
+      return {
+        kind: 'replace_assumption', assumption_id: chosen.id,
+        statement: (assumptionText || chosen.statement).trim(),
+        ...(assumptionBasis.trim() ? { basis: assumptionBasis.trim() } : {}),
+      }
+    if (mutKind === 'withdraw_assumption' && chosen)
+      return { kind: 'withdraw_assumption', assumption_id: chosen.id }
     if (mutKind === 'adaptive_pressure') {
       const m: Record<string, unknown> = { kind: 'adaptive_pressure' }
       if (pressureFocus.trim()) m.focus = pressureFocus.trim()
@@ -94,6 +119,10 @@ export function Scrubber({ runId, maxTurn, cast, defaultBudget, models = [], def
   // undefined for 'none', which the caller already treats as a plain fork.
   const handleBranch = () => onBranch(turn, buildMutation(), branchModel || undefined)
   const changing = mutKind !== 'none'
+  // Replacing an assumption with itself is a plain fork that claims to be a change.
+  const unchangedAssumption =
+    mutKind === 'replace_assumption' && (!chosen || !(assumptionText || '').trim() ||
+      (assumptionText || '').trim() === chosen.statement)
 
   return (
     <div className="flex h-full flex-col">
@@ -109,7 +138,7 @@ export function Scrubber({ runId, maxTurn, cast, defaultBudget, models = [], def
           <input type="range" min={0} max={maxTurn} value={turn} aria-label="checkpoint turn"
             onChange={(e) => setTurn(Number(e.target.value))}
             className="flex-1 min-w-[120px] accent-matrix-accent" />
-          <button onClick={handleBranch} disabled={branching}
+          <button onClick={handleBranch} disabled={branching || unchangedAssumption}
             title={changing
               ? 'Fork a new run from this turn with your change applied — this run is never modified'
               : 'Fork a new run from this turn, unchanged — this run is never modified'}
@@ -150,6 +179,8 @@ export function Scrubber({ runId, maxTurn, cast, defaultBudget, models = [], def
                 <option value="edit_goal">🎯 Edit goal</option>
                 <option value="add_persona">➕ Add persona</option>
                 <option value="remove_persona">➖ Remove persona</option>
+                {inForce.length > 0 && <option value="replace_assumption">≈ Change an assumption</option>}
+                {inForce.length > 0 && <option value="withdraw_assumption">≈ Withdraw an assumption</option>}
                 <option value="adaptive_pressure">🌩 Adaptive pressure (experimental)</option>
               </select>
               <Hint label="the change options">
@@ -164,6 +195,11 @@ export function Scrubber({ runId, maxTurn, cast, defaultBudget, models = [], def
                 <br />
                 <strong>Add / remove persona</strong> — change who is in the room. The
                 cleanest test of whether one voice was carrying the outcome.
+                <br />
+                <strong>Change / withdraw an assumption</strong> — offered when working
+                assumptions are in force at this turn. Every later turn reasons from the new
+                value, or without it; nothing already said is rewritten. The cleanest test of
+                what an assumption was worth.
                 <br />
                 <strong>Adaptive pressure</strong> — one narrator-voiced world event that
                 raises the stakes. Experimental and off unless enabled server-side; it can
@@ -237,6 +273,27 @@ export function Scrubber({ runId, maxTurn, cast, defaultBudget, models = [], def
               </select>
             )}
 
+            {assumptionKind && chosen && (<>
+              <select value={chosen.id} onChange={(e) => pickAssumption(e.target.value)}
+                aria-label="Assumption to change"
+                className="w-full rounded border border-matrix-border bg-matrix-panel px-2 py-1 text-xs text-slate-200">
+                {inForce.map((a) => <option key={a.id} value={a.id}>{a.id}: {a.statement}</option>)}
+              </select>
+              {mutKind === 'replace_assumption' && (<>
+                <input value={assumptionText || chosen.statement} maxLength={300}
+                  onChange={(e) => setAssumptionText(e.target.value)} aria-label="New value"
+                  className="w-full rounded border border-matrix-border bg-matrix-bg px-2 py-1 text-xs text-slate-200" />
+                <input placeholder="Basis (optional)" value={assumptionBasis} maxLength={300}
+                  onChange={(e) => setAssumptionBasis(e.target.value)}
+                  className="w-full rounded border border-matrix-border bg-matrix-bg px-2 py-1 text-xs text-slate-200" />
+              </>)}
+              <p className="text-[11px] text-slate-500">
+                {chosen.id} was {chosen.turn === 0 && chosen.source === 'operator'
+                  ? 'set before the run' : `made at turn ${chosen.turn} by the ${chosen.source}`}.
+                Forking later than that keeps what was said under the old value up to turn {turn}.
+              </p>
+            </>)}
+
             {mutKind === 'adaptive_pressure' && (<>
               <p className="text-[11px] text-amber-400">
                 ⚠ Experimental — must be enabled server-side (ADAPTIVE_PRESSURE_ENABLED=true).
@@ -300,7 +357,8 @@ export function Scrubber({ runId, maxTurn, cast, defaultBudget, models = [], def
             : <CastBoard state={state} onSelect={() => {}} />}
         </aside>
         <main className="overflow-hidden rounded-lg border border-matrix-border bg-matrix-panel">
-          <ConversationFeed feed={state.feed} agents={state.agents} activeSpeaker={null} thinking={false} />
+          <ConversationFeed feed={state.feed} agents={state.agents} activeSpeaker={null} thinking={false}
+            assumptions={state.assumptions} />
         </main>
       </div>
     </div>
