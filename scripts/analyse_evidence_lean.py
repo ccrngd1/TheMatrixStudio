@@ -79,6 +79,8 @@ async def main() -> int:
     ap.add_argument("--off", nargs="+", required=True)
     ap.add_argument("--on", nargs="+", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--criteria", type=int, choices=(1, 2), default=1,
+                    help="1: docs/EVIDENCE-LEAN.md; 2: docs/EVIDENCE-LEAN-2.md (lean by majority of passes)")
     ap.add_argument("--repeats", type=int, default=1,
                     help="analyst passes per run; 1 reproduces the pre-registered scoring exactly")
     args = ap.parse_args()
@@ -94,6 +96,30 @@ async def main() -> int:
     Path(args.out).write_text(json.dumps({"off": off, "on": on}, indent=2))
     for name, a in (("off", off), ("on", on)):
         print(name, json.dumps({k: v for k, v in a.items() if k != "rows"}))
+
+    if args.criteria == 2:
+        # docs/EVIDENCE-LEAN-2.md: lean by majority of >= 3 passes is the primary; best-guess share is
+        # reported only, because a single run scored 0.00 and 1.00 on it across passes.
+        if args.repeats < 3:
+            print("criteria 2 requires --repeats >= 3", file=sys.stderr)
+            return 2
+        p = on["runs_with_lean"] >= 2 and on["runs_with_lean"] - off["runs_with_lean"] >= 1
+        g1 = (on["mean_dissenters"] or 0) >= (off["mean_dissenters"] or 0) - 1
+        g2 = bool(off["median_words"]) and abs(on["median_words"] - off["median_words"]) <= 0.25 * off["median_words"]
+        g3 = on["cost_usd"] <= 1.15 * off["cost_usd"]
+        lean_passes = lambda a: sum(s["lean_stated"] for r in a["rows"] for s in r["scores"])  # noqa: E731
+        print(f"primary (lean by majority: on >= 2 of 3 and on - off >= 1): {'MET' if p else 'MISSED'}"
+              f"  ({on['runs_with_lean']} vs {off['runs_with_lean']})")
+        print(f"guardrail 1 (mean dissenters on >= off - 1):   {'MET' if g1 else 'MISSED'}"
+              f"  ({on['mean_dissenters']} vs {off['mean_dissenters']})")
+        print(f"guardrail 2 (median words within ±25%):        {'MET' if g2 else 'MISSED'}"
+              f"  ({on['median_words']} vs {off['median_words']})")
+        print(f"guardrail 3 (on cost <= 1.15x off):            {'MET' if g3 else 'MISSED'}"
+              f"  ({on['cost_usd']:.2f} vs {off['cost_usd']:.2f})")
+        print(f"reported: lean passes on {lean_passes(on)}/{on['runs'] * args.repeats} vs off "
+              f"{lean_passes(off)}/{off['runs'] * args.repeats}; best-guess share (noisy) "
+              f"{on['best_guess_share']} vs {off['best_guess_share']}")
+        return 0
 
     bg_on, bg_off = on["best_guess_share"] or 0, off["best_guess_share"] or 0
     p1 = bg_on >= 0.80 and bg_on - bg_off >= 0.20
