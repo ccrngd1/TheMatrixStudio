@@ -175,3 +175,13 @@ async def test_an_ensemble_may_vary_injections_and_assumptions_but_not_a_cast_me
                                           {"after_turn": 1, "speaker": "dana", "content": "I give up."}]}}]}
     with pytest.raises(ValidationError, match="cast member"):
         CreateEnsembleModel(**body)
+
+
+async def test_a_reply_that_opens_with_its_own_name_loses_it_and_nothing_else():
+    from matrix_studio.engine.simulator import strip_own_name
+
+    assert strip_own_name("Dana: I hear the urgency.", "Dana") == "I hear the urgency."
+    assert strip_own_name("**Dana:** Fine.", "Dana") == "Fine."
+    assert strip_own_name("Marcus: you are wrong.", "Dana") == "Marcus: you are wrong."
+    assert strip_own_name("I told Dana: no.", "Dana") == "I told Dana: no."
+    assert strip_own_name("Dana:", "Dana") == "Dana:"
