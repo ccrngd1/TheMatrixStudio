@@ -26,9 +26,19 @@ TheMatrix Simulation Studio is a standalone tool for running multi-agent convers
 - **Consistency Validation** (Phase 4a) — A pre-emit gate checks each turn against the priority hierarchy (coherence / causality / continuity / agency / character consistency) and regenerates violations; model output is never rewritten in place
 - **Pending Threads** (Phase 4b, optional) — A setups-&-payoffs ledger: agents plant threads that causally feed into later turns, with dangling-thread surfacing in the dossier
 - **Structured Turn View** (Phase 4d, optional) — Narrative / Consequences / Updated State / Possibilities projection of any turn, sourced only from real events
-- **Post-Run Analysis** — Auto-generated structured summary (consensus / dissenters / key ideas / open questions) plus aside conversations (ask the analyst, ask a persona, ask the room)
+- **Post-Run Analysis** — Auto-generated structured summary (consensus / dissenters / key ideas / open questions / what would settle it) plus aside conversations (ask the analyst, a persona, the room, or a consultant), answered by a background worker
+- **Ensembles** — Run one brief several times in labelled groups and count each conclusion per group, never pooled. A group may differ in one declared thing only: the speaker method, a scheduled message, or a working assumption. See `docs/ENSEMBLE-CONVERSATIONS.md`
+- **Pre-Conversation Research** (optional) — Before turn 1, search the open web for the authorities on the subject, tier them (controlling / persuasive / commentary), and ingest them into knowledge bases: a shared corpus, one per persona, and a library per consultant. See `docs/PERSONA-RESEARCH.md`
+- **Consultants** — Experts outside the room who answer only from their own documents, with citations, or say the answer is not in their sources. Personas ask them mid-run; you can ask them from the conversation view. They never take a turn
+- **Getting to a decision** — Three measured pieces aimed at runs that would otherwise end in "it depends":
+  - *Evidence lean* (on by default): a persona that asks for evidence must also say what it expects it to show and which way it leans today. Measured on two briefs: runs ending with a stated lean 3/3 vs 0/3 and 3/3 vs 1/3 (`docs/EVIDENCE-LEAN-2.md`, `docs/EVIDENCE-LEAN-3.md`)
+  - *Working assumptions*: set what the room should reason from when nobody in it can know; each is marked in the transcript, can be forked with a different value from its card or the scrubber, and can be an ensemble variable (`docs/ASSUMPTION-ENSEMBLE.md`). Assumptions added by the moderator during a run are opt-in — measured at about two-thirds facts (`docs/MODERATOR-ASSUMPTIONS.md`)
+  - *Position-shift flags*: when a persona says its position moved, the message shows what it credited and the conditions it had said would move it, marked when none of them appears to be named (`docs/EVIDENCE-LEAN-FOLDING.md`)
+- **Scheduled Messages** — A message that enters a run after a given turn (a customer, a regulator's letter), marked as injected; compare runs with and without it in an ensemble
+- **Decision Brief & Exports** — A one-page brief (bottom line, what would settle it, what was assumed, standing objections, how much to trust it) and full Markdown / HTML reports
+- **Cast Templates & Persona Library** — Save a cast and reuse it; start from ready-made archetypes, labelled "not yet qualified"
 - **Non-Photorealistic Avatars** — Anime-style character portraits generated via Stability SD3.5 on AWS Bedrock (optional, with graceful fallback to initials)
-- **Cost Visibility** — Live token/$ meter, optional hard spend cap per run, and creation-time cost estimate
+- **Cost Visibility** — Live token/$ meter, optional hard spend cap per run, a forecast before every launch priced from your own past runs, and the cost of a fork shown before you make it
 - **Provider-Agnostic** — Bring your own API key for OpenAI, Anthropic, AWS Bedrock, OpenRouter, or local Ollama models via LiteLLM
 - **Event-Sourced Storage** — An append-only event log in DynamoDB, with snapshot and document bodies in S3, captures full simulation history for replay, branching, and audit
 - **Named Runs** — Every run gets a memorable two-word codename (e.g., `trusted-robot`) for easy browsing
@@ -784,15 +794,22 @@ npm run dev
   grants and query-time revocation (15/15), and per-user monthly spend caps. Phase 4 of
   that plan was **cancelled** on measurement — see `docs/AWS-IMPLEMENTATION-PLAN.md`, which
   is instructive about why
+- ✅ **Decision support (2026-09):** ensembles, research, consultants, cost forecast, decision brief, evidence plan, evidence lean (default after two pre-registered comparisons), working assumptions (operator-set, moderator-made, forkable, ensemble variable), scheduled messages, position-shift flags
 - **Next:** Explain `distinct_positions` instability in the rendered arms — the one signal of a real cost to rendering convictions from data
 - **Future:** Embedding-based *memory* retrieval (document retrieval shipped in Phase 5), multi-modal inputs
 
-**Open work is indexed in [`private/private/docs/BACKLOG.md` (kept out of git)](private/docs/BACKLOG.md)** — including what was
-deliberately rejected after measurement, so it is not retried on intuition.
+**Open work is indexed in a backlog kept outside the public repository** (`private/docs/BACKLOG.md`, gitignored),
+including what was deliberately rejected after measurement, so it is not retried on intuition.
 
 ## Documentation
 
-- `private/private/docs/BACKLOG.md` (kept out of git) — Open, deferred and rejected work, each with a revisit trigger
+- `private/docs/BACKLOG.md` (gitignored, not in the public repository) — Open, deferred and rejected work, each with a revisit trigger
+- `docs/EVIDENCE-LEAN.md`, `-2`, `-3`, `-FOLDING` — Pre-registered comparisons behind the evidence-lean default, and the check that it does not make personas fold
+- `docs/MODERATOR-ASSUMPTIONS.md` — Assumptions made by the moderator: the measurement, and three classifier attempts that missed
+- `docs/ASSUMPTION-ENSEMBLE.md` — One working assumption as the only difference between two ensemble groups
+- `docs/ENSEMBLE-CONVERSATIONS.md` — Ensembles: why replicates, why groups are counted separately
+- `docs/PERSONA-RESEARCH.md` — Pre-conversation research, and its pre-registered comparison
+- `docs/CITE-INLINE.md`, `docs/CAPITULATION-STUDY.md` — Inline citation and settled-or-folded studies
 - `docs/PHASE6-STRUCTURED-PERSONAS.md` — Phase 6 design: why concerns are withheld, and the re-tuned dismissal rule
 - `docs/PHASE5-PREMISE-VALIDATION.md` — The three-arm experiment that justified Phase 6 (including its negative result)
 - `docs/AWS-SERVERLESS-ARCHITECTURE.md` — The deployed design: tenancy, storage keys, the turn loop, retrieval, sharing
