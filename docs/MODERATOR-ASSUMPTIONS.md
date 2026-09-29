@@ -141,3 +141,26 @@ the classifier goes in (still under the opt-in flag). Missed → it does not, an
 passing the asks and repeat checks, $0.58. Labels: FACT 28, PLAN 9, DECISION 6 — **65% facts**, the same
 rate the live runs showed (6 of 9). Working half: FACT 19, PLAN 6, DECISION 3; held-out half: FACT 9,
 PLAN 3, DECISION 3. Labels file SHA-256 `7f86d59e181c49e535303584e893e77db0e57655c994684b4f9c0f5966578c56`.
+
+**Working half (prompt revisions allowed):** six prompt versions, on the moderator's model (Haiku 4.5)
+and the conversation model (Sonnet 5). Haiku was either too permissive — keeping legal readings of the
+disputed point because they are "checkable" — or, asked "would this settle something they dispute?",
+too strict: every missing fact settles something, and it kept 7 of 19 facts. On Sonnet, a prompt that
+names the cases (a description of the proposal is a PLAN; what the law permits *for the thing in
+dispute* is a DECISION; "X% have enough detail to decide" is a DECISION) and includes the recent
+conversation rejected 8 of 9 non-facts and kept 19 of 19 facts. Chosen before the held-out run; prompt
+SHA-256 prefix `4a9d68081abda5ad`.
+
+**Held-out half, run once: MISSED.** Non-facts rejected **4 of 6** (bar: all); facts kept 9 of 9. The two
+it passed: a DECISION ("California courts read 'including' in §4826(b) as illustrative" — the point that
+run was disputing) and a PLAN (an engineering estimate "will be delivered within 5 business days"). The
+drop from 8/9 on the working half to 4/6 held out is what fitting to the working half looks like. **Not
+deployed.**
+
+**Where that leaves it.** Two classifier attempts, two misses, and the failure that matters — a legal
+reading of the disputed point taken as a fact — survived both. Telling "a fact they are missing" from "the
+answer to what they are arguing about" appears to need more than the statement and a few messages. The
+feature stays opt-in with the verbatim-asks and repeat checks only, and the operator should expect about
+two in three of its assumptions to be facts. Options not tried: restricting it to quantities (a number
+with a unit), which would also drop the useful "no board has acted" kind; or asking the personas, not a
+classifier, to contest an assumption before it takes effect.
