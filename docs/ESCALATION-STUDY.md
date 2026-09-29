@@ -56,3 +56,5 @@ conditions was named.
 
 **What n = 3 per arm can say.** Only whether the behaviour is common in one arm and absent in the other, and
 only in combination with the earlier observation. Not a rate.
+
+**Labels fingerprinted before unblinding:** SHA-256 `4608687333d705e19c787f7a6181876ba69d31296e7dcf39fad7b191d113325a`.
