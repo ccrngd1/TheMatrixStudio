@@ -164,3 +164,13 @@ feature stays opt-in with the verbatim-asks and repeat checks only, and the oper
 two in three of its assumptions to be facts. Options not tried: restricting it to quantities (a number
 with a unit), which would also drop the useful "no board has acted" kind; or asking the personas, not a
 classifier, to contest an assumption before it takes effect.
+
+## Addendum 3 — a third classifier attempt, on fully unseen proposals (protocol set 2026-09-29, before collection)
+
+The 43 proposals of addendum 2 have now been seen in full, so neither half can judge a new prompt. A third attempt
+may revise the prompt against **all 43**. It is then run **once** on proposals collected by
+`scripts/shadow_assumption_checks.py` from the six EVIDENCE-LEAN-3 transcripts — a different brief, which also
+tests whether it generalises — labelled under the same definitions and fingerprinted before it runs. **Bar:**
+rejects every non-fact and keeps at least 80% of the facts. Met → it goes in, under the opt-in flag. Missed → it
+does not, and three attempts are recorded as the answer. If fewer than 10 proposals pass the asks check, the
+attempt is reported as not testable rather than run.
