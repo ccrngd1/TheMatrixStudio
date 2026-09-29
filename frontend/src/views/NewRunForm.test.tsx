@@ -196,6 +196,18 @@ describe('NewRunForm option hints', () => {
     expect(body.cast[0].structured).toBeUndefined()
   })
 
+  it('says when a defended condition needs evidence nobody in the room can produce', () => {
+    renderForm()
+    fireEvent.change(screen.getByPlaceholderText('Name'), { target: { value: 'Ada' } })
+    fireEvent.click(screen.getByText(/Convictions & background documents/))
+    fireEvent.change(screen.getByPlaceholderText(/No feature may add an external service/), {
+      target: { value: '[firm] The free plan is fine -> a ruling that bundled support is regulated' },
+    })
+    expect(screen.getByText(/Nobody in the room can produce/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('checkbox', { name: /Research the subject before starting/ }))
+    expect(screen.queryByText(/Nobody in the room can produce/)).toBeNull()
+  })
+
   it('sends assumptions and the moderator switch only when set', () => {
     renderForm()
     fireEvent.change(screen.getByPlaceholderText(/What should the cast discuss/i), { target: { value: 'a topic' } })

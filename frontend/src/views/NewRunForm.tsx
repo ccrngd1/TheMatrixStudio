@@ -8,7 +8,7 @@ import { ConsultantsEditor, consultantsConfig, type DraftConsultant } from '../c
 import { AssumptionsEditor, assumptionsConfig, type DraftAssumption } from '../components/AssumptionsEditor'
 import { InjectionsEditor, injectionsConfig, type DraftInjection } from '../components/InjectionsEditor'
 import { Hint } from '../components/Hint'
-import { buildStructured } from '../lib/convictions'
+import { buildStructured, outsideEvidenceConditions } from '../lib/convictions'
 import { parseSetup, parseSetupObject, ImportError } from '../lib/importSetup'
 import {
   blankPersona, CEILING_TURNS, DEFAULT_REPLICATES, MAX_MEMBERS, MIN_REPLICATES,
@@ -1384,6 +1384,14 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId }
                   rows={3}
                   className="mt-1 w-full rounded border border-matrix-border bg-matrix-bg p-2 font-mono text-xs"
                 />
+                {!research && experts.length === 0 && outsideEvidenceConditions(p.positions).length > 0 && (
+                  <p className="mt-1 text-[11px] text-amber-400/90">
+                    Nobody in the room can produce{' '}
+                    <span className="italic">{outsideEvidenceConditions(p.positions).join('; ')}</span>. Personas
+                    whose conditions only outside evidence can meet have been seen to move without them. Turn on
+                    research below, or add a consultant who holds it, so the condition can actually turn up.
+                  </p>
+                )}
 
                 <label className="mt-2 flex items-center gap-2 text-xs text-amber-500/80">
                   What is really behind them — withheld

@@ -20,7 +20,8 @@ turn in which a persona legitimately changed its mind. This records; the reader 
 Personas announce shifts in words, and only REALISED ones count: "it moved me", "I'll give ground", "I was
 wrong", "that's what changed my mind". Prospective and conditional forms — "that would move me", "before I
 concede", "nothing has changed my position" — are the common case and are excluded by a negation or
-conditional in the cue's own clause. Measured on the twelve evidence-lean runs (480 messages): the first
+conditional in the cue's own clause, as are descriptions of what moves a persona in general ("the only thing
+that's ever moved me") — the two false positives in the first 13 live runs. Measured on the twelve evidence-lean runs (480 messages): the first
 version of the cues fired 51 times, almost all prospective; this one fires 8 times, each a real shift or an
 explicit concession.
 """
@@ -40,7 +41,7 @@ SHIFT = re.compile(
 )
 NOT_REALISED = re.compile(
     r"\b(?:if|unless|until|before|would|could|whether|nothing|hasn'?t|haven'?t|didn'?t|doesn'?t|won'?t|not"
-    r"|never|nobody|no one|what i'?d)\b",
+    r"|never|nobody|no one|what i'?d|ever|the only)\b",
     re.IGNORECASE,
 )
 _SENTENCES = re.compile(r"(?<=[.!?])[\"”’]?\s+")

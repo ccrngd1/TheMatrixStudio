@@ -119,3 +119,18 @@ export function buildStructured(input: {
     ...(dismisses.length ? { preferences: { dismisses } } : {}),
   }
 }
+
+// Conditions that name evidence from OUTSIDE the room — a ruling, a statute, a regulator, a study, data.
+// Measured on live runs (docs/EVIDENCE-LEAN-FOLDING.md and after): the personas that moved without any of
+// their stated conditions met were, three times in four, personas whose conditions only outside evidence
+// could satisfy. Nobody in a simulated room can produce a court case; research or a consultant can.
+const OUTSIDE_EVIDENCE =
+  /\b(?:case|cases|court|ruling|ruled|holding|statute|statutory|law|legal|regulat\w*|federal|board action|board ruling|agency|guidance|study|studies|survey|data|dataset|audit|pilot|measurement|benchmark|precedent)\b/i
+
+/** The defended conditions (firm and above) that need evidence from outside the room. */
+export function outsideEvidenceConditions(text: string): string[] {
+  return parsePositions(text)
+    .filter((v) => v.firmness !== 'negotiable')
+    .flatMap((v) => v.evidence_that_shifts ?? [])
+    .filter((c) => OUTSIDE_EVIDENCE.test(c))
+}

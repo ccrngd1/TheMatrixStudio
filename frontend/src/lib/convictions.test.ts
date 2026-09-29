@@ -137,3 +137,15 @@ describe('withheld concerns', () => {
     expect(buildStructured({ positions: '', dismisses: '', concerns: 'a worry' })).toBeUndefined()
   })
 })
+
+describe('outsideEvidenceConditions', () => {
+  it('finds defended conditions only outside evidence can meet', async () => {
+    const { outsideEvidenceConditions } = await import('./convictions')
+    const text = [
+      '[firm] The free plan is fine -> a ruling that bundled support is regulated; the team agreeing',
+      '[negotiable] Price it low -> churn data',
+      'Ship this quarter',
+    ].join('\n')
+    expect(outsideEvidenceConditions(text)).toEqual(['a ruling that bundled support is regulated'])
+  })
+})

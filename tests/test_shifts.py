@@ -33,6 +33,8 @@ PROSPECTIVE = [
     "If any regulator classed this as a paid service, that changes my position immediately.",
     "Nobody has produced the data, so nothing has actually moved me.",
     "What I'd actually change my mind on is a pilot showing churn under five percent.",
+    "The sequencing holds, and that's the only currency that's ever moved me.",
+    "That is still the only thing that's ever moved me.",
 ]
 
 
