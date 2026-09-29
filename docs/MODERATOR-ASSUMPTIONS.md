@@ -136,3 +136,8 @@ labels file is committed before the classifier is run.
 
 **Bar, on the held-out half:** rejects **every** non-fact, and keeps **at least 80%** of the facts. Met →
 the classifier goes in (still under the opt-in flag). Missed → it does not, and the miss is recorded.
+
+**Collected and labelled (before any classifier ran):** 124 shadow checks on the 14 runs, 43 proposals
+passing the asks and repeat checks, $0.58. Labels: FACT 28, PLAN 9, DECISION 6 — **65% facts**, the same
+rate the live runs showed (6 of 9). Working half: FACT 19, PLAN 6, DECISION 3; held-out half: FACT 9,
+PLAN 3, DECISION 3. Labels file SHA-256 `7f86d59e181c49e535303584e893e77db0e57655c994684b4f9c0f5966578c56`.
