@@ -1,0 +1,10 @@
+<!doctype html><meta charset="utf-8"><style>html,body{margin:0;background:#000}iframe{border:0;display:block}</style>
+<body><script>
+const q = new URLSearchParams(location.search)
+const f = document.createElement('iframe')
+f.style.width = (q.get('w') || 390) + 'px'; f.style.height = (q.get('h') || 844) + 'px'
+f.src = q.get('src')
+f.onload = () => { const steps = (q.get('do') || '').split('||').filter(Boolean); let t = 200
+  for (const s of steps) { const [ms, code] = s.split('@@'); t += +ms; setTimeout(() => f.contentWindow.eval(code), t) } }
+document.body.appendChild(f)
+</script>

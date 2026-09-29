@@ -16,7 +16,15 @@ gates the other half — if the instrument is that noisy, no amount of re-runnin
 
 The four stored 15-turn Sonnet transcripts (`docs/labels/sonnet-transcripts.json`). Each is judged **five
 times** by `scripts/judge_variance.py` using `score_validation.judge_arm` **unmodified** — same prompt, same
-schema, same `temperature=0`, same model as the default (Sonnet 5) — under the same anonymous label each time.
+schema, same model as the default (Sonnet 5) — under the same anonymous label each time.
+
+**Found while trying to run this, and recorded rather than quietly fixed:** `judge_arm` asks for
+`temperature=0`, and **Sonnet 5 refuses any temperature but 1**; litellm raised `UnsupportedParamsError`, so
+`score_validation.py --judge` has been broken against the default model since that model became the default.
+Fixed with `drop_params=True` (the convention everywhere else in this codebase), which means the judge runs
+at **temperature 1** on Sonnet 5. That makes this measurement more necessary, not less: the numbers in
+`docs/labels/judge-rules.json` were produced by a model that honoured 0, and any future scoring run on the
+default model will not be. The criteria below were fixed before the fix and are unchanged.
 No new conversations; about $0.10 of judge calls.
 
 ## Criteria — decided now

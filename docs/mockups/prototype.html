@@ -1,0 +1,1680 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- Clickable mobile-first prototype of TheMatrix Simulation Studio.
+     Self-contained: no build, no network, no backend. Every run, persona and document here is
+     invented mock data held in memory; reloading the page resets it. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Matrix Studio — prototype</title>
+<style>
+  @property --spin { syntax:'<angle>'; inherits:false; initial-value:0deg; }
+  :root { --mono:ui-monospace,"SF Mono","JetBrains Mono","Cascadia Code",Menlo,Consolas,monospace;
+    --sans:"SF Pro Text","Segoe UI Variable Text","Segoe UI",Inter,system-ui,-apple-system,Roboto,sans-serif;
+    --hex:polygon(50% 0,100% 25%,100% 75%,50% 100%,0 75%,0 25%); --cut:12px; }
+  /* Themes swap palette only. Within a theme each colour means exactly one thing. */
+  body, body[data-theme=holo] { --bg0:#02050a; --bg1:#061020; --panel:#0a1422; --panel-hi:#0f1d31; --line:rgba(34,211,238,.2); --line-hi:rgba(34,211,238,.5);
+    --accent:#22d3ee; --accent2:#a78bfa; --live:#34f5a0; --support:#34f5a0; --undecided:#7d8fa9; --hold:#ff4d78;
+    --inject:#ffc53d; --shift:#b794ff; --danger:#ff4d78; --t1:#e8f6ff; --t2:#a3b7cc; --t3:#5f7892; --rain:#22d3ee; }
+  body[data-theme=matrix] { --bg0:#000; --bg1:#010c06; --panel:#03120a; --panel-hi:#072016; --line:rgba(0,255,156,.2); --line-hi:rgba(0,255,156,.5);
+    --accent:#00ff9c; --accent2:#7dffcf; --live:#00ff9c; --support:#6ff7ff; --undecided:#5d7d6d; --hold:#ff5f5f;
+    --inject:#e6ff5c; --shift:#c3a6ff; --danger:#ff5f5f; --t1:#dcffec; --t2:#94c9aa; --t3:#4f7a62; --rain:#00ff9c; }
+  body[data-theme=neon] { --bg0:#07010d; --bg1:#10051e; --panel:#140a24; --panel-hi:#1d1033; --line:rgba(255,61,242,.22); --line-hi:rgba(255,61,242,.55);
+    --accent:#ff3df2; --accent2:#00e5ff; --live:#00ffa3; --support:#00ffa3; --undecided:#8a8fb5; --hold:#ff4d4d;
+    --inject:#ffe600; --shift:#00e5ff; --danger:#ff4d4d; --t1:#fdeeff; --t2:#c7acd9; --t3:#7b6392; --rain:#ff3df2; }
+  * { box-sizing:border-box; margin:0; padding:0; -webkit-tap-highlight-color:transparent; }
+  html,body { height:100%; }
+  body { color:var(--t1); font:14.5px/1.5 var(--sans); -webkit-font-smoothing:antialiased;
+    background:radial-gradient(50% 40% at 50% 0%, color-mix(in srgb,var(--accent) 10%,transparent), transparent 70%),
+      linear-gradient(color-mix(in srgb,var(--accent) 4%,transparent) 1px, transparent 1px) 0 0/40px 40px,
+      linear-gradient(90deg, color-mix(in srgb,var(--accent) 4%,transparent) 1px, transparent 1px) 0 0/40px 40px, #010306; }
+  button { font:inherit; color:inherit; background:none; border:none; cursor:pointer; text-align:inherit; }
+  input,textarea,select { font:inherit; color:var(--t1); }
+  ::-webkit-scrollbar { width:5px; height:5px; } ::-webkit-scrollbar-thumb { background:color-mix(in srgb,var(--accent) 30%,transparent); }
+  ::selection { background:color-mix(in srgb,var(--accent) 35%,transparent); }
+
+  /* ── frame & atmosphere ── */
+  #app { position:relative; overflow:hidden; background:radial-gradient(120% 50% at 50% -10%, color-mix(in srgb,var(--accent) 17%,transparent), transparent 60%),
+      radial-gradient(90% 45% at 110% 110%, color-mix(in srgb,var(--accent2) 15%,transparent), transparent 60%), linear-gradient(180deg,var(--bg1),var(--bg0)); }
+  body.framed #app { width:390px; height:min(844px,calc(100vh - 70px)); margin:50px auto 0; border-radius:48px;
+    box-shadow:0 0 0 1px color-mix(in srgb,var(--accent) 50%,transparent), 0 0 0 10px #04070b, 0 0 0 11px color-mix(in srgb,var(--accent) 22%,transparent),
+      0 0 70px color-mix(in srgb,var(--accent) 22%,transparent), 0 40px 90px rgba(0,0,0,.85); }
+  body.wide #app { width:100%; height:calc(100vh - 44px); margin-top:44px; }
+  body.native #app { width:100%; height:100vh; height:100dvh; }
+  #rain { position:absolute; inset:0; width:100%; height:100%; z-index:0; pointer-events:none; opacity:.2;
+    -webkit-mask-image:linear-gradient(180deg,#000,rgba(0,0,0,.35) 45%,transparent 80%); mask-image:linear-gradient(180deg,#000,rgba(0,0,0,.35) 45%,transparent 80%); }
+  #floor { position:absolute; left:-50%; right:-50%; bottom:0; height:42%; z-index:0; pointer-events:none; opacity:.15;
+    background-image:linear-gradient(color-mix(in srgb,var(--accent) 60%,transparent) 1px,transparent 1px),linear-gradient(90deg,color-mix(in srgb,var(--accent) 60%,transparent) 1px,transparent 1px);
+    background-size:44px 44px; transform:perspective(240px) rotateX(62deg); transform-origin:50% 100%;
+    -webkit-mask-image:linear-gradient(0deg,#000,transparent 90%); mask-image:linear-gradient(0deg,#000,transparent 90%); animation:floor 3s linear infinite; }
+  @keyframes floor { to { background-position:0 44px; } }
+  #app::after { content:""; position:absolute; inset:0; z-index:80; pointer-events:none; background:repeating-linear-gradient(180deg,rgba(255,255,255,.03) 0 1px,transparent 1px 3px); mix-blend-mode:overlay; }
+  body.nofx #rain, body.nofx #floor, body.nofx #app::after { display:none; }
+  #sb { position:absolute; top:0; left:0; right:0; height:36px; z-index:2; display:none; align-items:center; justify-content:space-between; padding:2px 30px 0; font:600 12px var(--mono); }
+  #sb .island { width:100px; height:28px; border-radius:15px; background:#000; box-shadow:0 0 0 1px rgba(255,255,255,.06); }
+  body.framed #sb { display:flex; }
+  #view { position:absolute; inset:0; z-index:1; display:flex; flex-direction:column; }
+  body.framed #view { top:36px; }
+  #devbar { position:fixed; top:9px; left:50%; transform:translateX(-50%); display:flex; gap:2px; align-items:center; z-index:50; padding:3px;
+    background:rgba(4,8,14,.85); border:1px solid var(--line); font:600 10px var(--mono); letter-spacing:.12em; backdrop-filter:blur(10px); }
+  #devbar button { padding:5px 9px; color:var(--t3); }
+  #devbar button.on { color:var(--accent); background:color-mix(in srgb,var(--accent) 12%,transparent); box-shadow:inset 0 -2px 0 var(--accent); }
+  #devbar .sep { width:1px; height:14px; background:var(--line); margin:0 4px; }
+  body.native #devbar { display:none; }
+  #boot { position:absolute; inset:0; z-index:95; background:radial-gradient(60% 40% at 50% 45%, color-mix(in srgb,var(--accent) 14%,transparent), transparent 70%), var(--bg0);
+    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:20px; transition:opacity .45s; }
+  #boot.out { opacity:0; pointer-events:none; }
+  #boot .logo { font:800 25px/1 var(--mono); letter-spacing:.18em; text-shadow:0 0 24px color-mix(in srgb,var(--accent) 60%,transparent); }
+  #boot pre { font:500 11px/1.9 var(--mono); color:var(--t3); width:266px; min-height:105px; }
+  #boot pre b { color:var(--live); font-weight:600; }
+  #boot .bb { width:266px; height:2px; background:var(--line); overflow:hidden; }
+  #boot .bb i { display:block; height:100%; width:0; background:linear-gradient(90deg,var(--accent),var(--accent2)); box-shadow:0 0 10px var(--accent); animation:load 1.5s ease-out forwards; }
+  @keyframes load { to { width:100%; } }
+
+  /* ── primitives ── */
+  .row { display:flex; align-items:center; gap:8px; }
+  .between { justify-content:space-between; } .wrap { flex-wrap:wrap; } .grow { flex:1; min-width:0; }
+  .muted { color:var(--t3); font-size:12px; } .t2 { color:var(--t2); } .sm { font-size:13px; } .xs { font-size:11.5px; }
+  .num { font-family:var(--mono); font-variant-numeric:tabular-nums; }
+  .code { font:700 15px/1.2 var(--mono); letter-spacing:.07em; text-transform:uppercase;
+    text-shadow:1px 0 color-mix(in srgb,var(--accent2) 65%,transparent), -1px 0 color-mix(in srgb,var(--accent) 65%,transparent); }
+  .label { font:600 10px/1.3 var(--mono); letter-spacing:.18em; text-transform:uppercase; color:var(--t3); }
+  .label::before { content:"// "; color:var(--accent); }
+  .big { font-size:17px; line-height:1.45; font-weight:600; color:var(--t1); margin-top:8px; }
+  .scroll { flex:1; overflow-y:auto; min-height:0; padding:12px 14px 16px; display:flex; flex-direction:column; gap:10px; }
+  .list { display:flex; flex-direction:column; gap:10px; }
+  /* Column flex children may otherwise shrink below their content: an overflow:hidden child's
+     automatic minimum height is 0, which collapsed the scheduled-message banner to its header. */
+  .scroll > *, .sbody > *, .list > *, .sec > * { flex-shrink:0; }
+  .sec { display:flex; flex-direction:column; gap:8px; }
+  .empty { text-align:center; color:var(--t3); padding:30px 10px; font:12px var(--mono); letter-spacing:.06em; }
+  .hr { height:1px; background:var(--line); flex:none; }
+  ul.plain { list-style:none; display:flex; flex-direction:column; gap:7px; margin-top:8px; }
+  ul.plain li { font-size:13.5px; color:var(--t2); padding-left:16px; position:relative; }
+  ul.plain li::before { content:""; position:absolute; left:2px; top:.6em; width:6px; height:6px; transform:rotate(45deg); border:1px solid var(--accent); }
+  details > summary { list-style:none; cursor:pointer; }
+  details > summary::-webkit-details-marker { display:none; }
+  details[open] > summary .caret { transform:rotate(90deg); }
+  .caret { display:inline-block; transition:transform .15s; color:var(--accent); }
+
+  /* Chamfered panel: the element background IS the 1px border (it follows the cut corners, which a
+     CSS border cannot); ::before paints the fill, ::after the HUD corner brackets. */
+  .card { position:relative; isolation:isolate; display:block; width:100%; text-align:left; padding:12px 14px;
+    --bd:var(--line); --fill:linear-gradient(165deg,var(--panel-hi),var(--panel) 55%); background:var(--bd);
+    clip-path:polygon(0 0,calc(100% - var(--cut)) 0,100% var(--cut),100% 100%,var(--cut) 100%,0 calc(100% - var(--cut))); transition:transform .1s; }
+  .card::before { content:""; position:absolute; inset:1px; z-index:-1; background:var(--fill);
+    clip-path:polygon(0 0,calc(100% - var(--cut) + .5px) 0,100% calc(var(--cut) - .5px),100% 100%,calc(var(--cut) - .5px) 100%,0 calc(100% - var(--cut) + .5px)); }
+  .card::after { content:""; position:absolute; inset:0; pointer-events:none; opacity:.8; background-repeat:no-repeat;
+    background-image:linear-gradient(var(--accent),var(--accent)),linear-gradient(var(--accent),var(--accent)),linear-gradient(var(--accent),var(--accent)),linear-gradient(var(--accent),var(--accent));
+    background-size:14px 1px,1px 14px,14px 1px,1px 14px; background-position:left top,left top,right bottom,right bottom; }
+  button.card:hover { --bd:var(--line-hi); }
+  button.card:active { transform:scale(.99); }
+  .card[data-s] { --edge:transparent;
+    --fill:linear-gradient(90deg,var(--edge) 0 3px,transparent 3px), linear-gradient(90deg,color-mix(in srgb,var(--edge) 13%,transparent),transparent 110px), linear-gradient(165deg,var(--panel-hi),var(--panel) 55%); }
+  .card[data-s=running],.card[data-s=stopping] { --edge:var(--live); }
+  .card[data-s=complete] { --edge:var(--accent); }
+  .card[data-s=stopped] { --edge:var(--inject); }
+  .card[data-s=capped] { --edge:var(--danger); }
+  .card[data-s=ensemble] { --edge:var(--accent2); }
+  .card.livecard { --bd:conic-gradient(from var(--spin),var(--line) 0deg 240deg,var(--live) 320deg,var(--line) 360deg); animation:spin 4s linear infinite; animation-delay:var(--ph); }
+  @keyframes spin { to { --spin:360deg; } }
+  .card.hero { --bd:linear-gradient(120deg,var(--accent),var(--accent2));
+    --fill:radial-gradient(130% 100% at 0% 0%,color-mix(in srgb,var(--accent) 17%,transparent),transparent 60%), linear-gradient(165deg,var(--panel-hi),var(--panel)); }
+  .card.center { text-align:center; }
+
+  .btn { position:relative; isolation:isolate; display:inline-flex; align-items:center; justify-content:center; gap:7px; min-height:44px; padding:0 16px;
+    font:700 11.5px/1 var(--mono); letter-spacing:.12em; text-transform:uppercase; color:var(--t1); text-align:center;
+    --bd:color-mix(in srgb,var(--accent) 45%,transparent); --fill:color-mix(in srgb,var(--accent) 9%,var(--panel)); background:var(--bd);
+    clip-path:polygon(9px 0,100% 0,100% calc(100% - 9px),calc(100% - 9px) 100%,0 100%,0 9px); overflow:hidden; transition:transform .1s; }
+  .btn::before { content:""; position:absolute; inset:1px; z-index:-1; background:var(--fill); clip-path:polygon(8.6px 0,100% 0,100% calc(100% - 8.6px),calc(100% - 8.6px) 100%,0 100%,0 8.6px); }
+  .btn:hover { --bd:var(--accent); }
+  .btn:active { transform:scale(.97); }
+  .btn.primary { --bd:linear-gradient(110deg,var(--accent),var(--accent2)); --fill:linear-gradient(110deg,var(--accent),var(--accent2)); color:#030a12; }
+  .btn.primary::after { content:""; position:absolute; inset:0; background:linear-gradient(110deg,transparent 35%,rgba(255,255,255,.5) 50%,transparent 65%); transform:translateX(-130%); animation:shine 4s infinite; animation-delay:var(--ph); }
+  @keyframes shine { 0%,70% { transform:translateX(-130%); } 100% { transform:translateX(130%); } }
+  .btn.danger { --bd:color-mix(in srgb,var(--danger) 60%,transparent); --fill:color-mix(in srgb,var(--danger) 11%,var(--panel)); color:var(--danger); }
+  .btn.warn { --bd:color-mix(in srgb,var(--inject) 60%,transparent); --fill:color-mix(in srgb,var(--inject) 10%,var(--panel)); color:var(--inject); }
+  .btn.sm { min-height:34px; padding:0 11px; font-size:10.5px; }
+  .btn.full { width:100%; }
+  .btn:disabled { opacity:.35; } .btn:disabled::after { display:none; }
+  .fabwrap { position:absolute; right:16px; bottom:90px; z-index:5; filter:drop-shadow(0 0 16px color-mix(in srgb,var(--accent) 55%,transparent)); }
+  .fabwrap .btn { min-height:52px; padding:0 20px; font-size:12px; }
+  .tag { display:inline-flex; align-items:center; gap:6px; padding:5px 8px; font:700 10px/1 var(--mono); letter-spacing:.12em; text-transform:uppercase; white-space:nowrap;
+    color:var(--c,var(--t2)); background:color-mix(in srgb,var(--c,var(--t2)) 12%,transparent); border:1px solid color-mix(in srgb,var(--c,var(--t2)) 45%,transparent);
+    clip-path:polygon(6px 0,100% 0,100% calc(100% - 6px),calc(100% - 6px) 100%,0 100%,0 6px); }
+  .tag.live { --c:var(--live); } .tag.ok { --c:var(--accent); } .tag.warn { --c:var(--inject); } .tag.danger { --c:var(--danger); }
+  .tag.ens { --c:var(--accent2); } .tag.shiftc { --c:var(--shift); }
+  .pulse { width:6px; height:6px; background:currentColor; box-shadow:0 0 8px currentColor; animation:pulse 1.5s infinite; animation-delay:var(--ph); }
+  @keyframes pulse { 50% { opacity:.5; } }
+  .chip { display:inline-flex; align-items:center; gap:5px; padding:4px 8px; font:500 11px/1.25 var(--mono); color:var(--t2); white-space:nowrap;
+    border:1px solid var(--line); background:color-mix(in srgb,var(--panel-hi) 70%,transparent); }
+  button.chip { min-height:30px; } button.chip:hover { border-color:var(--line-hi); color:var(--t1); }
+  .chip.on,.chip.accent { color:var(--accent); border-color:color-mix(in srgb,var(--accent) 55%,transparent); background:color-mix(in srgb,var(--accent) 10%,transparent); }
+  .icon { width:36px; height:36px; display:grid; place-items:center; color:var(--t2); flex:none; }
+  .icon:hover { color:var(--accent); }
+  .info { color:var(--accent); opacity:.8; padding:0 4px; vertical-align:-2px; }
+
+  .ticks { display:flex; gap:2px; height:6px; margin-top:8px; }
+  .ticks i { flex:1; background:color-mix(in srgb,var(--t3) 28%,transparent); transform:skewX(-24deg); }
+  .ticks i.on { background:var(--accent); box-shadow:0 0 6px color-mix(in srgb,var(--accent) 70%,transparent); }
+  .ticks.livet i.on { background:var(--live); box-shadow:0 0 6px color-mix(in srgb,var(--live) 70%,transparent); }
+  .ticks i.head { animation:pulse 1.5s infinite; animation-delay:var(--ph); }
+  .meter { height:4px; margin-top:8px; background:color-mix(in srgb,var(--t3) 25%,transparent); overflow:hidden; }
+  .meter i { display:block; height:100%; background:linear-gradient(90deg,var(--accent),var(--accent2)); box-shadow:0 0 8px var(--accent); transition:width .5s; }
+  .meter.warn i { background:var(--inject); box-shadow:0 0 8px var(--inject); }
+  .sbar { display:flex; gap:3px; height:8px; margin-top:8px; }
+  .sbar i { flex:1; background:var(--sc); transform:skewX(-24deg); box-shadow:0 0 7px color-mix(in srgb,var(--sc) 55%,transparent); }
+  .counts { display:inline-flex; gap:8px; font:700 11px var(--mono); }
+  .c-support { color:var(--support); } .c-undecided { color:var(--undecided); } .c-holding { color:var(--hold); }
+  .legend { font:500 10px/1.5 var(--mono); letter-spacing:.06em; color:var(--t3); display:flex; flex-wrap:wrap; gap:4px 10px; }
+
+  /* hex persona tokens */
+  .hx { --s:38px; position:relative; display:inline-block; flex:none; width:var(--s); height:calc(var(--s) * 1.1547); }
+  .hx::before { content:""; position:absolute; inset:0; background:var(--ring); clip-path:var(--hex); }
+  .hx > i { position:absolute; inset:2.5px; clip-path:var(--hex); display:flex; align-items:center; justify-content:center; font:800 calc(var(--s) * .32)/1 var(--mono); font-style:normal; color:#041018; }
+  .hx.xs { --s:24px; } .hx.xs > i { inset:2px; }
+  .hx.sm { --s:32px; }
+  .hx.lg { --s:60px; } .hx.lg > i { inset:3px; }
+  .hx.active { filter:drop-shadow(0 0 7px var(--live)); animation:pulse 1.5s infinite; animation-delay:var(--ph); }
+  .hx.active::before { background:var(--live); }
+  .a1 { background:linear-gradient(135deg,#f9a8d4,#c084fc); } .a2 { background:linear-gradient(135deg,#a5f3fc,#38bdf8); }
+  .a3 { background:linear-gradient(135deg,#fde68a,#f59e0b); } .a4 { background:linear-gradient(135deg,#a7f3d0,#34d399); }
+  .a5 { background:linear-gradient(135deg,#fecdd3,#fb7185); } .a6 { background:linear-gradient(135deg,#c7d2fe,#818cf8); }
+  .a0 { background:var(--panel-hi); color:var(--accent) !important; }
+  .hxrow { display:flex; gap:3px; }
+
+  /* ── chrome ── */
+  .top { flex:none; position:relative; display:flex; align-items:center; gap:10px; padding:10px 14px 11px;
+    background:linear-gradient(180deg,color-mix(in srgb,var(--bg0) 80%,transparent),color-mix(in srgb,var(--bg0) 45%,transparent)); backdrop-filter:blur(12px); }
+  .top::after { content:""; position:absolute; left:0; right:0; bottom:0; height:1px; background:linear-gradient(90deg,transparent,var(--accent) 20%,var(--accent2) 80%,transparent); opacity:.55; }
+  .back { width:36px; height:36px; flex:none; display:grid; place-items:center; color:var(--accent); background:color-mix(in srgb,var(--accent) 8%,transparent);
+    border:1px solid color-mix(in srgb,var(--accent) 40%,transparent); clip-path:polygon(9px 0,100% 0,100% 100%,0 100%,0 9px); }
+  .top .title { flex:1; min-width:0; }
+  .top .title > b { display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .top .title > b.code { font-size:17px; }
+  .top .title > b.disp { font:800 15px/1.2 var(--mono); letter-spacing:.22em; text-transform:uppercase; }
+  .top .sub { display:flex; align-items:center; gap:8px; margin-top:4px; min-width:0; font-size:12px; color:var(--t3); }
+  .top .sub .tt { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
+  .brand { font:800 19px/1 var(--mono); letter-spacing:.14em; }
+  .brand em { font-style:normal; color:var(--accent); text-shadow:0 0 14px var(--accent); }
+  .brand small { display:block; margin-top:6px; font:600 9px/1 var(--mono); letter-spacing:.32em; color:var(--t3); text-transform:uppercase; }
+  .tabs { flex:none; position:relative; display:flex; height:62px; margin:0 12px 12px; background:color-mix(in srgb,var(--panel) 90%,transparent);
+    backdrop-filter:blur(14px); border:1px solid var(--line); clip-path:polygon(14px 0,calc(100% - 14px) 0,100% 14px,100% 100%,0 100%,0 14px); }
+  .tabs button { flex:1; position:relative; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px;
+    font:700 8.5px/1 var(--mono); letter-spacing:.16em; text-transform:uppercase; color:var(--t3); }
+  .tabs button.on { color:var(--accent); }
+  .tabs button.on svg { filter:drop-shadow(0 0 6px var(--accent)); }
+  .tabs button.on::before { content:""; position:absolute; top:0; left:26%; right:26%; height:2px; background:var(--accent); box-shadow:0 0 10px var(--accent); }
+  body.native .tabs { margin-bottom:max(12px, env(safe-area-inset-bottom)); }
+  .htabs { flex:none; display:flex; border-bottom:1px solid var(--line); }
+  .htabs button { flex:1; position:relative; padding:11px 0 10px; text-align:center; font:700 10px/1 var(--mono); letter-spacing:.16em; text-transform:uppercase; color:var(--t3); }
+  .htabs button.on { color:var(--t1); }
+  .htabs button.on::after { content:""; position:absolute; left:16%; right:16%; bottom:-1px; height:2px; background:linear-gradient(90deg,var(--accent),var(--accent2)); box-shadow:0 0 10px var(--accent); }
+  .htabs .lock { color:var(--t3); opacity:.6; }
+  .runtabs { margin:6px 14px 0; }
+  .seg { display:flex; flex:none; border:1px solid var(--line); }
+  .seg button { flex:1; padding:9px 0; text-align:center; font:700 10px/1 var(--mono); letter-spacing:.12em; text-transform:uppercase; color:var(--t3); }
+  .seg button + button { border-left:1px solid var(--line); }
+  .seg button.on { color:var(--accent); background:color-mix(in srgb,var(--accent) 12%,transparent); box-shadow:inset 0 -2px 0 var(--accent); }
+  .field { width:100%; padding:10px 12px; font-size:14px; color:var(--t1); outline:none; resize:vertical; border:none; border-bottom:1px solid var(--line-hi);
+    background:color-mix(in srgb,var(--panel) 85%,transparent); }
+  .field:focus { border-bottom-color:var(--accent); background:color-mix(in srgb,var(--accent) 6%,var(--panel)); box-shadow:0 1px 0 var(--accent); }
+  .field::placeholder { color:var(--t3); }
+  select.field { appearance:none; width:auto; padding-right:22px; background-image:linear-gradient(45deg,transparent 50%,var(--accent) 50%),linear-gradient(135deg,var(--accent) 50%,transparent 50%);
+    background-position:calc(100% - 12px) 50%,calc(100% - 8px) 50%; background-size:4px 4px; background-repeat:no-repeat; font:600 12px var(--mono); }
+  option { background:var(--panel); }
+  .searchbox { display:flex; align-items:center; gap:8px; padding:0 12px; color:var(--t3); border-bottom:1px solid var(--line-hi); background:color-mix(in srgb,var(--panel) 80%,transparent); flex:none; }
+  .searchbox input { flex:1; height:42px; border:none; outline:none; background:none; font-size:14px; color:var(--t1); }
+  .searchbox:focus-within { border-bottom-color:var(--accent); color:var(--accent); }
+  .toggle { width:42px; height:22px; flex:none; position:relative; background:color-mix(in srgb,var(--t3) 28%,transparent); clip-path:polygon(6px 0,100% 0,100% calc(100% - 6px),calc(100% - 6px) 100%,0 100%,0 6px); transition:background .2s; }
+  .toggle::after { content:""; position:absolute; top:4px; left:4px; width:14px; height:14px; background:var(--t3); transition:left .2s; }
+  .toggle.on { background:color-mix(in srgb,var(--accent) 32%,transparent); }
+  .toggle.on::after { left:24px; background:var(--accent); box-shadow:0 0 8px var(--accent); }
+  .setting { display:flex; align-items:center; justify-content:space-between; gap:10px; min-height:44px; }
+  .setting + .setting { border-top:1px solid color-mix(in srgb,var(--accent) 8%,transparent); }
+  .stepper { position:relative; display:flex; justify-content:space-between; padding:2px 4px 4px; flex:none; }
+  .stepper::before { content:""; position:absolute; left:22px; right:22px; top:9px; height:1px; background:var(--line-hi); }
+  .stepper .sn { position:relative; display:flex; flex-direction:column; align-items:center; gap:7px; font:700 8.5px/1 var(--mono); letter-spacing:.12em; text-transform:uppercase; color:var(--t3); width:60px; }
+  .stepper .sn i { width:13px; height:13px; transform:rotate(45deg); background:var(--bg1); border:1px solid var(--line-hi); }
+  .stepper .sn.done, .stepper .sn.cur { color:var(--t1); }
+  .stepper .sn.done i { background:var(--accent); border-color:var(--accent); box-shadow:0 0 8px var(--accent); }
+  .stepper .sn.cur i { border:2px solid var(--accent); box-shadow:0 0 12px var(--accent); animation:pulse 1.5s infinite; animation-delay:var(--ph); }
+  .sticky { flex:none; position:relative; padding:12px 14px 16px; background:color-mix(in srgb,var(--bg0) 75%,transparent); backdrop-filter:blur(14px); }
+  .sticky::before, .mini::before { content:""; position:absolute; left:0; right:0; top:0; height:1px; background:linear-gradient(90deg,transparent,var(--accent) 20%,var(--accent2) 80%,transparent); opacity:.5; }
+
+  /* HUD strips */
+  .hudstrip { display:grid; grid-template-columns:1fr 1fr 1.25fr; padding:0; }
+  .hudstrip > div { position:relative; min-width:0; padding:10px 12px 11px; }
+  .hudstrip > div + div::before { content:""; position:absolute; left:0; top:10px; bottom:10px; width:1px; background:var(--line); }
+  .runhud { margin:10px 14px 0; flex:none; width:auto; }
+  .rk { display:flex; justify-content:space-between; align-items:center; gap:6px; margin-bottom:5px; font:700 9px/1 var(--mono); letter-spacing:.18em; text-transform:uppercase; color:var(--t3); }
+  .readout { font:700 21px/1 var(--mono); font-variant-numeric:tabular-nums; letter-spacing:.02em; text-shadow:0 0 16px color-mix(in srgb,currentColor 40%,transparent); }
+  .readout small { font-size:11px; color:var(--t3); font-weight:600; text-shadow:none; }
+  .rsub { margin-top:6px; font:500 9.5px var(--mono); color:var(--t3); letter-spacing:.04em; }
+  /* ── conversation ── */
+  .faces { display:flex; gap:7px; align-items:center; padding:10px 14px 4px; flex:none; overflow-x:auto; }
+  .faces .hint { margin-left:auto; font:600 9px var(--mono); letter-spacing:.14em; text-transform:uppercase; color:var(--t3); white-space:nowrap; }
+  .feed { gap:12px; }
+  .msg { display:flex; gap:10px; align-items:flex-start; }
+  .tx { flex:1; min-width:0; position:relative; padding:9px 12px 10px;
+    background:linear-gradient(100deg,color-mix(in srgb,var(--c) 10%,var(--panel)),var(--panel) 50%); clip-path:polygon(10px 0,100% 0,100% 100%,0 100%,0 10px); }
+  .tx::before { content:""; position:absolute; left:0; top:10px; bottom:0; width:2px; background:var(--c); box-shadow:0 0 8px var(--c); }
+  .tx-h { display:flex; align-items:baseline; gap:8px; margin-bottom:3px; }
+  .tx-h b { font:800 10.5px/1.2 var(--mono); letter-spacing:.12em; text-transform:uppercase; color:var(--c); white-space:nowrap; }
+  .tx-h .role { flex:1; min-width:0; font-size:11px; color:var(--t3); overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+  .tx-h .t { font:600 10px var(--mono); color:var(--t3); }
+  .tx-b { font-size:14.5px; line-height:1.5; }
+  .msg.new .tx { animation:arrive .6s ease-out; }
+  @keyframes arrive { from { opacity:0; transform:translateX(-10px); filter:brightness(2); } }
+  .cite { color:var(--accent); font:700 10px var(--mono); vertical-align:super; padding:0 3px; }
+  .flag { display:flex; gap:9px; align-items:baseline; width:100%; margin-top:7px; padding:6px 9px; text-align:left; font-size:12.5px; line-height:1.4; color:var(--t2);
+    background:color-mix(in srgb,var(--fc) 8%,transparent); border-left:2px solid var(--fc); }
+  .flag .ft { flex:none; font:800 8.5px/1.7 var(--mono); letter-spacing:.16em; color:var(--fc); }
+  .flag b { color:var(--t1); }
+  .flag.shift { --fc:var(--shift); } .flag.lean { --fc:var(--inject); } .flag.assume { --fc:var(--accent); }
+  .signal { position:relative; overflow:hidden; padding:9px 12px 10px; border:1px solid color-mix(in srgb,var(--inject) 45%,transparent);
+    background:repeating-linear-gradient(135deg,color-mix(in srgb,var(--inject) 9%,transparent) 0 6px,transparent 6px 14px), color-mix(in srgb,var(--panel) 92%,transparent); }
+  .signal::after { content:""; position:absolute; top:0; bottom:0; left:-40%; width:40%; background:linear-gradient(90deg,transparent,color-mix(in srgb,var(--inject) 22%,transparent),transparent); animation:sweep 3s infinite; animation-delay:var(--ph); }
+  @keyframes sweep { to { left:110%; } }
+  .sig-h { display:flex; justify-content:space-between; font:800 9px/1.4 var(--mono); letter-spacing:.16em; text-transform:uppercase; color:var(--inject); }
+  .sig-b { margin-top:4px; font-size:13.5px; }
+  .composing { display:flex; align-items:center; gap:10px; font:700 9.5px var(--mono); letter-spacing:.16em; text-transform:uppercase; color:var(--t3); }
+  .eq { display:inline-flex; align-items:flex-end; gap:2px; height:12px; }
+  .eq i { width:3px; height:3px; background:var(--live); box-shadow:0 0 5px var(--live); animation:eq 1s ease-in-out infinite; animation-delay:calc(var(--ph) + var(--d)); }
+  @keyframes eq { 50% { height:12px; } }
+  .mini { flex:none; position:relative; display:flex; align-items:center; gap:10px; padding:9px 14px 12px; background:color-mix(in srgb,var(--bg0) 72%,transparent); backdrop-filter:blur(12px); }
+  .mini .ticks { margin-top:0; }
+  .mini-t { display:flex; justify-content:space-between; margin-top:6px; font:700 9px var(--mono); letter-spacing:.16em; text-transform:uppercase; color:var(--t3); }
+  .ctl { width:40px; height:40px; flex:none; display:grid; place-items:center; color:var(--accent); font:700 11px var(--mono);
+    background:color-mix(in srgb,var(--accent) 10%,var(--panel)); border:1px solid color-mix(in srgb,var(--accent) 45%,transparent);
+    clip-path:polygon(8px 0,100% 0,100% calc(100% - 8px),calc(100% - 8px) 100%,0 100%,0 8px); }
+  .ctl:disabled { opacity:.3; }
+
+  /* room map, gauge, timeline, ensemble blocks */
+  .radar { display:block; width:100%; height:auto; margin-top:4px; }
+  .radar .rings circle { fill:none; stroke:var(--accent); stroke-opacity:.15; }
+  .radar .rings line { stroke:var(--accent); stroke-opacity:.12; stroke-dasharray:2 4; }
+  .radar .sweep { animation:rot 6s linear infinite; animation-delay:var(--ph); }
+  @keyframes rot { to { transform:rotate(360deg); } }
+  .radar .edge { fill:none; stroke:var(--accent2); }
+  .radar .edge-live { fill:none; stroke:var(--accent); stroke-width:2; stroke-dasharray:5 6; animation:flow 1.5s linear infinite; animation-delay:var(--ph); filter:drop-shadow(0 0 3px var(--accent)); }
+  @keyframes flow { to { stroke-dashoffset:-22; } }
+  .radar .core { fill:var(--bg1); stroke:var(--accent); stroke-opacity:.4; }
+  .radar .cpct { font:800 19px var(--mono); fill:var(--t1); text-anchor:middle; }
+  .radar .clabel { font:700 6.5px var(--mono); letter-spacing:.22em; fill:var(--t3); text-anchor:middle; }
+  .radar .node { cursor:pointer; }
+  .radar .halo { fill:none; stroke:var(--ring); stroke-width:2.2; }
+  .radar .node.active .halo { stroke:var(--live); animation:pulse 1.5s infinite; animation-delay:var(--ph); filter:drop-shadow(0 0 5px var(--live)); }
+  .radar .ntext { font:800 10px var(--mono); fill:#041018; text-anchor:middle; pointer-events:none; }
+  .radar .nlabel { font:700 7px var(--mono); letter-spacing:.14em; fill:var(--t2); text-anchor:middle; pointer-events:none; }
+  .gauge { display:block; width:100%; max-width:280px; margin:4px auto 0; }
+  .gauge .g-track { fill:none; stroke:color-mix(in srgb,var(--t3) 22%,transparent); stroke-width:12; }
+  .gauge .g-seg { fill:none; stroke-width:12; filter:drop-shadow(0 0 4px currentColor); }
+  .gauge .g-tick { stroke:var(--accent); stroke-opacity:.4; }
+  .gauge .g-pct { font:800 28px var(--mono); fill:var(--t1); text-anchor:middle; }
+  .gauge .g-lab { font:700 7.5px var(--mono); letter-spacing:.26em; fill:var(--t3); text-anchor:middle; }
+  .gcounts { display:grid; grid-template-columns:repeat(3,1fr); text-align:center; margin-top:2px; }
+  .gcounts b { display:block; font:800 18px/1.1 var(--mono); }
+  .gcounts span { font:700 8.5px var(--mono); letter-spacing:.14em; text-transform:uppercase; color:var(--t3); }
+  .wave { position:relative; display:flex; align-items:flex-end; gap:2px; height:70px; margin-top:10px; }
+  .wave i { flex:1; min-width:3px; background:var(--wc); opacity:.22; transition:opacity .15s; }
+  .wave i.on { opacity:.95; box-shadow:0 0 6px var(--wc); }
+  .wave i.cur { opacity:1; outline:1px solid var(--t1); outline-offset:1px; }
+  .wave .inj { position:absolute; top:-4px; bottom:0; width:2px; margin-left:-1px; background:var(--inject); box-shadow:0 0 6px var(--inject); }
+  .range { -webkit-appearance:none; appearance:none; width:100%; height:30px; margin-top:6px; background:transparent; }
+  .range::-webkit-slider-runnable-track { height:2px; background:linear-gradient(90deg,var(--accent),var(--accent2)); }
+  .range::-webkit-slider-thumb { -webkit-appearance:none; width:18px; height:18px; margin-top:-8px; background:var(--accent); transform:rotate(45deg); border:2px solid var(--bg0); box-shadow:0 0 14px var(--accent); }
+  .range::-moz-range-track { height:2px; background:linear-gradient(90deg,var(--accent),var(--accent2)); }
+  .range::-moz-range-thumb { width:14px; height:14px; background:var(--accent); transform:rotate(45deg); border:2px solid var(--bg0); border-radius:0; box-shadow:0 0 14px var(--accent); }
+  .blocks { display:flex; gap:4px; }
+  .blocks i { width:24px; height:12px; transform:skewX(-24deg); background:color-mix(in srgb,var(--t3) 25%,transparent); }
+  .blocks i.on { background:var(--bc); box-shadow:0 0 8px var(--bc); }
+  .grpk { display:inline-grid; place-items:center; width:20px; height:20px; flex:none; font:800 11px var(--mono); color:#041018; background:var(--gc);
+    clip-path:polygon(5px 0,100% 0,100% calc(100% - 5px),calc(100% - 5px) 100%,0 100%,0 5px); }
+  .k0 { --gc:var(--accent); --bc:var(--accent); } .k1 { --gc:var(--accent2); --bc:var(--accent2); }
+  .vs { display:flex; align-items:center; gap:7px; flex-wrap:wrap; margin-top:6px; font-size:12.5px; color:var(--t2); }
+  .vs .x { font:800 9px var(--mono); letter-spacing:.2em; color:var(--t3); }
+  .verdict { margin-top:10px; padding:6px 9px; font:700 10px/1.4 var(--mono); letter-spacing:.12em; text-transform:uppercase; border-left:2px solid var(--vc); color:var(--vc);
+    background:color-mix(in srgb,var(--vc) 9%,transparent); }
+  .verdict.split { --vc:var(--inject); } .verdict.same { --vc:var(--live); }
+  .topic { margin:4px 0 0; font-size:14px; line-height:1.4; color:var(--t1); }
+  .meta { margin-top:10px; font:500 11px var(--mono); color:var(--t3); }
+  .prow { display:flex; align-items:center; gap:12px; }
+  .prow b { font-size:14px; }
+  .airtime { display:grid; grid-template-columns:78px 1fr 26px; align-items:center; gap:8px; font:600 10.5px var(--mono); letter-spacing:.06em; color:var(--t2); }
+  .airtime .bar { height:8px; background:color-mix(in srgb,var(--t3) 20%,transparent); }
+  .airtime .bar i { display:block; height:100%; background:var(--wc); box-shadow:0 0 6px var(--wc); }
+  .airtime b { text-align:right; }
+  .drop { display:block; padding:24px 12px; text-align:center; cursor:pointer; color:var(--t2);
+    background:linear-gradient(90deg,var(--accent) 50%,transparent 0) repeat-x top/12px 1px, linear-gradient(90deg,var(--accent) 50%,transparent 0) repeat-x bottom/12px 1px,
+      linear-gradient(0deg,var(--accent) 50%,transparent 0) repeat-y left/1px 12px, linear-gradient(0deg,var(--accent) 50%,transparent 0) repeat-y right/1px 12px, color-mix(in srgb,var(--accent) 4%,transparent);
+    animation:ants 1s linear infinite; }
+  @keyframes ants { to { background-position:12px 0,-12px 100%,0 -12px,100% 12px,0 0; } }
+  .fc { display:flex; justify-content:space-between; align-items:flex-end; margin-bottom:10px; }
+
+  /* sheets, toast, chat */
+  .scrim { position:absolute; inset:0; z-index:20; background:color-mix(in srgb,var(--bg0) 62%,transparent); backdrop-filter:blur(4px) saturate(.7); animation:fade .2s; }
+  @keyframes fade { from { opacity:0; } }
+  .sheet { position:absolute; left:0; right:0; bottom:0; max-height:88%; z-index:21; display:flex; flex-direction:column; gap:10px; padding:14px 14px 18px;
+    background:linear-gradient(color-mix(in srgb,var(--accent) 4%,transparent) 1px,transparent 1px) 0 0/24px 24px, linear-gradient(90deg,color-mix(in srgb,var(--accent) 4%,transparent) 1px,transparent 1px) 0 0/24px 24px, linear-gradient(180deg,var(--panel-hi),var(--bg1));
+    clip-path:polygon(0 20px,20px 0,calc(100% - 20px) 0,100% 20px,100% 100%,0 100%); animation:up .3s cubic-bezier(.2,.9,.3,1); }
+  .sheet::before { content:""; position:absolute; left:20px; right:20px; top:0; height:2px; background:linear-gradient(90deg,var(--accent),var(--accent2)); box-shadow:0 0 14px var(--accent); }
+  .sheet.tall { top:8%; }
+  .sheet .sbody { flex:1; min-height:0; overflow-y:auto; display:flex; flex-direction:column; gap:10px; }
+  @keyframes up { from { transform:translateY(35%); opacity:.3; } }
+  .sh-h { display:flex; align-items:center; gap:12px; }
+  .sh-h .grow b { display:block; font-size:18px; line-height:1.2; }
+  .menu button { display:flex; align-items:center; gap:14px; width:100%; min-height:50px; padding:0 4px; font-size:14.5px; border-bottom:1px solid var(--line); }
+  .menu button svg { color:var(--accent); }
+  .menu > :last-child { border-bottom:none; }
+  .toast { position:absolute; left:50%; bottom:98px; transform:translateX(-50%); z-index:40; max-width:92%; padding:10px 14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    font:600 11.5px/1.3 var(--mono); letter-spacing:.04em; background:color-mix(in srgb,var(--panel-hi) 96%,transparent); border:1px solid var(--line-hi); border-left:3px solid var(--accent);
+    box-shadow:0 0 30px color-mix(in srgb,var(--accent) 25%,transparent); animation:fade .2s; }
+  .b-me { align-self:flex-end; max-width:82%; padding:9px 12px; font-size:14px; background:color-mix(in srgb,var(--accent) 14%,var(--panel));
+    border:1px solid color-mix(in srgb,var(--accent) 45%,transparent); clip-path:polygon(0 0,100% 0,100% calc(100% - 9px),calc(100% - 9px) 100%,0 100%); }
+  .b-them { align-self:flex-start; max-width:94%; padding:9px 12px; font-size:14px; background:var(--panel); border-left:2px solid var(--accent2); }
+  .b-them .from { margin-bottom:4px; font:800 9px var(--mono); letter-spacing:.18em; text-transform:uppercase; color:var(--accent2); }
+
+  /* ── wide: tabs become columns, sheets become a side panel ── */
+  .panes { flex:1; min-height:0; display:flex; flex-direction:column; }
+  .pane { flex:1; min-height:0; display:flex; flex-direction:column; }
+  body.wide .panes { display:grid; grid-template-columns:340px 1fr 400px; }
+  body.wide .pane + .pane { border-left:1px solid var(--line); }
+  body.wide .runtabs { display:none; }
+  body.wide .list { display:grid; grid-template-columns:repeat(auto-fill,minmax(360px,1fr)); align-content:start; }
+  body.wide .tabs { width:440px; align-self:center; }
+  body.wide .fabwrap { right:32px; }
+  body.wide .sheet { left:auto; top:0; width:450px; max-height:none; clip-path:polygon(20px 0,100% 0,100% 100%,0 100%,0 20px); }
+  body.wide .sheet::before { left:20px; right:0; }
+  body.wide .hudstrip.stats { max-width:760px; }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation:none !important; } }
+</style>
+</head>
+<body data-theme="holo">
+<div id="devbar">
+  <button data-a="mode:phone">PHONE</button><button data-a="mode:wide">WIDE</button><span class="sep"></span>
+  <button data-a="theme:holo">HOLO</button><button data-a="theme:matrix">MATRIX</button><button data-a="theme:neon">NEON</button><span class="sep"></span>
+  <button data-a="fx">FX</button><button data-a="reset">RESET</button>
+</div>
+<div id="app">
+  <canvas id="rain"></canvas>
+  <div id="floor"></div>
+  <div id="sb"><span>9:41</span><span class="island"></span><span>5G &#9646;&#9646;&#9646;</span></div>
+  <div id="view"></div>
+  <div id="boot"><div class="logo">MATRIX<span style="color:var(--accent)">//</span>STUDIO</div><pre id="bootlog"></pre><div class="bb"><i></i></div></div>
+</div>
+
+<script>
+'use strict'
+// ─────────────────────────────── mock data ───────────────────────────────
+const $ = (s) => document.querySelector(s)
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c])
+const money = (n) => '$' + n.toFixed(2)
+const initials = (name) => name.split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase()
+const TEXT = { a1: '#f0abfc', a2: '#7dd3fc', a3: '#fcd34d', a4: '#86efac', a5: '#fda4af', a6: '#c7d2fe', a0: '#94a3b8' }
+const GRAD = { a1: ['#f9a8d4', '#c084fc'], a2: ['#a5f3fc', '#38bdf8'], a3: ['#fde68a', '#f59e0b'], a4: ['#a7f3d0', '#34d399'], a5: ['#fecdd3', '#fb7185'], a6: ['#c7d2fe', '#818cf8'] }
+const STC = { support: 'var(--support)', undecided: 'var(--undecided)', holding: 'var(--hold)' }
+const STL = { support: '▲ support', undecided: '◆ undecided', holding: '▼ holding out' }
+const pad = (n) => String(n).padStart(2, '0')
+const MODELS = ['Claude Sonnet 5', 'Claude Opus 5.5', 'Claude Haiku 4.5', 'GPT (via OpenRouter)', 'Local · Ollama']
+
+function agent(name, role, cls, o = {}) {
+  return { name, role, cls, color: TEXT[cls], firm: 'soft', position: '', formed: '', exit: '', wont: '', withheld: '', memory: [], threads: [], why: '', ...o }
+}
+
+function harborAgents() {
+  return {
+    MR: agent('Maria Reyes', 'Small-business owner', 'a1', {
+      firm: 'firm', position: 'Oppose a flat fee; open to off-peak tiering',
+      formed: '2019 road closure cost her a quarter of revenue', exit: 'A delivery-window exemption',
+      wont: 'Carbon arguments without local numbers', withheld: 'Her lease renewal is next spring',
+      memory: ['Aisha raised night-shift equity (#6)', 'Reflection: tiering might protect deliveries'],
+      threads: ['Asked the room about delivery windows — unanswered'],
+      why: 'Her deliveries run 6–9am, so a flat all-day fee is the worst case. Once off-peak tiering came up, her named exit condition was within reach.' }),
+    JT: agent('James Tran', 'Transit planner', 'a2', {
+      firm: 'firm', position: 'Pricing works only if bus frequency rises first',
+      formed: 'Watched a fare rise empty a corridor in 2016', exit: 'Funded frequency from day one',
+      wont: 'Revenue projections with no service plan', withheld: 'His agency has a hiring freeze',
+      memory: ['DOT letter: 40% capital match', 'Reflection: the match removes my sequencing objection'],
+      threads: ['Promised a frequency map — pending'],
+      why: 'His objection was always about order. The DOT match paid for frequency before pricing began, which is exactly what he said would move him.' }),
+    AK: agent('Aisha Khan', 'City council member', 'a3', {
+      position: 'Support only with a written night-shift exemption', formed: 'Represents a district of hospital and warehouse workers',
+      exit: 'Exemption in the ordinance text', wont: 'Promises without a vote', withheld: 'She faces re-election next year',
+      memory: ['Constituent calls about shift workers', 'Maria is a potential ally on exemptions'],
+      threads: ['Night-shift exemption wording — dangling'],
+      why: 'She needs something she can point to in the ordinance. A promise is not a vote.' }),
+    DO: agent("Dan O'Neil", 'Suburban commuter', 'a4', {
+      position: 'Would switch to rail if trains had room', formed: 'Standing room on the 6:10 for three years',
+      exit: 'Peer-city ridership data', wont: 'Moral arguments about driving', withheld: 'Worries about his parking pass refund',
+      memory: ['James mentioned rail frequency'], threads: [], why: 'He will move on evidence, and he said which evidence.' }),
+    LP: agent('Lena Park', 'Moderator · policy analyst', 'a5', {
+      position: 'Frame who pays and when, not whether', formed: 'Ran two city consultations', exit: '—', wont: '—',
+      memory: ['Summarised positions at #10'], threads: [], why: 'Keeps the room on the decision rather than the principle.' }),
+  }
+}
+
+const HARBOR_MSGS = [
+  { t: 1, who: 'LP', text: "Let's frame it: the question is not whether to price, but who pays and when." },
+  { t: 2, who: 'JT', text: "Pricing works only if bus frequency rises first. Otherwise we're charging people for a choice they don't have.", lean: ['frequency is the binding constraint', 'undecided'] },
+  { t: 3, who: 'AK', text: "I'm hearing about equity from my district every week. Night shifts don't have a bus at 5am.", assume: 'Transit capacity is flat through 2028' },
+  { t: 4, who: 'DO', text: "I drive in because the 6:10 train is standing room. Fix that and I'd consider it." },
+  { t: 5, who: 'MR', text: 'Deliveries are 30% of my costs. A flat fee hits me every single morning.', cite: 1 },
+  { t: 6, who: 'AK', text: 'A flat fee hits night-shift workers hardest. I need to see an exemption before I vote.' },
+]
+const HARBOR_QUEUE = [
+  { inject: 'State DOT letter', after: 6, text: 'The state will match 40% of transit capital spend if a pricing programme launches by 2027.' },
+  { who: 'MR', text: "If the zone's evening price is lower, I could shift deliveries to the afternoon.", cite: 2, shift: 'off-peak tiering', shiftNamed: true },
+  { who: 'DO', text: "What would convince me is a peer city's ridership numbers after year one.", lean: ['ridership up 8–15%', 'support'] },
+  { who: 'JT', text: 'The DOT match changes my sequencing argument. We can fund frequency from day one.', shift: 'the state capital match', shiftNamed: true },
+  { who: 'LP', text: 'So the shape is tiered pricing, delivery windows and a transit match. Objections?' },
+  { who: 'AK', text: 'Only if the night-shift exemption is written in, not promised.', assume: 'Transit capacity is flat through 2028' },
+  { who: 'JT', text: "Agreed. I'd support a tiered pilot with that exemption written into the ordinance." },
+]
+const HARBOR_SOURCES = {
+  1: { doc: 'Merchant survey 2024.pdf', tier: 'persuasive', snip: 'Delivery and logistics costs averaged 28–33% of operating spend for respondents in the core zone.' },
+  2: { doc: 'Peer-city pricing review.pdf · p.14', tier: 'controlling', snip: 'Off-peak discounts of 40–60% shifted roughly a fifth of commercial deliveries outside the morning peak.' },
+}
+const HARBOR_BRIEF = {
+  bottom: 'Adopt a tiered pilot: lower off-peak price, a delivery-window exemption and a written night-shift exemption, sequenced with the state capital match.',
+  conclusion: 'Adopt with off-peak tier', trust: 'moderate', dissent: 0,
+  settle: ['Year-one ridership from a peer city', 'Ordinance text for the night-shift exemption'],
+  assumed: [{ text: 'Transit capacity is flat through 2028', cited: 2, disputed: 'James Tran' }],
+  objections: ['Aisha Khan: support conditional on exemption wording'],
+}
+
+function robotAgents() {
+  return {
+    SH: agent('Sam Hale', 'Support director', 'a2', { firm: 'firm', position: 'Pilot it for one quarter', formed: 'Lost two senior engineers to burnout last year', exit: 'Resolution time gets worse by >10%', wont: 'Anecdotes from other industries', withheld: 'Has already promised the pilot to the team', memory: ['Priya offered two teams', 'Lena raised contractual SLAs'], threads: ['Friday escalation plan — dangling'], why: 'Retention is his real problem; the pilot is his lever.' }),
+    PK: agent('Priya Kapoor', 'Team lead', 'a1', { position: 'Two teams can pilot with rotating Fridays', formed: 'Ran a rota during a hiring freeze', exit: '—', wont: '—', withheld: 'Her team is already short one person', memory: ['Proposed rotating Fridays'], threads: [], why: 'She has a concrete rota and wants it tested.' }),
+    LP: agent('Lena Park', 'Account manager', 'a5', { firm: 'firm', position: 'Enterprise SLAs make Fridays non-negotiable', formed: 'Paid a penalty clause in 2023', exit: 'A contract amendment signed by the customer', wont: 'Internal surveys', withheld: 'Her largest renewal is in Q2', memory: ['Nobody addressed the SLA clause'], threads: ['Contract amendment — never raised'], why: 'Her exit condition, a contract amendment, was never offered in the room.' }),
+    RB: agent('Rui Barros', 'Support engineer', 'a4', { position: 'Would trade longer days for a free Friday', formed: 'Commutes 90 minutes', exit: '—', wont: '—', withheld: '—', memory: [], threads: [], why: 'Speaks for the people who would actually work it.' }),
+    CF: agent('Chris Fox', 'Finance partner', 'a3', { position: 'Neutral if headcount stays flat', formed: '—', exit: 'Any request for new headcount', wont: '—', withheld: '—', memory: ['Assumption: headcount stays flat'], threads: [], why: 'Cost-neutral is his only test.' }),
+  }
+}
+const ROBOT_MSGS = [
+  { t: 1, who: 'SH', text: "We're losing senior people. I want to know if a four-day week helps without hurting customers." },
+  { t: 2, who: 'PK', text: 'Two of my teams could pilot with rotating Fridays so there is always coverage.' },
+  { t: 3, who: 'LP', text: "Our enterprise SLAs don't have a Friday carve-out. That's contractual, not a preference." },
+  { t: 4, who: 'CF', text: "I'm neutral as long as headcount stays flat.", assume: 'Headcount stays flat', lean: ['no new headcount needed', 'support'] },
+  { t: 5, who: 'RB', text: "I'd take four ten-hour days tomorrow. The commute alone is worth it.", lean: ['attrition drops', 'support'] },
+  { t: 6, who: 'SH', text: 'Then measure it: resolution time, CSAT and attrition over one quarter.', lean: ['resolution time flat or better', 'support'] },
+  { t: 7, who: 'PK', text: 'Rotating Fridays keeps 60% coverage every day. I can show the rota.', assume: 'Headcount stays flat', lean: ['coverage holds at 60%', 'support'] },
+  { t: 8, who: 'LP', text: 'Coverage is not the SLA. The SLA names response times on every business day.' },
+  { t: 9, who: 'CF', text: 'If the pilot needs even one extra hire, I am a no.', assume: 'Headcount stays flat' },
+  { t: 10, who: 'SH', text: 'Pilot two teams for one quarter, measured on resolution time. Lena, we will keep Friday escalations with the other teams.', shift: 'rotating coverage', shiftNamed: false },
+]
+const ROBOT_BRIEF = {
+  bottom: 'Pilot for one quarter in two teams, measured on resolution time. 4 of 5 lean support.',
+  conclusion: 'Run a one-quarter pilot', trust: 'moderate', dissent: 1,
+  settle: ['Resolution-time data from the pilot teams', 'Coverage plan for Friday escalations'],
+  assumed: [{ text: 'Headcount stays flat', cited: 6, disputed: 'Lena Park' }],
+  objections: ['Lena Park: customer SLAs are contractual'],
+}
+
+const CODE_A = ['quiet', 'amber', 'calm', 'bright', 'iron', 'silver', 'brisk', 'gentle', 'misty', 'bold', 'lucky', 'hidden']
+const CODE_B = ['harbor', 'lantern', 'river', 'maple', 'sparrow', 'comet', 'meadow', 'falcon', 'orbit', 'willow', 'ember', 'canyon']
+function codename() {
+  for (;;) {
+    const n = CODE_A[Math.floor(Math.random() * CODE_A.length)] + '-' + CODE_B[Math.floor(Math.random() * CODE_B.length)]
+    if (!DB.runs[n]) return n
+  }
+}
+
+function mkRun(o) {
+  const msgs = (o.msgs || []).map((m) => ({ ...m }))
+  const turn = msgs.filter((m) => !m.inject).length
+  return {
+    status: 'complete', topic: '', agents: {}, msgs, queue: [], turn, maxTurn: turn, cost: 0, tokIn: 0, tokOut: 0, cap: 1,
+    brief: null, parent: null, when: 'just now', consultant: null, sources: {}, assumptions: [], ensemble: null, group: null,
+    model: MODELS[0], ...o, msgs,
+  }
+}
+
+let DB
+function seed() {
+  DB = { runs: {}, ensembles: {}, kbs: [], library: [] }
+  const add = (r) => (DB.runs[r.id] = r)
+  add(mkRun({ id: 'quiet-harbor', topic: 'Should the city adopt congestion pricing downtown, and at what price?', status: 'running',
+    agents: harborAgents(), msgs: HARBOR_MSGS, queue: HARBOR_QUEUE.map((q) => ({ ...q })), maxTurn: 12, cost: 0.12, tokIn: 26400, tokOut: 3300,
+    when: '3m ago', consultant: 'Traffic economist', sources: HARBOR_SOURCES, finalBrief: HARBOR_BRIEF, assumptions: ['Transit capacity is flat through 2028'], kbs: ['City traffic studies'] }))
+  add(mkRun({ id: 'trusted-robot', topic: 'Four-day work week pilot for the support org', agents: robotAgents(), msgs: ROBOT_MSGS, cost: 0.39,
+    tokIn: 88200, tokOut: 10400, when: 'Tue', brief: ROBOT_BRIEF, assumptions: ['Headcount stays flat'] }))
+  add(mkRun({ id: 'amber-lantern', topic: 'Four-day work week pilot for the support org', status: 'stopped', agents: robotAgents(),
+    msgs: [...ROBOT_MSGS.slice(0, 6), { inject: 'Intervention', after: 6, text: 'The CFO joins and says budget is frozen until Q3.' },
+      { t: 7, who: 'CF', text: 'A freeze means no overtime either. Any pilot has to be exactly cost-neutral.' }],
+    queue: [{ who: 'SH', text: 'Then the pilot has to be self-funded: no overtime, no contractors.' }, { who: 'LP', text: 'And my SLA objection still stands.' }],
+    maxTurn: 10, cost: 0.11, when: 'Tue', parent: { id: 'trusted-robot', turn: 6 }, assumptions: ['Headcount stays flat'] }))
+
+  // Ensemble: one declared variable (a working assumption), counted per group, never pooled.
+  const ens = { id: 'pricing-tiers', topic: 'Should the city adopt congestion pricing downtown?', variable: 'Working assumption',
+    groups: [{ k: 'A', label: 'Transit capacity grows 10%' }, { k: 'B', label: 'Transit capacity is flat' }], members: [], when: 'Mon' }
+  const plan = [['A', 'Adopt with off-peak tier'], ['A', 'Adopt with off-peak tier'], ['A', 'Adopt with off-peak tier'],
+    ['B', 'Delay until bus frequency rises'], ['B', 'Adopt with off-peak tier'], ['B', 'Delay until bus frequency rises']]
+  const names = ['calm-river', 'bright-maple', 'silver-comet', 'misty-falcon', 'brisk-meadow', 'iron-sparrow']
+  plan.forEach(([g, concl], i) => {
+    const live = i === plan.length - 1
+    const r = mkRun({ id: names[i], topic: ens.topic, agents: harborAgents(), msgs: live ? HARBOR_MSGS.slice(0, 4) : HARBOR_MSGS,
+      queue: live ? [{ who: 'MR', text: 'Deliveries are 30% of my costs.' }, { who: 'JT', text: 'Without new capacity, pricing just punishes people.' }, { who: 'AK', text: 'Then delay it until the buses exist.' }] : [],
+      status: live ? 'running' : 'complete', maxTurn: live ? 7 : 6, cost: 0.29 + i * 0.01, when: 'Mon', ensemble: ens.id, group: g,
+      assumptions: [ens.groups.find((x) => x.k === g).label], sources: HARBOR_SOURCES,
+      brief: live ? null : { ...HARBOR_BRIEF, conclusion: concl, bottom: concl + '.' }, finalBrief: { ...HARBOR_BRIEF, conclusion: concl, bottom: concl + '.' } })
+    add(r)
+    ens.members.push(r.id)
+  })
+  DB.ensembles[ens.id] = ens
+
+  DB.kbs = [
+    { id: 'traffic', name: 'City traffic studies', scope: 'shared', docs: [{ name: 'Peer-city pricing review.pdf', chunks: 42, pct: 100 }, { name: 'Cordon study 2023.md', chunks: 18, pct: 100 }, { name: 'Bus frequency plan.pdf', chunks: 27, pct: 100 }], bound: ['quiet-harbor'] },
+    { id: 'merchants', name: 'Merchant interviews', scope: 'persona · Maria Reyes', docs: [{ name: 'Merchant survey 2024.pdf', chunks: 31, pct: 100 }, { name: 'Interview notes.txt', chunks: 0, pct: 40 }], bound: ['quiet-harbor'] },
+    { id: 'support', name: 'Support metrics', scope: 'shared', docs: [{ name: 'Q2 resolution times.csv', chunks: 12, pct: 100 }], bound: ['trusted-robot'] },
+    { id: 'econ', name: 'Traffic economist library', scope: 'consultant', docs: [{ name: 'Road pricing handbook.pdf', chunks: 120, pct: 100 }], bound: [] },
+  ]
+  DB.library = [
+    { name: 'Skeptical CFO', role: 'Finance', position: 'Only if cost-neutral within a year', cls: 'a3' },
+    { name: 'Frontline operator', role: 'Operations', position: 'Show me the rota before the policy', cls: 'a4' },
+    { name: 'Regulator', role: 'Compliance', position: 'Anything not written down did not happen', cls: 'a6' },
+    { name: 'Customer advocate', role: 'Customer success', position: 'The customer never agreed to this', cls: 'a5' },
+    { name: 'Union representative', role: 'Labour', position: 'No change without consultation', cls: 'a1' },
+    { name: 'Early adopter', role: 'Product', position: 'Ship a small version and learn', cls: 'a2' },
+  ]
+}
+
+// ─────────────────────────────── UI state ───────────────────────────────
+let S
+function freshState() {
+  const qs = new URLSearchParams(location.search)
+  const narrow = window.innerWidth < 520
+  S = { mode: narrow ? 'native' : (S?.mode === 'wide' || qs.has('wide') ? 'wide' : 'phone'),
+    theme: S?.theme || qs.get('theme') || 'holo', fx: S ? S.fx : !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches, sheet: null, toast: null, q: '', filter: 'all',
+    paused: {}, speed: 1, draft: null, scrub: {}, asides: {}, fresh: new Set() }
+}
+
+function route() { return (location.hash.replace(/^#\/?/, '') || 'runs').split('/') }
+function go(path) { if (location.hash === '#/' + path) render(); else location.hash = '#/' + path }
+window.addEventListener('hashchange', () => { S.sheet = null; render() })
+
+let toastTimer
+function toast(msg) { S.toast = msg; render(); clearTimeout(toastTimer); toastTimer = setTimeout(() => { S.toast = null; render() }, 2400) }
+
+// ─────────────────────────────── simulation ───────────────────────────────
+function speakerLines(run, who) {
+  const a = run.agents[who]
+  return [
+    `From where I sit as ${a.role.toLowerCase()}: ${a.position || 'I want to hear the trade-offs before I commit.'}`,
+    "I'd push back on that. What evidence would actually change the plan?",
+    `If we assume ${(run.assumptions[0] || 'the budget holds').toLowerCase()}, I can live with a phased version.`,
+    'What would settle it for me is a small pilot with one clear metric.',
+    'I am moving slightly: a time-boxed trial addresses my main worry.',
+    'I still need that written down before I agree.',
+  ]
+}
+function genQueue(run, n) {
+  const keys = Object.keys(run.agents)
+  const q = []
+  for (let i = 0; i < n; i++) {
+    const who = keys[(run.turn + i) % keys.length]
+    const lines = speakerLines(run, who)
+    const k = Math.floor((run.turn + i) / keys.length) % lines.length
+    const item = { who, text: lines[k] }
+    if (k === 1) item.lean = ['a pilot will show no loss', i % 2 ? 'support' : 'undecided']
+    if (k === 4) { item.shift = 'the time-boxed trial'; item.shiftNamed = i % 2 === 0 }
+    if (k === 2 && run.assumptions[0]) item.assume = run.assumptions[0]
+    q.push(item)
+  }
+  return q
+}
+function genericBrief(run) {
+  const n = Object.keys(run.agents).length
+  return { bottom: 'Run a time-boxed pilot with one agreed metric; revisit with its results.', conclusion: 'Run a time-boxed pilot', trust: 'low',
+    dissent: 1, settle: ['Results from the pilot metric', 'A written version of the main exemption'],
+    assumed: run.assumptions.map((a) => ({ text: a, cited: 2, disputed: null })),
+    objections: [`${Object.values(run.agents)[n - 1].name}: wants it in writing first`] }
+}
+
+function advance(run) {
+  const item = run.queue.shift()
+  if (item) {
+    const m = { ...item }
+    if (!m.inject) m.t = ++run.turn
+    run.msgs.push(m)
+    S.fresh.add(run.id + ':' + run.msgs.length)
+    run.cost += 0.014 + Math.random() * 0.01
+    run.tokIn += 3000 + Math.floor(Math.random() * 1500)
+    run.tokOut += 350 + Math.floor(Math.random() * 200)
+  }
+  const done = !run.queue.length
+  if (run.cost >= run.cap) { run.status = 'capped'; toast(`${run.id} hit its spend cap`) }
+  else if (run.status === 'stopping') { run.status = 'stopped'; toast(`${run.id} stopped after turn ${run.turn}`) }
+  else if (done) {
+    run.status = 'complete'; run.brief = run.finalBrief || genericBrief(run)
+    if (route()[0] !== 'run' || route()[1] !== run.id) toast(`✓ ${run.id} finished`)
+  }
+}
+
+setInterval(() => {
+  const now = Date.now()
+  let changed = false
+  for (const run of Object.values(DB.runs)) {
+    if (run.status !== 'running' && run.status !== 'stopping') { run.nextAt = 0; continue }
+    if (S.paused[run.id]) continue
+    if (!run.nextAt) run.nextAt = now + 3000 / S.speed
+    if (now >= run.nextAt) { advance(run); run.nextAt = now + 3000 / S.speed; changed = true }
+  }
+  for (const kb of DB.kbs) for (const d of kb.docs) if (d.pct < 100) { d.pct = Math.min(100, d.pct + 12); if (d.pct === 100) d.chunks = 8 + Math.floor(Math.random() * 30); changed = true }
+  if (changed) softRender()
+}, 400)
+
+function softRender() {
+  const el = document.activeElement
+  if (el && /INPUT|TEXTAREA|SELECT/.test(el.tagName) && el.type !== 'range') return
+  const [r] = route()
+  if (r === 'new' || (S.sheet && S.sheet.type === 'fork')) return
+  render()
+}
+
+// ─────────────────────────────── icons ───────────────────────────────
+// Line icons rather than emoji: emoji render inconsistently across platforms and read as clip-art.
+const ICONS = {
+  runs: '<path d="M4 6h16M4 12h16M4 18h10"/>',
+  ensembles: '<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/>',
+  knowledge: '<path d="M4 5a2 2 0 0 1 2-2h12v16H6a2 2 0 0 0-2 2z"/><path d="M4 19V5M8 7h6"/>',
+  library: '<circle cx="9" cy="8" r="3.2"/><path d="M3 20c.6-3.4 3-5 6-5s5.4 1.6 6 5"/><circle cx="17" cy="9" r="2.5"/><path d="M16 14.2c2.6-.2 4.4 1.3 5 4.8"/>',
+  gear: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/>',
+  pause: '<path d="M8 5v14M16 5v14"/>',
+  play: '<path d="M7 4.5v15l12-7.5z" fill="currentColor"/>',
+  step: '<path d="M6 5v14l9-7z" fill="currentColor"/><path d="M18 5v14"/>',
+  branch: '<circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 7v10M18 10c0 4-6 3-11 7"/>',
+  doc: '<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4M9 12h6M9 16h6"/>',
+  chat: '<path d="M4 5h16v11H9l-5 4z"/>',
+  clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3 2"/>',
+  expert: '<path d="M2 9l10-5 10 5-10 5z"/><path d="M6 11v5c3 2.5 9 2.5 12 0v-5"/>',
+  back: '<path d="M15 5l-7 7 7 7"/>',
+  close: '<path d="M6 6l12 12M18 6L6 18"/>',
+  more: '<circle cx="5" cy="12" r="1.3" fill="currentColor"/><circle cx="12" cy="12" r="1.3" fill="currentColor"/><circle cx="19" cy="12" r="1.3" fill="currentColor"/>',
+  search: '<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  upload: '<path d="M12 16V4M7 9l5-5 5 5M4 20h16"/>',
+  download: '<path d="M12 4v12M7 11l5 5 5-5M4 20h16"/>',
+  stop: '<rect x="6" y="6" width="12" height="12" fill="currentColor"/>',
+  resume: '<path d="M4 12a8 8 0 1 0 3-6.2"/><path d="M4 4v4h4"/>',
+  share: '<path d="M12 15V4M8 8l4-4 4 4M5 12v8h14v-8"/>',
+  info: '<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5M12 8v.01"/>',
+  spark: '<path d="M12 3l2 6 6 2-6 2-2 6-2-6-6-2 6-2z"/>',
+  save: '<path d="M5 4h11l3 3v13H5z"/><path d="M8 4v5h7M8 20v-6h8v6"/>',
+  model: '<rect x="5" y="5" width="14" height="14"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/>',
+  import: '<path d="M12 4v10M8 10l4 4 4-4"/><path d="M5 14v6h14v-6"/>',
+}
+const ic = (n, size = 16) => `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex:none;vertical-align:-3px">${ICONS[n]}</svg>`
+
+// ─────────────────────────────── components ───────────────────────────────
+const isLive = (run) => run.status === 'running' || run.status === 'stopping'
+const ended = (run) => ['complete', 'stopped', 'capped'].includes(run.status)
+const nextSpeaker = (run) => isLive(run) && run.queue.find((q) => !q.inject)?.who
+
+// Where each persona stands right now, from the transcript alone: whichever of a stated lean or a
+// recorded shift came last; failing both, a persona who has spoken and is not "soft" is holding out.
+function stanceOf(run, k) {
+  const ms = run.msgs.filter((m) => m.who === k)
+  const last = [...ms].reverse().find((m) => m.lean || m.shift)
+  if (last?.shift) return 'support'
+  if (last?.lean) return last.lean[1] === 'support' ? 'support' : 'undecided'
+  return ms.length && run.agents[k].firm !== 'soft' ? 'holding' : 'undecided'
+}
+function stances(run) {
+  const o = { support: 0, undecided: 0, holding: 0 }
+  Object.keys(run.agents).forEach((k) => o[stanceOf(run, k)]++)
+  return o
+}
+const countsHtml = (s) => `<span class="counts"><b class="c-support">▲${s.support}</b><b class="c-undecided">◆${s.undecided}</b><b class="c-holding">▼${s.holding}</b></span>`
+// One slanted bar per persona, ordered support → undecided → holding out.
+function stanceBar(run) {
+  const order = { support: 0, undecided: 1, holding: 2 }
+  const ks = Object.keys(run.agents).map((k) => [k, stanceOf(run, k)]).sort((a, b) => order[a[1]] - order[b[1]])
+  return `<div class="sbar">${ks.map(([k, st]) => `<i style="--sc:${STC[st]}" title="${esc(run.agents[k].name)}: ${st}"></i>`).join('')}</div>`
+}
+// One tick per turn while that is legible; a plain meter once there are too many to count.
+function ticks(n, max, live = false) {
+  if (max > 30) return `<div class="meter"><i style="width:${(100 * n) / max}%"></i></div>`
+  return `<div class="ticks ${live ? 'livet' : ''}">${Array.from({ length: max }, (_, i) => `<i class="${i < n ? 'on' : ''}${live && i === n - 1 ? ' head' : ''}"></i>`).join('')}</div>`
+}
+function hx(a, size = '', ring = null, active = false) {
+  const inner = a ? esc(initials(a.name)) : ic('expert', size === 'xs' ? 11 : 15)
+  return `<span class="hx ${size} ${active ? 'active' : ''}" style="--ring:${ring || 'var(--line-hi)'}"><i class="${a ? a.cls : 'a0'}">${inner}</i></span>`
+}
+function tag(run) {
+  const s = run.status
+  if (s === 'running') return `<span class="tag live"><i class="pulse"></i>Live ${pad(run.turn)}/${pad(run.maxTurn)}</span>`
+  if (s === 'stopping') return '<span class="tag warn">■ Stopping</span>'
+  if (s === 'stopped') return '<span class="tag warn">■ Stopped</span>'
+  if (s === 'capped') return '<span class="tag danger">$ Capped</span>'
+  return '<span class="tag ok">✓ Complete</span>'
+}
+const stanceTag = (st) => `<span class="tag" style="--c:${STC[st]}">${STL[st]}</span>`
+function header({ back, title, sub, right = '', brand = false, code = false }) {
+  return `<header class="top">${back ? `<button class="back" data-a="go:${back}" aria-label="Back">${ic('back', 18)}</button>` : ''}
+    <div class="title">${brand ? `<div class="brand">MATRIX<em>//</em>STUDIO<small>${sub}</small></div>`
+      : `<b class="${code ? 'code' : 'disp'}" data-scramble="${esc(title)}">${esc(title)}</b>${sub ? `<div class="sub">${sub}</div>` : ''}`}</div>${right}</header>`
+}
+function tabs(on) {
+  const t = [['runs', 'Runs'], ['ensembles', 'Ensembles'], ['knowledge', 'Knowledge'], ['library', 'Library']]
+  return `<nav class="tabs">${t.map(([k, l]) => `<button class="${on === k ? 'on' : ''}" data-a="go:${k}">${ic(k, 21)}${l}</button>`).join('')}</nav>`
+}
+const hint = (text) => `<button class="info" data-a="hint:${esc(text)}" aria-label="More info">${ic('info', 14)}</button>`
+const tog = (path, on) => `<button class="toggle ${on ? 'on' : ''}" data-a="toggle:${path}" aria-pressed="${on}"></button>`
+// The three numbers a watcher wants first: how far in, how much spent, where the room stands.
+function hud(run) {
+  const pct = run.cost / run.cap
+  const s = stances(run)
+  return `<div class="card hudstrip runhud">
+    <div><div class="rk">Turn</div><div class="readout">${pad(run.turn)}<small>/${pad(run.maxTurn)}</small></div>${ticks(run.turn, run.maxTurn, isLive(run))}</div>
+    <div><div class="rk">Spend</div><div class="readout" style="color:${pct > 0.8 ? 'var(--inject)' : 'var(--t1)'}">${money(run.cost)}</div>
+      <div class="meter ${pct > 0.8 ? 'warn' : ''}"><i style="width:${Math.min(100, pct * 100)}%"></i></div>
+      <div class="rsub">cap ${money(run.cap)} · ${Math.round(run.tokIn / 1000)}k/${Math.round(run.tokOut / 1000)}k tok</div></div>
+    <div><div class="rk"><span>Room</span>${countsHtml(s)}</div>${stanceBar(run)}
+      <div class="rsub">${Math.round((100 * s.support) / Object.keys(run.agents).length)}% support</div></div>
+  </div>`
+}
+
+function hexPts(x, y, r) {
+  return [0, 1, 2, 3, 4, 5].map((i) => { const a = -Math.PI / 2 + (i * Math.PI) / 3; return `${(x + r * Math.cos(a)).toFixed(1)},${(y + r * Math.sin(a)).toFixed(1)}` }).join(' ')
+}
+// The room map: one node per persona (size = turns taken, ring = stance), one line per pair who
+// spoke back to back (thicker = more often), and the latest exchange animated.
+function radar(run) {
+  const cx = 160, cy = 124, R = 90
+  const keys = Object.keys(run.agents)
+  const pos = {}
+  keys.forEach((k, i) => { const ang = -Math.PI / 2 + (i / keys.length) * Math.PI * 2; pos[k] = [cx + R * Math.cos(ang), cy + R * Math.sin(ang)] })
+  const seq = run.msgs.filter((m) => m.who).map((m) => m.who)
+  const edges = {}
+  for (let i = 1; i < seq.length; i++) { if (seq[i - 1] === seq[i]) continue; const key = [seq[i - 1], seq[i]].sort().join('|'); edges[key] = (edges[key] || 0) + 1 }
+  const maxE = Math.max(1, ...Object.values(edges))
+  const curve = (a, b) => {
+    const [x1, y1] = pos[a], [x2, y2] = pos[b]
+    const mx = ((x1 + x2) / 2) * 0.7 + cx * 0.3, my = ((y1 + y2) / 2) * 0.7 + cy * 0.3
+    return `M${x1.toFixed(1)},${y1.toFixed(1)} Q${mx.toFixed(1)},${my.toFixed(1)} ${x2.toFixed(1)},${y2.toFixed(1)}`
+  }
+  const edgeSvg = Object.entries(edges).map(([key, w]) => {
+    const [a, b] = key.split('|')
+    return `<path d="${curve(a, b)}" class="edge" style="stroke-opacity:${(0.15 + (0.55 * w) / maxE).toFixed(2)};stroke-width:${(1 + (2.5 * w) / maxE).toFixed(1)}"/>`
+  }).join('')
+  const last = seq.length > 1 && seq[seq.length - 2] !== seq[seq.length - 1] ? `<path d="${curve(seq[seq.length - 2], seq[seq.length - 1])}" class="edge-live"/>` : ''
+  const counts = {}
+  seq.forEach((k) => { counts[k] = (counts[k] || 0) + 1 })
+  const nxt = nextSpeaker(run)
+  const defs = Object.entries(GRAD).map(([k, [c1, c2]]) => `<linearGradient id="g-${k}" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${c1}"/><stop offset="1" stop-color="${c2}"/></linearGradient>`).join('')
+  const nodes = keys.map((k) => {
+    const a = run.agents[k], [x, y] = pos[k], r = 13 + Math.min(7, (counts[k] || 0) * 1.4)
+    return `<g class="node ${k === nxt ? 'active' : ''}" data-a="dossier:${run.id}:${k}" style="--ring:${STC[stanceOf(run, k)]}">
+      <polygon points="${hexPts(x, y, r + 4)}" class="halo"/><polygon points="${hexPts(x, y, r)}" fill="url(#g-${a.cls})"/>
+      <text x="${x.toFixed(1)}" y="${(y + 3.5).toFixed(1)}" class="ntext">${esc(initials(a.name))}</text>
+      <text x="${x.toFixed(1)}" y="${(y + r + 15).toFixed(1)}" class="nlabel">${esc(a.name.split(' ')[0].toUpperCase())}</text></g>`
+  }).join('')
+  const s = stances(run)
+  const sw = (deg) => [cx + 122 * Math.cos((deg * Math.PI) / 180), cy + 122 * Math.sin((deg * Math.PI) / 180)].map((v) => v.toFixed(1)).join(',')
+  return `<svg viewBox="0 0 320 262" class="radar" role="img" aria-label="Room map">
+    <defs>${defs}<linearGradient id="sweepg" x1="1" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--accent)" stop-opacity=".35"/><stop offset="1" stop-color="var(--accent)" stop-opacity="0"/></linearGradient></defs>
+    <g class="rings"><circle cx="${cx}" cy="${cy}" r="34"/><circle cx="${cx}" cy="${cy}" r="62"/><circle cx="${cx}" cy="${cy}" r="${R}"/><circle cx="${cx}" cy="${cy}" r="120"/>
+      <line x1="${cx - 124}" y1="${cy}" x2="${cx + 124}" y2="${cy}"/><line x1="${cx}" y1="${cy - 124}" x2="${cx}" y2="${cy + 124}"/></g>
+    <g class="sweep" style="transform-origin:${cx}px ${cy}px"><path d="M${cx},${cy} L${sw(0)} A122,122 0 0,0 ${sw(-50)} Z" fill="url(#sweepg)"/></g>
+    ${edgeSvg}${last}
+    <circle cx="${cx}" cy="${cy}" r="27" class="core"/>
+    <text x="${cx}" y="${cy + 4}" class="cpct">${Math.round((100 * s.support) / keys.length)}%</text><text x="${cx}" y="${cy + 14}" class="clabel">SUPPORT</text>
+    ${nodes}</svg>`
+}
+
+function arcPath(cx, cy, r, a0, a1) {
+  const p = (a) => `${(cx + r * Math.cos(a)).toFixed(1)},${(cy + r * Math.sin(a)).toFixed(1)}`
+  return `M${p(a0)} A${r},${r} 0 ${a1 - a0 > Math.PI ? 1 : 0},1 ${p(a1)}`
+}
+// Half-dial: one arc segment per stance, sized by how many personas hold it.
+function gauge(run) {
+  const s = stances(run), n = Object.keys(run.agents).length
+  const cx = 110, cy = 104, r = 80
+  let a0 = Math.PI
+  const segs = ['support', 'undecided', 'holding'].map((k) => {
+    const span = (Math.PI * s[k]) / n
+    const d = s[k] ? arcPath(cx, cy, r, a0 + 0.025, a0 + span - 0.025) : ''
+    a0 += span
+    return d ? `<path d="${d}" class="g-seg" style="stroke:${STC[k]};color:${STC[k]}"/>` : ''
+  }).join('')
+  const tk = Array.from({ length: 11 }, (_, i) => {
+    const a = Math.PI + (i * Math.PI) / 10, o = i % 5 ? 14 : 18
+    return `<line x1="${(cx + (r + 11) * Math.cos(a)).toFixed(1)}" y1="${(cy + (r + 11) * Math.sin(a)).toFixed(1)}" x2="${(cx + (r + o) * Math.cos(a)).toFixed(1)}" y2="${(cy + (r + o) * Math.sin(a)).toFixed(1)}" class="g-tick"/>`
+  }).join('')
+  return `<svg viewBox="0 0 220 116" class="gauge" role="img" aria-label="Consensus gauge"><path d="${arcPath(cx, cy, r, Math.PI, 2 * Math.PI - 0.0001)}" class="g-track"/>${segs}${tk}
+      <text x="${cx}" y="${cy - 14}" class="g-pct">${Math.round((100 * s.support) / n)}%</text><text x="${cx}" y="${cy + 2}" class="g-lab">SUPPORT</text></svg>
+    <div class="gcounts">${['support', 'undecided', 'holding'].map((k) => `<div class="c-${k}"><b>${s[k]}</b><span>${k === 'holding' ? 'holding out' : k}</span></div>`).join('')}</div>`
+}
+
+// ─────────────────────────────── views: browse ───────────────────────────────
+function vRuns() {
+  const q = S.q.toLowerCase()
+  const match = (r) => !q || (r.id + r.topic + Object.values(r.agents).map((a) => a.name).join(' ')).toLowerCase().includes(q)
+  const runs = Object.values(DB.runs).filter((r) => !r.ensemble && match(r))
+  const live = runs.filter(isLive), done = runs.filter((r) => !isLive(r))
+  const ens = Object.values(DB.ensembles).filter((e) => !q || (e.id + e.topic).toLowerCase().includes(q))
+  const f = S.filter
+  const sec = (title, items) => items.length ? `<div class="sec"><div class="label">${title}</div><div class="list">${items.join('')}</div></div>` : ''
+  let body = ''
+  if (f === 'branches') body = sec('Branches', runs.filter((r) => r.parent).map(runCard))
+  else {
+    if (f === 'all' || f === 'running') body += sec(`Live now · ${pad(live.length)}`, live.map(runCard))
+    if (f === 'all') body += sec(`Finished & stopped · ${pad(done.length)}`, done.map(runCard))
+    if (f === 'all' || f === 'ensembles') body += sec(`Ensembles · ${pad(ens.length)}`, ens.map(ensCard))
+  }
+  const all = Object.values(DB.runs)
+  const nLive = all.filter(isLive).length
+  const fb = (k, l) => `<button class="${f === k ? 'on' : ''}" data-a="filter:${k}">${l}</button>`
+  return header({ brand: true, sub: `Simulation control · ${nLive} live`,
+      right: `<button class="icon" data-a="toast:Settings: API keys, default model, spend cap" aria-label="Settings">${ic('gear', 20)}</button>` }) +
+    `<div class="scroll" id="scroll">
+      <div class="card hudstrip stats">
+        <div><div class="rk">Live now ${nLive ? '<i class="pulse" style="color:var(--live)"></i>' : ''}</div><div class="readout" style="color:var(--live)">${pad(nLive)}</div></div>
+        <div><div class="rk">Briefs ready</div><div class="readout" style="color:var(--accent)">${pad(all.filter((r) => r.brief && !r.ensemble).length)}</div></div>
+        <div><div class="rk">Spend · 7d</div><div class="readout">${money(all.reduce((s, r) => s + r.cost, 0))}</div></div>
+      </div>
+      <div class="legend"><span>Each token's ring is that persona's stance:</span><span class="c-support">▲ support</span><span class="c-undecided">◆ undecided</span><span class="c-holding">▼ holding out</span></div>
+      <label class="searchbox">${ic('search', 16)}<input id="q" data-bind="q" placeholder="Search runs, topics, personas" value="${esc(S.q)}"></label>
+      <div class="htabs">${fb('all', 'All')}${fb('running', 'Live')}${fb('ensembles', 'Ensembles')}${fb('branches', 'Branches')}</div>
+      ${body || '<div class="empty">NO SIGNAL · nothing matches</div>'}
+      <div style="height:64px;flex:none"></div>
+    </div>
+    <div class="fabwrap"><button class="btn primary" data-a="newRun">${ic('plus', 16)} New run</button></div>` + tabs('runs')
+}
+function runCard(r) {
+  const nxt = nextSpeaker(r)
+  const kids = Object.values(DB.runs).filter((x) => x.parent?.id === r.id).length
+  return `<button class="card ${isLive(r) ? 'livecard' : ''}" data-s="${r.status}" data-a="go:run/${r.id}">
+    <div class="row between"><b class="code">${esc(r.id)}</b>${tag(r)}</div>
+    <div class="topic">${r.parent ? `<span class="t2" style="display:inline-flex;gap:4px;align-items:center">${ic('branch', 13)}${esc(r.parent.id)} @${r.parent.turn} ·</span> ` : ''}${esc(r.topic)}</div>
+    ${isLive(r) ? ticks(r.turn, r.maxTurn, true) : ''}
+    <div class="row between" style="margin-top:12px">
+      <div class="hxrow">${Object.entries(r.agents).map(([k, a]) => hx(a, 'xs', STC[stanceOf(r, k)], k === nxt)).join('')}</div>
+      ${countsHtml(stances(r))}
+    </div>
+    <div class="row between meta"><span class="row" style="gap:6px">${kids ? `<span class="chip">${ic('branch', 12)} ${kids}</span>` : ''}${r.brief ? `<span class="chip">${ic('doc', 12)} brief</span>` : ''}${r.status === 'stopped' ? '<span class="chip" style="color:var(--inject)">resumable</span>' : ''}</span>
+      <span>${money(r.cost)} · ${esc(r.when)}</span></div></button>`
+}
+// Which conclusion led in each group, and whether the declared variable changed it.
+function verdict(e) {
+  const members = e.members.map((id) => DB.runs[id])
+  const lead = e.groups.map((g) => {
+    const c = {}
+    members.filter((m) => m.group === g.k && m.brief).forEach((m) => { c[m.brief.conclusion] = (c[m.brief.conclusion] || 0) + 1 })
+    const top = Object.entries(c).sort((a, b) => b[1] - a[1])[0]
+    return { g, concl: top?.[0], n: top?.[1] || 0 }
+  })
+  return { lead, split: new Set(lead.map((l) => l.concl)).size > 1 }
+}
+function ensCard(e) {
+  const m = e.members.map((id) => DB.runs[id])
+  const done = m.filter(ended).length
+  const ready = done === m.length
+  const v = ready && verdict(e)
+  return `<button class="card ${ready ? '' : 'livecard'}" data-s="ensemble" data-a="go:ensemble/${e.id}">
+    <div class="row between"><b class="code">${esc(e.id)}</b><span class="tag ens">${ic('ensembles', 11)} ${e.groups.length}×${m.length / e.groups.length}</span></div>
+    <div class="topic">${esc(e.topic)}</div>
+    <div class="vs">${e.groups.map((g, i) => `<span class="grpk k${i}">${g.k}</span><span>${esc(g.label)}</span>`).join('<span class="x">VS</span>')}</div>
+    ${ticks(done, m.length, !ready)}
+    <div class="row between meta"><span>${done}/${m.length} members settled</span><span>${money(m.reduce((s, r) => s + r.cost, 0))} · ${esc(e.when)}</span></div>
+    ${v ? `<div class="verdict ${v.split ? 'split' : 'same'}">${v.split ? '⚠ The variable changes the outcome' : '✓ Same conclusion in every group'}</div>` : ''}
+  </button>`
+}
+function vEnsembles() {
+  return header({ title: 'Ensembles', sub: '<span class="tt">One brief, several runs, one declared difference</span>' }) +
+    `<div class="scroll"><div class="list">${Object.values(DB.ensembles).map(ensCard).join('')}</div>
+    <div class="card"><div class="label">How ensembles work</div><div class="sm t2" style="margin-top:6px">The same brief runs several times in labelled groups. Groups may differ in one thing only: the speaker method, a scheduled message or a working assumption. Conclusions are counted per group and never pooled.</div></div>
+    <button class="btn primary full" data-a="newEnsemble">${ic('plus', 16)} New ensemble</button></div>` + tabs('ensembles')
+}
+
+// ─────────────────────────────── views: a run ───────────────────────────────
+function vRun(id, tab = 'conversation') {
+  const run = DB.runs[id]
+  if (!run) return header({ back: 'runs', title: 'Not found' }) + '<div class="empty">NO SIGNAL · that run does not exist (the prototype resets on reload)</div>'
+  if (tab === 'scrub') return vScrub(run)
+  const back = run.ensemble ? `ensemble/${run.ensemble}` : 'runs'
+  const right = (isLive(run) ? `<button class="btn danger sm" data-a="stop:${id}" ${run.status === 'stopping' ? 'disabled' : ''}>${ic('stop', 12)} ${run.status === 'stopping' ? 'Stopping' : 'Stop'}</button>` : '') +
+    (run.status === 'stopped' ? `<button class="btn warn sm" data-a="resume:${id}">${ic('resume', 13)} Resume</button>` : '') +
+    `<button class="icon" data-a="menu:${id}" aria-label="More">${ic('more', 22)}</button>`
+  const kids = Object.values(DB.runs).filter((x) => x.parent?.id === id)
+  const lineage = run.parent || kids.length ? `<div class="row wrap" style="padding:8px 14px 0;gap:6px;flex:none">
+      ${run.parent ? `<span class="label">From</span><button class="chip accent" data-a="go:run/${run.parent.id}">${ic('branch', 12)} ${esc(run.parent.id)} @${run.parent.turn}</button>` : ''}
+      ${kids.length ? `<span class="label">Branches</span>${kids.map((k) => `<button class="chip accent" data-a="go:run/${k.id}">${ic('branch', 12)} ${esc(k.id)} @${k.parent.turn}</button>`).join('')}` : ''}</div>` : ''
+  const tb = (k, l) => `<button class="${tab === k ? 'on' : ''}" data-a="go:run/${id}/${k}">${l}</button>`
+  const panes = S.mode === 'wide'
+    ? `<div class="pane">${paneCast(run)}</div><div class="pane">${paneConv(run)}</div><div class="pane">${paneAnalysis(run)}</div>`
+    : `<div class="pane">${tab === 'cast' ? paneCast(run) : tab === 'analysis' ? paneAnalysis(run) : paneConv(run)}</div>`
+  return header({ back, title: id, code: true, sub: `${tag(run)}<span class="tt">${esc(run.topic)}</span>`, right }) + hud(run) + lineage +
+    `<div class="htabs runtabs">${tb('conversation', 'Conversation')}${tb('cast', 'Cast')}${tb('analysis', ended(run) ? 'Analysis' : 'Analysis <span class="lock">◇</span>')}</div>
+    <div class="panes">${panes}</div>`
+}
+
+function paneConv(run) {
+  const nxt = nextSpeaker(run)
+  const faces = Object.entries(run.agents).map(([k, a]) => `<button data-a="dossier:${run.id}:${k}" title="${esc(a.name)}">${hx(a, 'sm', STC[stanceOf(run, k)], k === nxt)}</button>`).join('')
+  const feed = run.msgs.map((m, i) => msgHtml(run, m, S.fresh.has(run.id + ':' + (i + 1)))).join('')
+  S.fresh.clear()
+  const typing = nxt ? `<div class="composing">${hx(run.agents[nxt], 'sm', null, true)}<span>${esc(run.agents[nxt].name)} composing</span>
+      <span class="eq"><i style="--d:0s"></i><i style="--d:.25s"></i><i style="--d:.5s"></i><i style="--d:.125s"></i></span></div>` : ''
+  const paused = S.paused[run.id]
+  const mini = isLive(run)
+    ? `<div class="mini"><button class="ctl" data-a="pause:${run.id}" aria-label="${paused ? 'Play' : 'Pause'}">${ic(paused ? 'play' : 'pause', 18)}</button>
+        <button class="ctl" data-a="step:${run.id}" ${paused ? '' : 'disabled'} aria-label="Step">${ic('step', 18)}</button>
+        <div class="grow">${ticks(run.turn, run.maxTurn, true)}<div class="mini-t"><span>${paused ? 'Paused' : 'Live'} · ${S.speed}×</span><span>${run.queue.filter((q) => !q.inject).length} queued</span></div></div>
+        <button class="ctl" data-a="speed" aria-label="Speed">${S.speed}×</button></div>`
+    : ended(run) ? `<div class="mini"><span class="grow mini-t" style="margin:0">${run.status === 'complete' ? '✓ Replay complete' : `Ended at turn ${pad(run.turn)}`}</span>
+        <button class="btn sm" data-a="go:run/${run.id}/scrub">${ic('clock', 14)} Scrub</button><button class="btn sm" data-a="asides:${run.id}">${ic('chat', 14)} Asides</button></div>` : ''
+  return `<div class="faces">${faces}${run.consultant ? `<button data-a="consult:${run.id}" title="${esc(run.consultant)}">${hx(null, 'sm')}</button>` : ''}<span class="hint">Tap → dossier</span></div>
+    <div class="scroll feed" id="scroll">${feed}${typing}</div>${mini}`
+}
+function msgHtml(run, m, isNew) {
+  if (m.inject) return `<div class="signal"><div class="sig-h"><span>▼ Incoming · ${m.inject === 'Intervention' ? 'intervention' : 'scheduled message'}</span><span>after #${pad(m.after)}</span></div>
+    <div class="sig-b"><b>${esc(m.inject)}</b>: ${esc(m.text)}</div></div>`
+  const a = run.agents[m.who]
+  return `<div class="msg ${isNew ? 'new' : ''}" id="t${m.t}" style="--c:${a.color}">
+    <button data-a="dossier:${run.id}:${m.who}" aria-label="${esc(a.name)} dossier">${hx(a, 'sm', a.color)}</button>
+    <div class="tx"><div class="tx-h"><b>${esc(a.name)}</b><span class="role">${esc(a.role)}</span><span class="t">#${pad(m.t)}</span></div>
+      <div class="tx-b"><span class="tt">${esc(m.text)}</span>${m.cite ? `<button class="cite" data-a="cite:${run.id}:${m.cite}">[${m.cite}]</button>` : ''}</div>
+      ${m.shift ? `<div class="flag shift"><span class="ft">SHIFT</span><span>Credits “${esc(m.shift)}”. ${m.shiftNamed ? 'Their named exit condition was met.' : '<i>None of the conditions they named appears.</i>'}</span></div>` : ''}
+      ${m.lean ? `<div class="flag lean"><span class="ft">LEAN</span><span>Expects ${esc(m.lean[0])}. Leans <b>${esc(m.lean[1])}</b> today.</span></div>` : ''}
+      ${m.assume ? `<button class="flag assume" data-a="assumeCard:${run.id}"><span class="ft">ASSUMES</span><span>${esc(m.assume)}</span></button>` : ''}
+    </div></div>`
+}
+
+function paneCast(run) {
+  const nxt = nextSpeaker(run)
+  const count = (k) => run.msgs.filter((m) => m.who === k).length
+  const shifted = (k) => run.msgs.find((m) => m.who === k && m.shift)
+  return `<div class="scroll">
+    <div class="card"><div class="row between"><span class="label">Room map</span>${countsHtml(stances(run))}</div>${radar(run)}
+      <div class="legend" style="justify-content:center">node size = turns · line = exchanges · ring = stance · tap a node</div></div>
+    <div class="label">Personas · ${pad(Object.keys(run.agents).length)}</div>
+    ${Object.entries(run.agents).map(([k, a]) => {
+      const st = stanceOf(run, k), n = count(k)
+      return `<button class="card prow" data-a="dossier:${run.id}:${k}">${hx(a, '', STC[st], k === nxt)}
+        <div class="grow"><b>${esc(a.name)}</b><div class="muted">${esc(a.role)}</div>
+          <div class="num" style="font-size:10.5px;color:var(--t3);margin-top:3px">${k === nxt ? '<span style="color:var(--live)">SPEAKING · </span>' : ''}${n} TURN${n === 1 ? '' : 'S'}${shifted(k) ? ` · <span style="color:var(--shift)">SHIFTED #${pad(shifted(k).t)}</span>` : ''}${a.threads.length ? ` · ${a.threads.length} OPEN THREAD` : ''}</div></div>
+        ${stanceTag(st)}</button>`
+    }).join('')}
+    ${run.consultant ? `<button class="card prow" data-a="consult:${run.id}">${hx(null)}<div class="grow"><b>${esc(run.consultant)}</b><div class="muted">Consultant · answers only from its sources, never takes a turn</div></div><span class="caret">›</span></button>` : ''}
+  </div>`
+}
+
+function paneAnalysis(run) {
+  if (!ended(run)) {
+    return `<div class="scroll"><div class="card center"><div class="label">Analysis locked</div><div class="big">Unlocks when the run ends</div>
+      <div class="sm t2" style="margin-top:6px">The decision brief, airtime and branch tree are built from the finished transcript.</div>
+      ${ticks(run.turn, run.maxTurn, true)}<div class="muted num" style="margin-top:6px">TURN ${pad(run.turn)} OF ${pad(run.maxTurn)}</div></div>
+      <div class="card"><div class="label">Room right now</div>${gauge(run)}</div>
+      ${run.assumptions.length ? `<div class="card"><div class="label">Working assumptions</div>${run.assumptions.map((a) => `<div class="flag assume"><span class="ft">ASSUMES</span><span>${esc(a)}</span></div>`).join('')}</div>` : ''}</div>`
+  }
+  const b = run.brief
+  const counts = {}
+  run.msgs.forEach((m) => { if (m.who) counts[m.who] = (counts[m.who] || 0) + 1 })
+  const max = Math.max(1, ...Object.values(counts))
+  const kids = Object.values(DB.runs).filter((x) => x.parent?.id === run.id)
+  const srcs = Object.entries(run.sources)
+  return `<div class="scroll">
+    ${b ? `<div class="card hero"><div class="label">Bottom line</div><div class="big">${esc(b.bottom)}</div>
+        <div class="row wrap" style="gap:6px;margin-top:12px"><span class="tag ok">Trust · ${b.trust}</span><span class="tag ${b.dissent ? 'danger' : 'live'}">${b.dissent} dissenter${b.dissent === 1 ? '' : 's'}</span></div></div>
+      <div class="card"><div class="label">Where the room ended</div>${gauge(run)}</div>
+      <div class="card"><div class="label">What would settle it</div><ul class="plain">${b.settle.map((s) => `<li>${esc(s)}</li>`).join('')}</ul></div>
+      ${b.assumed.length ? `<div class="card"><div class="label">Assumed</div>${b.assumed.map((a) => `<div class="flag assume" style="margin-top:8px"><span class="ft">ASSUMES</span><span class="grow">${esc(a.text)}<br><span class="muted num">CITED ${a.cited}×${a.disputed ? ` · DISPUTED BY ${esc(a.disputed.toUpperCase())}` : ''}</span></span></div>
+        <div class="row" style="justify-content:flex-end;margin-top:8px"><button class="btn sm" data-a="forkAssume:${run.id}:${esc(a.text)}">${ic('branch', 13)} Fork with a different value</button></div>`).join('')}</div>` : ''}
+      <div class="card"><div class="label">Standing objections</div><ul class="plain">${b.objections.map((s) => `<li>${esc(s)}</li>`).join('')}</ul></div>`
+    : `<div class="card"><div class="label">No summary yet</div><div class="sm t2" style="margin:6px 0 10px">This run ${run.status === 'stopped' ? 'was stopped' : 'ended'} at turn ${run.turn}. A brief can still be built from what was said.</div><button class="btn sm" data-a="genBrief:${run.id}">${ic('spark', 13)} Generate summary</button></div>
+      <div class="card"><div class="label">Room when it ended</div>${gauge(run)}</div>`}
+    <details class="card" open><summary class="row between"><span class="label">Airtime</span><span class="caret">›</span></summary>
+      <div style="margin-top:10px;display:flex;flex-direction:column;gap:7px">${Object.entries(counts).sort((x, y) => y[1] - x[1]).map(([k, n]) => `<div class="airtime" style="--wc:${run.agents[k].color}"><span>${esc(run.agents[k].name.split(' ')[0].toUpperCase())}</span><div class="bar"><i style="width:${(100 * n) / max}%"></i></div><b>${n}</b></div>`).join('')}</div></details>
+    ${srcs.length ? `<details class="card"><summary class="row between"><span class="label">Sources cited · ${pad(srcs.length)}</span><span class="caret">›</span></summary>
+      <div style="margin-top:10px;display:flex;flex-direction:column;gap:8px">${srcs.map(([n, s]) => `<button class="row between xs" data-a="cite:${run.id}:${n}"><span class="t2 row">${ic('doc', 14)} ${esc(s.doc)}</span><span class="tag ${s.tier === 'controlling' ? 'ok' : ''}">${s.tier}</span></button>`).join('')}</div></details>` : ''}
+    <details class="card" ${kids.length ? 'open' : ''}><summary class="row between"><span class="label">Branch tree · ${pad(kids.length)}</span><span class="caret">›</span></summary>
+      <div style="margin-top:10px;display:flex;flex-direction:column;gap:8px;font:600 12px var(--mono)">
+        ${run.parent ? `<button class="t2 row" data-a="go:run/${run.parent.id}">↑ ${esc(run.parent.id.toUpperCase())} <span class="muted">parent</span></button>` : ''}
+        <div class="row" style="color:var(--accent)">◆ ${esc(run.id.toUpperCase())}</div>
+        ${kids.map((k) => `<button class="row t2" style="padding-left:14px" data-a="go:run/${k.id}">└ ${esc(k.id.toUpperCase())} <span class="muted">@${k.parent.turn}</span> ${tag(k)}</button>`).join('')}
+        ${!kids.length ? '<span class="muted">No branches yet. Scrub to any turn and fork.</span>' : ''}</div></details>
+    <div class="row" style="gap:8px;flex:none">
+      <button class="btn" style="flex:1" data-a="asides:${run.id}">${ic('chat', 15)} Asides</button>
+      <button class="btn" style="flex:1" data-a="go:run/${run.id}/scrub">${ic('clock', 15)} Scrub</button>
+      <button class="btn primary" style="flex:1" data-a="brief:${run.id}" ${b ? '' : 'disabled'}>${ic('doc', 15)} Brief</button></div>
+  </div>`
+}
+
+function vScrub(run) {
+  const t = S.scrub[run.id] ?? Math.max(1, Math.round(run.turn / 2))
+  // One bar per turn, in the speaker's colour; taller where that turn carried a lean or a shift.
+  const wave = run.msgs.filter((m) => !m.inject).map((m) => {
+    const h = 26 + (m.lean ? 22 : 0) + (m.shift ? 34 : 0) + Math.min(18, m.text.length / 7)
+    return `<i data-t="${m.t}" class="${m.t <= t ? 'on' : ''}${m.t === t ? ' cur' : ''}" style="--wc:${run.agents[m.who].color};height:${Math.min(100, h)}%" title="#${m.t} ${esc(run.agents[m.who].name)}"></i>`
+  }).join('')
+  const injs = run.msgs.filter((m) => m.inject).map((m) => `<span class="inj" style="left:${((100 * m.after) / Math.max(1, run.turn)).toFixed(1)}%"></span>`).join('')
+  return header({ back: `run/${run.id}/analysis`, title: `Scrub · ${run.id}`, code: true, sub: '<span class="tt">State as of any turn · fork from there</span>',
+      right: `<button class="icon" data-a="go:run/${run.id}/analysis" aria-label="Close">${ic('close', 20)}</button>` }) +
+    `<div class="scroll">
+      <div class="card">
+        <div class="row between"><span class="label">Timeline</span><span class="readout" id="scrubT" style="font-size:18px">#${pad(t)}<small>/${pad(run.turn)}</small></span></div>
+        <div class="wave" id="wave">${wave}${injs}</div>
+        <input type="range" class="range" id="scrub" data-run="${run.id}" min="1" max="${run.turn}" value="${t}" aria-label="Turn">
+        <div class="row between" style="margin-top:4px"><div class="legend"><span>bar = one turn, speaker colour</span><span style="color:var(--inject)">▍ injection</span><span>taller = lean / shift</span></div>
+          <span class="row"><button class="ctl" style="width:34px;height:34px" data-a="scrubStep:${run.id}:-1" aria-label="Previous turn">${ic('back', 14)}</button><button class="ctl" style="width:34px;height:34px;transform:scaleX(-1)" data-a="scrubStep:${run.id}:1" aria-label="Next turn">${ic('back', 14)}</button></span></div>
+      </div>
+      <div id="scrubInfo" style="display:flex;flex-direction:column;gap:10px">${scrubInfo(run, t)}</div>
+    </div>
+    <div class="sticky"><button class="btn primary full" data-a="fork:${run.id}">${ic('branch', 16)} Fork from turn <span id="forkT">${t}</span></button></div>`
+}
+function scrubInfo(run, t) {
+  const upTo = run.msgs.filter((m) => (m.inject ? m.after < t : m.t <= t))
+  const cur = run.msgs.find((m) => m.t === t)
+  const leans = {}
+  upTo.forEach((m) => { if (m.lean) leans[m.who] = m.lean[1] })
+  const supp = Object.values(leans).filter((l) => l === 'support').length
+  const shifts = upTo.filter((m) => m.shift).length
+  const inj = upTo.filter((m) => m.inject).length
+  return `${cur ? msgHtml(run, cur) : ''}
+    <div class="card hudstrip">
+      <div><div class="rk">Leaning support</div><div class="readout c-support">${pad(supp)}</div></div>
+      <div><div class="rk">Shifts</div><div class="readout" style="color:var(--shift)">${pad(shifts)}</div></div>
+      <div><div class="rk">Injections</div><div class="readout" style="color:var(--inject)">${pad(inj)}</div></div></div>
+    ${run.assumptions.length ? `<div class="flag assume"><span class="ft">ASSUMES</span><span>${run.assumptions.map(esc).join(' · ')}</span></div>` : ''}
+    <div class="card"><div class="label">Fork cost</div><div class="sm t2" style="margin-top:6px">Replaying to turn ${t} is free because every turn is checkpointed. Each new turn costs about <b class="num" style="color:var(--t1)">$0.016</b>.</div></div>`
+}
+
+function vEnsemble(id) {
+  const e = DB.ensembles[id]
+  if (!e) return header({ back: 'ensembles', title: 'Not found' }) + '<div class="empty">NO SIGNAL</div>'
+  const members = e.members.map((m) => DB.runs[m])
+  const settled = members.filter(ended).length
+  const ready = settled === members.length
+  const per = e.members.length / e.groups.length
+  const concl = [...new Set(members.map((m) => m.finalBrief.conclusion))]
+  const v = ready && verdict(e)
+  const hero = !ready
+    ? `<div class="card livecard" data-s="ensemble"><div class="label">Building the report</div><div class="big">${settled} of ${members.length} members settled</div>${ticks(settled, members.length, true)}
+        <div class="sm t2" style="margin-top:8px">Conclusions are counted once every member has finished.</div></div>`
+    : `<div class="card hero"><div class="label">Verdict</div><div class="big">${v.split ? `The ${esc(e.variable.toLowerCase())} changes the outcome.` : 'Same conclusion in every group: robust to this variable.'}</div>
+        <div style="display:flex;flex-direction:column;gap:6px;margin-top:10px">${v.lead.map((l, i) => `<div class="row sm"><span class="grpk k${i}">${l.g.k}</span><span>${esc(l.concl)} <span class="muted num">${l.n}/${per}</span></span></div>`).join('')}</div></div>`
+  const bars = concl.map((c) => `<div style="display:flex;flex-direction:column;gap:6px"><div class="sm">${esc(c)}</div>` + e.groups.map((g, gi) => {
+    const n = members.filter((m) => m.group === g.k && m.brief?.conclusion === c).length
+    return `<div class="row"><span class="grpk k${gi}">${g.k}</span><div class="blocks k${gi}">${Array.from({ length: per }, (_, i) => `<i class="${i < n ? 'on' : ''}"></i>`).join('')}</div><b class="num" style="margin-left:auto">${n}/${per}</b></div>`
+  }).join('') + '</div>').join('<div class="hr"></div>')
+  return header({ back: 'ensembles', title: e.id, code: true, sub: `<span class="tag ens">${e.groups.length}×${per}</span><span class="tt">${money(members.reduce((s, r) => s + r.cost, 0))} · ${esc(e.topic)}</span>`,
+      right: `<button class="icon" data-a="toast:Ensemble report exported (mock)" aria-label="More">${ic('more', 22)}</button>` }) +
+    `<div class="scroll">
+      ${hero}
+      <div class="card"><div class="label">Varies one thing · ${esc(e.variable)}</div><div class="vs" style="margin-top:8px">${e.groups.map((g, i) => `<span class="grpk k${i}">${g.k}</span><span>${esc(g.label)}</span>`).join('<span class="x">VS</span>')}</div></div>
+      ${ready ? `<div class="card" style="display:flex;flex-direction:column;gap:10px"><div class="row between"><span class="label">Conclusions per group</span><span class="muted num">NEVER POOLED</span></div>${bars}</div>` : ''}
+      <div class="label">Members · each opens as an ordinary run</div>
+      ${members.map((m) => `<button class="card ${isLive(m) ? 'livecard' : ''}" data-s="${m.status}" data-a="go:run/${m.id}"><div class="row between"><span class="row"><span class="grpk k${m.group === 'A' ? 0 : 1}">${m.group}</span><b class="code" style="font-size:13px">${esc(m.id)}</b></span>
+        ${isLive(m) ? tag(m) : `<span class="muted">${esc(m.brief?.conclusion ?? m.status)}</span>`}</div></button>`).join('')}
+    </div>` + tabs('ensembles')
+}
+
+function vKnowledge(id) {
+  if (id) {
+    const kb = DB.kbs.find((k) => k.id === id)
+    if (!kb) return header({ back: 'knowledge', title: 'Not found' }) + '<div class="empty">NO SIGNAL</div>'
+    return header({ back: 'knowledge', title: kb.name, sub: `<span class="tt">${esc(kb.scope)} · ${kb.docs.length} documents</span>` }) +
+      `<div class="scroll">
+        <label class="drop"><input type="file" multiple hidden data-upload="${kb.id}"><div style="color:var(--accent)">${ic('upload', 28)}</div>
+          <div class="sm" style="margin-top:6px">Upload to <b>${esc(kb.name)}</b></div><div class="muted">PDF, Markdown or text · tap to choose files</div></label>
+        <div class="label">Documents · ${pad(kb.docs.length)}</div>
+        ${kb.docs.map((d) => `<div class="card"><div class="row between"><span class="sm row">${ic('doc', 15)} ${esc(d.name)}</span><span class="muted num">${d.pct < 100 ? `INDEXING ${d.pct}%` : `${d.chunks} CHUNKS`}</span></div>
+          ${d.pct < 100 ? ticks(Math.round(d.pct / 10), 10, true) : ''}</div>`).join('')}
+        <div class="label">Bound to</div>
+        <div class="row wrap" style="gap:6px">${kb.bound.length ? kb.bound.map((r) => `<button class="chip accent" data-a="go:run/${r}">${esc(r)}</button>`).join('') : '<span class="muted">No runs yet</span>'}</div>
+      </div>` + tabs('knowledge')
+  }
+  return header({ title: 'Knowledge', sub: `<span class="tt">${DB.kbs.length} collections · they outlive any one run</span>`, right: `<button class="btn sm" data-a="newKb">${ic('plus', 13)} New</button>` }) +
+    `<div class="scroll"><div class="list">${DB.kbs.map((kb) => {
+      const idx = kb.docs.filter((d) => d.pct < 100)
+      return `<button class="card ${idx.length ? 'livecard' : ''}" data-s="${idx.length ? 'running' : 'complete'}" data-a="go:knowledge/${kb.id}">
+        <div class="row between"><b class="row" style="font-size:14.5px">${ic('knowledge', 16)} ${esc(kb.name)}</b>${idx.length ? `<span class="tag warn">Indexing ${kb.docs.length - idx.length}/${kb.docs.length}</span>` : '<span class="tag live">Ready</span>'}</div>
+        <div class="meta">${kb.docs.length} DOCS · ${esc(kb.scope.toUpperCase())}</div>
+        ${kb.bound.length ? `<div class="row wrap" style="gap:6px;margin-top:8px">${kb.bound.map((r) => `<span class="chip">${esc(r)}</span>`).join('')}</div>` : ''}</button>`
+    }).join('')}</div></div>` + tabs('knowledge')
+}
+
+function vLibrary() {
+  return header({ title: 'Library', sub: '<span class="tt">Archetypes and saved personas</span>' }) +
+    `<div class="scroll"><div class="list">${DB.library.map((p, i) => `<button class="card prow" data-a="libPick:${i}">${hx(p)}<div class="grow"><b>${esc(p.name)}</b><div class="muted">${esc(p.role)} · “${esc(p.position)}”</div></div><span class="tag warn">Unqualified</span></button>`).join('')}</div>
+    <div class="label" style="margin-top:6px">Cast templates</div>
+    <button class="card row between" data-a="template:harbor"><span class="sm">City policy panel · 5 personas</span><span class="caret">›</span></button>
+    <button class="card row between" data-a="template:robot"><span class="sm">Workplace change panel · 5 personas</span><span class="caret">›</span></button></div>` + tabs('library')
+}
+
+// ─────────────────────────────── new-run wizard ───────────────────────────────
+const STEP_NAMES = ['Topic', 'Cast', 'Knowledge', 'Assume', 'Launch']
+function blankDraft() {
+  return { topic: '', type: 'single', max: 12, converged: true, method: 'Hybrid', closing: true, avatars: true, cognition: true, lean: true,
+    cast: [], open: null, kbs: [], research: false, researchPersona: false, citations: true, assumptions: [], scheduled: [], cap: 1,
+    ensVar: 'Working assumption', groupA: '', groupB: '', reps: 3, model: MODELS[0], consultant: null }
+}
+function forecast(d) {
+  const per = 0.0032 * d.max * Math.max(1, d.cast.length) * (d.cognition ? 1.3 : 1) * (d.research ? 1.2 : 1)
+  const n = d.type === 'ensemble' ? d.reps * 2 : 1
+  return [per * n * 0.85, per * n * 1.15]
+}
+function vNew(stepStr) {
+  if (!S.draft) S.draft = blankDraft()
+  const d = S.draft
+  const step = Math.min(5, Math.max(1, +stepStr || 1))
+  const [lo, hi] = forecast(d)
+  const body = [null, stepTopic, stepCast, stepKnowledge, stepAssume, stepReview][step](d)
+  const canNext = step !== 1 || d.topic.trim().length > 0
+  const nextBtn = step < 5
+    ? `<button class="btn primary" style="flex:2" data-a="go:new/${step + 1}" ${canNext ? '' : 'disabled'}>Next · ${STEP_NAMES[step]} →</button>`
+    : `<button class="btn primary" style="flex:2" data-a="start" ${d.topic && d.cast.length >= 2 ? '' : 'disabled'}>▶ Launch ${d.type === 'ensemble' ? 'ensemble' : 'run'}</button>`
+  return header({ back: step > 1 ? `new/${step - 1}` : null, title: step === 5 ? 'Launch' : 'New run', sub: `<span class="tt num">STEP ${pad(step)}/05 · ${STEP_NAMES[step - 1].toUpperCase()}</span>`,
+      right: `<button class="icon" data-a="cancelNew" aria-label="Cancel">${ic('close', 20)}</button>` }) +
+    `<div class="scroll"><div class="stepper">${STEP_NAMES.map((n, i) => `<button class="sn ${i + 1 < step ? 'done' : i + 1 === step ? 'cur' : ''}" data-a="go:new/${i + 1}"><i></i>${n}</button>`).join('')}</div>${body}</div>
+    <div class="sticky"><div class="fc"><div><div class="rk">Forecast</div><div class="readout" id="fc">${money(lo)}–${money(hi)}</div></div><div class="muted num" style="text-align:right">PRICED FROM<br>9 PAST RUNS</div></div>
+      <div class="row" style="gap:8px">${step > 1 ? `<button class="btn" style="flex:1" data-a="go:new/${step - 1}">‹ Back</button>` : ''}${nextBtn}</div>
+      ${step === 5 && d.cast.length < 2 ? '<div class="muted" style="margin-top:8px;text-align:center">Add at least two personas.</div>' : ''}</div>`
+}
+const spin = (path, val, w = 26) => `<span class="row"><button class="ctl" style="width:32px;height:32px" data-a="inc:${path}:-${val}">−</button><b class="num" style="width:${w}px;text-align:center">{V}</b><button class="ctl" style="width:32px;height:32px" data-a="inc:${path}:${val}">+</button></span>`
+function stepTopic(d) {
+  return `<div class="card"><div class="label">Topic</div>
+      <textarea class="field" rows="3" style="margin-top:8px" data-bind="draft.topic" placeholder="What should the room decide?">${esc(d.topic)}</textarea></div>
+    <div class="card"><div class="label">Run type ${hint('An ensemble runs the brief several times in labelled groups that differ in exactly one declared thing.')}</div>
+      <div class="seg" style="margin-top:8px"><button class="${d.type === 'single' ? 'on' : ''}" data-a="set:draft.type:single">Single run</button><button class="${d.type === 'ensemble' ? 'on' : ''}" data-a="set:draft.type:ensemble">Ensemble</button></div>
+    ${d.type === 'ensemble' ? `<div style="display:flex;flex-direction:column;gap:8px;margin-top:10px">
+      <div class="setting"><span class="sm">Groups differ in</span><select class="field" data-bind="draft.ensVar">${['Working assumption', 'Speaker method', 'Scheduled message'].map((v) => `<option ${d.ensVar === v ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
+      <input class="field" data-bind="draft.groupA" placeholder="Group A value, e.g. transit grows 10%" value="${esc(d.groupA)}">
+      <input class="field" data-bind="draft.groupB" placeholder="Group B value, e.g. transit is flat" value="${esc(d.groupB)}">
+      <div class="setting"><span class="sm">Replicates per group</span>${spin('draft.reps', 1, 22).replace('{V}', d.reps)}</div></div>` : ''}</div>
+    <div class="card"><div class="label">Settings</div>
+      <div class="setting"><span class="sm">Max messages ${hint('The turn ceiling. With stop-when-converged the run may end earlier.')}</span>${spin('draft.max', 2).replace('{V}', d.max)}</div>
+      <div class="setting"><span class="sm">Stop when converged ${hint('Ends the run once positions stop moving.')}</span>${tog('draft.converged', d.converged)}</div>
+      <div class="setting"><span class="sm">Conversation method ${hint('Who speaks next: round-robin, a selector model, or a hybrid of both.')}</span><select class="field" data-bind="draft.method">${['Hybrid', 'Round-robin', 'Selector'].map((v) => `<option ${d.method === v ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
+      <div class="setting"><span class="sm">Closing round ${hint('Each persona states a final position before the run ends.')}</span>${tog('draft.closing', d.closing)}</div>
+      <div class="setting"><span class="sm">Cognition ${hint('Memory stream, reflection, dynamic goals and relationships.')}</span>${tog('draft.cognition', d.cognition)}</div>
+      <div class="setting"><span class="sm">Generate avatars</span>${tog('draft.avatars', d.avatars)}</div>
+      <div class="setting"><span class="sm">Model</span><select class="field" style="max-width:170px" data-bind="draft.model">${MODELS.map((m) => `<option ${d.model === m ? 'selected' : ''}>${m}</option>`).join('')}</select></div>
+    </div>
+    <button class="card row" data-a="importSample"><span style="color:var(--accent)">${ic('import', 20)}</span><div class="grow"><b class="sm">Import a setup</b><div class="muted">Load a JSON definition (topic, cast and config)</div></div><span class="caret">›</span></button>`
+}
+function stepCast(d) {
+  const cards = d.cast.map((p, i) => {
+    const open = d.open === i
+    return `<div class="card" ${open ? 'style="--bd:var(--line-hi)"' : ''}>
+      <button class="row" style="width:100%;gap:12px" data-a="openP:${i}">${hx(p, 'sm', 'var(--line-hi)')}<div class="grow"><b class="sm">${esc(p.name || 'Unnamed persona')}</b><div class="muted">${esc(p.role || 'no role')}${p.position ? ' · 1 position' : ''}</div></div><span class="caret" style="${open ? 'transform:rotate(90deg)' : ''}">›</span></button>
+      ${open ? `<div style="display:flex;flex-direction:column;gap:8px;margin-top:12px">
+        <input class="field" data-bind="draft.cast.${i}.name" placeholder="Name" value="${esc(p.name)}">
+        <input class="field" data-bind="draft.cast.${i}.role" placeholder="Role" value="${esc(p.role)}">
+        <div class="label" style="margin-top:4px">Position ${hint('A conviction the persona holds, how firmly, and what would change it.')}</div>
+        <input class="field" data-bind="draft.cast.${i}.position" placeholder="What they believe" value="${esc(p.position)}">
+        <div class="seg">${['soft', 'firm', 'fixed'].map((f) => `<button class="${p.firm === f ? 'on' : ''}" data-a="set:draft.cast.${i}.firm:${f}">${f}</button>`).join('')}</div>
+        <input class="field" data-bind="draft.cast.${i}.exit" placeholder="Exit condition: what would move them" value="${esc(p.exit)}">
+        <input class="field" data-bind="draft.cast.${i}.withheld" placeholder="Withheld concern (revealed only if drawn out)" value="${esc(p.withheld)}">
+        <input class="field" data-bind="draft.cast.${i}.wont" placeholder="Will not weigh…" value="${esc(p.wont)}">
+        <div class="setting"><span class="sm t2">Background documents</span><button class="btn sm" data-a="toast:File picker would open here">${ic('plus', 12)} Attach</button></div>
+        <button class="btn danger sm" data-a="rmP:${i}">Remove persona</button></div>` : ''}
+    </div>`
+  }).join('')
+  return `${cards || '<div class="empty">NO PERSONAS YET · draft a cast, pick from the library, or add one</div>'}
+    <div class="row" style="gap:8px;flex:none"><button class="btn sm" style="flex:1" data-a="addP">${ic('plus', 12)} Persona</button><button class="btn sm" style="flex:1" data-a="go:library">${ic('library', 13)} Library</button><button class="btn sm" style="flex:1" data-a="addConsultant">${ic('expert', 13)} Expert</button></div>
+    <button class="card hero row" data-a="draftCast"><span style="color:var(--accent)">${ic('spark', 22)}</span><div class="grow"><b class="sm">Draft a cast for me</b><div class="muted">Proposes personas from the topic</div></div><span class="caret">›</span></button>
+    ${d.consultant ? `<div class="card prow">${hx(null, 'sm')}<div class="grow"><b class="sm">${esc(d.consultant)}</b><div class="muted">Consultant · answers only from its library</div></div><button class="icon" data-a="rmConsultant" aria-label="Remove">${ic('close', 16)}</button></div>` : ''}
+    <div class="card"><div class="setting"><span class="sm">Evidence lean ${hint('A persona that asks for evidence must also say what it expects and which way it leans today.')}</span>${tog('draft.lean', d.lean)}</div></div>`
+}
+function stepKnowledge(d) {
+  return `<div class="label">Knowledge bases for this run</div>
+    ${DB.kbs.map((kb) => `<button class="card row" data-a="kbToggle:${kb.id}"><span style="color:var(--accent)">${ic('knowledge', 18)}</span><div class="grow"><b class="sm">${esc(kb.name)}</b><div class="muted">${kb.docs.length} docs · ${esc(kb.scope)}</div></div><span class="toggle ${d.kbs.includes(kb.id) ? 'on' : ''}"></span></button>`).join('')}
+    <div class="card">
+      <div class="setting"><span class="sm">Inline citations ${hint('Personas cite the passages they draw on; tap a citation to open the source.')}</span>${tog('draft.citations', d.citations)}</div>
+      <div class="setting"><span class="sm">Pre-conversation research ${hint('Before turn 1, search the open web for authorities and tier them: controlling, persuasive or commentary.')}</span>${tog('draft.research', d.research)}</div>
+      ${d.research ? `<div class="setting"><span class="sm t2">Per-persona research</span>${tog('draft.researchPersona', d.researchPersona)}</div>` : ''}
+    </div>${d.research ? '<div class="muted num">RESEARCH ADDS ~20% TO THE FORECAST</div>' : ''}`
+}
+function stepAssume(d) {
+  return `<div class="card"><div class="label">Working assumptions ${hint('What the room should reason from when nobody in it can know. Each is marked in the transcript and can be forked.')}</div>
+      ${d.assumptions.map((a, i) => `<div class="flag assume" style="margin-top:8px"><span class="ft">ASSUMES</span><span class="grow">${esc(a)}</span><button data-a="rmA:${i}" aria-label="Remove">${ic('close', 14)}</button></div>`).join('')}
+      <div class="row" style="margin-top:10px"><input class="field" id="newA" placeholder="e.g. Headcount stays flat"><button class="btn sm" data-a="addA">Add</button></div></div>
+    <div class="card"><div class="label">Scheduled messages ${hint('A message that enters the run after a given turn, e.g. a customer email or a regulator letter.')}</div>
+      ${d.scheduled.map((s, i) => `<div class="signal" style="margin-top:8px"><div class="sig-h"><span>▼ After #${pad(s.after)}</span><button data-a="rmS:${i}" aria-label="Remove">${ic('close', 13)}</button></div><div class="sig-b">${esc(s.text)}</div></div>`).join('')}
+      <div class="row" style="margin-top:10px"><input class="field" id="newS" placeholder="Message text"><input class="field" id="newSAfter" type="number" min="1" value="4" style="width:64px" aria-label="After turn"><button class="btn sm" data-a="addS">Add</button></div></div>
+    <div class="card"><div class="setting"><span class="sm">Spend cap</span>${spin('draft.cap', 0.5, 48).replace('{V}', money(d.cap))}</div>
+      <div class="muted">The run stops cleanly at the cap; you are warned at 80%.</div></div>`
+}
+function stepReview(d) {
+  const sec = (label, step, inner) => `<div class="card"><div class="row between"><span class="label">${label}</span><button class="chip accent" data-a="go:new/${step}">Edit</button></div>${inner}</div>`
+  return sec('Topic', 1, `<div class="big" style="font-size:15px">${esc(d.topic) || '<span class="muted">none</span>'}</div>${d.type === 'ensemble' ? `<div class="vs" style="margin-top:8px"><span class="tag ens">Ensemble · ${d.reps}× per group</span><span class="grpk k0">A</span><span>${esc(d.groupA || '—')}</span><span class="x">VS</span><span class="grpk k1">B</span><span>${esc(d.groupB || '—')}</span></div>` : ''}`) +
+    sec('Cast', 2, `<div class="row" style="margin-top:8px"><div class="hxrow">${d.cast.map((p) => hx(p, 'sm')).join('') || '<span class="muted">none</span>'}</div><span class="muted num" style="margin-left:8px">${d.cast.length} PERSONAS${d.consultant ? ' + 1 EXPERT' : ''}</span></div>`) +
+    sec('Knowledge', 3, `<div class="row wrap" style="gap:6px;margin-top:8px">${d.kbs.map((k) => `<span class="chip accent">${esc(DB.kbs.find((x) => x.id === k).name)}</span>`).join('') || '<span class="muted">no knowledge bases</span>'}${d.research ? '<span class="chip">research</span>' : ''}${d.citations ? '<span class="chip">inline citations</span>' : ''}</div>`) +
+    sec('Assumptions & schedule', 4, `${d.assumptions.map((a) => `<div class="flag assume" style="margin-top:8px"><span class="ft">ASSUMES</span><span>${esc(a)}</span></div>`).join('')}${d.scheduled.map((s) => `<div class="flag lean" style="margin-top:8px"><span class="ft">AFTER #${pad(s.after)}</span><span>${esc(s.text)}</span></div>`).join('')}${!d.assumptions.length && !d.scheduled.length ? '<div class="muted" style="margin-top:6px">none</div>' : ''}`) +
+    sec('Options', 1, `<div class="row wrap" style="gap:6px;margin-top:8px"><span class="chip">${d.max} msgs</span><span class="chip">${d.method}</span>${d.cognition ? '<span class="chip">cognition</span>' : ''}${d.lean ? '<span class="chip">evidence lean</span>' : ''}${d.closing ? '<span class="chip">closing round</span>' : ''}<span class="chip">${esc(d.model)}</span></div>`) +
+    `<div class="card" data-s="stopped"><div class="row between"><span class="label">Spend cap</span><span class="readout" style="font-size:17px;color:var(--inject)">${money(d.cap)}</span></div><div class="muted">Warns at 80% · stops cleanly at the cap</div></div>`
+}
+
+const SAMPLE_CAST = [
+  { name: 'Ana Silva', role: 'Operations lead', position: 'Only if the rota holds', firm: 'firm', exit: 'A tested rota', withheld: 'Short-staffed already', wont: '', cls: 'a1' },
+  { name: 'Ben Carter', role: 'Finance partner', position: 'Cost-neutral or nothing', firm: 'firm', exit: 'A costed plan', withheld: '', wont: 'Morale arguments', cls: 'a3' },
+  { name: 'Chloe Wu', role: 'Customer advocate', position: 'Customers must not notice', firm: 'soft', exit: 'SLA data', withheld: 'Key renewal in Q2', wont: '', cls: 'a5' },
+  { name: 'Dev Patel', role: 'Engineer', position: 'Try it small and measure', firm: 'soft', exit: '', withheld: '', wont: '', cls: 'a4' },
+  { name: 'Eve Morgan', role: 'Moderator', position: 'Keep to the decision', firm: 'soft', exit: '', withheld: '', wont: '', cls: 'a2' },
+]
+const CLS = ['a1', 'a2', 'a3', 'a4', 'a5', 'a6']
+
+function startFromDraft() {
+  const d = S.draft
+  const agentsFrom = () => {
+    const o = {}
+    d.cast.forEach((p, i) => { o['P' + i] = agent(p.name || `Persona ${i + 1}`, p.role || 'Participant', p.cls || CLS[i % 6], { position: p.position, firm: p.firm, exit: p.exit, withheld: p.withheld, wont: p.wont }) })
+    return o
+  }
+  const sched = (run) => d.scheduled.map((s) => ({ inject: 'Scheduled', after: s.after, text: s.text }))
+  const mk = (extra) => {
+    const run = mkRun({ id: codename(), topic: d.topic, status: 'running', agents: agentsFrom(), maxTurn: d.max, cap: d.cap, when: 'just now',
+      assumptions: [...d.assumptions], consultant: d.consultant || null, model: d.model, kbs: d.kbs, ...extra })
+    run.queue = genQueue(run, run.maxTurn)
+    sched(run).sort((a, b) => b.after - a.after).forEach((s) => run.queue.splice(Math.min(s.after, run.queue.length), 0, s))
+    DB.runs[run.id] = run
+    d.kbs.forEach((k) => DB.kbs.find((x) => x.id === k).bound.push(run.id))
+    return run
+  }
+  if (d.type === 'ensemble') {
+    const id = codename()
+    const e = { id, topic: d.topic, variable: d.ensVar, groups: [{ k: 'A', label: d.groupA || 'Variant A' }, { k: 'B', label: d.groupB || 'Variant B' }], members: [], when: 'just now' }
+    DB.ensembles[id] = e
+    e.groups.forEach((g) => { for (let i = 0; i < d.reps; i++) { const r = mk({ ensemble: id, group: g.k, maxTurn: 4 + i, assumptions: d.ensVar === 'Working assumption' ? [g.label] : [...d.assumptions] }); r.finalBrief = { ...genericBrief(r), conclusion: (i + (g.k === 'B')) % 3 ? 'Run a time-boxed pilot' : 'Do not proceed yet' }; e.members.push(r.id) } })
+    S.draft = null
+    go('ensemble/' + id)
+  } else {
+    const r = mk({})
+    S.draft = null
+    go('run/' + r.id)
+  }
+}
+
+// ─────────────────────────────── sheets ───────────────────────────────
+const closeBtn = `<button class="icon" data-a="close" aria-label="Close">${ic('close', 20)}</button>`
+function sheetHtml() {
+  const s = S.sheet
+  if (!s) return ''
+  const run = s.runId && DB.runs[s.runId]
+  let inner = '', tall = false
+  if (s.type === 'dossier') {
+    tall = true
+    const a = run.agents[s.key]
+    const st = stanceOf(run, s.key)
+    const tab = s.tab || 'convictions'
+    const said = run.msgs.filter((m) => m.who === s.key)
+    const shiftM = said.find((m) => m.shift)
+    const tb = (k, l) => `<button class="${tab === k ? 'on' : ''}" data-a="dtab:${k}">${l}</button>`
+    const body = {
+      convictions: `<div class="card"><div class="row between"><span class="label">Position</span>${shiftM ? `<span class="tag shiftc">Moved @${pad(shiftM.t)}</span>` : `<span class="tag">${a.firm}</span>`}</div>
+          <div class="big" style="font-size:15.5px">${esc(a.position || '—')}</div>
+          ${a.formed ? `<div class="flag" style="--fc:var(--t3)"><span class="ft">FORMED BY</span><span>${esc(a.formed)}</span></div>` : ''}
+          ${a.exit ? `<div class="flag" style="--fc:var(--live)"><span class="ft">WOULD MOVE</span><span>${esc(a.exit)}</span></div>` : ''}</div>
+        ${a.wont ? `<div class="card"><div class="label">Will not weigh</div><div class="sm t2" style="margin-top:6px">${esc(a.wont)}</div></div>` : ''}
+        ${a.withheld ? `<div class="card" data-s="stopped"><div class="row between"><span class="label">Withheld concern</span><span class="tag warn">Not drawn out</span></div><div class="sm t2" style="margin-top:6px">${esc(a.withheld)}</div></div>` : ''}`,
+      memory: `<div class="card"><div class="label">Memory stream</div><ul class="plain">${[...said.slice(-3).reverse().map((m) => `Said at #${pad(m.t)}: “${m.text.slice(0, 64)}${m.text.length > 64 ? '…' : ''}”`), ...a.memory].map((x) => `<li>${esc(x)}</li>`).join('') || '<li>Nothing yet</li>'}</ul></div>
+        ${Object.keys(run.sources).length ? `<div class="card"><div class="label">Retrieved last turn</div>${Object.values(run.sources).map((src, i) => `<div class="row between xs" style="margin-top:8px"><span class="t2 row">${ic('doc', 13)} ${esc(src.doc)}</span><span class="num" style="color:var(--accent)">${(0.82 - i * 0.05).toFixed(2)}</span></div>`).join('')}</div>` : ''}`,
+      threads: `<div class="card"><div class="label">Pending threads</div><ul class="plain">${a.threads.map((x) => `<li>${esc(x)}</li>`).join('') || '<li>No open threads</li>'}</ul></div>`,
+      why: `<div class="card hero"><div class="label">Why did they say that?</div><div class="sm" style="margin-top:8px;line-height:1.55">${esc(a.why || 'Their goals and the last two turns drove this reply.')}</div></div>
+        ${said.length ? `<div class="card"><div class="label">Latest turn · #${pad(said[said.length - 1].t)}</div><div class="sm" style="margin-top:6px">${esc(said[said.length - 1].text)}</div></div>` : ''}`,
+    }[tab]
+    inner = `<div class="sh-h">${hx(a, 'lg', STC[st])}<div class="grow"><div class="label">Dossier</div><b>${esc(a.name)}</b><div class="muted">${esc(a.role)}</div></div>${closeBtn}</div>
+      <div class="card hudstrip"><div><div class="rk">Turns</div><div class="readout">${pad(said.length)}</div></div>
+        <div><div class="rk">Stance</div><div class="readout c-${st}" style="font-size:14px;margin-top:4px">${STL[st].toUpperCase()}</div></div>
+        <div><div class="rk">Firmness</div><div class="readout" style="font-size:14px;margin-top:4px">${a.firm.toUpperCase()}</div></div></div>
+      <div class="htabs">${tb('convictions', 'Convictions')}${tb('memory', 'Memory')}${tb('threads', 'Threads')}${tb('why', 'Why?')}</div><div class="sbody">${body}</div>`
+  } else if (s.type === 'menu') {
+    inner = `<div class="sh-h"><div class="grow"><div class="label">Actions</div><b class="code">${esc(run.id)}</b></div>${closeBtn}</div><div class="menu">
+      ${run.brief ? `<button data-a="brief:${run.id}">${ic('doc', 18)} Decision brief</button>` : ''}
+      ${ended(run) ? `<button data-a="export:${run.id}:md">${ic('download', 18)} Export Markdown</button><button data-a="export:${run.id}:html">${ic('download', 18)} Export HTML report</button>` : ''}
+      ${ended(run) ? `<button data-a="go:run/${run.id}/scrub">${ic('clock', 18)} Scrubber</button><button data-a="asides:${run.id}">${ic('chat', 18)} Asides</button>` : ''}
+      <button data-a="freshFrom:${run.id}">${ic('resume', 18)} Start fresh from this setup</button>
+      <button data-a="saveTemplate:${run.id}">${ic('save', 18)} Save cast as template</button>
+      <div class="setting" style="padding:4px"><span class="row" style="gap:14px"><span style="color:var(--accent)">${ic('model', 18)}</span>Analysis model</span><select class="field" style="max-width:170px" data-bind="run.${run.id}.model">${MODELS.map((m) => `<option ${run.model === m ? 'selected' : ''}>${m}</option>`).join('')}</select></div>
+    </div>`
+  } else if (s.type === 'brief') {
+    tall = true
+    const b = run.brief
+    inner = `<div class="sh-h"><div class="grow"><div class="label">Decision brief</div><b class="code">${esc(run.id)}</b></div>${closeBtn}</div>
+      <div class="sbody"><div class="muted">${esc(run.topic)}</div>
+      <div class="card hero"><div class="label">Bottom line</div><div class="big">${esc(b.bottom)}</div></div>
+      <div class="card"><div class="label">Where the room ended</div>${gauge(run)}</div>
+      <div class="card"><div class="label">What would settle it</div><ul class="plain">${b.settle.map((x) => `<li>${esc(x)}</li>`).join('')}</ul></div>
+      <div class="card"><div class="label">What was assumed</div><ul class="plain">${b.assumed.map((x) => `<li>${esc(x.text)} <span class="muted num">(cited ${x.cited}×)</span></li>`).join('') || '<li>Nothing</li>'}</ul></div>
+      <div class="card"><div class="label">Standing objections</div><ul class="plain">${b.objections.map((x) => `<li>${esc(x)}</li>`).join('')}</ul></div>
+      <div class="card" data-s="stopped"><div class="label">How much to trust it</div><div class="sm t2" style="margin-top:6px"><b style="color:var(--t1)">${b.trust.toUpperCase()}</b>: one run, ${Object.keys(run.agents).length} personas, ${run.turn} turns. Repeat it as an ensemble before relying on it.</div></div></div>
+      <div class="row" style="gap:8px"><button class="btn" style="flex:1" data-a="export:${run.id}:md">${ic('download', 15)} Markdown</button><button class="btn primary" style="flex:1" data-a="share:${run.id}">${ic('share', 15)} Share</button></div>`
+  } else if (s.type === 'asides') {
+    tall = true
+    const a = (S.asides[run.id] ||= { target: 'Analyst', persona: Object.keys(run.agents)[0], msgs: [] })
+    const tb = (k) => `<button class="${a.target === k ? 'on' : ''}" data-a="aTarget:${k}">${k}</button>`
+    inner = `<div class="sh-h"><div class="grow"><div class="label">Asides</div><b>Ask about the run</b><div class="muted">Read-only · does not change the transcript</div></div>${closeBtn}</div>
+      <div class="seg">${tb('Analyst')}${tb('Persona')}${tb('Room')}${tb('Consultant')}</div>
+      ${a.target === 'Persona' ? `<div class="row wrap" style="gap:6px">${Object.entries(run.agents).map(([k, ag]) => `<button class="chip ${a.persona === k ? 'on' : ''}" data-a="aPersona:${k}">${esc(ag.name.split(' ')[0])}</button>`).join('')}</div>` : ''}
+      <div class="sbody" id="asideScroll">${a.msgs.map((m) => m.me ? `<div class="b-me">${esc(m.text)}</div>`
+        : m.pending ? `<div class="b-them"><div class="from">Answering</div><span class="eq"><i style="--d:0s"></i><i style="--d:.25s"></i><i style="--d:.5s"></i></span></div>`
+        : `<div class="b-them"><div class="from">${esc(m.from)}</div>${esc(m.text)}${m.turns.length ? `<div class="row wrap" style="gap:6px;margin-top:8px">${m.turns.map((t) => `<button class="chip accent" data-a="jump:${run.id}:${t}">#${pad(t)}</button>`).join('')}</div>` : ''}
+            <div style="margin-top:10px"><button class="btn sm" data-a="promote:${run.id}">${ic('branch', 13)} Promote to branch</button></div></div>`).join('') ||
+        `<div class="empty">Ask why someone never moved, what the room missed, or what a persona would say to a new fact.<div class="row wrap" style="gap:6px;justify-content:center;margin-top:12px">
+          <button class="chip" data-a="askQuick:Who was closest to changing their mind?">Who nearly moved?</button><button class="chip" data-a="askQuick:What did the room never address?">What was missed?</button></div></div>`}</div>
+      <div class="row" style="gap:8px"><input class="field" id="asideInput" placeholder="Ask the ${a.target.toLowerCase()}…"><button class="btn primary sm" style="width:48px;min-height:42px" data-a="askSend" aria-label="Send">↑</button></div>`
+  } else if (s.type === 'fork') {
+    const kinds = ['Inject', 'Edit goal', 'Assumption', 'Cast']
+    const ph = { Inject: 'The CFO joins and says the budget is frozen until Q3…', 'Edit goal': 'New goal for a persona…', Assumption: 'Replace the assumption with…', Cast: 'Add a persona, e.g. Union representative' }
+    inner = `<div class="sh-h"><div class="grow"><div class="label">Fork</div><b>From turn ${pad(s.turn)}</b></div>${closeBtn}</div>
+      <div class="seg">${kinds.map((k) => `<button class="${s.kind === k ? 'on' : ''}" data-a="forkKind:${k}">${k}</button>`).join('')}</div>
+      <textarea class="field" id="forkText" rows="3" placeholder="${esc(ph[s.kind])}">${esc(s.text || '')}</textarea>
+      <div class="card hudstrip"><div><div class="rk">Budget</div><div class="row"><button class="ctl" style="width:30px;height:30px" data-a="forkBudget:-2">−</button><span class="readout">${pad(s.budget)}</span><button class="ctl" style="width:30px;height:30px" data-a="forkBudget:2">+</button></div></div>
+        <div><div class="rk">Est. cost</div><div class="readout">${money(s.budget * 0.016)}</div></div><div><div class="rk">Replay</div><div class="readout c-support">FREE</div></div></div>
+      <button class="btn primary full" data-a="createBranch">${ic('branch', 16)} Create branch</button>`
+  } else if (s.type === 'source') {
+    const src = run.sources[s.n]
+    inner = `<div class="sh-h"><div class="grow"><div class="label">Source [${s.n}]</div><b class="sm row">${ic('doc', 15)} ${esc(src.doc)}</b></div>${closeBtn}</div>
+      <div class="card"><span class="tag ${src.tier === 'controlling' ? 'ok' : ''}">${src.tier}</span><div class="sm" style="margin-top:10px;border-left:2px solid var(--accent);padding-left:12px;line-height:1.6">“${esc(src.snip)}”</div></div>
+      <button class="btn full" data-a="close">Back to conversation</button>`
+  } else if (s.type === 'consult') {
+    inner = `<div class="sh-h">${hx(null, 'lg')}<div class="grow"><div class="label">Consultant</div><b>${esc(run.consultant)}</b></div>${closeBtn}</div>
+      <div class="sm t2">An expert outside the room. Answers only from its own documents, with citations, or says the answer is not in its sources. It never takes a turn.</div>
+      <div class="card"><div class="label">Asked during this run</div><ul class="plain"><li>Maria: “Do off-peak discounts shift deliveries?” Answered from the Road pricing handbook §4.2.</li><li>James: “Typical year-one ridership change?” <i>Not in my sources.</i></li></ul></div>
+      <button class="btn primary full" data-a="asidesConsult:${run.id}">${ic('chat', 15)} Ask the consultant</button>`
+  } else if (s.type === 'lib') {
+    const p = DB.library[s.i]
+    inner = `<div class="sh-h">${hx(p, 'lg')}<div class="grow"><div class="label">Archetype</div><b>${esc(p.name)}</b><div class="muted">${esc(p.role)}</div></div>${closeBtn}</div>
+      <div class="card"><div class="label">Position</div><div class="big" style="font-size:15px">${esc(p.position)}</div></div>
+      <div class="card" data-s="stopped"><span class="tag warn">Not yet qualified</span><div class="sm t2" style="margin-top:8px">A starting archetype. Measure it in a run before relying on it.</div></div>
+      <button class="btn primary full" data-a="libUse:${s.i}">${ic('plus', 15)} Add to a new run</button>`
+  } else if (s.type === 'hint') {
+    inner = `<div class="sh-h"><div class="grow"><div class="label">Info</div></div>${closeBtn}</div><div style="font-size:14.5px;line-height:1.55">${esc(s.text)}</div><button class="btn full" data-a="close">Got it</button>`
+  }
+  return `<div class="scrim" data-a="close"></div><div class="sheet ${tall ? 'tall' : ''}">${inner}</div>`
+}
+
+const ANSWERS = {
+  Analyst: [{ text: 'Lena never moved because her exit condition, a contract amendment, was never named in the room. Nobody offered it.', turns: [3, 8] },
+    { text: 'The biggest gap: nobody priced the Friday escalation cover. Two personas assumed it was free.', turns: [7, 10] }],
+  Persona: [{ text: 'Honestly? I would have moved if someone had put the exemption in writing. Nobody did.', turns: [6] }],
+  Room: [{ text: 'The room agrees on a pilot but splits on who carries the risk. Three of five would sign today.', turns: [6, 10] }],
+  Consultant: [{ text: 'My sources show off-peak discounts of 40–60% shifting about a fifth of deliveries [Road pricing handbook §4.2]. Year-one ridership is not in my sources.', turns: [] }],
+}
+
+// ─────────────────────────────── effects ───────────────────────────────
+const GLYPHS = 'ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉ0123456789<>/=+*#'
+function scramble(el) {
+  const final = el.dataset.scramble, start = performance.now(), dur = 650
+  const step = (now) => {
+    const p = Math.min(1, (now - start) / dur), n = Math.floor(final.length * p)
+    el.textContent = final.slice(0, n) + [...final.slice(n)].map((c) => (c === ' ' ? ' ' : GLYPHS[Math.floor(Math.random() * GLYPHS.length)])).join('')
+    if (p < 1) requestAnimationFrame(step)
+  }
+  requestAnimationFrame(step)
+}
+// A new message types itself in. The untyped remainder stays in the DOM but invisible, so the
+// bubble never changes height and the feed does not jump while it types.
+function typeOut(el) {
+  const full = el.textContent, start = performance.now(), dur = Math.min(1400, 300 + full.length * 14)
+  const step = (now) => {
+    const n = Math.floor(full.length * Math.min(1, (now - start) / dur))
+    el.innerHTML = `${esc(full.slice(0, n))}<span style="opacity:0">${esc(full.slice(n))}</span>`
+    if (n < full.length) requestAnimationFrame(step)
+  }
+  requestAnimationFrame(step)
+}
+const rain = { ctx: null, w: 0, h: 0, drops: [], color: '#22d3ee', last: 0 }
+function rainInit() {
+  const c = document.getElementById('rain')
+  let ctx = null
+  try { ctx = c.getContext && c.getContext('2d') } catch { ctx = null }
+  if (!ctx) return
+  const r = c.getBoundingClientRect(), dpr = Math.min(2, window.devicePixelRatio || 1)
+  c.width = Math.max(1, r.width * dpr); c.height = Math.max(1, r.height * dpr)
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+  Object.assign(rain, { ctx, w: r.width, h: r.height, drops: Array.from({ length: Math.ceil(r.width / 16) }, () => Math.floor(Math.random() * -60)),
+    color: getComputedStyle(document.body).getPropertyValue('--rain').trim() || '#22d3ee' })
+}
+function rainFrame(t) {
+  requestAnimationFrame(rainFrame)
+  if (!S.fx || !rain.ctx || t - rain.last < 60) return
+  rain.last = t
+  const { ctx, w, h } = rain
+  ctx.globalCompositeOperation = 'destination-out'; ctx.fillStyle = 'rgba(0,0,0,.12)'; ctx.fillRect(0, 0, w, h)
+  ctx.globalCompositeOperation = 'source-over'; ctx.font = '13px ui-monospace,monospace'
+  rain.drops.forEach((y, i) => {
+    ctx.fillStyle = Math.random() > 0.95 ? '#ffffff' : rain.color
+    ctx.fillText(GLYPHS[Math.floor(Math.random() * GLYPHS.length)], i * 16, y * 16)
+    rain.drops[i] = y * 16 > h && Math.random() > 0.975 ? 0 : y + 1
+  })
+}
+function boot() {
+  const el = $('#boot')
+  if (new URLSearchParams(location.search).has('noboot')) { el.remove(); return }
+  const lines = ['linking persona agents', 'restoring checkpoints', 'arming cost meter', `${Object.values(DB.runs).filter(isLive).length} simulations live`]
+  let i = 0
+  const log = $('#bootlog')
+  const tick = setInterval(() => { if (i < lines.length) log.innerHTML += `\u203a ${esc(lines[i++]).padEnd(26, '.')} <b>ok</b>\n` }, 260)
+  const done = () => { clearInterval(tick); el.classList.add('out'); setTimeout(() => el.remove(), 460) }
+  el.addEventListener('click', done)
+  setTimeout(done, 1650)
+}
+
+// ─────────────────────────────── render ───────────────────────────────
+let lastKey = null, lastSize = null
+function render() {
+  document.body.className = (S.mode === 'native' ? 'native' : S.mode === 'wide' ? 'wide' : 'framed') + (S.fx ? '' : ' nofx')
+  if (document.body.dataset.theme !== S.theme) { document.body.dataset.theme = S.theme; rain.color = getComputedStyle(document.body).getPropertyValue('--rain').trim() }
+  document.querySelectorAll('#devbar [data-a]').forEach((b) => {
+    const [k, v] = b.dataset.a.split(':')
+    b.classList.toggle('on', (k === 'mode' && v === S.mode) || (k === 'theme' && v === S.theme) || (k === 'fx' && S.fx))
+  })
+  const [r, a, b] = route()
+  const key = location.hash
+  const sc = document.getElementById('scroll')
+  const prev = sc && { top: sc.scrollTop, atBottom: sc.scrollHeight - sc.scrollTop - sc.clientHeight < 60, key: sc.dataset.key }
+  let html
+  switch (r) {
+    case 'run': html = vRun(a, b); break
+    case 'new': html = vNew(a); break
+    case 'ensemble': html = vEnsemble(a); break
+    case 'ensembles': html = vEnsembles(); break
+    case 'knowledge': html = vKnowledge(a); break
+    case 'library': html = vLibrary(); break
+    default: html = vRuns()
+  }
+  const view = $('#view')
+  // Every looping animation is delayed by this, so a re-render resumes each loop in phase rather
+  // than restarting it. All loop periods divide 12s.
+  view.style.setProperty('--ph', `${-((performance.now() % 12000) / 1000).toFixed(3)}s`)
+  view.innerHTML = html + sheetHtml() + (S.toast ? `<div class="toast">${esc(S.toast)}</div>` : '')
+  const n = document.getElementById('scroll')
+  if (n) {
+    n.dataset.key = key
+    const isFeed = r === 'run' && (!b || b === 'conversation' || S.mode === 'wide')
+    if (prev && prev.key === key) n.scrollTop = isFeed && prev.atBottom ? n.scrollHeight : prev.top
+    else if (isFeed) n.scrollTop = n.scrollHeight
+  }
+  const na = document.getElementById('asideScroll')
+  if (na) na.scrollTop = na.scrollHeight
+  const titleKey = r + '/' + (a || '')
+  if (titleKey !== lastKey) { lastKey = titleKey; document.querySelectorAll('.top [data-scramble]').forEach(scramble) }
+  document.querySelectorAll('.msg.new .tt').forEach(typeOut)
+  const size = S.mode + (S.fx ? 1 : 0)
+  if (size !== lastSize) { lastSize = size; requestAnimationFrame(rainInit) }
+}
+
+// ─────────────────────────────── actions ───────────────────────────────
+function getPath(path) { return path.split('.').reduce((o, k) => o?.[k], { draft: S.draft, run: DB.runs, q: S.q }) }
+function setPath(path, val) {
+  if (path === 'q') { S.q = val; return }
+  const keys = path.split('.')
+  const root = { draft: S.draft, run: DB.runs }
+  let o = root
+  for (let i = 0; i < keys.length - 1; i++) o = o[keys[i]]
+  o[keys.at(-1)] = val
+}
+function openSheet(s) { S.sheet = s; render() }
+
+const A = {
+  go: (p) => { S.sheet = null; go(p) },
+  mode: (m) => { S.mode = m; S.sheet = null; render() },
+  theme: (t) => { S.theme = t; render(); rainInit() },
+  fx: () => { S.fx = !S.fx; render() },
+  reset: () => { seed(); freshState(); go('runs'); toast('Prototype data reset') },
+  toast: (...m) => toast(m.join(':')),
+  filter: (k) => { S.filter = k; render() },
+  newRun: () => { S.draft = blankDraft(); go('new/1') },
+  newEnsemble: () => { S.draft = { ...blankDraft(), type: 'ensemble' }; go('new/1') },
+  cancelNew: () => { S.draft = null; go('runs') },
+  close: () => { S.sheet = null; render() },
+  hint: (...t) => openSheet({ type: 'hint', text: t.join(':') }),
+  stop: (id) => { DB.runs[id].status = 'stopping'; render() },
+  resume: (id) => { const r = DB.runs[id]; if (!r.queue.length) r.queue = genQueue(r, 3); r.maxTurn = Math.max(r.maxTurn, r.turn + r.queue.filter((q) => !q.inject).length); r.status = 'running'; S.paused[id] = false; render() },
+  pause: (id) => { S.paused[id] = !S.paused[id]; render() },
+  step: (id) => { if (S.paused[id]) { advance(DB.runs[id]); render() } },
+  speed: () => { S.speed = S.speed >= 4 ? 1 : S.speed * 2; render() },
+  menu: (id) => openSheet({ type: 'menu', runId: id }),
+  dossier: (id, key) => openSheet({ type: 'dossier', runId: id, key }),
+  dtab: (t) => { S.sheet.tab = t; render() },
+  cite: (id, n) => openSheet({ type: 'source', runId: id, n }),
+  consult: (id) => openSheet({ type: 'consult', runId: id }),
+  asidesConsult: (id) => { S.asides[id] = { ...(S.asides[id] || { msgs: [] }), target: 'Consultant' }; openSheet({ type: 'asides', runId: id }) },
+  brief: (id) => openSheet({ type: 'brief', runId: id }),
+  asides: (id) => openSheet({ type: 'asides', runId: id }),
+  aTarget: (t) => { S.asides[S.sheet.runId].target = t; render() },
+  aPersona: (k) => { S.asides[S.sheet.runId].persona = k; render() },
+  askQuick: (...q) => { $('#asideInput').value = q.join(':'); A.askSend() },
+  askSend: () => {
+    const text = $('#asideInput').value.trim()
+    if (!text) return
+    const id = S.sheet.runId, run = DB.runs[id], st = S.asides[id]
+    const pool = ANSWERS[st.target]
+    const ans = pool[st.msgs.filter((m) => !m.me).length % pool.length]
+    const from = st.target === 'Persona' ? run.agents[st.persona].name : st.target === 'Consultant' ? (run.consultant || 'Consultant') : st.target
+    st.msgs.push({ me: true, text }, { pending: true })
+    render()
+    setTimeout(() => { st.msgs.pop(); st.msgs.push({ from, text: ans.text, turns: ans.turns.filter((t) => t <= run.turn) }); if (S.sheet?.type === 'asides') render() }, 1300)
+  },
+  jump: (id, t) => { S.sheet = null; go(`run/${id}/conversation`); setTimeout(() => document.getElementById('t' + t)?.scrollIntoView({ block: 'center', behavior: 'smooth' }), 50) },
+  promote: (id) => { S.sheet = null; branch(DB.runs[id], DB.runs[id].turn, 'Inject', 'Aside promoted into the room: the analyst notes the contract amendment was never offered.', 6) },
+  genBrief: (id) => { DB.runs[id].brief = genericBrief(DB.runs[id]); toast('Summary generated'); },
+  export: (id, fmt) => { download(DB.runs[id], fmt); toast(`Downloaded ${id}.${fmt === 'md' ? 'md' : 'html'}`) },
+  share: (id) => { navigator.clipboard?.writeText(location.href).catch(() => {}); toast('Link copied (mock)') },
+  freshFrom: (id) => {
+    const r = DB.runs[id]
+    S.draft = { ...blankDraft(), topic: r.topic, max: r.maxTurn, assumptions: [...r.assumptions], consultant: r.consultant,
+      cast: Object.values(r.agents).map((a) => ({ name: a.name, role: a.role, position: a.position, firm: a.firm, exit: a.exit, withheld: a.withheld, wont: a.wont, cls: a.cls })) }
+    S.sheet = null; go('new/5')
+  },
+  saveTemplate: () => { S.sheet = null; toast('Cast saved as a template') },
+  forkAssume: (id, ...t) => openSheet({ type: 'fork', runId: id, turn: 1, kind: 'Assumption', text: t.join(':') + ' → ', budget: 8 }),
+  assumeCard: (id) => { const r = DB.runs[id]; if (ended(r)) go(`run/${id}/analysis`); else toast(`Assumption: ${r.assumptions[0]} · fork it once the run ends`) },
+  fork: (id) => openSheet({ type: 'fork', runId: id, turn: S.scrub[id] ?? Math.max(1, Math.round(DB.runs[id].turn / 2)), kind: 'Inject', text: '', budget: 8 }),
+  forkKind: (k) => { S.sheet.text = $('#forkText').value; S.sheet.kind = k; render() },
+  forkBudget: (n) => { S.sheet.text = $('#forkText').value; S.sheet.budget = Math.max(2, Math.min(24, S.sheet.budget + +n)); render() },
+  createBranch: () => { const s = S.sheet; S.sheet = null; branch(DB.runs[s.runId], s.turn, s.kind, $('#forkText')?.value || s.text || '', s.budget) },
+  scrubStep: (id, n) => { const r = DB.runs[id]; S.scrub[id] = Math.max(1, Math.min(r.turn, (S.scrub[id] ?? Math.round(r.turn / 2)) + +n)); render() },
+  libPick: (i) => openSheet({ type: 'lib', i: +i }),
+  libUse: (i) => { const p = DB.library[i]; if (!S.draft) S.draft = blankDraft(); S.draft.cast.push({ name: p.name, role: p.role, position: p.position, firm: 'soft', exit: '', withheld: '', wont: '', cls: p.cls }); S.sheet = null; go('new/2') },
+  template: (k) => {
+    const ags = Object.values(k === 'harbor' ? harborAgents() : robotAgents())
+    S.draft = { ...(S.draft || blankDraft()), cast: ags.map((a) => ({ name: a.name, role: a.role, position: a.position, firm: a.firm, exit: a.exit, withheld: a.withheld, wont: a.wont, cls: a.cls })) }
+    go('new/2'); toast('Template loaded')
+  },
+  newKb: () => { const id = 'kb' + Date.now(); DB.kbs.push({ id, name: 'New collection', scope: 'shared', docs: [], bound: [] }); go('knowledge/' + id) },
+  // wizard
+  set: (path, val) => { setPath(path, val); render() },
+  toggle: (path) => { setPath(path, !getPath(path)); render() },
+  inc: (path, n) => { const v = +getPath(path) + +n; setPath(path, Math.max(path.endsWith('cap') ? 0.5 : path.endsWith('reps') ? 1 : 2, Math.round(v * 100) / 100)); render() },
+  openP: (i) => { S.draft.open = S.draft.open === +i ? null : +i; render() },
+  addP: () => { S.draft.cast.push({ name: '', role: '', position: '', firm: 'soft', exit: '', withheld: '', wont: '', cls: CLS[S.draft.cast.length % 6] }); S.draft.open = S.draft.cast.length - 1; render() },
+  rmP: (i) => { S.draft.cast.splice(+i, 1); S.draft.open = null; render() },
+  addConsultant: () => { S.draft.consultant = 'Domain consultant'; render() },
+  rmConsultant: () => { S.draft.consultant = null; render() },
+  draftCast: () => { toast('Drafting a cast from the topic…'); setTimeout(() => { if (!S.draft) return; S.draft.cast = SAMPLE_CAST.map((p) => ({ ...p })); S.draft.open = null; render(); toast('5 personas drafted. Review them before launch') }, 1100) },
+  importSample: () => { S.draft = { ...S.draft, topic: 'Should we move the support org to a four-day week?', cast: SAMPLE_CAST.map((p) => ({ ...p })), assumptions: ['Headcount stays flat'], max: 10 }; render(); toast('Imported sampleImport.json') },
+  kbToggle: (id) => { const k = S.draft.kbs; k.includes(id) ? k.splice(k.indexOf(id), 1) : k.push(id); render() },
+  addA: () => { const v = $('#newA').value.trim(); if (v) { S.draft.assumptions.push(v); render() } },
+  rmA: (i) => { S.draft.assumptions.splice(+i, 1); render() },
+  addS: () => { const v = $('#newS').value.trim(); if (v) { S.draft.scheduled.push({ text: v, after: Math.max(1, +$('#newSAfter').value || 1) }); render() } },
+  rmS: (i) => { S.draft.scheduled.splice(+i, 1); render() },
+  start: () => startFromDraft(),
+}
+
+function branch(parent, turn, kind, text, budget) {
+  const id = codename()
+  const msgs = parent.msgs.filter((m) => (m.inject ? m.after < turn : m.t <= turn)).map((m) => ({ ...m }))
+  const run = mkRun({ id, topic: parent.topic, status: 'running', agents: JSON.parse(JSON.stringify(parent.agents)), msgs, parent: { id: parent.id, turn },
+    cap: parent.cap, when: 'just now', assumptions: kind === 'Assumption' && text ? [text.split('→').pop().trim() || text] : [...parent.assumptions],
+    sources: parent.sources, consultant: parent.consultant, model: parent.model })
+  run.cost = 0
+  const q = genQueue(run, budget)
+  if (text && kind === 'Inject') q.unshift({ inject: 'Intervention', after: turn, text })
+  if (text && kind === 'Cast') { run.agents.NEW = agent(text.replace(/^add\s+/i, '').slice(0, 40) || 'New persona', 'Joined at the fork', 'a6', { position: 'Arrives with fresh objections' }); q.splice(1, 0, { who: 'NEW', text: 'I have just joined. Before anything else, who has checked this with the people it affects?' }) }
+  run.queue = q
+  run.maxTurn = run.turn + q.filter((x) => !x.inject).length
+  DB.runs[id] = run
+  go(`run/${id}/conversation`)
+  toast(`Branched ${id} from ${parent.id} @ turn ${turn}`)
+}
+
+function download(run, fmt) {
+  const lines = run.msgs.map((m) => m.inject ? `> ✉ ${m.inject} (after turn ${m.after}): ${m.text}` : `**${run.agents[m.who].name}** (#${m.t}): ${m.text}`)
+  const md = `# ${run.id}\n\n_${run.topic}_\n\n${run.brief ? `## Bottom line\n\n${run.brief.bottom}\n\n` : ''}## Transcript\n\n${lines.join('\n\n')}\n`
+  const body = fmt === 'md' ? md : `<!doctype html><meta charset="utf-8"><title>${esc(run.id)}</title><body style="font-family:system-ui;max-width:700px;margin:40px auto">${md.split('\n\n').map((p) => `<p>${esc(p)}</p>`).join('')}</body>`
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(new Blob([body], { type: fmt === 'md' ? 'text/markdown' : 'text/html' }))
+  a.download = `${run.id}.${fmt === 'md' ? 'md' : 'html'}`
+  a.click()
+}
+
+document.addEventListener('click', (e) => {
+  const el = e.target.closest('[data-a]')
+  if (!el || el.disabled) return
+  const [act, ...args] = el.dataset.a.split(':')
+  if (A[act]) { e.preventDefault(); A[act](...args) }
+})
+document.addEventListener('input', (e) => {
+  const el = e.target
+  if (el.id === 'scrub') {
+    const run = DB.runs[el.dataset.run], t = +el.value
+    S.scrub[run.id] = t
+    $('#scrubT').textContent = 'Turn ' + t
+    $('#forkT').textContent = t
+    $('#scrubInfo').innerHTML = scrubInfo(run, t)
+    return
+  }
+  const path = el.dataset.bind
+  if (!path) return
+  setPath(path, el.value)
+  if (path === 'q') { render(); const q = $('#q'); q.focus(); q.setSelectionRange(q.value.length, q.value.length) }
+  else if (path.startsWith('draft.')) {
+    const [lo, hi] = forecast(S.draft); const fc = $('#fc'); if (fc) fc.textContent = `≈ ${money(lo)}–${money(hi)}`
+    const next = document.querySelector('[data-a="go:new/2"]'); if (next) next.disabled = !S.draft.topic.trim()
+    if (el.tagName === 'SELECT') render()
+  }
+})
+document.addEventListener('change', (e) => {
+  const el = e.target
+  if (el.dataset.upload) {
+    const kb = DB.kbs.find((k) => k.id === el.dataset.upload)
+    for (const f of el.files) kb.docs.push({ name: f.name, chunks: 0, pct: 5 })
+    toast(`Indexing ${el.files.length} file${el.files.length === 1 ? '' : 's'}…`)
+  }
+})
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && e.target.id === 'asideInput') A.askSend()
+  if (e.key === 'Enter' && e.target.id === 'newA') A.addA()
+  if (e.key === 'Escape' && S.sheet) A.close()
+})
+window.addEventListener('resize', () => {
+  if (window.innerWidth < 520 && S.mode !== 'native') S.mode = 'native'
+  lastSize = null
+  render()
+})
+
+seed()
+freshState()
+render()
+boot()
+requestAnimationFrame(rainFrame)
+</script>
+</body>
+</html>

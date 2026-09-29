@@ -433,8 +433,16 @@ async def judge_arm(label: str, conv: List[Dict[str, Any]], model: str) -> Dict[
     resp = await litellm.acompletion(
         model=model,
         messages=[{"role": "user", "content": prompt}],
+        # `temperature=0` is the intent — a judge should be as repeatable as the provider allows — but
+        # Sonnet 5 REFUSES any temperature but 1, and without `drop_params` litellm raises
+        # `UnsupportedParamsError` rather than adjusting. So `--judge` failed outright against the
+        # default model from the day it became the default (found 2026-09-29 by docs/JUDGE-VARIANCE.md,
+        # which could not run). Dropped rather than removed: on a model that honours 0 this still asks
+        # for it, and on one that does not the judge runs at the only temperature it has — which is why
+        # its variance has to be measured rather than assumed.
         temperature=0,
         max_tokens=900,
+        drop_params=True,
     )
     raw = resp.choices[0].message.content.strip()
     m = re.search(r"\{.*\}", raw, re.DOTALL)
