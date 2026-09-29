@@ -192,7 +192,9 @@ def _fake_dynamic(log, checks, propose=True):
         if "You keep a discussion moving" in text:
             checks.append(text)
             body = ({"assumption": {"statement": "Churn is about 7%", "basis": "both guessed 5-9%",
-                                    "gap": "churn, asked by Dana twice"}} if propose else {"assumption": None})
+                                    "gap": "churn, asked by Dana twice",
+                                    "asks": ["I need the churn number before I decide"]}}
+                    if propose else {"assumption": None})
             return _Resp(json.dumps(body))
         if "conversation moderator" in text:
             who = ("Dana", "Marcus")[state["i"] % 2]
@@ -224,10 +226,30 @@ async def test_due_respects_every_the_cap_and_a_retried_turn():
 
 
 async def test_a_malformed_proposal_is_no_assumption():
-    assert am.parse_proposal({"assumption": None}) is None
-    assert am.parse_proposal({"assumption": {"statement": "  "}}) is None
-    assert am.parse_proposal(None) is None
-    assert am.parse_proposal({"assumption": {"statement": "x", "basis": "b"}})["statement"] == "x"
+    assert am.parse_proposal({"assumption": None})[0] is None
+    assert am.parse_proposal({"assumption": {"statement": "  "}})[0] is None
+    assert am.parse_proposal(None)[0] is None
+
+
+CONV = [{"speaker": "Dana", "content": "I need the churn number before I decide anything."},
+        {"speaker": "Marcus", "content": "Fine, but what\u2019s the churn number, roughly?"},
+        {"speaker": "Dana", "content": "Nobody here knows it."}]
+
+
+async def test_a_proposal_must_quote_two_real_asks():
+    ok, why = am.parse_proposal({"assumption": {"statement": "Churn is 7%", "asks": [
+        "I need the churn number before I decide", "what's the churn number, roughly"]}}, CONV)
+    assert ok is not None and ok["statement"] == "Churn is 7%" and why == ""
+    one, why = am.parse_proposal({"assumption": {"statement": "Churn is 7%", "asks": [
+        "I need the churn number before I decide", "we must know churn before launch"]}}, CONV)
+    assert one is None and "1 message" in why, "an invented ask must not count"
+    none, _ = am.parse_proposal({"assumption": {"statement": "Churn is 7%"}}, CONV)
+    assert none is None
+
+
+async def test_the_same_words_from_two_messages_are_two_asks():
+    conv = [{"speaker": "A", "content": "We need the churn number."}, {"speaker": "B", "content": "We need the churn number."}]
+    assert am.parse_proposal({"assumption": {"statement": "s", "asks": ["we need the churn number"]}}, conv)[0]
 
 
 async def test_the_moderator_adds_one_and_later_turns_reason_from_it(db):
@@ -235,11 +257,12 @@ async def test_the_moderator_adds_one_and_later_turns_reason_from_it(db):
     with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake_dynamic(log, checks)):
         await run_simulation(_dyn_request(every=1, limit=1, turns=3), db=db, run_id="dy1")
     made = await _events(db, "dy1", "assumption.made")
-    assert [(m["id"], m["source"], m["turn"]) for m in made] == [("A1", "moderator", 1)]
-    assert made[0]["gap"] == "churn, asked by Dana twice"
-    assert "A1: Churn is about 7%" not in log[0] and all("A1: Churn is about 7%" in p for p in log[1:])
+    # After turn 1 there is only one ask in the room, so the check must refuse; after turn 2, two.
+    assert [(m["id"], m["source"], m["turn"]) for m in made] == [("A1", "moderator", 2)]
+    assert made[0]["gap"] == "churn, asked by Dana twice" and made[0]["asks"]
+    assert all("A1:" not in p for p in log[:2]) and "A1: Churn is about 7%" in log[-1]
     checked = await _events(db, "dy1", "assumption.checked")
-    assert len(checked) == 1 and checked[0]["proposed"] is True and checked[0]["cost_usd"] > 0
+    assert [c["proposed"] for c in checked] == [False, True] and checked[1]["cost_usd"] > 0
 
 
 async def test_a_check_that_finds_no_gap_is_still_recorded_and_adds_nothing(db):
@@ -268,15 +291,15 @@ async def test_the_deployed_slices_carry_the_moderator_s_assumption_forward(db):
         for t in range(3):
             await orchestration.execute_slice(db, "dy4", turn=t, turn_budget=1)
     assert [m["id"] for m in await _events(db, "dy4", "assumption.made")] == ["A1"]
-    # Made in turn 2's slice; turn 3's slice is a fresh call that must rebuild it from the log.
-    # (More prompts than turns: the fake does not answer the validator, so turns are regenerated.)
-    assert "A1:" not in log[0] and len(log) >= 3 and all("A1: Churn is about 7%" in p for p in log[1:])
-    assert len(checks) == 1, "the cap must hold across slices, not per slice"
+    # Made after turn 2, in turn 3's slice, which rebuilt the ledger from the log; a 4th slice would
+    # rebuild it again. Turn 3's prompts carry it.
+    assert "A1: Churn is about 7%" in log[-1] and "A1:" not in log[0]
+    assert len(checks) == 2, "checked after turns 1 and 2, then the cap of 1 holds across slices"
 
 
 async def test_operator_and_moderator_ids_do_not_collide(db):
     log, checks = [], []
-    req = _dyn_request(every=1, limit=1, turns=2)
+    req = _dyn_request(every=1, limit=1, turns=3)
     req["config"]["assumptions"] = [{"statement": "Launch date is fixed"}]
     with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake_dynamic(log, checks)):
         await run_simulation(req, db=db, run_id="dy5")
@@ -295,3 +318,20 @@ async def test_the_forecast_prices_checks_or_says_it_cannot():
     priced = forecast.History(assumption_check_costs=[0.0005, 0.001])
     part = next(p for p in forecast.forecast_run(req, priced, **kw)["parts"] if p["part"] == "assumption checks")
     assert part["measured"] and part["high"] == pytest.approx(0.04)
+
+
+async def test_a_discarded_proposal_is_recorded_with_its_reason(db):
+    def fake(*_a, **kw):
+        text = " ".join(m["content"] for m in kw["messages"])
+        if "You keep a discussion moving" in text:
+            return _Resp(json.dumps({"assumption": {"statement": "The plan will work", "asks": ["nobody said this"]}}))
+        if "conversation moderator" in text:
+            return _Resp(json.dumps({"speaker": "Dana", "reason": "turn"}))
+        return _Resp("I need the churn number before I decide.")
+
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=fake):
+        await run_simulation(_dyn_request(every=1, limit=2, turns=2), db=db, run_id="dy6")
+    assert await _events(db, "dy6", "assumption.made") == []
+    [c] = await _events(db, "dy6", "assumption.checked")
+    assert c["proposed"] is False and "0 message(s)" in c["rejected"]
+    assert c["proposal"]["statement"] == "The plan will work"

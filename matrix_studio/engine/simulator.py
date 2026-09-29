@@ -1590,11 +1590,17 @@ async def _propose_assumption(
     except Exception as exc:  # noqa: BLE001 — a failed check must not end the run
         logger.warning("Assumption check after turn %d failed: %s", completed_turns, exc)
         error = str(exc)[:300]
-    proposal = assumptions_mod.parse_proposal(parsed)
+    proposal, why_not = assumptions_mod.parse_proposal(
+        parsed, conversation[-assumptions_mod.RECENT_MESSAGES:],
+    )
+    raw = (parsed or {}).get("assumption") if isinstance(parsed, dict) else None
     await emit(
         turn=completed_turns, seq=next_seq(), event_type="assumption.checked", agent_name=None,
         payload={"after_turn": completed_turns, "proposed": proposal is not None,
                  "gap": (proposal or {}).get("gap", ""), "cost_usd": cost,
+                 # A proposal the engine discarded is recorded with its reason and what it said, so the
+                 # trigger rule's false positives are countable rather than invisible.
+                 **({"rejected": why_not, "proposal": raw} if proposal is None and isinstance(raw, dict) else {}),
                  **({"error": error} if error else {})},
     )
     if proposal is None:
@@ -1604,7 +1610,7 @@ async def _propose_assumption(
         assumptions_mod.MODERATOR, completed_turns,
     )
     await emit(turn=completed_turns, seq=next_seq(), event_type="assumption.made", agent_name=None,
-               payload={**made.payload(), "gap": proposal["gap"]})
+               payload={**made.payload(), "gap": proposal["gap"], "asks": proposal["asks"]})
     return made
 
 

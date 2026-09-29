@@ -25,7 +25,7 @@ recorded as an `assumption.made` event at turn 0, so the transcript shows it and
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 #: Most assumptions a run may be given. Each is prompt text on every turn.
 MAX_ASSUMPTIONS = 8
@@ -170,38 +170,85 @@ Decide ONE thing: is the discussion stuck on an unknown that NOBODY in it can su
 missing fact or number asked for by two participants, or twice by one — that no assumption above \
 covers?
 
-If so, propose ONE working assumption so the discussion can move on: the most plausible value, stated \
-plainly and specifically, and its basis — preferably estimates the participants themselves gave. It \
-must be a FACT about the world, never the decision under discussion and never anyone's position.
+If so, propose ONE working assumption so the discussion can move on: the most plausible value of that \
+unknown, stated plainly and specifically, and its basis — preferably estimates the participants \
+themselves gave. It must be a FACT about the world (a number, a date, a rate, what a rule says), never \
+the decision under discussion, never a plan, and never anyone's position.
 
-If not, the answer is null. Most of the time the answer is null.
+Quote the asks: copy, word for word, at least two places in the conversation above where someone asked \
+for this unknown or said they needed it. Copy exactly — the quotes are checked against the transcript, \
+and a proposal whose asks cannot be found is discarded.
+
+If there is no such unknown, the answer is null. Most of the time the answer is null.
 
 Reply with ONLY a JSON object:
 {{"assumption": null}}
 or
-{{"assumption": {{"statement": "<the assumption>", "basis": "<why this value>", "gap": "<the unknown it fills, and who asked>"}}}}"""
+{{"assumption": {{"statement": "<the assumption>", "basis": "<why this value, in one sentence>", \
+"gap": "<the unknown, in a few words>", "asks": ["<exact words>", "<exact words>"]}}}}"""
+
+#: Verbatim asks a proposal must cite, found in the conversation. The prompt's rule — "the same unknown
+#: asked for by two participants, or twice by one" — measured as NOT followed when merely stated: on the
+#: first live run the check proposed at both of its two chances, once with a plan rather than a fact.
+#: Quoting makes the rule checkable without another model call.
+MIN_ASKS = 2
+MIN_ASK_CHARS = 12
+
+
+#: Messages the check reads — and the only ones its quoted asks are verified against.
+RECENT_MESSAGES = 12
 
 
 def propose_messages(topic: str, conversation: Sequence[Dict[str, Any]],
-                     ledger: Sequence[Assumption], recent: int = 12) -> List[Dict[str, str]]:
+                     ledger: Sequence[Assumption], recent: int = RECENT_MESSAGES) -> List[Dict[str, str]]:
     lines = "\n".join(f"{m.get('speaker')}: {m.get('content')}" for m in list(conversation)[-recent:])
     held = "\n".join(f"- {a.id}: {a.statement}" for a in ledger) or "(none)"
     return [{"role": "user", "content": _PROPOSE_PROMPT.format(
         topic=topic, ledger=held, conversation=lines or "(nothing yet)")}]
 
 
-def parse_proposal(parsed: Optional[Dict[str, Any]]) -> Optional[Dict[str, str]]:
-    """The proposed assumption, or None. Anything malformed is None: a missing assumption costs a turn of
-    "show me"; an invented one built from a parse accident would steer the whole run."""
+def _norm(text: str) -> str:
+    return " ".join(str(text or "").lower().replace("\u2019", "'").replace("\u201c", '"')
+                    .replace("\u201d", '"').split())
+
+
+def verified_asks(asks: Any, conversation: Sequence[Dict[str, Any]]) -> Tuple[List[str], int]:
+    """(the quoted asks that really occur in the conversation, how many distinct MESSAGES they occur in).
+
+    Word for word, case and spacing aside. Messages, not quotes, are what count: two people asking in the
+    same words is two asks, and one quote repeated is still one message.
+    """
+    said = [_norm(m.get("content")) for m in conversation]
+    found: List[str] = []
+    where: set = set()
+    for ask in asks if isinstance(asks, list) else []:
+        q = _norm(str(ask)).strip(" .\"'")
+        if len(q) < MIN_ASK_CHARS:
+            continue
+        hits = {i for i, s in enumerate(said) if q in s}
+        if hits and q not in found:
+            found.append(q)
+            where |= hits
+    return found, len(where)
+
+
+def parse_proposal(parsed: Optional[Dict[str, Any]],
+                   conversation: Sequence[Dict[str, Any]] = ()) -> Tuple[Optional[Dict[str, Any]], str]:
+    """(the proposed assumption or None, why not). Anything malformed is None: a missing assumption costs
+    a turn of "show me"; an invented one would steer the whole run."""
     raw = (parsed or {}).get("assumption")
     if not isinstance(raw, dict):
-        return None
+        return None, "no gap"
     statement = " ".join(str(raw.get("statement") or "").split())[:MAX_STATEMENT_CHARS]
     if not statement:
-        return None
+        return None, "no statement"
+    asks, messages = verified_asks(raw.get("asks"), conversation)
+    if messages < MIN_ASKS:
+        return None, f"the quoted asks occur in {messages} message(s) of the conversation; {MIN_ASKS} needed"
     return {"statement": statement,
             "basis": " ".join(str(raw.get("basis") or "").split())[:MAX_BASIS_CHARS],
-            "gap": " ".join(str(raw.get("gap") or "").split())[:MAX_BASIS_CHARS]}
+            "gap": " ".join(str(raw.get("gap") or "").split())[:MAX_BASIS_CHARS],
+            "asks": asks}, ""
 
 
 def next_id(ledger: Sequence[Assumption]) -> str:
