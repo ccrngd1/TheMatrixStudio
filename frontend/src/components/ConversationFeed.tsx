@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { assumptionUsage, type Usage } from '../lib/assumptionUsage'
 import type { AgentView, FeedMessage, PositionShift, Quote, SourcePassage, WorkingAssumption } from '../types'
 import { AvatarBadge } from './AvatarBadge'
 import { SourceViewer } from './SourceViewer'
@@ -30,8 +31,9 @@ export function ConversationFeed({
   feed, agents, activeSpeaker, thinking, jumpTo, runId, sourceIndex = {}, quotes = {}, assumptions = [],
   onForkAssumption, forkCost,
 }: Props) {
+  const usage = useMemo(() => assumptionUsage(assumptions.map((a) => a.id), feed), [assumptions, feed])
   const card = (a: WorkingAssumption) => (
-    <AssumptionCard key={a.id} a={a} onFork={onForkAssumption} cost={forkCost?.(a.turn)} />
+    <AssumptionCard key={a.id} a={a} onFork={onForkAssumption} cost={forkCost?.(a.turn)} usage={usage[a.id]} />
   )
   // A claim is checked where it is read. The source viewer was reachable only from a persona's
   // dossier, so checking a sentence meant knowing who said it, opening their panel and finding the
@@ -279,10 +281,12 @@ function AssumptionCard({
   a,
   onFork,
   cost,
+  usage,
 }: {
   a: WorkingAssumption
   onFork?: (a: WorkingAssumption, statement: string | null) => Promise<void>
   cost?: string
+  usage?: Usage
 }) {
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState(a.statement)
@@ -317,6 +321,17 @@ function AssumptionCard({
         — {origin}
         {a.basis ? `; basis: ${a.basis}` : ''}
       </span>
+      {usage && (usage.cited > 0 || usage.disputes.length > 0) && (
+        <span
+          className={`ml-2 ${usage.disputes.length ? 'text-amber-300' : 'text-slate-500'}`}
+          title={usage.disputes.map((d) => `${d.speaker} (turn ${d.turn}): ${d.sentence}`).join('\n') ||
+            'Messages naming this assumption by its id'}
+        >
+          · cited in {usage.cited} message{usage.cited === 1 ? '' : 's'}
+          {usage.disputes.length > 0 &&
+            ` · appears disputed by ${[...new Set(usage.disputes.map((d) => d.speaker))].join(', ')}`}
+        </span>
+      )}
       {onFork && !editing && (
         <button
           onClick={() => setEditing(true)}

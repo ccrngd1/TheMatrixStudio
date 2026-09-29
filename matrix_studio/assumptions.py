@@ -330,6 +330,9 @@ def usage(assumption_ids: Sequence[str], transcript: Sequence[Dict[str, Any]]) -
     out: Dict[str, Dict[str, Any]] = {a: {"cited": 0, "disputes": []} for a in assumption_ids}
     patterns = {a: _re.compile(rf"\b{_re.escape(a)}\b") for a in assumption_ids}
     for m in transcript:
+        if m.get("injected"):
+            # The operator's own words, not the room reasoning from it.
+            continue
         text = str(m.get("message") or "")
         for aid, pat in patterns.items():
             if not pat.search(text):

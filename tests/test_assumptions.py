@@ -472,3 +472,8 @@ async def test_a_repeat_of_an_assumption_in_force_is_rejected_and_a_written_id_i
     ok, _ = am.parse_proposal({"assumption": {"statement": "A3: Records are retrievable in 85% of cases",
                                              "asks": ["what share come from partners"]}}, conv, ledger)
     assert ok["statement"] == "Records are retrievable in 85% of cases"
+
+
+async def test_the_operator_s_own_injected_words_are_not_the_room_reasoning_from_it():
+    t = [{"speaker": "Customer", "turn": 5, "message": "A1 is wrong.", "injected": True}]
+    assert am.usage(["A1"], t)["A1"] == {"cited": 0, "disputes": []}
