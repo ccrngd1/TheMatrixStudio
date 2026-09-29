@@ -46,3 +46,26 @@ difference is noise.
 
 **Labels recorded before the key was opened:** SHA-256
 `9e81afb7a0ca6e4515cd0c833f91e87a6b5a12ae6d1be7ae6e14f58319e89030`.
+
+## Result — 2026-09-29
+
+Twelve packets judged under anonymous labels, labels fingerprinted (`3683559`), then unblinded.
+
+| | on (6) | off (6) |
+|---|---|---|
+| FOLDED | **1** | 0 |
+| SETTLED | 0 | 1 |
+| HELD | 4 | 5 |
+| UNCLEAR | 1 | 0 |
+
+- **Criterion: MET** — FOLDED(on) 1 ≤ FOLDED(off) 0 + 1. As pre-registered, no signal against the default.
+- **But the direction is recorded, not waved through.** The one fold and the one unclear case are both
+  on-arm, and both are the same persona: the one whose defended position has conditions nobody in the
+  room can produce (a federal condition, a case holding). In the fold, that persona gave ground on a
+  reason that is on neither condition and *claimed* it was on its list — a misattribution the holding
+  rule does not catch. The unclear case shows the same persona arguing from a softened position whose
+  change happened before the final ten turns. One run is noise at n = 6; two adjacent on-arm cases for
+  the persona most exposed to pressure is the thing to watch.
+- **What would settle it:** the same packets from more runs, or a flag-only check that a persona saying
+  its position moved names a condition that is on its list (the backlog's "abandoned conviction" gate,
+  which this result does not yet justify building).
