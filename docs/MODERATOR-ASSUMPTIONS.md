@@ -99,3 +99,11 @@ assumptions were labelled before the effects pass.
   scored them the day before. So the reported evidence-plan comparison (on 0.33 vs off 0.50; lean 0 vs 2)
   is within that noise and supports nothing, and the EVIDENCE-LEAN result should be read with the same
   caveat.
+
+**Result of the offline check: MISSED.** Non-facts rejected 3 of 3; facts kept **0 of 6**. The classifier
+labelled every proposal PLAN, including ones its own prompt lists as FACT ("what a system can do
+today"), apparently because each statement sat inside a discussion of a proposed workflow. Shipped as
+written it would record nothing on this brief — the feature made inert rather than made safe. As
+committed above, the prompt was not re-tuned against these nine; the classifier was **reverted** and
+never deployed. A second attempt needs its own labelled proposals from new runs, or it would be fitted
+to the labels it is judged by.
