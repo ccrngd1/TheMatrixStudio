@@ -367,3 +367,10 @@ option { background:var(--panel); }
 .cc-sheet::before { left:20px; right:0; }
 .cc-hudstrip.cc-stats { max-width:760px; }
 }
+
+/* ── added for the app (not in the prototype) ── */
+/* Sheets are portalled here. The layer itself never takes a tap; its sheets and scrims do. */
+#cc-overlay { position:absolute; inset:0; z-index:30; pointer-events:none; }
+#cc-overlay > * { pointer-events:auto; }
+/* A screen not yet restyled scrolls inside the frame instead of the page. */
+.cc-legacy { flex:1; min-height:0; overflow-y:auto; }

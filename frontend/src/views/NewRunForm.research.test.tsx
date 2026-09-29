@@ -19,7 +19,7 @@
  * nominates one.
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { NewRunForm } from './NewRunForm'
 import { api } from '../api'
 
@@ -217,12 +217,14 @@ describe('NewRunForm research toggle', () => {
 
   it('explains itself, because an unexplained switch that costs money stays off', () => {
     renderForm()
+    // Tapping the ⓘ opens a sheet (docs/MOBILE-UI.md §2: tap, never hover); the text is read from it.
     fireEvent.click(screen.getByRole('button', { name: /pre-conversation research/i }))
-    expect(screen.getByText(/statutes, regulations, board opinions/)).toBeInTheDocument()
+    const sheet = within(screen.getByRole('dialog', { name: /pre-conversation research/i }))
+    expect(sheet.getByText(/statutes, regulations, board opinions/)).toBeInTheDocument()
     // The two facts an operator needs before agreeing: what it costs, and that they are not
     // made to wait for it.
-    expect(screen.getByText(/\$0\.25/)).toBeInTheDocument()
-    expect(screen.getByText(/not made to wait/)).toBeInTheDocument()
+    expect(sheet.getByText(/\$0\.25/)).toBeInTheDocument()
+    expect(sheet.getByText(/not made to wait/)).toBeInTheDocument()
   })
 })
 

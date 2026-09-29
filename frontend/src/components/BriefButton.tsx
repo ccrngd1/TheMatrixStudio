@@ -60,7 +60,7 @@ export function BriefButton({ kind, id, name }: Props) {
       <button
         className="rounded border border-matrix-accent px-2 py-1 text-xs text-matrix-accent hover:bg-sky-950/40"
         onClick={() => setOpen(true)}
-        title="A one-page decision brief: what was concluded, how consistently, and what is still open."
+        aria-description="A one-page decision brief: what was concluded, how consistently, and what is still open."
       >
         Brief
       </button>

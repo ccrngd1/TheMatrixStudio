@@ -50,15 +50,16 @@ describe('History status pill', () => {
 
   it('shows a recently-active running run as running', async () => {
     await show(run({ status: 'running', last_event_at: NOW - 5 }))
-    expect(screen.getByText('running')).toBeTruthy()
-    expect(screen.queryByText('stalled')).toBeNull()
+    // The design's live tag (docs/MOBILE-UI.md §4.1).
+    expect(screen.getByText(/^Live \d/)).toBeTruthy()
+    expect(screen.queryByText(/Stalled/)).toBeNull()
   })
 
   it('shows a running run with no recent events as stalled', async () => {
     // The branch that could never fire, because the call site passed no timestamp.
     await show(run({ status: 'running', last_event_at: NOW - 600 }))
-    expect(screen.getByText('stalled')).toBeTruthy()
-    expect(screen.queryByText('running')).toBeNull()
+    expect(screen.getByText(/Stalled/)).toBeTruthy()
+    expect(screen.queryByText(/^Live \d/)).toBeNull()
   })
 
   it('shows a run stuck at pending as stalled', async () => {
@@ -66,7 +67,9 @@ describe('History status pill', () => {
     // otherwise silent failure: `start_execution` returning None, a denied
     // StartExecution, or no state machine at all.
     await show(run({ status: 'pending', last_event_at: null, created_at: NOW - 600 }))
-    expect(screen.getByText('stalled')).toBeTruthy()
+    expect(screen.getByText(/Stalled/)).toBeTruthy()
+    // Says why, for a screen reader and a test, where the old hover title said it to nobody.
+    expect(screen.getByText(/never started generating/)).toBeTruthy()
   })
 
   it('does not flag a freshly created pending run', async () => {
@@ -74,26 +77,29 @@ describe('History status pill', () => {
     // which took ~90 s on the measurement corpus. Flagging that would cry wolf on every
     // run with attachments.
     await show(run({ status: 'pending', last_event_at: null, created_at: NOW - 5 }))
-    expect(screen.getByText('pending')).toBeTruthy()
-    expect(screen.queryByText('stalled')).toBeNull()
+    expect(screen.getByText('Pending')).toBeTruthy()
+    expect(screen.queryByText(/Stalled/)).toBeNull()
   })
 
   it('falls back to created_at when a run has no events at all', async () => {
     // `last_event_at` is null for a run that never generated, so a check requiring it
     // skips exactly the case worth catching.
     await show(run({ status: 'running', last_event_at: null, created_at: NOW - 600 }))
-    expect(screen.getByText('stalled')).toBeTruthy()
+    expect(screen.getByText(/Stalled/)).toBeTruthy()
   })
 
   it('never flags a terminal run as stalled', async () => {
-    for (const status of ['complete', 'failed', 'stopped', 'capped', 'interrupted']) {
+    const label: Record<string, RegExp> = {
+      complete: /Complete/, failed: /Failed/, stopped: /Stopped/, capped: /Capped/, interrupted: /Interrupted/,
+    }
+    for (const status of Object.keys(label)) {
       vi.clearAllMocks()
       ;(api.listRuns as ReturnType<typeof vi.fn>).mockResolvedValue([
         run({ status, last_event_at: NOW - 100_000, created_at: NOW - 100_000 }),
       ])
       const { unmount } = render(<History onOpen={() => {}} onNew={() => {}} />)
-      await waitFor(() => expect(screen.getByText(status)).toBeTruthy())
-      expect(screen.queryByText('stalled')).toBeNull()
+      await waitFor(() => expect(screen.getByText(label[status])).toBeTruthy())
+      expect(screen.queryByText(/Stalled/)).toBeNull()
       unmount()
     }
   })

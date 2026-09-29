@@ -111,13 +111,10 @@ describe('ClaimTable', () => {
   })
 
   it('says which runs held a claim', () => {
-    const { container } = render(
-      <ClaimTable claims={METHOD_DEPENDENT} cells={['base', 'hybrid']} />,
-    )
-    const badge = [...container.querySelectorAll('span[title]')].find((s) =>
-      s.textContent?.includes('5 of 5'),
-    )
-    expect(badge?.getAttribute('title')).toBe('b1, b2, b3, b4, b5')
+    render(<ClaimTable claims={METHOD_DEPENDENT} cells={['base', 'hybrid']} />)
+    // Behind a tap-to-open ⓘ now, not a hover title a phone cannot reach (docs/MOBILE-UI.md §2).
+    const tips = screen.getAllByRole('tooltip').map((t) => t.textContent)
+    expect(tips).toContain('b1, b2, b3, b4, b5')
   })
 
   it('marks whether a claim is a demand or a refusal', () => {

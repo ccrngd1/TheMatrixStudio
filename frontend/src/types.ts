@@ -58,6 +58,9 @@ export interface RunSummary {
   // Set on an ensemble's member runs (and the group label it was created under).
   ensemble_id?: string | null
   ensemble_cell?: string | null
+  // For the run cards: the turn ceiling (for `LIVE 06/12`) and the cast (one hex token per persona).
+  max_messages?: number | null
+  cast_names?: string[]
 }
 
 export interface AgentResult {

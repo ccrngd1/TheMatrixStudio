@@ -176,7 +176,7 @@ describe('History — ensembles fold their own conversations', () => {
     await waitFor(() => expect(screen.getByText('solo-run')).toBeInTheDocument())
     await waitFor(() => expect(screen.getByText('renewal')).toBeInTheDocument())
     expect(screen.queryByText('renewal-base-1')).not.toBeInTheDocument()
-    expect(screen.getByText('Individual conversations').parentElement).toHaveTextContent('(1)')
+    expect(screen.getByText('Finished & stopped').parentElement).toHaveTextContent('(1)')
 
     fireEvent.click(screen.getByLabelText(/Show the conversations in renewal/))
     expect(screen.getByText('renewal-base-1')).toBeInTheDocument()
@@ -199,7 +199,7 @@ describe('History — ensembles fold their own conversations', () => {
   it('folds each section, and remembers it', async () => {
     const { unmount } = render(<History onOpen={() => {}} onNew={() => {}} onOpenEnsemble={() => {}} />)
     await waitFor(() => expect(screen.getByText('solo-run')).toBeInTheDocument())
-    fireEvent.click(screen.getByText('Individual conversations'))
+    fireEvent.click(screen.getByText('Finished & stopped'))
     expect(screen.queryByText('solo-run')).not.toBeInTheDocument()
     fireEvent.click(screen.getByText('Ensembles'))
     expect(screen.queryByText('renewal')).not.toBeInTheDocument()
@@ -207,7 +207,7 @@ describe('History — ensembles fold their own conversations', () => {
 
     render(<History onOpen={() => {}} onNew={() => {}} onOpenEnsemble={() => {}} />)
     await waitFor(() => expect(mocked.listRuns).toHaveBeenCalledTimes(2))
-    await waitFor(() => expect(screen.getByText('Individual conversations')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('Finished & stopped')).toBeInTheDocument())
     expect(screen.queryByText('solo-run')).not.toBeInTheDocument()
     expect(screen.queryByText('renewal')).not.toBeInTheDocument()
   })

@@ -49,10 +49,11 @@ describe('command-centre primitives', () => {
 
   it('sheets close on Escape and on the scrim', () => {
     const onClose = vi.fn()
-    const { container } = render(<Sheet title="Dossier" onClose={onClose}>body</Sheet>)
+    render(<Sheet title="Dossier" onClose={onClose}>body</Sheet>)
     expect(screen.getByRole('dialog', { name: 'Dossier' })).toBeInTheDocument()
     fireEvent.keyDown(window, { key: 'Escape' })
-    fireEvent.click(container.querySelector('.cc-scrim')!)
+    // Portalled out of the component's container, so it is found in the document.
+    fireEvent.click(document.querySelector('.cc-scrim')!)
     expect(onClose).toHaveBeenCalledTimes(2)
   })
 

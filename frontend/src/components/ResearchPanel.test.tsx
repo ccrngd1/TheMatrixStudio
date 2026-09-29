@@ -76,7 +76,7 @@ describe('ResearchPanel', () => {
     // question the personas were asking, and that has to be legible at a glance rather than
     // buried in a per-row column.
     render(<ResearchPanel research={RESEARCHED} />)
-    expect(screen.getByText(/controlling/)).toBeInTheDocument()
+    expect(screen.getAllByText(/controlling/).length).toBeGreaterThan(0)
   })
 
   it('marks a scope whose absence of authority was recorded as a finding', () => {

@@ -363,3 +363,14 @@ def test_ws_run_not_found(client):
     with client.websocket_connect("/api/runs/nope/stream") as ws:
         msg = ws.receive_json()
         assert msg["event_type"] == "error"
+
+
+def test_the_run_list_carries_the_card_fields():
+    from matrix_studio.api.app import _run_summary
+
+    row = {"id": "r1", "topic": "t", "config_json": '{"max_messages": 12}',
+           "cast_json": '[{"name": "Ana"}, {"name": "Bo"}, {"persona": "no name"}]'}
+    s = _run_summary(row)
+    assert s["max_messages"] == 12 and s["cast_names"] == ["Ana", "Bo"]
+    bad = _run_summary({"id": "r2", "topic": "t", "config_json": "not json", "cast_json": None})
+    assert bad["max_messages"] is None and bad["cast_names"] == []

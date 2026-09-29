@@ -696,7 +696,24 @@ def _run_summary(run: Dict[str, Any]) -> Dict[str, Any]:
         # ensemble instead of listing replicates among the individual conversations.
         "ensemble_id": run.get("ensemble_id"),
         "ensemble_cell": run.get("ensemble_cell"),
+        # For the run cards (docs/MOBILE-UI.md §4.1): a live run's `LIVE 06/12` needs its ceiling, and one hex
+        # token per persona needs the cast's names. Both are already on the row, so no extra read.
+        **_card_fields(run),
     }
+
+
+def _card_fields(run: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        cfg = json.loads(run.get("config_json") or "{}")
+    except (TypeError, ValueError):
+        cfg = {}
+    try:
+        cast = json.loads(run.get("cast_json") or "[]")
+    except (TypeError, ValueError):
+        cast = []
+    names = [str(m.get("name")) for m in cast if isinstance(m, dict) and m.get("name")] if isinstance(cast, list) else []
+    max_messages = cfg.get("max_messages") if isinstance(cfg, dict) else None
+    return {"max_messages": max_messages if isinstance(max_messages, int) else None, "cast_names": names}
 
 
 #: Run statuses that mean the engine will send nothing more for that run.

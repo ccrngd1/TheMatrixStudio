@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+import { Hint } from './Hint'
 import { useState } from 'react'
 import { api, type ExportFormat } from '../api'
 import { downloadText, slugify } from '../lib/download'
@@ -79,10 +80,12 @@ export function ExportMenu({ kind, id, name }: Props) {
         className={btn}
         disabled={busy !== null}
         onClick={() => void printPdf()}
-        title="Opens the HTML export and your browser's print dialog — choose “Save as PDF”."
       >
         {busy === 'pdf' ? 'Preparing…' : 'PDF'}
       </button>
+      <Hint label="PDF export">
+        Opens the HTML export and your browser's print dialog — choose “Save as PDF”.
+      </Hint>
       {error && <span className="text-xs text-rose-300">Export failed: {error}</span>}
     </div>
   )

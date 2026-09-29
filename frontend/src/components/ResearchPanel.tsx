@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+import { Hint } from './Hint'
 import type { ResearchRecord } from '../types'
 
 interface Props {
@@ -150,11 +151,12 @@ export function ResearchPanel({ research }: Props) {
                       s.scope
                     )}
                     {(s.negative || (s.query_negatives ?? 0) > 0) && (
-                      <span
-                        className="ml-1 text-amber-400"
-                        title="No controlling authority was found, and that absence was recorded as a finding the conversation can retrieve."
-                      >
+                      <span className="ml-1 text-amber-400">
                         ◆
+                        <Hint label="documented negative">
+                          No controlling authority was found, and that absence was recorded as a finding
+                          the conversation can retrieve.
+                        </Hint>
                       </span>
                     )}
                   </td>
@@ -176,8 +178,9 @@ export function ResearchPanel({ research }: Props) {
                         them. That is the one failure here worth shouting about, because
                         every other symptom of it looks like a bad researcher. */}
                     {s.embed_error ? (
-                      <span className="text-rose-400" title={s.embed_error}>
+                      <span className="text-rose-400">
                         not retrievable
+                        <Hint label="why it is not retrievable">{s.embed_error}</Hint>
                       </span>
                     ) : (
                       (s.embedded ?? 0)
@@ -185,8 +188,9 @@ export function ResearchPanel({ research }: Props) {
                   </td>
                   <td className="py-1 font-mono text-slate-500">
                     {s.refused ? (
-                      <span className="text-rose-400" title={s.refused}>
+                      <span className="text-rose-400">
                         refused
+                        <Hint label="why it was refused">{s.refused}</Hint>
                       </span>
                     ) : (
                       (s.kb_id ?? '—')

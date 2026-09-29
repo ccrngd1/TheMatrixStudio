@@ -4,6 +4,7 @@
 // for layout and passes other props through.
 import type { ButtonHTMLAttributes, CSSProperties, HTMLAttributes, ReactNode } from 'react'
 import { useEffect } from 'react'
+import { createPortal } from 'react-dom'
 import { Icon } from './icons'
 import { phase } from './theme'
 
@@ -243,7 +244,10 @@ export function Sheet({
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
-  return (
+  // Portalled to the app's overlay layer: a sheet opened from inside a scrolled or clipped container (a Hint in
+  // a form, say) must still cover the screen, not the container. Falls back to <body> outside the shell.
+  const host = document.getElementById('cc-overlay') ?? document.body
+  return createPortal(
     <>
       <div className="cc-scrim" onClick={onClose} aria-hidden="true" />
       <div className={cx('cc-sheet', tall && 'cc-tall')} role="dialog" aria-modal="true" aria-label={title}>
@@ -255,6 +259,7 @@ export function Sheet({
         </div>
         <div className="cc-sbody">{children}</div>
       </div>
-    </>
+    </>,
+    host,
   )
 }

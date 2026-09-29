@@ -1,36 +1,48 @@
 // SPDX-License-Identifier: Apache-2.0
 /**
- * A small "?" affordance explaining an option, and why you might turn it on.
+ * An ⓘ that explains an option, and why you might turn it on (docs/MOBILE-UI.md §2 rule 6: tap, never hover).
  *
- * Design notes:
- *
- * - The text lives in the DOM at all times and is hidden visually, rather than
- *   being mounted on hover. That makes it reachable by a screen reader and by
- *   find-in-page, and it makes the content assertable in a test — a tooltip that
- *   only exists during a real mouse hover is a tooltip nothing can verify.
- * - Revealed on hover AND on keyboard focus (`focus-within`), because an option
- *   whose explanation is mouse-only is not explained to everyone.
- * - `type="button"` is deliberate: this sits inside a form, and a bare <button>
- *   would submit it.
+ * - **Tapping opens a sheet** with the explanation. The old version appeared on hover and keyboard focus, and
+ *   phones have neither, so every explanation in the app was unreachable on a touch screen.
+ * - **The text is always in the DOM**, visually hidden and linked with `aria-describedby`, so a screen reader
+ *   announces it without opening anything, find-in-page reaches it, and a test can assert it. It keeps
+ *   `role="tooltip"`, which is what nine test files query.
+ * - `type="button"`: this sits inside forms, and a bare <button> would submit them.
  */
-import type { ReactNode } from 'react'
+import { useId, useState, type ReactNode } from 'react'
+import { Sheet } from '../ui/primitives'
+import { Icon } from '../ui/icons'
 
 export function Hint({ children, label }: { children: ReactNode; label?: string }) {
+  const [open, setOpen] = useState(false)
+  const id = useId()
+  const name = label ? `About ${label}` : 'More information'
   return (
-    <span className="group relative inline-flex align-middle">
+    <span className="inline-flex align-middle">
       <button
         type="button"
-        aria-label={label ? `About ${label}` : 'More information'}
-        className="flex h-4 w-4 items-center justify-center rounded-full border border-matrix-border text-[10px] leading-none text-slate-500 transition-colors hover:border-matrix-accent hover:text-matrix-accent focus:border-matrix-accent focus:text-matrix-accent focus:outline-none"
+        aria-label={name}
+        aria-describedby={id}
+        onClick={(e) => {
+          // Inside a <label>, a click would otherwise also toggle the label's checkbox.
+          e.preventDefault()
+          e.stopPropagation()
+          setOpen(true)
+        }}
+        className="cc-info inline-flex min-h-[28px] min-w-[28px] items-center justify-center"
       >
-        ?
+        <Icon name="info" size={15} />
       </button>
-      <span
-        role="tooltip"
-        className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-1.5 w-64 -translate-x-1/2 rounded border border-matrix-border bg-matrix-bg p-2 text-left text-[11px] font-normal leading-snug text-slate-300 opacity-0 shadow-lg transition-opacity group-focus-within:opacity-100 group-hover:opacity-100"
-      >
+      <span id={id} role="tooltip" className="sr-only">
         {children}
       </span>
+      {open && (
+        <Sheet title={label ? `About ${label}` : 'About this'} onClose={() => setOpen(false)}>
+          <div className="text-[14px] leading-relaxed" style={{ color: 'var(--t2)' }}>
+            {children}
+          </div>
+        </Sheet>
+      )}
     </span>
   )
 }

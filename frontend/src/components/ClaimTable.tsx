@@ -18,6 +18,7 @@
 //     claim any group size supports, where "weak" invites a comparison that five runs cannot
 //     support.
 
+import { Hint } from './Hint'
 import type { EnsembleClaim } from '../api'
 
 interface Props {
@@ -122,8 +123,11 @@ export function ClaimTable({ claims, cells, clustered }: Props) {
                 const at = claim.per_cell[cell]
                 if (!at) {
                   return (
-                    <td key={cell} className="py-2 pr-4 text-slate-600" title="This group produced no usable conversation, so it has no opinion on this claim.">
+                    <td key={cell} className="py-2 pr-4 text-slate-600">
                       —
+                      <span className="sr-only">
+                        This group produced no usable conversation, so it has no opinion on this claim.
+                      </span>
                     </td>
                   )
                 }
@@ -133,10 +137,12 @@ export function ClaimTable({ claims, cells, clustered }: Props) {
                       className={`inline-block rounded border px-2 py-0.5 text-[11px] ${
                         TIER_STYLE[at.tier] ?? TIER_STYLE.absent
                       }`}
-                      title={at.runs.length ? at.runs.join(', ') : 'No run in this group held it.'}
                     >
                       {at.held} of {at.of} · {TIER_LABEL[at.tier] ?? at.tier}
                     </span>
+                    <Hint label="which runs held it">
+                      {at.runs.length ? at.runs.join(', ') : 'No run in this group held it.'}
+                    </Hint>
                   </td>
                 )
               })}

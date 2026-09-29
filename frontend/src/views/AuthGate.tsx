@@ -8,7 +8,7 @@
 // boundary: every API route is 401 without a token regardless. The gate stops an
 // unauthenticated visitor seeing an application shell that cannot work.
 
-import { useCallback, useEffect, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useState } from 'react'
 import { setTokenProvider, setUnauthorizedHandler } from '../api'
 import {
   beginLogin,
@@ -163,18 +163,16 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     )
   }
 
+  // Sign-out is offered to the shell rather than drawn here. It used to be a button fixed over the top-right
+  // corner of every screen, which on a phone sits on top of the header's controls; the shell puts it in the
+  // settings sheet. Absent (null) for the local single-user tool, which has nobody to sign out.
+  const cfg = state.config
   return (
-    <>
-      {state.config && (
-        <button
-          onClick={() => logout(state.config as RuntimeConfig)}
-          title="Sign out"
-          className="fixed right-3 top-3 z-50 rounded border border-matrix-border bg-matrix-panel px-2 py-1 text-xs text-slate-400 hover:text-slate-100"
-        >
-          Sign out
-        </button>
-      )}
+    <SessionContext.Provider value={{ signOut: cfg ? () => logout(cfg as RuntimeConfig) : null }}>
       {children}
-    </>
+    </SessionContext.Provider>
   )
 }
+
+export const SessionContext = createContext<{ signOut: (() => void) | null }>({ signOut: null })
+export const useSession = () => useContext(SessionContext)

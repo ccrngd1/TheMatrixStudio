@@ -1,80 +1,112 @@
 // SPDX-License-Identifier: Apache-2.0
-import { useState } from 'react'
 import { History } from './views/History'
 import { NewRunForm } from './views/NewRunForm'
 import { LiveView } from './views/LiveView'
 import { AuthGate } from './views/AuthGate'
 import { KnowledgeBases } from './views/KnowledgeBases'
 import { EnsembleView } from './views/EnsembleView'
+import { EnsembleList } from './views/EnsembleList'
+import { Library } from './views/Library'
+import { AppFrame, ListScreen, SettingsButton, TopBar } from './views/Shell'
+import { navigate, useRoute, type Route } from './lib/route'
+import { useThemeState } from './ui/theme'
+import { Btn } from './ui/primitives'
+import { Icon } from './ui/icons'
 
-type View =
-  | { name: 'history' }
-  // `fromRunId` prefills the form from an existing run's setup. Held in the view
-  // rather than inside the form so remounting on a different source re-loads it.
-  | { name: 'new'; fromRunId?: string }
-  | { name: 'run'; runId: string }
-  // Phase 6: the collections view. A sibling of history rather than a panel inside a
-  // run, because a knowledge base outlives any one conversation — that is the point of it.
-  | { name: 'knowledge' }
-  // An ensemble is its own view, not a run view. It has no transcript and no live stream —
-  // the artefact is the comparison across its members, each of which IS an ordinary run and
-  // opens as one.
-  | { name: 'ensemble'; ensembleId: string }
-
-// Minimal client-side view switching — no router dependency needed for Phase 1.
 export default function App() {
+  const themeState = useThemeState()
   return (
     <AuthGate>
-      <Views />
+      <AppFrame fx={themeState.fx}>
+        <Views themeState={themeState} />
+      </AppFrame>
     </AuthGate>
   )
 }
 
-// The views, wrapped by the gate so an unauthenticated visitor never reaches them. Split
-// out rather than gated inside each case: three views today and a dozen panels, and the
-// next one added would have to remember, whereas a wrapper cannot be forgotten.
-function Views() {
-  const [view, setView] = useState<View>({ name: 'history' })
+const go = (r: Route) => navigate(r)
 
-  switch (view.name) {
+// The views, wrapped by the gate so an unauthenticated visitor never reaches them. Routed by the URL hash
+// (lib/route.ts, docs/MOBILE-UI.md §3), so the back button and deep links work.
+function Views({ themeState }: { themeState: ReturnType<typeof useThemeState> }) {
+  const route = useRoute()
+  const settings = <SettingsButton {...themeState} />
+
+  switch (route.name) {
     case 'new':
       return (
-        <NewRunForm
-          key={view.fromRunId ?? 'blank'}
-          fromRunId={view.fromRunId}
-          onStarted={(runId) => setView({ name: 'run', runId })}
-          onEnsembleStarted={(ensembleId) => setView({ name: 'ensemble', ensembleId })}
-          onCancel={() => setView({ name: 'history' })}
-        />
+        <div className="cc-legacy">
+          <NewRunForm
+            key={route.fromRunId ?? 'blank'}
+            fromRunId={route.fromRunId}
+            onStarted={(runId) => go({ name: 'run', runId, tab: 'conversation' })}
+            onEnsembleStarted={(ensembleId) => go({ name: 'ensemble', ensembleId })}
+            onCancel={() => window.history.back()}
+          />
+        </div>
       )
     case 'run':
+    case 'scrub':
       return (
-        <LiveView
-          runId={view.runId}
-          onBack={() => setView({ name: 'history' })}
-          onOpenRun={(runId) => setView({ name: 'run', runId })}
-          onStartFresh={(runId) => setView({ name: 'new', fromRunId: runId })}
-        />
+        <div className="cc-legacy">
+          <LiveView
+            key={route.runId}
+            runId={route.runId}
+            onBack={() => go({ name: 'runs' })}
+            onOpenRun={(runId) => go({ name: 'run', runId, tab: 'conversation' })}
+            onStartFresh={(runId) => go({ name: 'new', fromRunId: runId })}
+          />
+        </div>
       )
     case 'ensemble':
       return (
-        <EnsembleView
-          ensembleId={view.ensembleId}
-          onBack={() => setView({ name: 'history' })}
-          onOpenRun={(runId) => setView({ name: 'run', runId })}
-        />
+        <div className="cc-legacy">
+          <EnsembleView
+            key={route.ensembleId}
+            ensembleId={route.ensembleId}
+            onBack={() => go({ name: 'ensembles' })}
+            onOpenRun={(runId) => go({ name: 'run', runId, tab: 'conversation' })}
+          />
+        </div>
+      )
+    case 'ensembles':
+      return (
+        <ListScreen dock="ensembles" top={<TopBar title="Ensembles" sub="groups of runs, counted per group" right={settings} />}>
+          <EnsembleList
+            onOpen={(ensembleId) => go({ name: 'ensemble', ensembleId })}
+            onNew={() => go({ name: 'new' })}
+          />
+        </ListScreen>
       )
     case 'knowledge':
-      return <KnowledgeBases onBack={() => setView({ name: 'history' })} />
-    case 'history':
+      return (
+        <ListScreen dock="knowledge" top={<TopBar title="Knowledge" sub="collections personas search" right={settings} />}>
+          <KnowledgeBases onBack={() => go({ name: 'runs' })} />
+        </ListScreen>
+      )
+    case 'library':
+      return (
+        <ListScreen dock="library" top={<TopBar title="Library" sub="archetypes and saved casts" right={settings} />}>
+          <Library onNewRun={() => go({ name: 'new' })} />
+        </ListScreen>
+      )
+    case 'runs':
     default:
       return (
-        <History
-          onOpen={(runId) => setView({ name: 'run', runId })}
-          onNew={() => setView({ name: 'new' })}
-          onKnowledgeBases={() => setView({ name: 'knowledge' })}
-          onOpenEnsemble={(ensembleId) => setView({ name: 'ensemble', ensembleId })}
-        />
+        <ListScreen
+          dock="runs"
+          top={<TopBar title="Matrix Studio" brand sub="command centre" right={settings} />}
+          fab={
+            <Btn variant="primary" onClick={() => go({ name: 'new' })}>
+              <Icon name="plus" /> New run
+            </Btn>
+          }
+        >
+          <History
+            onOpen={(runId) => go({ name: 'run', runId, tab: 'conversation' })}
+            onOpenEnsemble={(ensembleId) => go({ name: 'ensemble', ensembleId })}
+          />
+        </ListScreen>
       )
   }
 }

@@ -8,7 +8,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
-import { AuthGate } from './AuthGate'
+import { AuthGate, useSession } from './AuthGate'
 import { resetConfigCache } from '../lib/config'
 import { storeTokens } from '../lib/auth'
 
@@ -153,6 +153,12 @@ describe('the gate fails closed', () => {
 // Opens for the cases it should
 // --------------------------------------------------------------------------- //
 
+// Stands in for the shell's settings sheet: renders sign-out exactly when the gate offers one.
+function SignOutProbe() {
+  const { signOut } = useSession()
+  return signOut ? <button onClick={signOut}>Sign out</button> : null
+}
+
 describe('the gate opens', () => {
   it('renders the app with a live token', async () => {
     storeTokens({
@@ -162,8 +168,9 @@ describe('the gate opens', () => {
       expiresAt: Math.floor(Date.now() / 1000) + 3600,
     })
     vi.stubGlobal('fetch', respond(DEPLOYED))
-    render(<AuthGate>{child()}</AuthGate>)
+    render(<AuthGate>{child()}<SignOutProbe /></AuthGate>)
     await waitFor(() => expect(screen.getByText(PROTECTED)).toBeTruthy())
+    // Offered to the shell (which puts it in the settings sheet) rather than drawn over every screen.
     expect(screen.getByRole('button', { name: /sign out/i })).toBeTruthy()
   })
 
@@ -172,7 +179,7 @@ describe('the gate opens', () => {
     // API's own `/config.json` route. It does not rely on the file being absent — see
     // the 404 test below for why absence can no longer mean "open".
     vi.stubGlobal('fetch', respond({ ...DEPLOYED, authRequired: false }))
-    render(<AuthGate>{child()}</AuthGate>)
+    render(<AuthGate>{child()}<SignOutProbe /></AuthGate>)
     await waitFor(() => expect(screen.getByText(PROTECTED)).toBeTruthy())
     // No sign-out button: there is no session to end.
     expect(screen.queryByRole('button', { name: /sign out/i })).toBeNull()

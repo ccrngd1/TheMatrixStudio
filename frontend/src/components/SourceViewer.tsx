@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+import { Hint } from './Hint'
 import { useEffect, useRef, useState } from 'react'
 import { api, type RunSource } from '../api'
 
@@ -86,10 +87,14 @@ export function SourceViewer({ runId, documentId, ordinal, onClose }: Props) {
                         ? 'bg-emerald-900/60 text-emerald-300'
                         : 'bg-slate-800 text-slate-400'
                     }`}
-                    title="How research tiered it: a statute, regulation, board ruling or decided case is controlling."
                   >
                     {source.authority}
                   </span>
+                )}
+                {source.authority && (
+                  <Hint label="authority tiers">
+                    How research tiered it: a statute, regulation, board ruling or decided case is controlling.
+                  </Hint>
                 )}
                 {source.kb_name && (
                   <span className="text-slate-500">in {source.kb_name}</span>

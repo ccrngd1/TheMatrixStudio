@@ -3,6 +3,10 @@ import { useEffect, useRef, useState } from 'react'
 import { api, type EnsembleSummary } from '../api'
 import type { RunSummary } from '../types'
 import { isStalled } from '../lib/runStatus'
+import { Icon } from '../ui/icons'
+import {
+  Btn, Chip, Hex, HudCell, HudStrip, Panel, PanelButton, Tag, Ticks, identityOf, type RunState,
+} from '../ui/primitives'
 
 // How long a load may take before the view says why it is still waiting.
 //
@@ -15,7 +19,8 @@ const SLOW_AFTER_MS = 3000
 
 interface Props {
   onOpen: (runId: string) => void
-  onNew: () => void
+  /** Optional: in the shell the New-run button is the floating action on this screen. */
+  onNew?: () => void
   /** Optional so existing tests that render History alone keep working; the button is
    *  simply absent without it rather than rendering a control that does nothing. */
   onKnowledgeBases?: () => void
@@ -32,6 +37,7 @@ export function History({ onOpen, onNew, onKnowledgeBases, onOpenEnsemble }: Pro
   // runs are nested under them, not repeated in the individual list.
   const [ensembles, setEnsembles] = useState<EnsembleSummary[]>([])
   const [q, setQ] = useState('')
+  const [branchesOnly, setBranchesOnly] = useState(false)
   const [loading, setLoading] = useState(true)
   const [slow, setSlow] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -152,34 +158,50 @@ export function History({ onOpen, onNew, onKnowledgeBases, onOpenEnsemble }: Pro
     )
   }
 
+  // §4.1: live runs first, then everything that has stopped; branches are a filter, not a section.
+  const shown = branchesOnly ? individual.filter((r) => r.parent_run_id) : individual
+  const liveRuns = shown.filter((r) => isLiveStatus(r))
+  const doneRuns = shown.filter((r) => !isLiveStatus(r))
+  const weekAgo = Date.now() / 1000 - 7 * 86400
+  const spend7d = runs.filter((r) => (r.created_at ?? 0) >= weekAgo).reduce((n, r) => n + (r.total_cost_usd ?? 0), 0)
+  const liveCount = runs.filter((r) => isLiveStatus(r)).length
+  const branchCount = individual.filter((r) => r.parent_run_id).length
+
   return (
-    <div className="mx-auto max-w-4xl p-6">
-      <div className="mb-4 flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-slate-100">TheMatrix Simulation Studio</h1>
-        <div className="flex items-center gap-2">
-          {onKnowledgeBases && (
-            <button
-              onClick={onKnowledgeBases}
-              className="rounded-lg border border-matrix-border px-3 py-2 text-sm text-slate-300 hover:text-slate-100"
-            >
-              Knowledge bases
-            </button>
-          )}
-          <button
-            onClick={onNew}
-            className="rounded-lg bg-matrix-accent px-4 py-2 font-semibold text-matrix-bg hover:bg-sky-400"
-          >
-            + New run
-          </button>
-        </div>
+    <div className="flex flex-col gap-2.5">
+      <HudStrip className="cc-stats">
+        <HudCell label="Live now" value={pad(liveCount)} sub={liveCount ? 'streaming' : 'none running'} />
+        <HudCell label="Finished" value={pad(runs.filter((r) => r.status === 'complete').length)} sub="complete" />
+        <HudCell label="Spend · 7 days" value={`$${spend7d.toFixed(2)}`} sub={`${runs.length} runs listed`} />
+      </HudStrip>
+
+      <div className="cc-searchbox">
+        <Icon name="search" />
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Search by name, description, or topic…"
+          aria-label="Search runs"
+        />
       </div>
 
-      <input
-        value={q}
-        onChange={(e) => setQ(e.target.value)}
-        placeholder="Search by name, description, or topic…"
-        className="mb-4 w-full rounded-lg border border-matrix-border bg-matrix-panel p-2 text-sm"
-      />
+      <div className="flex flex-wrap items-center gap-2">
+        {onNew && (
+          <Btn variant="primary" size="sm" onClick={onNew}>
+            <Icon name="plus" /> New run
+          </Btn>
+        )}
+        {onKnowledgeBases && (
+          <Btn size="sm" onClick={onKnowledgeBases}>
+            <Icon name="knowledge" /> Knowledge bases
+          </Btn>
+        )}
+        {branchCount > 0 && (
+          <Chip on={branchesOnly} onClick={() => setBranchesOnly((b) => !b)} aria-pressed={branchesOnly}>
+            <Icon name="branch" size={13} /> Branches only ({branchCount})
+          </Chip>
+        )}
+      </div>
 
       {onOpenEnsemble && ensembles.length > 0 && (
         <Section
@@ -189,71 +211,63 @@ export function History({ onOpen, onNew, onKnowledgeBases, onOpenEnsemble }: Pro
           open={openSections.ensembles}
           onToggle={() => toggleSection('ensembles')}
         >
-          <div className="space-y-2">
+          <div className="cc-list">
             {ensembles.map((e) => {
               const planned = (e.spec ?? []).reduce((n, c) => n + (c.n ?? 0), 0)
               const members = membersOf.get(e.ensemble_id) ?? []
               const expanded = openEnsembles.has(e.ensemble_id)
               return (
-                <div key={e.ensemble_id} className="rounded-lg border border-matrix-border bg-matrix-panel">
-                  <div className="flex items-stretch">
-                    {/* Its own control, not part of the row: the row opens the ensemble, and
+                <Panel key={e.ensemble_id} edge="ensemble">
+                  <div className="flex items-start gap-2">
+                    <button
+                      type="button"
+                      onClick={() => onOpenEnsemble(e.ensemble_id)}
+                      className="min-w-0 flex-1 text-left"
+                    >
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="cc-code">{e.name ?? e.ensemble_id.slice(0, 8)}</span>
+                        <Tag tone="ens">
+                          {planned} run{planned === 1 ? '' : 's'}
+                          {(e.spec ?? []).length > 1 ? `, ${e.spec.length} groups` : ''}
+                        </Tag>
+                        {/* Three states, not two. "No report yet" and "a report was refused" are
+                            different, and only one of them is worth opening to retry. */}
+                        {e.report_error ? (
+                          <Tag tone="danger">report failed</Tag>
+                        ) : e.has_report ? (
+                          <Tag tone="ok">report ready</Tag>
+                        ) : (
+                          <Tag>{e.status ?? 'pending'}</Tag>
+                        )}
+                      </div>
+                      <p className="cc-topic">{e.description ?? e.topic}</p>
+                      {e.report_cost_usd != null && (
+                        <p className="cc-meta">${e.report_cost_usd.toFixed(4)} report</p>
+                      )}
+                    </button>
+                    {/* Its own control, not part of the card: the card opens the ensemble, and
                         folding a list open should not navigate away from it. */}
                     <button
+                      type="button"
                       onClick={() => toggleEnsemble(e.ensemble_id)}
                       aria-expanded={expanded}
                       aria-label={`${expanded ? 'Hide' : 'Show'} the conversations in ${e.name ?? e.ensemble_id}`}
                       disabled={members.length === 0}
-                      className="w-8 shrink-0 border-r border-matrix-border text-slate-400 hover:text-slate-100 disabled:opacity-30"
+                      className="cc-icon disabled:opacity-30"
                     >
-                      {expanded ? '▾' : '▸'}
-                    </button>
-                    <button
-                      onClick={() => onOpenEnsemble(e.ensemble_id)}
-                      className="flex min-w-0 flex-1 items-center justify-between p-3 text-left hover:bg-matrix-border/30"
-                    >
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="font-semibold text-matrix-accent">
-                            {e.name ?? e.ensemble_id.slice(0, 8)}
-                          </span>
-                          <span className="rounded bg-matrix-border px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-300">
-                            {planned} run{planned === 1 ? '' : 's'}
-                            {(e.spec ?? []).length > 1 ? `, ${e.spec.length} groups` : ''}
-                          </span>
-                          {/* Three states, not two. "No report yet" and "a report was refused"
-                              are different, and only one of them is worth opening to retry. */}
-                          {e.report_error ? (
-                            <span className="rounded bg-rose-900/40 px-2 py-0.5 text-[10px] uppercase tracking-wide text-rose-200">
-                              report failed
-                            </span>
-                          ) : e.has_report ? (
-                            <span className="rounded bg-emerald-900/40 px-2 py-0.5 text-[10px] uppercase tracking-wide text-emerald-200">
-                              report ready
-                            </span>
-                          ) : (
-                            <span className="rounded bg-matrix-border px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-400">
-                              {e.status ?? 'pending'}
-                            </span>
-                          )}
-                        </div>
-                        <p className="truncate text-sm text-slate-300">
-                          {e.description ?? e.topic}
-                        </p>
-                      </div>
-                      <div className="ml-3 whitespace-nowrap text-right text-xs text-slate-500">
-                        {e.report_cost_usd != null && <div>${e.report_cost_usd.toFixed(4)} report</div>}
-                      </div>
+                      <span className="cc-caret" style={{ transform: expanded ? 'rotate(90deg)' : undefined }}>
+                        ▸
+                      </span>
                     </button>
                   </div>
                   {expanded && members.length > 0 && (
-                    <div className="space-y-2 border-t border-matrix-border p-2 pl-10">
+                    <div className="mt-2 flex flex-col gap-2">
                       {members.map((r) => (
-                        <RunRow key={r.run_id} run={r} onOpen={onOpen} cell={r.ensemble_cell} />
+                        <RunCard key={r.run_id} run={r} onOpen={onOpen} cell={r.ensemble_cell} />
                       ))}
                     </div>
                   )}
-                </div>
+                </Panel>
               )
             })}
           </div>
@@ -261,47 +275,61 @@ export function History({ onOpen, onNew, onKnowledgeBases, onOpenEnsemble }: Pro
       )}
 
       {loading ? (
-        <div className="text-slate-500">
+        <div className="cc-empty">
           <p>Loading…</p>
           {slow && (
-            <p className="mt-2 text-xs text-slate-500">
+            <p className="mt-2">
               Still waiting on the API. The first request after an idle period starts a
               new Lambda sandbox and can take up to 30 seconds; it is not stuck.
             </p>
           )}
         </div>
       ) : error ? (
-        <div className="rounded-lg border border-red-900/60 bg-red-900/20 p-4">
-          <p className="text-sm text-red-300">Could not load your runs: {error}</p>
-          <button
-            onClick={() => load(q || undefined)}
-            className="mt-3 rounded border border-matrix-border px-3 py-1 text-xs text-slate-300 hover:text-slate-100"
-          >
+        <Panel>
+          <p className="text-sm" style={{ color: 'var(--danger)' }}>Could not load your runs: {error}</p>
+          <Btn size="sm" className="mt-3" onClick={() => load(q || undefined)}>
             Try again
-          </button>
-        </div>
+          </Btn>
+        </Panel>
       ) : runs.length === 0 ? (
-        <p className="text-slate-500">No runs yet. Start one with “+ New run”.</p>
+        <p className="cc-empty">No runs yet. Start one with “New run”.</p>
       ) : (
-        <Section
-          id="runs"
-          title="Individual conversations"
-          count={individual.length}
-          open={openSections.runs}
-          onToggle={() => toggleSection('runs')}
-        >
-          {individual.length === 0 ? (
-            <p className="text-sm text-slate-500">
-              {q ? 'No individual conversation matches.' : 'Every conversation here belongs to an ensemble above.'}
-            </p>
-          ) : (
-            <div className="space-y-2">
-              {individual.map((r) => (
-                <RunRow key={r.run_id} run={r} onOpen={onOpen} />
-              ))}
-            </div>
+        <>
+          {liveRuns.length > 0 && (
+            <Section id="live" title="Live now" count={liveRuns.length} open={openSections.live} onToggle={() => toggleSection('live')}>
+              <div className="cc-list">
+                {liveRuns.map((r) => (
+                  <RunCard key={r.run_id} run={r} onOpen={onOpen} />
+                ))}
+              </div>
+            </Section>
           )}
-        </Section>
+          <Section
+            id="finished"
+            title="Finished & stopped"
+            count={doneRuns.length}
+            open={openSections.finished}
+            onToggle={() => toggleSection('finished')}
+          >
+            {doneRuns.length === 0 ? (
+              <p className="cc-empty">
+                {q
+                  ? 'No individual conversation matches.'
+                  : branchesOnly
+                    ? 'No finished branches.'
+                    : liveRuns.length
+                      ? 'Nothing has finished yet.'
+                      : 'Every conversation here belongs to an ensemble above.'}
+              </p>
+            ) : (
+              <div className="cc-list">
+                {doneRuns.map((r) => (
+                  <RunCard key={r.run_id} run={r} onOpen={onOpen} />
+                ))}
+              </div>
+            )}
+          </Section>
+        </>
       )}
     </div>
   )
@@ -310,10 +338,10 @@ export function History({ onOpen, onNew, onKnowledgeBases, onOpenEnsemble }: Pro
 // Which sections are folded is remembered across visits: a user who closes the individual list
 // to work with ensembles should not reopen it on every return to this page.
 const SECTIONS_KEY = 'matrix-studio.history.sections'
-type SectionId = 'ensembles' | 'runs'
+type SectionId = 'ensembles' | 'live' | 'finished'
 
 function readSections(): Record<SectionId, boolean> {
-  const all = { ensembles: true, runs: true }
+  const all = { ensembles: true, live: true, finished: true }
   try {
     const saved = JSON.parse(localStorage.getItem(SECTIONS_KEY) ?? '{}')
     return { ...all, ...(saved && typeof saved === 'object' ? saved : {}) }
@@ -338,17 +366,20 @@ function Section({
   children: React.ReactNode
 }) {
   return (
-    <section className="mb-6">
-      <h2 className="mb-2">
+    <section className="cc-sec">
+      <h2>
         <button
+          type="button"
           onClick={onToggle}
           aria-expanded={open}
           aria-controls={`history-${id}`}
-          className="flex items-center gap-1 text-xs uppercase tracking-wide text-slate-500 hover:text-slate-300"
+          className="cc-label flex min-h-[32px] items-center gap-1.5"
         >
-          <span aria-hidden>{open ? '▾' : '▸'}</span>
           <span>{title}</span>
-          <span className="normal-case text-slate-600">({count})</span>
+          <span className="cc-num">({count})</span>
+          <span className="cc-caret" aria-hidden style={{ transform: open ? 'rotate(90deg)' : undefined }}>
+            ▸
+          </span>
         </button>
       </h2>
       {open && <div id={`history-${id}`}>{children}</div>}
@@ -356,7 +387,7 @@ function Section({
   )
 }
 
-function RunRow({
+function RunCard({
   run: r,
   onOpen,
   cell,
@@ -366,39 +397,37 @@ function RunRow({
   /** The ensemble group the run was created under; shown only when nested. */
   cell?: string | null
 }) {
+  const stalled = isStalled(r.status, r.last_event_at, r.created_at, STALL_SECONDS)
+  const live = r.status === 'running' && !stalled
+  const cast = r.cast_names ?? []
   return (
-    <button
-      onClick={() => onOpen(r.run_id)}
-      className="flex w-full items-center justify-between rounded-lg border border-matrix-border bg-matrix-panel p-3 text-left hover:border-matrix-accent"
-    >
-      <div className="min-w-0">
-        <div className="flex items-center gap-2">
-          {cell && (
-            <span className="text-[10px] uppercase tracking-wide text-slate-500">{cell}</span>
-          )}
-          <span className="font-semibold text-matrix-accent">{r.name ?? r.run_id.slice(0, 8)}</span>
-          {/* `lastEventAt` and `createdAt` were never passed, so the
-              staleness branch inside StatusPill could not fire: a run orphaned
-              by a restart rendered as a healthy "running" for ever. The API has
-              supplied `last_event_at` for exactly this since it was added. */}
-          <StatusPill status={r.status} lastEventAt={r.last_event_at} createdAt={r.created_at} />
-          {r.parent_run_id && (
-            <span
-              title={`Branched @ turn ${r.branch_turn}`}
-              className="rounded bg-matrix-border px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-300"
-            >
-              ⑂ branch @ {r.branch_turn}
-            </span>
-          )}
-        </div>
-        <p className="truncate text-sm text-slate-300">{r.description ?? r.topic}</p>
-        {!cell && <p className="truncate text-xs text-slate-500">{r.topic}</p>}
+    <PanelButton edge={edgeOf(r.status, stalled)} live={live} onClick={() => onOpen(r.run_id)}>
+      <div className="flex flex-wrap items-center gap-2">
+        {cell && <span className="cc-label">{cell}</span>}
+        <span className="cc-code">{r.name ?? r.run_id.slice(0, 8)}</span>
+        {/* `lastEventAt` and `createdAt` were never passed, so the staleness branch could not fire:
+            a run orphaned by a restart rendered as a healthy "running" for ever. */}
+        <StatusTag run={r} stalled={stalled} />
+        {r.parent_run_id && (
+          <Tag tone="ens">
+            <Icon name="branch" size={12} /> branch @ {r.branch_turn}
+          </Tag>
+        )}
       </div>
-      <div className="ml-3 whitespace-nowrap text-right text-xs text-slate-500">
-        <div>{r.turn_count} turns</div>
-        <div>${(r.total_cost_usd ?? 0).toFixed(4)}</div>
+      <p className="cc-topic">{r.description ?? r.topic}</p>
+      {!cell && r.description && <p className="cc-muted truncate">{r.topic}</p>}
+      {live && r.max_messages ? <Ticks n={r.turn_count} max={r.max_messages} live /> : null}
+      <div className="cc-meta flex items-center justify-between gap-2">
+        <span className="flex gap-[3px]">
+          {cast.slice(0, 8).map((name) => (
+            <Hex key={name} name={name} slot={identityOf(name, cast)} size="xs" />
+          ))}
+        </span>
+        <span className="cc-num">
+          {r.turn_count} turns · ${(r.total_cost_usd ?? 0).toFixed(4)}
+        </span>
       </div>
-    </button>
+    </PanelButton>
   )
 }
 
@@ -407,47 +436,56 @@ function RunRow({
 // Generous so a slow multi-agent turn is never mislabelled.
 const STALL_SECONDS = 120
 
-function StatusPill({
-  status,
-  lastEventAt,
-  createdAt,
-}: {
-  status: string
-  lastEventAt?: number | null
-  createdAt?: number | null
-}) {
-  // Item 2: a "running" row in history has no live stream by definition; if it
-  // also has no recent events, show it as stalled rather than falsely live.
-  //
-  // `pending` is included, and that is the more important half now. A run is created
-  // `pending` and its first turn flips it to `running` — so a run stuck at `pending` is
-  // one whose execution never started, which is a real and silent failure mode
-  // (`start_execution` returning None, a denied StartExecution, a state machine that is
-  // not there). Without this it renders as "pending" for ever, indistinguishable from a
-  // run that is about to begin.
-  const stalled = isStalled(status, lastEventAt, createdAt, STALL_SECONDS)
-  const shown = stalled ? 'stalled' : status
-  const color =
-    shown === 'complete'
-      ? 'bg-matrix-live/20 text-matrix-live'
-      : shown === 'running'
-        ? 'bg-matrix-accent/20 text-matrix-accent'
-        : shown === 'failed'
-          ? 'bg-red-900/40 text-red-300'
-          : shown === 'stalled' || shown === 'interrupted'
-            ? 'bg-amber-900/40 text-amber-300'
-            : 'bg-matrix-border text-slate-400'
-  const title = stalled
-    ? status === 'pending'
-      ? 'Created but never started generating — its execution may have failed to start'
-      : 'Marked running but no recent events — likely orphaned by a server restart mid-run'
-    : undefined
-  return (
-    <span
-      title={title}
-      className={`rounded px-2 py-0.5 text-[10px] uppercase tracking-wide ${color}`}
-    >
-      {shown}
-    </span>
-  )
+function StatusTag({ run: r, stalled }: { run: RunSummary; stalled: boolean }) {
+  // `pending` counts as stalled too, and that is the more important half: a run stuck at `pending` is one
+  // whose execution never started (`start_execution` returning None, a denied StartExecution), which is a
+  // real and silent failure mode that would otherwise read as "about to begin" for ever.
+  if (stalled) {
+    return (
+      <Tag tone="warn">
+        ⚠ Stalled
+        <span className="sr-only">
+          {r.status === 'pending'
+            ? ' — created but never started generating; its execution may have failed to start'
+            : ' — marked running but no recent events; likely orphaned mid-run'}
+        </span>
+      </Tag>
+    )
+  }
+  switch (r.status) {
+    case 'running':
+      return (
+        <Tag tone="live" pulse>
+          Live {pad(r.turn_count)}
+          {r.max_messages ? `/${pad(r.max_messages)}` : ''}
+        </Tag>
+      )
+    case 'complete':
+      return <Tag tone="ok">✓ Complete</Tag>
+    case 'stopped':
+      return <Tag tone="warn">■ Stopped</Tag>
+    case 'capped':
+      return <Tag tone="danger">$ Capped</Tag>
+    case 'failed':
+      return <Tag tone="danger">✕ Failed</Tag>
+    case 'interrupted':
+      return <Tag tone="warn">Interrupted</Tag>
+    default:
+      return <Tag>{r.status ? r.status[0].toUpperCase() + r.status.slice(1) : 'Unknown'}</Tag>
+  }
 }
+
+function edgeOf(status: string, stalled: boolean): RunState | undefined {
+  if (stalled) return 'stopped'
+  if (status === 'running' || status === 'stopping') return 'running'
+  if (status === 'complete') return 'complete'
+  if (status === 'stopped' || status === 'interrupted' || status === 'pending') return 'stopped'
+  if (status === 'capped' || status === 'failed') return 'capped'
+  return undefined
+}
+
+const isLiveStatus = (r: RunSummary) =>
+  (r.status === 'running' || r.status === 'pending' || r.status === 'stopping') &&
+  !isStalled(r.status, r.last_event_at, r.created_at, STALL_SECONDS)
+
+const pad = (n: number) => String(n).padStart(2, '0')
