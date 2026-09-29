@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { assumptionUsage, type Usage } from '../lib/assumptionUsage'
 import type { AgentView, FeedMessage, PositionShift, Quote, SourcePassage, WorkingAssumption } from '../types'
-import { AvatarBadge } from './AvatarBadge'
 import { SourceViewer } from './SourceViewer'
 import { citeSegments, unsourcedCitations } from '../lib/citeText'
+import { Hint } from './Hint'
+import { Hex, identityColor, identityOf } from '../ui/primitives'
+import { phase } from '../ui/theme'
 
 interface Props {
   feed: FeedMessage[]
@@ -25,12 +27,19 @@ interface Props {
   onForkAssumption?: (a: WorkingAssumption, statement: string | null) => Promise<void>
   /** What a fork at a turn would cost, in words (`lib/forkCost.ts`). */
   forkCost?: (turn: number) => string
+  /** Open a speaker's dossier from their token. */
+  onOpenDossier?: (name: string) => void
 }
+
+const pad = (n: number) => String(n).padStart(2, '0')
+type Css = CSSProperties & Record<`--${string}`, string>
 
 export function ConversationFeed({
   feed, agents, activeSpeaker, thinking, jumpTo, runId, sourceIndex = {}, quotes = {}, assumptions = [],
-  onForkAssumption, forkCost,
+  onForkAssumption, forkCost, onOpenDossier,
 }: Props) {
+  // Identity slots in the cast's own order, so a persona keeps one colour on every surface.
+  const castOrder = useMemo(() => Object.keys(agents), [agents])
   const usage = useMemo(() => assumptionUsage(assumptions.map((a) => a.id), feed), [assumptions, feed])
   const card = (a: WorkingAssumption) => (
     <AssumptionCard key={a.id} a={a} onFork={onForkAssumption} cost={forkCost?.(a.turn)} usage={usage[a.id]} />
@@ -65,7 +74,7 @@ export function ConversationFeed({
   }, [jumpTo])
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="cc-pane">
       {openSource && runId && (
         <SourceViewer
           runId={runId}
@@ -74,20 +83,9 @@ export function ConversationFeed({
           onClose={() => setOpenSource(null)}
         />
       )}
-      <div className="flex items-center justify-between border-b border-matrix-border px-4 py-2">
-        <h2 className="text-sm font-semibold text-slate-300">Conversation</h2>
-        <label className="flex items-center gap-1 text-xs text-slate-400">
-          <input
-            type="checkbox"
-            checked={autoScroll}
-            onChange={(e) => setAutoScroll(e.target.checked)}
-          />
-          auto-scroll
-        </label>
-      </div>
-      <div className="flex-1 space-y-3 overflow-y-auto p-4">
+      <div className="cc-scroll cc-feed">
         {feed.length === 0 && !thinking && (
-          <p className="text-sm text-slate-500">Waiting for the conversation to begin…</p>
+          <p className="cc-empty">Waiting for the conversation to begin…</p>
         )}
         {feed.map((m, i) => {
           // The simultaneous method puts every survivor of a round on ONE turn number.
@@ -101,65 +99,70 @@ export function ConversationFeed({
           // An assumption made at turn t is shown before the first message of a later turn.
           const prevTurn = i === 0 ? -Infinity : feed[i - 1].turn
           const madeHere = assumptions.filter((a) => a.turn < m.turn && a.turn >= prevTurn)
+          const slot = identityOf(m.speaker, castOrder)
           return (
-            <div key={`${m.seq}`} className="space-y-3">
+            <div key={`${m.seq}`} className="flex flex-col gap-3">
               {madeHere.map(card)}
               {opensRound && (
-                <div className="flex items-center gap-2 pt-1 text-[11px] text-slate-500">
+                <div className="cc-legend flex items-center gap-2">
                   <span className="h-px flex-1 bg-matrix-border" />
                   round {m.turn} · {roundSize} spoke at once
                   <span className="h-px flex-1 bg-matrix-border" />
                 </div>
               )}
-              <div
-                id={`turn-${m.seq}`}
-                className={`flex gap-3 rounded transition-colors ${
-                  m.consultant ? 'ml-10 border-l-2 border-amber-500/40 pl-3 ' : ''
-                }${
-                  highlight === m.seq ? 'bg-matrix-accent/10 ring-1 ring-matrix-accent/60' : ''
-                }`}
-              >
-                <AvatarBadge name={m.speaker} portrait={agents[m.speaker]?.portrait ?? null}
-                  portraitUrl={agents[m.speaker]?.portraitUrl ?? null} size={36} />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-baseline gap-2">
-                    <span className="font-semibold text-slate-200">{m.speaker}</span>
-                    {m.injected && (
-                      <span
-                        className="rounded bg-fuchsia-900/40 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-fuchsia-200"
-                        title="Put into the conversation by the operator, not generated"
-                      >
-                        injected
-                      </span>
-                    )}
-                    {m.consultant ? (
-                      <span
-                        className="rounded bg-amber-900/40 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-200"
-                        title="Not a participant: answers only from its own sources, when asked"
-                      >
-                        consultant
-                      </span>
-                    ) : (
-                      <span className="text-[11px] text-slate-500">turn {m.turn}</span>
-                    )}
-                    {roundSize > 1 && !opensRound && (
-                      <span className="text-[11px] text-slate-600">· at the same time</span>
-                    )}
+              {m.injected ? (
+                // Put in by the operator: a hatched banner, so it can never be read as a persona speaking.
+                <div
+                  id={`turn-${m.seq}`}
+                  className={`cc-signal ${highlight === m.seq ? 'cc-jumped' : ''}`}
+                  style={{ '--ph': phase() } as Css}
+                >
+                  <div className="cc-sig-h">
+                    <span>
+                      ▼ Incoming · <span>injected</span>
+                    </span>
+                    <span>#{pad(m.turn)}</span>
                   </div>
-                  {m.consultant && (
-                    <p className="text-[11px] italic text-slate-400">
-                      {m.consultant.askedBy} asked: “{m.consultant.question}”
-                    </p>
-                  )}
-                  {m.shift && <ShiftFlag s={m.shift} speaker={m.speaker} />}
-                  <MessageBody
-                    m={m}
-                    index={sourceIndex}
-                    quotes={quotes[String(m.seq)]}
-                    onOpen={runId ? setOpenSource : undefined}
-                  />
+                  <div className="cc-sig-b">
+                    <b>{m.speaker}</b>: {m.content}
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <div
+                  id={`turn-${m.seq}`}
+                  className={`cc-msg ${m.consultant ? 'cc-consult' : ''} ${highlight === m.seq ? 'cc-jumped' : ''}`}
+                  style={{ '--c': identityColor(m.consultant ? 'a0' : slot) } as Css}
+                >
+                  {onOpenDossier && !m.consultant && agents[m.speaker] ? (
+                    <button type="button" onClick={() => onOpenDossier(m.speaker)} aria-label={`${m.speaker}: open dossier`}>
+                      <Hex name={m.speaker} slot={slot} size="sm" ring={identityColor(slot)} />
+                    </button>
+                  ) : (
+                    <Hex name={m.consultant ? undefined : m.speaker} slot={slot} size="sm" />
+                  )}
+                  <div className="cc-tx">
+                    <div className="cc-tx-h">
+                      <b>{m.speaker}</b>
+                      <span className="cc-role">
+                        {m.consultant ? 'consultant' : roundSize > 1 && !opensRound ? '· at the same time' : ''}
+                      </span>
+                      {!m.consultant && <span className="cc-t">#{pad(m.turn)}</span>}
+                    </div>
+                    {m.consultant && (
+                      <p className="cc-muted italic">
+                        {m.consultant.askedBy} asked: “{m.consultant.question}”
+                      </p>
+                    )}
+                    <MessageBody
+                      m={m}
+                      index={sourceIndex}
+                      quotes={quotes[String(m.seq)]}
+                      onOpen={runId ? setOpenSource : undefined}
+                    />
+                    {m.shift && <ShiftFlag s={m.shift} speaker={m.speaker} />}
+                  </div>
+                </div>
+              )}
             </div>
           )
         })}
@@ -168,17 +171,26 @@ export function ConversationFeed({
           .filter((a) => feed.length === 0 || a.turn >= feed[feed.length - 1].turn)
           .map(card)}
         {thinking && activeSpeaker && (
-          <div className="flex items-center gap-3 text-slate-400">
-            <AvatarBadge name={activeSpeaker} portrait={agents[activeSpeaker]?.portrait ?? null}
-              portraitUrl={agents[activeSpeaker]?.portraitUrl ?? null} size={36} />
-            <span className="text-sm italic">
-              {activeSpeaker} is thinking
-              <span className="animate-pulse">…</span>
+          <div className="cc-composing" role="status">
+            <Hex name={activeSpeaker} slot={identityOf(activeSpeaker, castOrder)} size="sm" active />
+            <span>{activeSpeaker} composing</span>
+            <span className="cc-eq" aria-hidden="true" style={{ '--ph': phase() } as Css}>
+              {['0s', '.25s', '.5s', '.125s'].map((d) => (
+                <i key={d} style={{ '--d': d } as Css} />
+              ))}
             </span>
           </div>
         )}
         <div ref={bottomRef} />
       </div>
+      <label className="cc-legend flex items-center justify-end gap-2 px-[14px] pb-1">
+        <input
+          type="checkbox"
+          checked={autoScroll}
+          onChange={(e) => setAutoScroll(e.target.checked)}
+        />
+        auto-scroll
+      </label>
     </div>
   )
 }
@@ -198,7 +210,7 @@ function MessageBody({
   const unsourced = unsourcedCitations(m.citations, index)
   return (
     <>
-      <p className="whitespace-pre-wrap text-sm text-slate-300">
+      <p className="cc-tx-b whitespace-pre-wrap">
         {segments.map((s, i) =>
           'passage' in s ? (
             <button
@@ -209,7 +221,7 @@ function MessageBody({
                   ? 'text-amber-300 underline decoration-dotted hover:text-amber-200'
                   : 'text-matrix-accent underline decoration-dotted hover:text-sky-300'
               }
-              title={
+              aria-description={
                 s.mark?.kind === 'unverified'
                   ? `Cited as if read, but ${m.speaker} was not given this source` +
                     (s.mark.reason ? ` (${s.mark.reason})` : '') + '. Open it to check.'
@@ -219,6 +231,7 @@ function MessageBody({
               }
             >
               {s.cite}
+              {s.mark?.kind === 'unverified' && <span aria-hidden="true">⚠</span>}
             </button>
           ) : (
             <span key={i}>{s.text}</span>
@@ -236,7 +249,7 @@ function MessageBody({
               <button
                 onClick={() => onOpen(q)}
                 className="text-matrix-accent hover:underline"
-                title={`${q.content_words} content words appear in this order in the passage`}
+                aria-description={`${q.content_words} content words appear in this order in the passage`}
               >
                 {q.title} #{q.ordinal}
               </button>
@@ -265,8 +278,9 @@ function MessageBody({
                 className={`hover:text-matrix-accent hover:underline ${
                   cited.has(label) ? 'text-slate-300' : ''
                 }`}
-                title={cited.has(label) ? 'Cited in this message' : 'In view, not cited'}
+                aria-description={cited.has(label) ? 'Cited in this message' : 'In view, not cited'}
               >
+                {cited.has(label) && <span aria-hidden="true">✓ </span>}
                 {label}
               </button>
             )
@@ -309,65 +323,68 @@ function AssumptionCard({
       ? 'set before the run'
       : `made at turn ${a.turn} by the ${a.source}`
   return (
-    <div
-      className="rounded border border-dashed border-sky-500/40 bg-sky-950/20 px-3 py-2 text-xs text-slate-300"
-      title="Not an established fact: the room was told to reason from it"
-    >
-      <span className="mr-2 rounded bg-sky-900/50 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-sky-200">
-        assumption {a.id}
-      </span>
-      {a.statement}
-      <span className="ml-1 text-slate-500">
-        — {origin}
-        {a.basis ? `; basis: ${a.basis}` : ''}
-      </span>
-      {usage && (usage.cited > 0 || usage.disputes.length > 0) && (
-        <span
-          className={`ml-2 ${usage.disputes.length ? 'text-amber-300' : 'text-slate-500'}`}
-          title={usage.disputes.map((d) => `${d.speaker} (turn ${d.turn}): ${d.sentence}`).join('\n') ||
-            'Messages naming this assumption by its id'}
-        >
-          · cited in {usage.cited} message{usage.cited === 1 ? '' : 's'}
-          {usage.disputes.length > 0 &&
-            ` · appears disputed by ${[...new Set(usage.disputes.map((d) => d.speaker))].join(', ')}`}
+    <div className="cc-flag cc-assume flex-wrap">
+      <span className="cc-ft">ASSUMES</span>
+      <span className="min-w-0 flex-1">
+        <b>{a.id}</b> {a.statement}
+        <span className="cc-muted">
+          {' '}— {origin}
+          {a.basis ? `; basis: ${a.basis}` : ''}
         </span>
-      )}
+        {usage && (usage.cited > 0 || usage.disputes.length > 0) && (
+          <span className={`cc-num ml-1 ${usage.disputes.length ? 'text-cc-inject' : 'cc-muted'}`}>
+            · cited in {usage.cited} message{usage.cited === 1 ? '' : 's'}
+            {usage.disputes.length > 0 &&
+              ` · appears disputed by ${[...new Set(usage.disputes.map((d) => d.speaker))].join(', ')}`}
+          </span>
+        )}
+        <Hint label={`assumption ${a.id}`}>
+          Not an established fact: the room was told to reason from it.
+          {usage && usage.disputes.length > 0 && (
+            <ul className="mt-2 list-inside list-disc">
+              {usage.disputes.map((d, i) => (
+                <li key={i}>
+                  {d.speaker} (turn {d.turn}): {d.sentence}
+                </li>
+              ))}
+            </ul>
+          )}
+        </Hint>
+      </span>
       {onFork && !editing && (
-        <button
-          onClick={() => setEditing(true)}
-          className="ml-2 text-sky-300 underline-offset-2 hover:underline"
-        >
+        <button type="button" onClick={() => setEditing(true)} className="cc-btn cc-sm">
           Fork with a different assumption
         </button>
       )}
       {onFork && editing && (
-        <div className="mt-2 flex flex-wrap items-center gap-2">
+        <div className="mt-2 flex w-full flex-wrap items-center gap-2">
           <input
             value={value}
             onChange={(e) => setValue(e.target.value)}
             maxLength={300}
             aria-label={`New value for ${a.id}`}
-            className="min-w-0 flex-1 rounded border border-matrix-border bg-matrix-bg p-1.5 text-xs"
+            className="cc-field min-w-0 flex-1"
           />
           <button
+            type="button"
             onClick={() => fork(value.trim())}
             disabled={busy || !value.trim() || value.trim() === a.statement}
-            className="rounded bg-sky-800/60 px-2 py-1 text-sky-100 disabled:opacity-40"
+            className="cc-btn cc-primary cc-sm"
           >
             {busy ? 'Forking…' : `Fork from turn ${a.turn}`}
           </button>
-          <button onClick={() => fork(null)} disabled={busy} className="text-slate-400 hover:text-rose-300">
+          <button type="button" onClick={() => fork(null)} disabled={busy} className="cc-btn cc-danger cc-sm">
             Withdraw it instead
           </button>
-          <button onClick={() => setEditing(false)} disabled={busy} className="text-slate-500">
+          <button type="button" onClick={() => setEditing(false)} disabled={busy} className="cc-btn cc-sm">
             Cancel
           </button>
-          <span className="w-full text-[11px] text-slate-500">
+          <span className="cc-muted w-full">
             A new run replays this one to turn {a.turn} and continues with {a.id} changed; this run is not
             touched. Everything after turn {a.turn} is generated again, so the later the assumption, the
             cheaper the fork.{cost ? ` Cost: ${cost}.` : ''}
           </span>
-          {error && <span className="w-full text-rose-300">{error}</span>}
+          {error && <span className="w-full text-cc-danger">{error}</span>}
         </div>
       )}
     </div>
@@ -381,18 +398,15 @@ function ShiftFlag({ s, speaker }: { s: PositionShift; speaker: string }) {
     ? s.credits.map((c) => `${c.name} (${c.kind})`).join(', ')
     : 'nobody named'
   return (
-    <div
-      className={`mb-1 rounded border px-2 py-1 text-[11px] ${
-        s.no_listed_condition ? 'border-amber-500/50 bg-amber-950/30 text-amber-200' : 'border-slate-600/50 text-slate-400'
-      }`}
-      title="Found by matching words, not by judgement. Read the message and decide."
-    >
-      <span className="font-semibold">⚑ {speaker} says their position moved</span> — credits {credits}.
+    <div className="cc-flag cc-shift">
+      <span className="cc-ft">SHIFT</span>
+      <span className="min-w-0 flex-1">
+      <b>⚑ {speaker} says their position moved</b> — credits {credits}.
       {s.conditions.length > 0 && (
         <>
           {' '}
           {s.no_listed_condition ? (
-            <span>None of the conditions {speaker} said would move them appears to be named: </span>
+            <b>None of the conditions {speaker} said would move them appears to be named: </b>
           ) : (
             <span>Appears to name a stated condition: </span>
           )}
@@ -402,6 +416,10 @@ function ShiftFlag({ s, speaker }: { s: PositionShift; speaker: string }) {
           .
         </>
       )}
+      <Hint label="shift flags">
+        Found by matching words, not by judgement. Read the message and decide.
+      </Hint>
+      </span>
     </div>
   )
 }

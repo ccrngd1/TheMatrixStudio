@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import { useEffect, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { api } from '../api'
 import { downloadText, slugify } from '../lib/download'
 
@@ -21,12 +22,28 @@ interface Props {
 // the app's origin, where the user's token lives.
 export function BriefButton({ kind, id, name }: Props) {
   const [open, setOpen] = useState(false)
+  return (
+    <>
+      <button
+        className="rounded border border-matrix-accent px-2 py-1 text-xs text-matrix-accent hover:bg-sky-950/40"
+        onClick={() => setOpen(true)}
+        aria-description="A one-page decision brief: what was concluded, how consistently, and what is still open."
+      >
+        Brief
+      </button>
+      {open && <BriefDialog kind={kind} id={id} name={name} onClose={() => setOpen(false)} />}
+    </>
+  )
+}
+
+/** The brief itself, for a caller with its own way in (the run's ⋯ menu). Portalled to the body so no
+ *  clipped or transformed ancestor — a sheet is both — can crop a fixed-position modal. */
+export function BriefDialog({ kind, id, name, onClose }: Props & { onClose: () => void }) {
   const [html, setHtml] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!open) return
     let live = true
     setHtml(null)
     setError(null)
@@ -37,7 +54,7 @@ export function BriefButton({ kind, id, name }: Props) {
     return () => {
       live = false
     }
-  }, [open, kind, id])
+  }, [kind, id])
 
   const save = async (format: 'md' | 'html') => {
     setBusy(format)
@@ -55,19 +72,10 @@ export function BriefButton({ kind, id, name }: Props) {
   const btn =
     'rounded border border-matrix-border px-2 py-1 text-xs text-slate-300 hover:border-matrix-accent disabled:opacity-50'
 
-  return (
-    <>
-      <button
-        className="rounded border border-matrix-accent px-2 py-1 text-xs text-matrix-accent hover:bg-sky-950/40"
-        onClick={() => setOpen(true)}
-        aria-description="A one-page decision brief: what was concluded, how consistently, and what is still open."
-      >
-        Brief
-      </button>
-      {open && (
+  return createPortal(
         <div
           className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60"
-          onClick={() => setOpen(false)}
+          onClick={() => onClose()}
         >
           <div
             role="dialog"
@@ -84,7 +92,7 @@ export function BriefButton({ kind, id, name }: Props) {
                 {busy === 'md' ? 'Saving…' : 'Download Markdown'}
               </button>
               <button
-                onClick={() => setOpen(false)}
+                onClick={() => onClose()}
                 className="px-1 text-slate-500 hover:text-slate-300"
                 aria-label="Close brief"
               >
@@ -104,8 +112,7 @@ export function BriefButton({ kind, id, name }: Props) {
               )}
             </div>
           </div>
-        </div>
-      )}
-    </>
+        </div>,
+    document.body,
   )
 }

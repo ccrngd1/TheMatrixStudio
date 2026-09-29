@@ -4,6 +4,8 @@ import { api, avatarUrl } from '../api'
 import type { AgentDossier, AgentView, FeedMessage, TurnTrace } from '../types'
 import { AvatarBadge } from './AvatarBadge'
 import { SourceViewer } from './SourceViewer'
+import { Sheet } from '../ui/primitives'
+import { Hint } from './Hint'
 
 interface Props {
   agent: AgentView
@@ -84,7 +86,7 @@ export function Dossier({ agent, feed, runId, onClose }: Props) {
   const formative = structured?.background?.formative_events ?? []
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-black/50" onClick={onClose}>
+    <>
       {openSource && (
         <SourceViewer
           runId={runId}
@@ -93,17 +95,16 @@ export function Dossier({ agent, feed, runId, onClose }: Props) {
           onClose={() => setOpenSource(null)}
         />
       )}
-      <div
-        className="h-full w-full max-w-md overflow-y-auto border-l border-matrix-border bg-matrix-panel p-5"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-start justify-between">
+      <Sheet
+        tall
+        title={`${agent.name}: dossier`}
+        onClose={onClose}
+        header={
           <div className="flex items-center gap-3">
-            <AvatarBadge name={agent.name} portrait={agent.portrait}
-              portraitUrl={currentUrl} size={64} />
-            <div>
-              <h2 className="text-xl font-bold text-slate-100">{agent.name}</h2>
-              <p className="text-xs text-slate-500">
+            <AvatarBadge name={agent.name} portrait={agent.portrait} portraitUrl={currentUrl} size={56} />
+            <div className="min-w-0">
+              <b className="cc-disp">{agent.name}</b>
+              <p className="cc-muted">
                 {agent.avatarResolved
                   ? currentUrl || agent.portrait
                     ? 'portrait generated'
@@ -111,20 +112,17 @@ export function Dossier({ agent, feed, runId, onClose }: Props) {
                   : 'avatar pending…'}
               </p>
               <button
+                type="button"
                 onClick={handleRegenerateAvatar}
                 disabled={regeneratingAvatar}
-                className="mt-1 rounded bg-matrix-accent/15 px-2 py-1 text-[11px] text-matrix-accent hover:bg-matrix-accent/25 disabled:opacity-50 disabled:cursor-not-allowed"
-                title="Generate a new AI avatar"
+                className="cc-btn cc-sm mt-1"
               >
-                {regeneratingAvatar ? 'Generating...' : '🔄 Regenerate Avatar'}
+                {regeneratingAvatar ? 'Generating...' : 'Regenerate avatar'}
               </button>
             </div>
           </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-200">
-            ✕
-          </button>
-        </div>
-
+        }
+      >
         <Section title="Persona">
           <p className="whitespace-pre-wrap text-sm text-slate-300">{agent.persona || '—'}</p>
         </Section>
@@ -239,16 +237,16 @@ export function Dossier({ agent, feed, runId, onClose }: Props) {
                               ? 'text-amber-400'
                               : 'text-slate-500'
                           }
-                          title={
-                            r.researched_passages === r.passages.length
-                              ? 'Every passage this turn was found by research. Nothing you ' +
-                                'uploaded reached this prompt — a collection is guaranteed one ' +
-                                'slot, but not one slot per kind of document in it.'
-                              : 'Some passages were found by research, some chosen by you.'
-                          }
                         >
                           {r.researched_passages} of {r.passages.length} researched
                         </span>
+                        <Hint label="researched passages">
+                          {r.researched_passages === r.passages.length
+                            ? 'Every passage this turn was found by research. Nothing you ' +
+                              'uploaded reached this prompt — a collection is guaranteed one ' +
+                              'slot, but not one slot per kind of document in it.'
+                            : 'Some passages were found by research, some chosen by you.'}
+                        </Hint>
                       </>
                     )}
                   </div>
@@ -260,7 +258,7 @@ export function Dossier({ agent, feed, runId, onClose }: Props) {
                         <button
                           onClick={() => setOpenSource({ documentId: p.document_id, ordinal: p.ordinal })}
                           className="text-left text-matrix-accent hover:underline"
-                          title="Read this source"
+                          aria-description="Read this source"
                         >
                           {p.title} #{p.ordinal}
                         </button>{' '}
@@ -268,11 +266,9 @@ export function Dossier({ agent, feed, runId, onClose }: Props) {
                             floor reserves a slot for: seeing it here is how an operator knows
                             the reservation did something. */}
                         {p.authority === 'controlling' && (
-                          <span
-                            className="text-emerald-400"
-                            title="A statute, regulation, board ruling or decided case."
-                          >
-                            [controlling]{' '}
+                          <span className="text-emerald-400">
+                            [controlling]
+                            <span className="sr-only"> a statute, regulation, board ruling or decided case</span>{' '}
                           </span>
                         )}
                         {/* Only when this turn actually mixed the two. A run with no research
@@ -281,15 +277,12 @@ export function Dossier({ agent, feed, runId, onClose }: Props) {
                             nothing — and the point is to make a DIFFERENCE visible. */}
                         {r.researched_passages !== undefined &&
                           (p.origin === 'researched' ? (
-                            <span
-                              className="text-slate-600"
-                              title="Found by pre-conversation research."
-                            >
-                              [found]{' '}
+                            <span className="cc-muted">
+                              [found]<span className="sr-only"> by pre-conversation research</span>{' '}
                             </span>
                           ) : (
-                            <span className="text-sky-400" title="A document you provided.">
-                              [yours]{' '}
+                            <span className="text-sky-400">
+                              [yours]<span className="sr-only"> a document you provided</span>{' '}
                             </span>
                           ))}
                         <span className="text-slate-600">score {p.score.toFixed(2)}</span>
@@ -467,8 +460,8 @@ export function Dossier({ agent, feed, runId, onClose }: Props) {
             </p>
           </Section>
         )}
-      </div>
-    </div>
+      </Sheet>
+    </>
   )
 }
 
@@ -503,7 +496,7 @@ function MessageRow({ m, runId, traceable }: { m: FeedMessage; runId: string; tr
           <button
             onClick={toggle}
             className="whitespace-nowrap rounded bg-matrix-accent/15 px-2 py-0.5 text-[11px] text-matrix-accent hover:bg-matrix-accent/25"
-            title="Why did it say that?"
+            aria-description="Why did it say that?"
           >
             {open ? 'hide' : 'why?'}
           </button>

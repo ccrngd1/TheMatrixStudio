@@ -69,7 +69,7 @@ describe('AsidesDrawer', () => {
     screen.getByText('Start').click()
 
     await waitFor(() => {
-      const btn = screen.getByTitle(/bring this reply into the conversation/i)
+      const btn = screen.getByRole('button', { name: /bring into conversation/i })
       expect(btn).not.toBeDisabled()
       expect(btn).toHaveTextContent(/bring into conversation/i)
     })

@@ -2,6 +2,8 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
 import type { AsideTarget, Persona, ThreadDetail, ThreadSummary } from '../types'
+import { Sheet } from '../ui/primitives'
+import { Hint } from './Hint'
 
 interface Props {
   runId: string
@@ -128,23 +130,17 @@ export function AsidesDrawer({ runId, cast, turnCount, model, models = [], consu
       : t.target === 'room' ? 'The room' : 'Analyst'
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-black/50" onClick={onClose}>
-      <div
-        className="flex h-full w-full max-w-lg flex-col border-l border-matrix-border bg-matrix-panel"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <header className="flex items-center justify-between border-b border-matrix-border p-4">
-          <div>
-            <h2 className="text-lg font-bold text-slate-100">Asides</h2>
-            <p className="text-[11px] text-slate-500">
-              Private, read-only side-threads over the finished run.
-            </p>
-          </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-200">
-            ✕
-          </button>
-        </header>
-
+    <Sheet
+      tall
+      title="Asides"
+      onClose={onClose}
+      header={
+        <>
+          <b>Asides</b>
+          <span className="cc-muted">Private, read-only side-threads over the finished run.</span>
+        </>
+      }
+    >
         {/* Canon boundary banner — asides are never part of the conversation. */}
         <div className="border-b border-matrix-border bg-amber-950/20 px-4 py-2 text-[11px] text-amber-300">
           Aside — not part of the conversation. Replies are model-generated analysis and do not
@@ -256,24 +252,17 @@ export function AsidesDrawer({ runId, cast, turnCount, model, models = [], consu
                 <p className="text-sm text-slate-500">Ask the first question below.</p>
               )}
               {active.messages.map((m) => (
-                <div
-                  key={m.id}
-                  className={m.role === 'user' ? 'text-right' : 'text-left'}
-                >
+                <div key={m.id} className="flex flex-col">
                   <div
-                    className={`inline-block max-w-[90%] rounded-lg p-2 text-sm ${
+                    className={
                       m.role === 'user'
-                        ? 'bg-matrix-accent/20 text-slate-100'
+                        ? 'cc-b-me'
                         : m.role === 'error'
-                          ? 'border border-rose-900/60 bg-rose-950/30 text-rose-200'
-                          : 'border border-matrix-border bg-matrix-bg text-slate-300'
-                    }`}
+                          ? 'cc-b-them border-l-cc-danger text-cc-danger'
+                          : 'cc-b-them'
+                    }
                   >
-                    {m.role === 'target' && (
-                      <div className="mb-1 text-[10px] uppercase tracking-wide text-slate-500">
-                        {m.speaker} · aside
-                      </div>
-                    )}
+                    {m.role === 'target' && <div className="cc-from">{m.speaker} · aside</div>}
                     <p className="whitespace-pre-wrap">{m.content}</p>
                     {/* Phase 2b: promote-aside affordance on every target (AI) reply */}
                     {m.role === 'target' && onBranch && (
@@ -281,8 +270,8 @@ export function AsidesDrawer({ runId, cast, turnCount, model, models = [], consu
                         <button
                           onClick={() => promoteMessage(m)}
                           disabled={promoting === m.id}
-                          title="Bring this reply into the conversation as a new branch"
-                          className="rounded border border-matrix-border px-2 py-0.5 text-[10px] text-slate-400 hover:border-sky-500 hover:text-sky-400 disabled:opacity-40"
+                          aria-description="Bring this reply into the conversation as a new branch"
+                          className="cc-btn cc-sm"
                         >
                           {promoting === m.id ? '…branching' : '⤴ bring into conversation'}
                         </button>
@@ -310,11 +299,14 @@ export function AsidesDrawer({ runId, cast, turnCount, model, models = [], consu
                   <select
                     value={asideModel}
                     onChange={(e) => setAsideModel(e.target.value)}
-                    title="Model used for aside replies and promote-into-conversation (defaults to the page's model)"
-                    className="max-w-[12rem] rounded border border-matrix-border bg-matrix-panel px-2 py-1 text-[11px] text-slate-200"
+                    aria-label="Model"
+                    className="cc-field max-w-[12rem]"
                   >
                     {models.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
                   </select>
+                  <Hint label="the aside model">
+                    Used for aside replies and for bringing one into the conversation. Defaults to the page's model.
+                  </Hint>
                 </div>
               )}
               <div className="flex gap-2">
@@ -341,8 +333,7 @@ export function AsidesDrawer({ runId, cast, turnCount, model, models = [], consu
             </div>
           </>
         )}
-      </div>
-    </div>
+    </Sheet>
   )
 }
 

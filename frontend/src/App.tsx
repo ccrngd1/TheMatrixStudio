@@ -48,15 +48,15 @@ function Views({ themeState }: { themeState: ReturnType<typeof useThemeState> })
     case 'run':
     case 'scrub':
       return (
-        <div className="cc-legacy">
-          <LiveView
-            key={route.runId}
-            runId={route.runId}
-            onBack={() => go({ name: 'runs' })}
-            onOpenRun={(runId) => go({ name: 'run', runId, tab: 'conversation' })}
-            onStartFresh={(runId) => go({ name: 'new', fromRunId: runId })}
-          />
-        </div>
+        <LiveView
+          key={route.runId}
+          runId={route.runId}
+          tab={route.name === 'run' ? route.tab : 'conversation'}
+          scrub={route.name === 'scrub'}
+          onBack={() => (route.name === 'scrub' ? go({ name: 'run', runId: route.runId, tab: 'conversation' }) : go({ name: 'runs' }))}
+          onOpenRun={(runId) => go({ name: 'run', runId, tab: 'conversation' })}
+          onStartFresh={(runId) => go({ name: 'new', fromRunId: runId })}
+        />
       )
     case 'ensemble':
       return (

@@ -1,50 +1,34 @@
 // SPDX-License-Identifier: Apache-2.0
+// One persona row on the Cast tab (docs/MOBILE-UI.md §4.3): token, name, what they are for, and their share of
+// the run so far. The whole row opens the dossier. The persona text is clamped rather than truncated to a
+// tooltip: a tooltip is hover-only, and the dossier one tap away has all of it.
 import type { AgentView } from '../types'
-import { AvatarBadge } from './AvatarBadge'
+import { Hex, PanelButton } from '../ui/primitives'
 
 interface Props {
   agent: AgentView
   active: boolean
   thinking: boolean
   onClick: () => void
+  /** The identity slot (`identityOf`), so the row matches the feed. */
+  slot?: string
 }
 
-export function CastCard({ agent, active, thinking, onClick }: Props) {
+export function CastCard({ agent, active, thinking, onClick, slot = 'a0' }: Props) {
+  const n = agent.messageCount
   return (
-    <button
-      onClick={onClick}
-      className={`w-full text-left rounded-lg border p-3 transition
-        ${active ? 'border-matrix-live bg-matrix-panel shadow-lg shadow-matrix-live/10' : 'border-matrix-border bg-matrix-panel hover:border-matrix-accent'}`}
-    >
-      <div className="flex items-center gap-3">
-        <AvatarBadge name={agent.name} portrait={agent.portrait}
-          portraitUrl={agent.portraitUrl} ring={active} />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <span className="truncate font-semibold text-slate-100">{agent.name}</span>
-            {active && (
-              <span className="inline-flex items-center gap-1 text-xs text-matrix-live">
-                <span className="h-2 w-2 animate-pulse rounded-full bg-matrix-live" />
-                {thinking ? 'thinking…' : 'speaking'}
-              </span>
-            )}
-          </div>
-          <p className="truncate text-xs text-slate-400" title={agent.persona}>
-            {agent.persona || '—'}
-          </p>
+    <PanelButton className="cc-prow" onClick={onClick} aria-label={`${agent.name}: open dossier`}>
+      <Hex name={agent.name} slot={slot} active={active} />
+      <div className="cc-grow min-w-0">
+        <b>{agent.name}</b>
+        <div className="cc-muted line-clamp-2">{agent.persona || '—'}</div>
+        {agent.goals.length > 0 && <div className="cc-muted line-clamp-1">Goals: {agent.goals.join('; ')}</div>}
+        <div className="cc-num mt-[3px] text-[10.5px] text-cc-t3">
+          {active && <span className="text-matrix-live">{thinking ? 'COMPOSING · ' : 'SPEAKING · '}</span>}
+          {n} TURN{n === 1 ? '' : 'S'} · {(agent.tokensIn + agent.tokensOut).toLocaleString()} TOK · $
+          {agent.costUsd.toFixed(4)}
         </div>
       </div>
-      {agent.goals.length > 0 && (
-        <p className="mt-2 truncate text-xs text-slate-500" title={agent.goals.join('; ')}>
-          🎯 {agent.goals.join('; ')}
-        </p>
-      )}
-      <div className="mt-2 flex justify-between text-[11px] text-slate-500">
-        <span>{agent.messageCount} msgs</span>
-        <span>
-          {agent.tokensIn + agent.tokensOut} tok · ${agent.costUsd.toFixed(4)}
-        </span>
-      </div>
-    </button>
+    </PanelButton>
   )
 }

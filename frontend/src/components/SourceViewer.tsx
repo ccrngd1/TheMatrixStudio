@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { Hint } from './Hint'
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { api, type RunSource } from '../api'
 
 interface Props {
@@ -48,7 +49,9 @@ export function SourceViewer({ runId, documentId, ordinal, onClose }: Props) {
     cited.current?.scrollIntoView?.({ block: 'center' })
   }, [source])
 
-  return (
+  // Portalled to the body: it opens from inside the dossier, which is a sheet, and a sheet's clip-path would
+  // crop a fixed-position child to the sheet.
+  return createPortal(
     // stopPropagation on the backdrop too: the viewer opens INSIDE the dossier's own backdrop, and
     // a click that closes the viewer would otherwise bubble up and close the dossier with it.
     <div
@@ -153,6 +156,7 @@ export function SourceViewer({ runId, documentId, ordinal, onClose }: Props) {
           })}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }

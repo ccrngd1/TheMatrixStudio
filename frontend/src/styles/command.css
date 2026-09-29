@@ -374,3 +374,12 @@ option { background:var(--panel); }
 #cc-overlay > * { pointer-events:auto; }
 /* A screen not yet restyled scrolls inside the frame instead of the page. */
 .cc-legacy { flex:1; min-height:0; overflow-y:auto; }
+/* Run tabs are links (each tab has a URL), styled as the prototype's buttons. */
+.cc-htabs a { flex:1; position:relative; padding:14px 0 13px; text-align:center; font:700 10px/1 var(--mono); letter-spacing:.16em; text-transform:uppercase; color:var(--t3); }
+.cc-htabs a.cc-on { color:var(--t1); }
+.cc-htabs a.cc-on::after { content:""; position:absolute; left:16%; right:16%; bottom:-1px; height:2px; background:linear-gradient(90deg,var(--accent),var(--accent2)); box-shadow:0 0 10px var(--accent); }
+/* A consultant answers when asked and is not a participant: set in, and in the neutral identity. */
+.cc-msg.cc-consult { margin-left:28px; }
+/* The message the participation panel jumped to. */
+.cc-jumped { outline:1px solid var(--accent); outline-offset:3px; box-shadow:0 0 18px color-mix(in srgb,var(--accent) 30%,transparent); }
+.cc-faces button { min-width:44px; min-height:44px; display:grid; place-items:center; }

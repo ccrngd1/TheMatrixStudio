@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { api } from '../api'
 import type { Persona, Quote, RunDetail, WorkingAssumption } from '../types'
 import { describeFork, forkEstimate } from '../lib/forkCost'
@@ -7,11 +7,10 @@ import { useRunStream } from '../hooks/useRunStream'
 import { isLive, isResumable, isTerminal } from '../lib/runStatus'
 import { CastBoard } from '../components/CastBoard'
 import { ConversationFeed } from '../components/ConversationFeed'
-import { CostMeter } from '../components/CostMeter'
 import { ParticipationPanel } from '../components/ParticipationPanel'
 import { PlaybackControls } from '../components/PlaybackControls'
 import { Dossier } from '../components/Dossier'
-import { BriefButton } from '../components/BriefButton'
+import { BriefDialog } from '../components/BriefButton'
 import { ExportMenu } from '../components/ExportMenu'
 import { ResearchPanel } from '../components/ResearchPanel'
 import { SummaryPanel } from '../components/SummaryPanel'
@@ -19,6 +18,13 @@ import { AsidesDrawer } from '../components/AsidesDrawer'
 import { BranchTree } from '../components/BranchTree'
 import { Scrubber } from '../components/Scrubber'
 import type { StoredSummary } from '../types'
+import { FaceStrip, RunHud, RunStatusTag, RunTabs } from '../components/run/RunChrome'
+import { Hint } from '../components/Hint'
+import { TopBar } from './Shell'
+import { navigate, type RunTab } from '../lib/route'
+import { Btn, Label, Panel, Sheet, Ticks } from '../ui/primitives'
+import { Icon } from '../ui/icons'
+import { useWide } from '../ui/useWide'
 
 interface Props {
   runId: string
@@ -27,11 +33,18 @@ interface Props {
   onOpenRun?: (runId: string) => void
   // Open the new-run form prefilled with this run's setup, to edit and run afresh.
   onStartFresh?: (runId: string) => void
+  /** Which pane a phone shows (the URL's tab). A wide screen shows all three. */
+  tab?: RunTab
+  /** The scrubber route (`#/run/:id/scrub`). */
+  scrub?: boolean
 }
 
-// The control room: cast board + live feed + cost meter + playback + dossier.
-// Works identically for a live run and a replayed completed run.
-export function LiveView({ runId, onBack, onOpenRun, onStartFresh }: Props) {
+// The control room (docs/MOBILE-UI.md §4.2): header, HUD, then Conversation · Cast · Analysis — tabs on a
+// phone, columns from 768 px. Works identically for a live run and a replayed completed run.
+export function LiveView({ runId, onBack, onOpenRun, onStartFresh, tab = 'conversation', scrub = false }: Props) {
+  const wide = useWide()
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [briefOpen, setBriefOpen] = useState(false)
   const [detail, setDetail] = useState<RunDetail | null>(null)
   const [cast, setCast] = useState<Persona[]>([])
   const [selected, setSelected] = useState<string | null>(null)
@@ -39,7 +52,6 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh }: Props) {
   const [generated, setGenerated] = useState<StoredSummary | null>(null)
   const [imported, setImported] = useState<StoredSummary | null>(null)
   const [defaultInstructions, setDefaultInstructions] = useState<string>('')
-  const [scrubbing, setScrubbing] = useState(false)
   // The turn the participation panel last asked for. `nonce` makes a repeat click on the
   // same turn a new request, since the seq on its own would not change.
   const [jumpTo, setJumpTo] = useState<{ seq: number; nonce: number } | null>(null)
@@ -161,7 +173,6 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh }: Props) {
       if (chosenModel) opts.model = chosenModel
       if (mutation) opts.mutation = mutation
       const res = await api.branchRun(runId, fromTurn, Object.keys(opts).length ? opts : undefined)
-      setScrubbing(false)
       if (onOpenRun) onOpenRun(res.run_id)
     } catch (e) {
       setBranchError((e as Error).message)
@@ -185,89 +196,268 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh }: Props) {
     if (onOpenRun) onOpenRun(res.run_id)
   }
 
-  return (
-    <div className="flex h-screen flex-col">
-      <header className="flex items-center justify-between border-b border-matrix-border px-4 py-3">
-        <div className="flex items-center gap-3">
-          <button onClick={onBack} className="text-slate-400 hover:text-slate-200">
-            ← Back
-          </button>
-          <div>
-            <h1 className="text-lg font-bold text-slate-100">
-              {detail?.name ?? 'Run'}{' '}
-              <span className="text-sm font-normal text-slate-500">
-                {state.status === 'running' && stream.stalled
-                  ? '· stalled'
-                  : state.status === 'running' && !stream.engineDone
-                    ? '· running'
-                    : `· ${state.status}`}
-              </span>
-            </h1>
-            <p className="text-xs text-slate-500">{detail?.description ?? detail?.topic}</p>
-            {/* Which model the personas actually spoke with. A definition once asked for Opus 5 and
-                every run silently used Sonnet 5; this is where that becomes visible. */}
-            {detail?.models?.voice && (
-              <p className="text-[11px] text-slate-600" title={Object.entries(detail.models)
-                .map(([role, m]) => `${role}: ${m ?? 'default'}`).join('\n')}>
-                voices: {detail.models.voice.split('/').pop()?.split('anthropic.').pop()}
-              </p>
-            )}
-          </div>
-        </div>
-        <div className="flex items-center gap-3">
-          {/* Offered only once the run has finished: an export mid-run would be a transcript that
-              stops at an arbitrary turn with no sign that more is coming. */}
-          {completed && <BriefButton kind="run" id={runId} name={detail?.name ?? runId} />}
-          {completed && <ExportMenu kind="run" id={runId} name={detail?.name ?? runId} />}
+  const scrubbing = scrub && completed
+  const maxMessages = (detail?.config?.max_messages as number | undefined) ?? undefined
+  // The turn reached so far, from what has been revealed. Consultants answer inside a turn.
+  const turn = state.feed.reduce((t, m) => (m.consultant ? t : Math.max(t, m.turn)), 0)
+  const status = state.status === 'idle' ? (detail?.status ?? 'idle') : state.status
+  const liveNow = status === 'running' && !stream.engineDone
+  const next = state.thinking ? state.activeSpeaker : null
+  const openScrub = () => navigate({ name: 'scrub', runId })
+  const openAsides = () => {
+    setMenuOpen(false)
+    setAsidesOpen(true)
+  }
+  const jump = (seq: number) => {
+    setJumpTo({ seq, nonce: Date.now() })
+    // On a phone the transcript is another tab; go to it so the jump lands where the reader is looking.
+    if (!wide && tab !== 'conversation') navigate({ name: 'run', runId, tab: 'conversation' })
+  }
+
+  const header = (
+    <TopBar
+      back={onBack}
+      code
+      title={detail?.name ?? 'Run'}
+      sub={
+        <span className="flex min-w-0 items-center gap-2">
+          <RunStatusTag status={status} stalled={stream.stalled} turn={turn} max={maxMessages} />
+          <span className="cc-tt truncate">{detail?.description ?? detail?.topic}</span>
+        </span>
+      }
+      right={
+        <>
+          {/* Stop or Resume, always in the same place (§4.2); everything else is under ⋯. */}
           {running && (
-            <button
-              onClick={stop}
-              disabled={stopping || stopRequested}
-              className="rounded border border-red-500/60 px-3 py-1 text-sm text-red-300 hover:border-red-400 disabled:opacity-50"
-              title="Stop after the turn being generated now. That turn is finished and kept; no further turns start. The run can be resumed later."
-            >
-              {stopRequested ? '■ Stopping after this turn…' : stopping ? '■ Stopping…' : '■ Stop'}
-            </button>
+            <Btn variant="danger" size="sm" onClick={stop} disabled={stopping || stopRequested}
+              aria-description="Stop after the turn being generated now. That turn is finished and kept; no further turns start. The run can be resumed later.">
+              <Icon name="stop" size={12} />{' '}
+              {stopRequested ? 'Stopping after this turn…' : stopping ? 'Stopping…' : 'Stop'}
+            </Btn>
           )}
           {resumable && (
-            <button
-              onClick={resume}
-              disabled={resuming}
-              className="rounded border border-amber-500/60 px-3 py-1 text-sm text-amber-300 hover:border-amber-400 disabled:opacity-50"
-              title="Continue this interrupted/failed run forward from its last checkpoint (same run)"
-            >
-              {resuming ? '↻ Resuming…' : '↻ Resume'}
-            </button>
+            <Btn variant="warn" size="sm" onClick={resume} disabled={resuming}
+              aria-description="Continue this interrupted or failed run forward from its last checkpoint (same run)">
+              <Icon name="resume" size={13} /> {resuming ? 'Resuming…' : 'Resume'}
+            </Btn>
           )}
-          {completed && (
-            <button
-              onClick={() => setScrubbing((s) => !s)}
-              className={`rounded border px-3 py-1 text-sm hover:border-matrix-accent ${
-                scrubbing
-                  ? 'border-matrix-accent text-matrix-accent'
-                  : 'border-matrix-border text-slate-300'
-              }`}
-              title="Scrub to any turn and view state as of that point; branch from there"
-            >
-              ⏱ Scrubber
+          <button type="button" className="cc-icon" aria-label="More" onClick={() => setMenuOpen(true)}>
+            <Icon name="more" size={22} />
+          </button>
+        </>
+      }
+    />
+  )
+
+  const alerts = [
+    stopError && `Stop failed: ${stopError}`,
+    resumeError && `Resume failed: ${resumeError}`,
+    branchError && `Branch failed: ${branchError}`,
+    state.status === 'failed' && `Simulation failed: ${state.error}`,
+  ].filter(Boolean) as string[]
+
+  const lineageRow = (lineage?.parent || (lineage?.branches?.length ?? 0) > 0) && (
+    <div className="flex flex-none flex-wrap items-center gap-1.5 px-[14px] pt-2">
+      {lineage?.parent && (
+        <>
+          <Label>From</Label>
+          <button type="button" className="cc-chip cc-accent" onClick={() => onOpenRun?.(lineage.parent!.run_id)}>
+            <Icon name="branch" size={12} /> {lineage.parent.name ?? lineage.parent.run_id.slice(0, 8)} @
+            {lineage.parent.branch_turn}
+          </button>
+        </>
+      )}
+      {(lineage?.branches?.length ?? 0) > 0 && (
+        <>
+          <Label>Branches</Label>
+          {lineage!.branches.map((b) => (
+            <button key={b.run_id} type="button" className="cc-chip cc-accent" onClick={() => onOpenRun?.(b.run_id)}>
+              <Icon name="branch" size={12} /> {b.name ?? b.run_id.slice(0, 8)} @{b.branch_turn}
             </button>
-          )}
-          {completed && (
-            <button
-              onClick={() => setAsidesOpen(true)}
-              className="rounded border border-matrix-border px-3 py-1 text-sm text-slate-300 hover:border-matrix-accent"
-              title="Ask read-only questions about the finished run"
-            >
-              💬 Asides
-            </button>
-          )}
+          ))}
+        </>
+      )}
+    </div>
+  )
+
+  const conversationPane = (
+    <div className="cc-pane">
+      <FaceStrip order={state.order} next={next} onOpen={setSelected} />
+      <ConversationFeed
+        feed={state.feed}
+        agents={state.agents}
+        activeSpeaker={state.activeSpeaker}
+        thinking={state.thinking}
+        jumpTo={jumpTo}
+        runId={runId}
+        sourceIndex={state.sourceIndex}
+        quotes={quotes}
+        assumptions={state.assumptions}
+        onForkAssumption={state.status !== 'running' && state.status !== 'idle' ? forkAssumption : undefined}
+        forkCost={(t) => describeFork(forkEstimate(stream.events, t))}
+        onOpenDossier={setSelected}
+      />
+      <PlaybackControls
+        mode={stream.mode}
+        behind={stream.behind}
+        engineDone={stream.engineDone}
+        speedMs={stream.speedMs}
+        onPause={stream.pause}
+        onResume={stream.resume}
+        onStep={stream.stepForward}
+        onCatchUp={stream.catchUp}
+        onSpeed={stream.setSpeedMs}
+        turn={turn}
+        maxTurn={maxMessages}
+        ended={
+          completed && (
+            <>
+              <Btn size="sm" onClick={openScrub}>
+                <Icon name="clock" size={14} /> Scrub
+              </Btn>
+              <Btn size="sm" onClick={openAsides}>
+                <Icon name="chat" size={14} /> Asides
+              </Btn>
+            </>
+          )
+        }
+      />
+    </div>
+  )
+
+  const castPane = (
+    <div className="cc-pane">
+      <div className="cc-scroll">
+        <CastBoard state={state} onSelect={setSelected} />
+      </div>
+    </div>
+  )
+
+  const analysisPane = (
+    <div className="cc-pane">
+      <div className="cc-scroll">
+        {!completed ? (
+          // Mid-run the counts change under the reader, and the questions this tab answers ("who spoke, what
+          // did it conclude?") are asked of a transcript rather than of a conversation in progress.
+          <Panel center>
+            <Label>
+              Analysis locked <span aria-hidden="true">◇</span>
+            </Label>
+            <p className="cc-muted mt-1.5">Opens when the run ends.</p>
+            {maxMessages ? (
+              <div className="mt-2">
+                <Ticks n={Math.min(turn, maxMessages)} max={maxMessages} live={liveNow} />
+              </div>
+            ) : null}
+          </Panel>
+        ) : (
+          <>
+            <SummaryPanel
+              runId={runId}
+              generated={generated}
+              imported={imported}
+              defaultInstructions={defaultInstructions}
+              canGenerate={completed}
+              model={analysisModel || undefined}
+              onUpdated={setGenerated}
+            />
+            {/* Renders nothing unless this run researched, so it adds no section to the
+                conversations that did not. §5.3: nobody watches the pass, so this is
+                where an operator finds out what it did. */}
+            <ResearchPanel research={detail?.research ?? null} />
+            {/* Consultants and injected messages are not a share of the conversation; the panel filters
+                them itself. */}
+            <ParticipationPanel feed={state.feed} order={state.order} onJump={jump} />
+            <BranchTree runId={runId} onOpenRun={onOpenRun} />
+          </>
+        )}
+      </div>
+    </div>
+  )
+
+  const panes = wide
+    ? [castPane, conversationPane, analysisPane]
+    : [tab === 'cast' ? castPane : tab === 'analysis' ? analysisPane : conversationPane]
+
+  return (
+    <>
+      {header}
+      {scrubbing ? (
+        <div className="cc-legacy">
+          <Scrubber
+            runId={runId}
+            maxTurn={maxTurn}
+            cast={cast}
+            defaultBudget={maxMessages ?? maxTurn}
+            models={models}
+            defaultModel={analysisModel}
+            onBranch={branchFrom}
+            branching={branching}
+            onStartFresh={onStartFresh ? () => onStartFresh(runId) : undefined}
+          />
+        </div>
+      ) : (
+        <>
+          <RunHud
+            turn={turn}
+            max={maxMessages}
+            live={liveNow}
+            cost={state.totalCost}
+            tokensIn={state.totalTokensIn}
+            tokensOut={state.totalTokensOut}
+          />
+          {lineageRow}
+          {alerts.map((a) => (
+            <p key={a} role="alert" className="cc-card mx-[14px] mt-2 flex-none text-cc-danger">
+              {a}
+            </p>
+          ))}
+          <RunTabs runId={runId} tab={tab} locked={!completed} />
+          <div className="cc-panes">
+            {panes.map((p, i) => (
+              <Fragment key={i}>{p}</Fragment>
+            ))}
+          </div>
+        </>
+      )}
+
+      {menuOpen && (
+        <Sheet title="Run options" onClose={() => setMenuOpen(false)}>
+          <div className="cc-menu">
+            {completed && (
+              <button type="button" onClick={() => { setMenuOpen(false); setBriefOpen(true) }}>
+                <Icon name="doc" size={18} /> Decision brief
+              </button>
+            )}
+            {completed && (
+              <button type="button" onClick={() => { setMenuOpen(false); openScrub() }}>
+                <Icon name="clock" size={18} /> Scrub and branch
+              </button>
+            )}
+            {completed && (
+              <button type="button" onClick={openAsides}>
+                <Icon name="chat" size={18} /> Asides
+              </button>
+            )}
+            {onStartFresh && (
+              <button type="button" onClick={() => { setMenuOpen(false); onStartFresh(runId) }}>
+                <Icon name="plus" size={18} /> Start fresh from this setup
+              </button>
+            )}
+          </div>
+          {/* Offered only once the run has finished: an export mid-run would be a transcript that
+              stops at an arbitrary turn with no sign that more is coming. */}
+          {completed && <ExportMenu kind="run" id={runId} name={detail?.name ?? runId} />}
           {models.length > 0 && (
-            <label className="flex items-center gap-1 text-xs text-slate-400" title="Model used for analysis (summary/asides) and forward branching from this thread">
-              Model
+            <div className="cc-setting">
+              <span>
+                Model <Hint label="the run's model">Used for analysis (summary and asides) and for branching forward from this run.</Hint>
+              </span>
               <select
                 value={analysisModel}
                 onChange={(e) => setAnalysisModel(e.target.value)}
-                className="max-w-[14rem] rounded border border-matrix-border bg-matrix-panel px-2 py-1 text-xs text-slate-200"
+                aria-label="Model"
+                className="cc-field max-w-[14rem]"
               >
                 {models.map((m) => (
                   <option key={m.id} value={m.id}>
@@ -275,156 +465,26 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh }: Props) {
                   </option>
                 ))}
               </select>
-            </label>
-          )}
-          <span className="text-xs text-slate-500">
-            {stream.engineDone
-              ? '✓ replay complete'
-              : stream.connected
-                ? '🔌 connected'
-                : '… connecting'}
-          </span>
-        </div>
-      </header>
-
-      {stopError && (
-        <div className="border-b border-red-900/50 bg-red-950/40 px-4 py-2 text-xs text-red-300">
-          Stop failed: {stopError}
-        </div>
-      )}
-
-      {resumeError && (
-        <div className="border-b border-red-900/50 bg-red-950/40 px-4 py-2 text-xs text-red-300">
-          Resume failed: {resumeError}
-        </div>
-      )}
-
-      {/* Phase 2a branch lineage — this run's parent and/or its child branches. */}
-      {(lineage?.parent || (lineage?.branches?.length ?? 0) > 0) && (
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-matrix-border bg-matrix-panel/60 px-4 py-2 text-xs text-slate-400">
-          {lineage?.parent && (
-            <span>
-              ⑂ Branched from{' '}
-              <button
-                onClick={() => onOpenRun && onOpenRun(lineage.parent!.run_id)}
-                className="font-semibold text-matrix-accent hover:underline"
-              >
-                {lineage.parent.name ?? lineage.parent.run_id.slice(0, 8)}
-              </button>{' '}
-              @ turn {lineage.parent.branch_turn}
-            </span>
-          )}
-          {(lineage?.branches?.length ?? 0) > 0 && (
-            <span className="flex flex-wrap items-center gap-1">
-              Branches:
-              {lineage!.branches.map((b) => (
-                <button
-                  key={b.run_id}
-                  onClick={() => onOpenRun && onOpenRun(b.run_id)}
-                  className="rounded border border-matrix-border px-2 py-0.5 text-matrix-accent hover:border-matrix-accent"
-                >
-                  {b.name ?? b.run_id.slice(0, 8)} @ {b.branch_turn}
-                </button>
-              ))}
-            </span>
-          )}
-        </div>
-      )}
-
-      {branchError && (
-        <div className="border-b border-red-900 bg-red-950/40 px-4 py-2 text-sm text-red-300">
-          Branch failed: {branchError}
-        </div>
-      )}
-
-      {scrubbing && completed ? (
-        <Scrubber
-          runId={runId}
-          maxTurn={maxTurn}
-          cast={cast}
-          defaultBudget={(detail?.config?.max_messages as number) ?? maxTurn}
-          models={models}
-          defaultModel={analysisModel}
-          onBranch={branchFrom}
-          branching={branching}
-          onStartFresh={onStartFresh ? () => onStartFresh(runId) : undefined}
-        />
-      ) : (
-        <>
-      <div className="border-b border-matrix-border px-4 py-2">
-        <PlaybackControls
-          mode={stream.mode}
-          behind={stream.behind}
-          engineDone={stream.engineDone}
-          speedMs={stream.speedMs}
-          onPause={stream.pause}
-          onResume={stream.resume}
-          onStep={stream.stepForward}
-          onCatchUp={stream.catchUp}
-          onSpeed={stream.setSpeedMs}
-        />
-      </div>
-
-      <div className="grid flex-1 grid-cols-1 gap-4 overflow-hidden p-4 lg:grid-cols-[320px_1fr]">
-        <aside className="space-y-4 overflow-y-auto">
-          <CostMeter
-            totalCost={state.totalCost}
-            tokensIn={state.totalTokensIn}
-            tokensOut={state.totalTokensOut}
-          />
-          <CastBoard state={state} onSelect={setSelected} />
-          {completed && (
-            <>
-              {/* Only on a finished run: mid-run the counts change under the reader, and
-                  the question this answers ("who actually spoke, and when?") is one asked
-                  of a transcript rather than of a conversation in progress. */}
-              <ParticipationPanel
-                // Consultants and injected messages are not a share of the conversation; the panel
-                // filters them itself.
-                feed={state.feed}
-                order={state.order}
-                onJump={(seq) => setJumpTo({ seq, nonce: Date.now() })}
-              />
-              <SummaryPanel
-                runId={runId}
-                generated={generated}
-                imported={imported}
-                defaultInstructions={defaultInstructions}
-                canGenerate={completed}
-                model={analysisModel || undefined}
-                onUpdated={setGenerated}
-              />
-              {/* Renders nothing unless this run researched, so it adds no section to the
-                  conversations that did not. §5.3: nobody watches the pass, so this is
-                  where an operator finds out what it did. */}
-              <ResearchPanel research={detail?.research ?? null} />
-              <BranchTree runId={runId} onOpenRun={onOpenRun} />
-            </>
-          )}
-        </aside>
-
-        <main className="overflow-hidden rounded-lg border border-matrix-border bg-matrix-panel">
-          {state.status === 'failed' && (
-            <div className="border-b border-red-900 bg-red-950/40 px-4 py-2 text-sm text-red-300">
-              Simulation failed: {state.error}
             </div>
           )}
-          <ConversationFeed
-            feed={state.feed}
-            agents={state.agents}
-            activeSpeaker={state.activeSpeaker}
-            thinking={state.thinking}
-            jumpTo={jumpTo}
-            runId={runId}
-            sourceIndex={state.sourceIndex}
-            quotes={quotes}
-            assumptions={state.assumptions}
-            onForkAssumption={state.status !== 'running' && state.status !== 'idle' ? forkAssumption : undefined}
-            forkCost={(t) => describeFork(forkEstimate(stream.events, t))}
-          />
-        </main>
-      </div>
-        </>
+          {/* Which model the personas actually spoke with. A definition once asked for Opus 5 and
+              every run silently used Sonnet 5; this is where that becomes visible. */}
+          {detail?.models?.voice && (
+            <p className="cc-muted">
+              Models used:{' '}
+              {Object.entries(detail.models)
+                .map(([role, m]) => `${role} ${(m ?? 'default').split('/').pop()?.split('anthropic.').pop()}`)
+                .join(' · ')}
+            </p>
+          )}
+          <p className="cc-muted">
+            {stream.engineDone ? '✓ Replay complete' : stream.connected ? 'Connected' : 'Connecting…'}
+          </p>
+        </Sheet>
+      )}
+
+      {briefOpen && (
+        <BriefDialog kind="run" id={runId} name={detail?.name ?? runId} onClose={() => setBriefOpen(false)} />
       )}
 
       {selected && state.agents[selected] && (
@@ -453,6 +513,6 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh }: Props) {
           onClose={() => setAsidesOpen(false)}
         />
       )}
-    </div>
+    </>
   )
 }

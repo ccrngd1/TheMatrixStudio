@@ -86,8 +86,8 @@ describe('ConversationFeed jump-to-turn', () => {
 
   it('marks the jumped-to message and only that one', () => {
     renderFeed({ seq: 6, nonce: 1 })
-    expect(document.getElementById('turn-6')?.className).toMatch(/ring-matrix-accent/)
-    expect(document.getElementById('turn-2')?.className).not.toMatch(/ring-matrix-accent/)
+    expect(document.getElementById('turn-6')?.className).toMatch(/cc-jumped/)
+    expect(document.getElementById('turn-2')?.className).not.toMatch(/cc-jumped/)
   })
 
   it('does not scroll to a turn when nothing was requested', () => {
