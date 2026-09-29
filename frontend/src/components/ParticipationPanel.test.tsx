@@ -177,4 +177,20 @@ describe('giniOfShares', () => {
     expect(giniOfShares([0, 0, 0])).toBe(0)
     expect(giniOfShares([])).toBe(0)
   })
+
+  it('counts neither an injected message nor a consultant as a speaker', () => {
+    render(
+      <ParticipationPanel
+        order={['Ada']}
+        onJump={() => {}}
+        feed={[
+          { turn: 1, seq: 1, speaker: 'Ada', content: 'x' },
+          { turn: 1, seq: 2, speaker: "Residents' survey", content: 'y', injected: true },
+          { turn: 1, seq: 3, speaker: 'Lee (consultant)', content: 'z', consultant: { expert: 'Lee', askedBy: 'Ada', question: 'q' } },
+        ]}
+      />,
+    )
+    expect(screen.queryByText("Residents' survey")).toBeNull()
+    expect(screen.queryByText('Lee (consultant)')).toBeNull()
+  })
 })

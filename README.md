@@ -4,17 +4,19 @@
 
 TheMatrix Simulation Studio is a standalone tool for running multi-agent conversation simulations. Define a topic and cast of personas, hit **Run**, and watch the conversation unfold live in a web control room. Features checkpointing, timeline branching, optional agent cognition (memory + reflection + goals), and anime-style avatar generation.
 
-![Control Room](docs/screenshots/control-room-placeholder.png)
-<!-- TODO: Replace with actual screenshot showing cast board + live conversation -->
+![Control room: cast with generated portraits, a working assumption marked above the conversation, and personas stating a lean](docs/screenshots/control-room.png)
+*The control room on a finished run. The card above the conversation is a working assumption the room was told to reason from (cited in 3 messages, forkable); the personas state what they expect the missing evidence to show and which way they lean today.*
 
-![Cognition Dossier](docs/screenshots/dossier-placeholder.png)
-<!-- TODO: Replace with actual screenshot showing agent dossier with memory stream + why-trace -->
+![A scheduled message, marked as injected, entering the conversation after turn 5](docs/screenshots/scheduled-message.png)
+*A scheduled message — here an early survey result — enters after turn 5, marked as injected, and the next speakers reason from it.*
 
-![Branch Tree View](docs/screenshots/branch-tree-placeholder.png)
-<!-- TODO: Replace with actual screenshot showing visual branch tree with parent/child relationships and timeline scrubber -->
+![The summary's "what would settle it" rows beside the timeline branches](docs/screenshots/summary-and-branches.png)
+*The summary's evidence plan (what data, who asked, what it unlocks, what would move them, the best guess — or "not stated") and the branch tree, with a fork that changed one assumption.*
 
-![Cost Meter](docs/screenshots/cost-meter-placeholder.png)
-<!-- TODO: Replace with actual screenshot showing live token/$ cost meter with optional spend cap and warning threshold -->
+![A persona's dossier: persona, goals, usage and each message with its "why?" trace](docs/screenshots/dossier.png)
+*A persona's dossier: goals, usage, and every message with a "why?" trace of what the persona was drawing on.*
+
+Screenshots are of a demonstration run on a neutral topic, captured from the deployed application.
 
 ## Features
 

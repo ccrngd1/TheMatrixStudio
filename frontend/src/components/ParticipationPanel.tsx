@@ -35,7 +35,10 @@ export function giniOfShares(shares: number[]): number {
  * the failure mode `docs/SPEAKER-SELECTION-EVALUATION.md` exists to remove, and a panel that
  * only lists speakers would hide exactly that.
  */
-export function ParticipationPanel({ feed, order, onJump }: Props) {
+export function ParticipationPanel({ feed: all, order, onJump }: Props) {
+  // Only participants' own turns. A consultant answers when asked and an injected message is the
+  // operator's; counting either made a scheduled "Residents' survey" read as a speaker with 8% of turns.
+  const feed = all.filter((m) => !m.consultant && !m.injected)
   const names = [...new Set([...order, ...feed.map((m) => m.speaker)])]
   const turnsBy = new Map<string, FeedMessage[]>(names.map((n) => [n, []]))
   for (const m of feed) turnsBy.get(m.speaker)?.push(m)
