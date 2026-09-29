@@ -35,3 +35,27 @@ analyst passes of the unchanged Stage 1 evidence-plan prompt.
 
 **What n = 3 can say.** Whether the lean difference seen after the fact recurs on fresh runs. A 3–1 or
 3–0 split at n = 3 is weak evidence on its own; its weight comes from agreeing, or not, with the first.
+
+## Result — 2026-09-29
+
+Runs: off `cbff706b` `b315d8d8` `ba6ddca6` ; on `d689b591` `54e3c278` `9e3da26d` . All six complete at 40 turns, launched together after `0c0d53f`. Scored by
+`scripts/analyse_evidence_lean.py --criteria 2 --repeats 3` as committed (the analyst is a model).
+
+| | off | on |
+|---|---|---|
+| **runs stating a lean, by majority of 3 passes** | **0 of 3** | **3 of 3** |
+| passes stating a lean | 1 of 9 | 9 of 9 |
+| mean standing dissenters | 2.7 | 2.3 |
+| median words per message | 143 | 152.5 |
+| total cost | $3.42 | $3.56 |
+| best-guess share, pooled (noisy; reported only) | 0.50 | 0.70 |
+
+- **Primary: MET** — 3 of 3 against 0 of 3, and unanimous across every on-arm pass.
+- **Guardrails: met.** Standing dissent 2.3 vs 2.7 (within the −1 allowance; it went *up* in the first
+  comparison), words +7%, cost +4%.
+- **Decision, as pre-registered:** recommend making `personas.evidence_lean` the default. The operator
+  decides.
+
+**Read with the first comparison.** Both now point the same way on the lean: 2 of 3 vs 1 of 3 on one
+pass, 8 of 9 vs 4 of 9 passes on re-analysis, and 9 of 9 vs 1 of 9 here, on fresh runs with the measure
+fixed in advance. One brief throughout, so nothing here speaks to other kinds of topic.
