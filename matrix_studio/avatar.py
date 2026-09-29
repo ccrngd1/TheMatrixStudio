@@ -14,7 +14,7 @@ import hashlib
 import base64
 import json
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 from matrix_studio import blobs
 from matrix_studio.settings import get_settings
@@ -62,6 +62,20 @@ def store_avatar(portrait_b64: Optional[str]) -> Optional[str]:
     except Exception as exc:  # noqa: BLE001 - never let an avatar fail a run
         logger.warning("Could not store avatar blob: %s", exc)
         return None
+
+
+async def store_avatar_for(portrait_b64: Optional[str], db: Any) -> Optional[str]:
+    """Persist a portrait where the API can serve it: the owner's S3 prefix when the store has one, the
+    local blob directory otherwise (the local single-user tool). Never raises, like `store_avatar`."""
+    if not portrait_b64:
+        return None
+    put = getattr(db, "put_avatar", None) if db is not None else None
+    if put is not None and getattr(db, "bucket", None):
+        try:
+            return await put(base64.b64decode(portrait_b64))
+        except Exception as exc:  # noqa: BLE001 - never let an avatar fail a run
+            logger.warning("Could not store avatar in S3, keeping it local: %s", exc)
+    return store_avatar(portrait_b64)
 
 
 #: What one generated portrait costs, in USD. **A list price, not a measurement.** litellm has no

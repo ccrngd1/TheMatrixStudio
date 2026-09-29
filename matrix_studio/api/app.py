@@ -2642,7 +2642,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         a generation failure surfaces as 502 (upstream image model), not 500.
         """
         import random
-        from matrix_studio.avatar import generate_avatar, store_avatar
+        from matrix_studio.avatar import generate_avatar, store_avatar_for
 
         run = await db.for_owner(user).get_run_by_ref(ref)
         if not run:
@@ -2674,7 +2674,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         # Store the image and keep only its key on the agent — see blobs.py. The
         # key is content-addressed, so a regenerated portrait gets a new key and any
         # URL built from it cache-busts itself.
-        agent.portrait_key = store_avatar(portrait)
+        agent.portrait_key = await store_avatar_for(portrait, db.for_owner(user))
         agent.portrait = None
         await db.for_owner(user).save_snapshot(snapshot)
 
@@ -2730,7 +2730,17 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         if not key:
             raise HTTPException(status_code=404, detail="No avatar for this agent")
 
-        data = blobs.get(key)
+        # The owner's S3 prefix first (where deployed avatars are written), the local blob directory
+        # second (the local tool, and anything stored before avatars moved to S3).
+        data = None
+        getter = getattr(db.for_owner(user), "get_avatar", None)
+        if getter is not None:
+            try:
+                data = await getter(key)
+            except Exception:  # noqa: BLE001 - a malformed key is simply not found
+                data = None
+        if data is None:
+            data = blobs.get(key)
         if data is None:
             raise HTTPException(status_code=404, detail="Avatar image not found")
         # Immutable: the key IS the content hash, so this body can never change.

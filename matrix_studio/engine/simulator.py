@@ -35,7 +35,7 @@ from matrix_studio import shifts as shifts_mod
 # event dict (same shape as a persisted row) for each event the engine emits.
 OnEvent = Callable[[Dict[str, Any]], Awaitable[None]]
 
-from matrix_studio.avatar import avatar_cost_usd, generate_avatar, store_avatar
+from matrix_studio.avatar import avatar_cost_usd, generate_avatar, store_avatar_for
 from matrix_studio.citations import (
     CitationContext,
     analyse_citations,
@@ -1076,7 +1076,7 @@ async def begin_run(
             # megabyte into the append-only log that every replay reads, and into
             # every snapshot via AgentState — measured at 99% of the largest
             # snapshot in a real database.
-            agent.portrait_key = store_avatar(portrait)
+            agent.portrait_key = await store_avatar_for(portrait, db)
             # avatar.ready lives outside the turn stream (turn 0); give it its
             # own seq so ordering stays total and replay is deterministic.
             await emit(

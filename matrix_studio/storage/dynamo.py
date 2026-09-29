@@ -798,6 +798,54 @@ class DynamoStorage:
             ContentType="text/plain; charset=utf-8",
         )
 
+    # ------------------------------------------------------------------ #
+    # Avatars — per-owner objects, so the scoped role's `…/{sub}/*` condition applies
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _avatar_object(owner: str, key: str) -> str:
+        """`avatars/<sha>.png` (the key events carry) → `avatars/{sub}/<sha>.png` (the object).
+
+        The recorded key is unchanged, so every stored event and snapshot keeps working; only where the
+        bytes live moves. Validated with the blob module's pattern, so a key from a URL cannot name any
+        other object."""
+        from matrix_studio.blobs import _KEY_RE
+
+        if not _KEY_RE.match(key or "") or not key.startswith("avatars/"):
+            raise StorageError(f"not an avatar key: {key!r}")
+        return f"avatars/{owner}/{key.split('/', 1)[1]}"
+
+    async def put_avatar(self, data: bytes, *, owner_sub: Optional[str] = None) -> str:
+        """Store a portrait in S3 under its owner and return its key.
+
+        Written here rather than to the local blob directory because on Lambda that directory is the
+        generating worker's own /tmp: the API, a different function, never saw the file, so every
+        deployed avatar was generated, paid for, and served as a 404."""
+        from matrix_studio.blobs import make_key
+
+        self._ensure_clients()
+        if not self.bucket:
+            raise StorageError("DATA_BUCKET is not set, so there is nowhere to write the avatar.")
+        key = make_key(data, namespace="avatars", suffix="png")
+        await self._call(self._s3.put_object, Bucket=self.bucket, Key=self._avatar_object(self._owner(owner_sub), key),
+                         Body=data, ContentType="image/png")
+        return key
+
+    async def get_avatar(self, key: str, *, owner_sub: Optional[str] = None) -> Optional[bytes]:
+        """The owner's portrait bytes, or None. Another owner's key resolves under THIS owner's prefix,
+        so it is simply not found — the ownership check the route used to lack."""
+        self._ensure_clients()
+        if not self.bucket:
+            return None
+        try:
+            obj = await self._call(self._s3.get_object, Bucket=self.bucket,
+                                   Key=self._avatar_object(self._owner(owner_sub), key))
+        except StorageError:
+            raise
+        except Exception:  # noqa: BLE001 - absent object
+            return None
+        return await asyncio.to_thread(lambda: obj["Body"].read())
+
     async def _get_text(self, key: str) -> Optional[str]:
         return await self._get_body(key)
 

@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- Mobile-first UI mockups for TheMatrix Simulation Studio. Static, no build step:
+     open in a browser. Sample content is invented and generic. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Matrix Studio — mobile UI mockups</title>
+<style>
+  :root {
+    --bg:#0b0f14; --panel:#121821; --panel2:#171f2a; --border:#1e2733;
+    --accent:#38bdf8; --live:#22c55e; --amber:#f59e0b; --red:#f87171; --violet:#a78bfa;
+    --t1:#e2e8f0; --t2:#94a3b8; --t3:#64748b;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:#05080b; color:var(--t1); font:14px/1.4 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; padding:32px 24px 80px; }
+  h1.page { font-size:22px; margin-bottom:6px; }
+  p.lede { color:var(--t2); max-width:900px; margin-bottom:28px; }
+  .principles { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:12px; margin-bottom:40px; max-width:1200px; }
+  .principles div { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:12px 14px; font-size:13px; color:var(--t2); }
+  .principles b { color:var(--t1); display:block; margin-bottom:2px; }
+  .grid { display:flex; flex-wrap:wrap; gap:36px; }
+  figure { width:360px; }
+  figcaption { margin-top:12px; font-size:13px; color:var(--t2); }
+  figcaption b { color:var(--t1); display:block; font-size:14px; margin-bottom:2px; }
+
+  /* phone */
+  .phone { width:360px; height:760px; border-radius:36px; border:8px solid #1a2029; background:var(--bg); position:relative; overflow:hidden; display:flex; flex-direction:column; box-shadow:0 20px 50px rgba(0,0,0,.5); }
+  .status { height:26px; flex:none; display:flex; justify-content:space-between; align-items:center; padding:0 20px; font-size:11px; color:var(--t2); }
+  .top { flex:none; padding:8px 14px 10px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:10px; }
+  .top .back { color:var(--accent); font-size:20px; }
+  .top .title { flex:1; min-width:0; }
+  .top .title b { display:block; font-size:16px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .top .title span { font-size:11px; color:var(--t3); }
+  .body { flex:1; overflow:hidden; padding:12px 14px; display:flex; flex-direction:column; gap:10px; }
+  .tabs { flex:none; height:62px; border-top:1px solid var(--border); background:var(--panel); display:flex; justify-content:space-around; align-items:center; padding-bottom:8px; }
+  .tabs div { text-align:center; font-size:10px; color:var(--t3); }
+  .tabs div i { display:block; font-style:normal; font-size:18px; margin-bottom:1px; }
+  .tabs div.on { color:var(--accent); }
+
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:10px 12px; }
+  .row { display:flex; align-items:center; gap:8px; }
+  .between { justify-content:space-between; }
+  .muted { color:var(--t3); font-size:11px; }
+  .t2 { color:var(--t2); }
+  .sm { font-size:12px; }
+  .xs { font-size:11px; }
+  .chip { display:inline-flex; align-items:center; gap:4px; font-size:10.5px; padding:2px 7px; border-radius:999px; border:1px solid var(--border); color:var(--t2); white-space:nowrap; }
+  .chip.live { color:var(--live); border-color:rgba(34,197,94,.4); }
+  .chip.accent { color:var(--accent); border-color:rgba(56,189,248,.4); }
+  .chip.amber { color:var(--amber); border-color:rgba(245,158,11,.4); }
+  .chip.red { color:var(--red); border-color:rgba(248,113,113,.4); }
+  .chip.violet { color:var(--violet); border-color:rgba(167,139,250,.4); }
+  .dot { width:7px; height:7px; border-radius:50%; background:var(--live); box-shadow:0 0 6px var(--live); }
+  .btn { display:inline-flex; justify-content:center; align-items:center; gap:6px; height:44px; border-radius:12px; font-weight:600; font-size:14px; border:1px solid var(--border); color:var(--t1); background:var(--panel2); padding:0 14px; }
+  .btn.primary { background:var(--accent); color:#04121c; border-color:var(--accent); }
+  .btn.danger { color:var(--red); border-color:rgba(248,113,113,.5); background:transparent; }
+  .btn.sm { height:34px; font-size:12px; border-radius:10px; padding:0 10px; }
+  .full { width:100%; }
+  .seg { display:flex; background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:3px; flex:none; }
+  .seg div { flex:1; text-align:center; font-size:12px; padding:6px 0; border-radius:7px; color:var(--t2); }
+  .seg div.on { background:var(--panel2); color:var(--t1); box-shadow:inset 0 0 0 1px var(--border); }
+  .av { width:34px; height:34px; border-radius:50%; flex:none; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:12px; color:#0b0f14; }
+  .av.lg { width:56px; height:56px; font-size:18px; }
+  .a1 { background:linear-gradient(135deg,#f9a8d4,#c084fc); }
+  .a2 { background:linear-gradient(135deg,#7dd3fc,#38bdf8); }
+  .a3 { background:linear-gradient(135deg,#fde68a,#f59e0b); }
+  .a4 { background:linear-gradient(135deg,#86efac,#22c55e); }
+  .a5 { background:linear-gradient(135deg,#fca5a5,#ef4444); }
+  .ring { box-shadow:0 0 0 2px var(--bg),0 0 0 4px var(--live); }
+  .fab { position:absolute; right:18px; bottom:80px; height:52px; padding:0 20px; border-radius:26px; background:var(--accent); color:#04121c; font-weight:700; display:flex; align-items:center; gap:6px; box-shadow:0 8px 24px rgba(56,189,248,.35); }
+  .search { height:38px; border-radius:10px; background:var(--panel); border:1px solid var(--border); display:flex; align-items:center; padding:0 12px; color:var(--t3); font-size:13px; flex:none; }
+  .bar { height:6px; border-radius:3px; background:var(--border); overflow:hidden; }
+  .bar i { display:block; height:100%; background:var(--accent); }
+  .label { font-size:10.5px; text-transform:uppercase; letter-spacing:.06em; color:var(--t3); font-weight:600; }
+  .field { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:9px 11px; font-size:13px; color:var(--t2); }
+  .toggle { width:38px; height:22px; border-radius:11px; background:var(--accent); position:relative; flex:none; }
+  .toggle::after { content:""; position:absolute; right:3px; top:3px; width:16px; height:16px; border-radius:50%; background:#04121c; }
+  .toggle.off { background:var(--border); }
+  .toggle.off::after { left:3px; right:auto; background:var(--t3); }
+
+  /* stepper */
+  .steps { display:flex; gap:4px; flex:none; }
+  .steps i { flex:1; height:4px; border-radius:2px; background:var(--border); }
+  .steps i.done { background:var(--accent); }
+  .sticky { flex:none; border-top:1px solid var(--border); background:var(--panel); padding:10px 14px 18px; }
+
+  /* feed */
+  .msg { display:flex; gap:9px; }
+  .msg .bub { flex:1; min-width:0; background:var(--panel); border:1px solid var(--border); border-radius:4px 14px 14px 14px; padding:8px 10px; font-size:13px; }
+  .msg .who { font-size:11.5px; font-weight:700; margin-bottom:2px; display:flex; justify-content:space-between; }
+  .msg .who span { font-weight:400; color:var(--t3); }
+  .cite { color:var(--accent); font-size:10px; vertical-align:super; }
+  .flag { margin-top:6px; padding:6px 8px; border-radius:8px; font-size:11px; }
+  .flag.shift { background:rgba(167,139,250,.08); border:1px solid rgba(167,139,250,.3); color:#c4b5fd; }
+  .flag.lean { background:rgba(245,158,11,.07); border:1px solid rgba(245,158,11,.3); color:#fcd34d; }
+  .inject { text-align:center; font-size:11px; color:var(--amber); border:1px dashed rgba(245,158,11,.4); border-radius:10px; padding:6px; }
+  .typing { display:flex; gap:9px; align-items:center; color:var(--t3); font-size:12px; }
+  .mini { flex:none; display:flex; align-items:center; gap:10px; padding:8px 14px; border-top:1px solid var(--border); background:var(--panel); font-size:12px; }
+  .mini .ctl { width:34px; height:34px; border-radius:50%; background:var(--panel2); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; }
+
+  /* sheet */
+  .scrim { position:absolute; inset:0; background:rgba(0,0,0,.55); }
+  .sheet { position:absolute; left:0; right:0; bottom:0; background:var(--panel); border-top-left-radius:20px; border-top-right-radius:20px; border-top:1px solid var(--border); padding:8px 14px 20px; display:flex; flex-direction:column; gap:10px; }
+  .grab { width:40px; height:4px; border-radius:2px; background:var(--border); margin:0 auto 4px; }
+  .dim { opacity:.35; }
+
+  /* scrubber */
+  .track { position:relative; height:44px; flex:none; }
+  .track .line { position:absolute; top:20px; left:0; right:0; height:4px; background:var(--border); border-radius:2px; }
+  .track .fill { position:absolute; top:20px; left:0; width:52%; height:4px; background:var(--accent); border-radius:2px; }
+  .track .knob { position:absolute; top:10px; left:calc(52% - 12px); width:24px; height:24px; border-radius:50%; background:var(--accent); box-shadow:0 0 0 6px rgba(56,189,248,.2); }
+  .track .tick { position:absolute; top:14px; width:2px; height:16px; background:var(--amber); }
+  .track .tick.v { background:var(--violet); }
+
+  /* ensemble */
+  .grp { display:grid; grid-template-columns:62px 1fr 34px; align-items:center; gap:8px; font-size:11.5px; }
+  .grp .bar { height:10px; border-radius:5px; }
+  .grp .bar.b i { background:var(--violet); }
+
+  ul.plain { list-style:none; display:flex; flex-direction:column; gap:6px; }
+  ul.plain li { font-size:12.5px; color:var(--t2); padding-left:12px; position:relative; }
+  ul.plain li::before { content:"•"; position:absolute; left:0; color:var(--t3); }
+  .hr { height:1px; background:var(--border); flex:none; }
+
+  /* tablet */
+  .tablet { width:1000px; height:620px; border-radius:24px; border:8px solid #1a2029; background:var(--bg); overflow:hidden; display:flex; flex-direction:column; box-shadow:0 20px 50px rgba(0,0,0,.5); }
+  .tablet .cols { flex:1; display:grid; grid-template-columns:260px 1fr 300px; gap:12px; padding:12px; overflow:hidden; }
+  .tablet .col { display:flex; flex-direction:column; gap:10px; overflow:hidden; }
+  section.h { margin:56px 0 18px; font-size:16px; color:var(--t1); border-bottom:1px solid var(--border); padding-bottom:6px; max-width:1200px; }
+</style>
+</head>
+<body>
+
+<h1 class="page">Matrix Studio — mobile UI mockups</h1>
+<p class="lede">
+  A mobile-first redesign that keeps the whole feature set and the current dark "control room" palette.
+  At phone width each view has one column, a bottom tab bar, and bottom sheets for detail (dossier, asides,
+  fork). Past 768px the same parts spread into columns (see the tablet frame at the end). Sample content is invented.
+</p>
+
+<div class="principles">
+  <div><b>One column, three tabs per run</b>Live view becomes Conversation / Cast / Analysis rather than a 320px sidebar beside the feed.</div>
+  <div><b>Bottom sheets, not side drawers</b>Dossier, Asides, Fork and Export slide up and can be dismissed with a swipe; the feed stays visible behind them.</div>
+  <div><b>The form becomes a wizard</b>The 1,800-line New Run form splits into five steps with a sticky cost forecast and one "Next" button in reach of the thumb.</div>
+  <div><b>Header actions go in a ⋯ menu</b>Stop stays visible while a run is going; Brief, Export, Model and Scrubber move into an overflow menu.</div>
+  <div><b>Hints are tapped, not hovered</b>Every <code>title=</code> tooltip becomes an ⓘ tap target, because phones have no hover.</div>
+  <div><b>44px minimum targets</b>Chips and toggles get bigger hit areas; the scrubber knob gets a thumb-sized handle with haptic ticks at each turn.</div>
+</div>
+
+<section class="h">1 · Browse &amp; start</section>
+<div class="grid">
+
+  <!-- RUNS / HISTORY -->
+  <figure>
+    <div class="phone">
+      <div class="status"><span>9:41</span><span>●●● 5G ▮</span></div>
+      <div class="top"><div class="title"><b>Runs</b><span>12 conversations · 2 ensembles</span></div><span class="chip">⚙</span></div>
+      <div class="body">
+        <div class="search">🔍&nbsp; Search runs, topics, personas</div>
+        <div class="row" style="gap:6px;flex:none">
+          <span class="chip accent">All</span><span class="chip">Running</span><span class="chip">Ensembles</span><span class="chip">Branches</span>
+        </div>
+
+        <div class="card">
+          <div class="row between"><b>quiet-harbor</b><span class="chip live"><span class="dot"></span> turn 14/24</span></div>
+          <div class="sm t2" style="margin:3px 0 8px">Should the city adopt congestion pricing downtown?</div>
+          <div class="bar"><i style="width:58%"></i></div>
+          <div class="row between" style="margin-top:8px">
+            <div class="row" style="gap:-6px"><div class="av a1" style="width:22px;height:22px;font-size:9px">MR</div><div class="av a2" style="width:22px;height:22px;font-size:9px;margin-left:-6px">JT</div><div class="av a3" style="width:22px;height:22px;font-size:9px;margin-left:-6px">AK</div><span class="muted" style="margin-left:4px">+3</span></div>
+            <span class="muted">$0.21 · 3m ago</span>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="row between"><b>ensemble · pricing-tiers</b><span class="chip violet">▦ 2 groups × 3</span></div>
+          <div class="sm t2" style="margin:3px 0 6px">Assumption: transit capacity grows 10% vs flat</div>
+          <div class="row" style="gap:6px"><span class="chip live">5 done</span><span class="chip">1 running</span><span class="muted" style="margin-left:auto">$1.84</span></div>
+        </div>
+
+        <div class="card">
+          <div class="row between"><b>trusted-robot</b><span class="chip accent">✓ complete</span></div>
+          <div class="sm t2" style="margin:3px 0 6px">Four-day work week pilot for the support org</div>
+          <div class="row" style="gap:6px"><span class="chip">⑂ 2 branches</span><span class="chip">📄 brief</span><span class="muted" style="margin-left:auto">$0.39 · Tue</span></div>
+        </div>
+
+        <div class="card">
+          <div class="row between"><b>amber-lantern</b><span class="chip amber">■ stopped</span></div>
+          <div class="sm t2" style="margin:3px 0 6px">⑂ from trusted-robot @ turn 12 — "What if the CFO objects?"</div>
+          <div class="row" style="gap:6px"><span class="chip amber">↻ resume</span><span class="muted" style="margin-left:auto">$0.11 · Tue</span></div>
+        </div>
+      </div>
+      <div class="fab">＋ New run</div>
+      <div class="tabs"><div class="on"><i>☰</i>Runs</div><div><i>▦</i>Ensembles</div><div><i>📚</i>Knowledge</div><div><i>👥</i>Library</div></div>
+    </div>
+    <figcaption><b>Runs (History)</b>Cards replace table rows. Filter chips cover running, ensembles and branches. A live run shows progress and who's in it; stopped runs offer Resume on the card. The FAB starts the wizard.</figcaption>
+  </figure>
+
+  <!-- WIZARD STEP 1 -->
+  <figure>
+    <div class="phone">
+      <div class="status"><span>9:41</span><span>●●● 5G ▮</span></div>
+      <div class="top"><span class="back">✕</span><div class="title"><b>New run</b><span>Step 1 of 5 · Topic</span></div><span class="chip">Import</span></div>
+      <div class="body">
+        <div class="steps"><i class="done"></i><i></i><i></i><i></i><i></i></div>
+        <div>
+          <div class="label" style="margin-bottom:5px">Topic</div>
+          <div class="field" style="min-height:74px;color:var(--t1)">Should the city adopt congestion pricing downtown, and at what price?</div>
+        </div>
+        <div>
+          <div class="label" style="margin-bottom:5px">Run type</div>
+          <div class="seg"><div class="on">Single run</div><div>Ensemble</div></div>
+        </div>
+        <div class="card" style="display:flex;flex-direction:column;gap:10px">
+          <div class="row between"><span class="sm">Max messages <span class="muted">ⓘ</span></span><span class="chip accent">24</span></div>
+          <div class="row between"><span class="sm">Stop when converged <span class="muted">ⓘ</span></span><div class="toggle"></div></div>
+          <div class="row between"><span class="sm">Conversation method <span class="muted">ⓘ</span></span><span class="chip">Hybrid ▾</span></div>
+          <div class="row between"><span class="sm">Closing round <span class="muted">ⓘ</span></span><div class="toggle"></div></div>
+        </div>
+        <div class="card row" style="gap:10px">
+          <span style="font-size:20px">✨</span>
+          <div style="flex:1"><b class="sm">Draft a cast for me</b><div class="muted">Proposes 5–8 personas from the topic</div></div>
+          <span class="t2">›</span>
+        </div>
+      </div>
+      <div class="sticky">
+        <div class="row between xs t2" style="margin-bottom:8px"><span>Forecast <b style="color:var(--t1)">≈ $0.35–0.48</b></span><span>from 9 past runs</span></div>
+        <div class="btn primary full">Next · Cast →</div>
+      </div>
+    </div>
+    <figcaption><b>New Run wizard: Topic</b>Steps are Topic → Cast → Knowledge &amp; Research → Assumptions &amp; Schedule → Review. Import and "Draft a cast" are entry points at the start. The cost forecast stays pinned above the Next button.</figcaption>
+  </figure>
+
+  <!-- WIZARD STEP 2 CAST -->
+  <figure>
+    <div class="phone">
+      <div class="status"><span>9:41</span><span>●●● 5G ▮</span></div>
+      <div class="top"><span class="back">‹</span><div class="title"><b>Cast</b><span>Step 2 of 5 · 5 personas</span></div><span class="chip">Templates</span></div>
+      <div class="body">
+        <div class="steps"><i class="done"></i><i class="done"></i><i></i><i></i><i></i></div>
+        <div class="card row"><div class="av a1">MR</div><div style="flex:1"><b class="sm">Maria Reyes</b><div class="muted">Small-business owner · 2 positions</div></div><span class="t2">›</span></div>
+        <div class="card" style="border-color:rgba(56,189,248,.5)">
+          <div class="row"><div class="av a2">JT</div><div style="flex:1"><b class="sm">James Tran</b><div class="muted">Transit planner</div></div><span class="t2">⌄</span></div>
+          <div class="hr" style="margin:10px 0"></div>
+          <div class="label" style="margin-bottom:4px">Position</div>
+          <div class="field sm" style="color:var(--t1)">Pricing works only if bus frequency rises first</div>
+          <div class="row" style="gap:6px;margin:6px 0"><span class="chip amber">firm</span><span class="chip">exit: ridership data from a peer city</span></div>
+          <div class="row between sm" style="margin-top:6px"><span class="t2">🔒 Withheld concern</span><span class="t2">set ›</span></div>
+          <div class="row between sm" style="margin-top:8px"><span class="t2">📎 Documents · KB</span><span class="chip accent">2 files</span></div>
+        </div>
+        <div class="card row"><div class="av a3">AK</div><div style="flex:1"><b class="sm">Aisha Khan</b><div class="muted">City council member</div></div><span class="t2">›</span></div>
+        <div class="card row"><div class="av a4">DO</div><div style="flex:1"><b class="sm">Dan O'Neil</b><div class="muted">Commuter, suburbs</div></div><span class="t2">›</span></div>
+        <div class="row" style="gap:8px;flex:none">
+          <div class="btn sm" style="flex:1">＋ Persona</div><div class="btn sm" style="flex:1">📚 From library</div><div class="btn sm" style="flex:1">🎓 Consultant</div>
+        </div>
+      </div>
+      <div class="sticky">
+        <div class="row between xs t2" style="margin-bottom:8px"><span>Forecast <b style="color:var(--t1)">≈ $0.41</b></span><span>Avatars: on</span></div>
+        <div class="row" style="gap:8px"><div class="btn" style="flex:1">‹ Back</div><div class="btn primary" style="flex:2">Next · Knowledge →</div></div>
+      </div>
+    </div>
+    <figcaption><b>Wizard: Cast</b>Personas are collapsible cards, with one open at a time. Structured-persona fields (position, firmness, exit condition, withheld concern, will-not-weigh) sit inside. Library, templates and consultants are one tap away.</figcaption>
+  </figure>
+
+  <!-- WIZARD REVIEW -->
+  <figure>
+    <div class="phone">
+      <div class="status"><span>9:41</span><span>●●● 5G ▮</span></div>
+      <div class="top"><span class="back">‹</span><div class="title"><b>Review &amp; launch</b><span>Step 5 of 5</span></div></div>
+      <div class="body">
+        <div class="steps"><i class="done"></i><i class="done"></i><i class="done"></i><i class="done"></i><i class="done"></i></div>
+        <div class="card">
+          <div class="row between"><span class="label">Topic</span><span class="xs" style="color:var(--accent)">edit</span></div>
+          <div class="sm" style="margin-top:3px">Should the city adopt congestion pricing downtown, and at what price?</div>
+        </div>
+        <div class="card row between"><div><span class="label">Cast</span><div class="row" style="margin-top:5px"><div class="av a1" style="width:26px;height:26px;font-size:10px">MR</div><div class="av a2" style="width:26px;height:26px;font-size:10px;margin-left:-8px">JT</div><div class="av a3" style="width:26px;height:26px;font-size:10px;margin-left:-8px">AK</div><div class="av a4" style="width:26px;height:26px;font-size:10px;margin-left:-8px">DO</div><div class="av a5" style="width:26px;height:26px;font-size:10px;margin-left:-8px">LP</div></div></div><span class="muted">+1 consultant</span></div>
+        <div class="card" style="display:flex;flex-direction:column;gap:6px">
+          <span class="label">Knowledge</span>
+          <div class="row" style="gap:6px;flex-wrap:wrap"><span class="chip accent">📚 City traffic studies</span><span class="chip">🔎 research: shared + per-persona</span><span class="chip">inline citations</span></div>
+        </div>
+        <div class="card" style="display:flex;flex-direction:column;gap:6px">
+          <span class="label">Assumptions &amp; schedule</span>
+          <div class="sm t2">⚑ Transit capacity is flat through 2028</div>
+          <div class="sm t2">✉ After turn 10: letter from the state DOT</div>
+        </div>
+        <div class="card" style="display:flex;flex-direction:column;gap:6px">
+          <span class="label">Options</span>
+          <div class="row" style="gap:6px;flex-wrap:wrap"><span class="chip">24 msgs</span><span class="chip">Hybrid</span><span class="chip">Cognition: memory + reflection</span><span class="chip">Evidence lean</span></div>
+        </div>
+        <div class="card row between" style="border-color:rgba(245,158,11,.45)"><span class="sm">Spend cap</span><span class="chip amber">$1.00 · warn at 80%</span></div>
+      </div>
+      <div class="sticky">
+        <div class="row between sm" style="margin-bottom:8px"><span class="t2">Forecast</span><b>≈ $0.44 <span class="muted">(± $0.09)</span></b></div>
+        <div class="btn primary full">▶ Start run</div>
+      </div>
+    </div>
+    <figcaption><b>Wizard: Review</b>Every choice from the long form on one scannable page, each with an edit link back to its step. The spend cap and forecast sit right above Start.</figcaption>
+  </figure>
+</div>
+
+<section class="h">2 · Watching a run</section>
+<div class="grid">
+
+  <!-- LIVE CONVERSATION -->
+  <figure>
+    <div class="phone">
+      <div class="status"><span>9:41</span><span>●●● 5G ▮</span></div>
+      <div class="top">
+        <span class="back">‹</span>
+        <div class="title"><b>quiet-harbor</b><span><span style="color:var(--live)">● running</span> · turn 14/24 · $0.21</span></div>
+        <div class="btn danger sm">■ Stop</div><span class="t2" style="font-size:18px">⋯</span>
+      </div>
+      <div style="padding:8px 14px 0;flex:none"><div class="seg"><div class="on">Conversation</div><div>Cast</div><div>Analysis</div></div></div>
+      <div class="row" style="gap:6px;padding:8px 14px 0;overflow:hidden;flex:none">
+        <div class="av a1" style="width:28px;height:28px;font-size:10px">MR</div>
+        <div class="av a2 ring" style="width:28px;height:28px;font-size:10px">JT</div>
+        <div class="av a3" style="width:28px;height:28px;font-size:10px">AK</div>
+        <div class="av a4" style="width:28px;height:28px;font-size:10px">DO</div>
+        <div class="av a5" style="width:28px;height:28px;font-size:10px">LP</div>
+        <span class="muted" style="margin-left:auto">tap a face → dossier</span>
+      </div>
+      <div class="body" style="gap:12px">
+        <div class="msg"><div class="av a3">AK</div><div class="bub"><div class="who" style="color:#fcd34d">Aisha Khan <span>#11</span></div>A flat fee hits the night-shift workers hardest. I need to see an exemption before I vote.</div></div>
+        <div class="inject">✉ Scheduled message after turn 10 · <b>State DOT letter</b></div>
+        <div class="msg"><div class="av a1">MR</div><div class="bub"><div class="who" style="color:#f0abfc">Maria Reyes <span>#12</span></div>Deliveries are 30% of my costs. If the zone's evening price is lower, I could shift<span class="cite">[2]</span>.
+          <div class="flag shift">↻ Position shifted: credits “off-peak tiering”. Named exit condition: <i>met</i>.</div></div></div>
+        <div class="msg"><div class="av a4">DO</div><div class="bub"><div class="who" style="color:#86efac">Dan O'Neil <span>#13</span></div>What would convince me is a peer city's ridership numbers.
+          <div class="flag lean">⚖ Expects: ridership up 8–15%. Leans today: <b>support</b>.</div></div></div>
+        <div class="typing"><div class="av a2 ring" style="width:28px;height:28px;font-size:10px">JT</div>James is thinking…</div>
+      </div>
+      <div class="mini">
+        <div class="ctl">⏸</div><div class="ctl">⏭</div>
+        <div style="flex:1"><div class="bar"><i style="width:58%"></i></div><div class="muted" style="margin-top:3px">live · 1× · 0 behind</div></div>
+        <span class="chip accent">⇣ Latest</span>
+      </div>
+    </div>
+    <figcaption><b>Live view: Conversation</b>A compact header keeps Stop visible. A face strip rings the active speaker. Scheduled injections, position-shift flags, evidence leans and citations appear inline. Playback shrinks to a mini-bar.</figcaption>
+  </figure>
+
+  <!-- CAST TAB -->
+  <figure>
+    <div class="phone">
+      <div class="status"><span>9:41</span><span>●●● 5G ▮</span></div>
+      <div class="top"><span class="back">‹</span><div class="title"><b>quiet-harbor</b><span><span style="color:var(--live)">● running</span> · turn 14/24 · $0.21</span></div><div class="btn danger sm">■ Stop</div><span class="t2" style="font-size:18px">⋯</span></div>
+      <div style="padding:8px 14px 0;flex:none"><div class="seg"><div>Conversation</div><div class="on">Cast</div><div>Analysis</div></div></div>
+      <div class="body">
+        <div class="card">
+          <div class="row between"><span class="label">Cost</span><span class="muted">cap $1.00</span></div>
+          <div class="row between" style="margin:4px 0 6px"><b style="font-size:20px">$0.21</b><span class="muted">48.2k in · 6.1k out</span></div>
+          <div class="bar"><i style="width:21%;background:var(--live)"></i></div>
+        </div>
+        <div class="card row" style="border-color:rgba(34,197,94,.5)"><div class="av a2 ring">JT</div><div style="flex:1"><b class="sm">James Tran</b><div class="muted">speaking · 3 turns · lean: undecided</div></div><span class="chip amber">firm</span></div>
+        <div class="card row"><div class="av a1">MR</div><div style="flex:1"><b class="sm">Maria Reyes</b><div class="muted">3 turns · shifted at #12</div></div><span class="chip violet">moved</span></div>
+        <div class="card row"><div class="av a3">AK</div><div style="flex:1"><b class="sm">Aisha Khan</b><div class="muted">4 turns · 1 dangling thread</div></div><span class="chip">open</span></div>
+        <div class="card row"><div class="av a4">DO</div><div style="flex:1"><b class="sm">Dan O'Neil</b><div class="muted">2 turns · lean: support</div></div><span class="chip">soft</span></div>
+        <div class="card row"><div class="av a5">LP</div><div style="flex:1"><b class="sm">Lena Park</b><div class="muted">2 turns</div></div><span class="chip">soft</span></div>
+        <div class="card row"><div class="av" style="background:var(--border);color:var(--t2)">🎓</div><div style="flex:1"><b class="sm">Traffic economist</b><div class="muted">Consultant · asked 2× · answers only from sources</div></div><span class="t2">›</span></div>
+      </div>
+    </div>
+    <figcaption><b>Live view: Cast</b>Cost meter and cast board, formerly the left sidebar, as a full-width list. Each row summarises firmness, shifts and dangling threads; tapping one opens the dossier sheet.</figcaption>
+  </figure>
+
+  <!-- DOSSIER SHEET -->
+  <figure>
+    <div class="phone">
+      <div class="status"><span>9:41</span><span>●●● 5G ▮</span></div>
+      <div class="top dim"><span class="back">‹</span><div class="title"><b>quiet-harbor</b><span>turn 14/24</span></div></div>
+      <div class="body dim"><div class="card" style="height:80px"></div><div class="card" style="height:80px"></div></div>
+      <div class="scrim"></div>
+      <div class="sheet" style="top:120px">
+        <div class="grab"></div>
+        <div class="row"><div class="av a1 lg">MR</div><div style="flex:1"><b style="font-size:17px">Maria Reyes</b><div class="muted">Small-business owner · 3 turns</div></div><span class="t2">✕</span></div>
+        <div class="seg"><div class="on">Convictions</div><div>Memory</div><div>Threads</div><div>Why?</div></div>
+        <div class="card">
+          <div class="row between"><span class="label">Position</span><span class="chip violet">moved @ #12</span></div>
+          <div class="sm" style="margin:4px 0">Oppose a flat fee; open to off-peak tiering</div>
+          <div class="xs t2"><span class="muted">formed by:</span> 2019 road closure cost her a quarter's revenue</div>
+          <div class="xs t2" style="margin-top:2px"><span class="muted">would change her mind:</span> delivery-window exemption ✓ named</div>
+        </div>
+        <div class="card"><span class="label">Will not weigh</span><div class="sm t2" style="margin-top:3px">Carbon arguments without local numbers</div></div>
+        <div class="card"><div class="row between"><span class="label">🔒 Withheld concern</span><span class="chip">not yet drawn out</span></div><div class="sm t2" style="margin-top:3px">Lease renewal next spring</div></div>
+        <div class="card"><span class="label">Retrieved this turn</span>
+          <div class="xs t2" style="margin-top:4px">📄 Peer-city pricing review, p.14 · <span style="color:var(--accent)">score 0.82</span></div>
+          <div class="xs t2">📄 Merchant survey 2024 · <span style="color:var(--accent)">score 0.77</span></div></div>
+      </div>
+    </div>
+    <figcaption><b>Dossier: bottom sheet</b>Drag it up for full height or swipe down to close. Tabs split convictions, memory stream plus reflections, pending threads, and the why-trace so none of them needs a long scroll.</figcaption>
+  </figure>
+</div>
+
+<section class="h">3 · After the run</section>
+<div class="grid">
+
+  <!-- ANALYSIS / BRIEF -->
+  <figure>
+    <div class="phone">
+      <div class="status"><span>9:41</span><span>●●● 5G ▮</span></div>
+      <div class="top"><span class="back">‹</span><div class="title"><b>trusted-robot</b><span style="color:var(--accent)">✓ complete · 24 turns · $0.39</span></span></div><span class="t2" style="font-size:18px">⋯</span></div>
+      <div style="padding:8px 14px 0;flex:none"><div class="seg"><div>Conversation</div><div>Cast</div><div class="on">Analysis</div></div></div>
+      <div class="body">
+        <div class="card" style="border-color:rgba(56,189,248,.5)">
+          <span class="label" style="color:var(--accent)">Bottom line</span>
+          <div class="sm" style="margin-top:4px">Pilot for one quarter in two teams, measured on resolution time. 4 of 5 lean support.</div>
+          <div class="row" style="gap:6px;margin-top:8px"><span class="chip live">trust: moderate</span><span class="chip">1 dissenter</span></div>
+        </div>
+        <div class="card"><span class="label">What would settle it</span>
+          <ul class="plain" style="margin-top:5px"><li>Resolution-time data from the pilot teams</li><li>Coverage plan for Friday escalations</li></ul></div>
+        <div class="card"><span class="label">Assumed</span>
+          <div class="row between sm" style="margin-top:5px"><span class="t2">⚑ Headcount stays flat</span><span class="chip">cited 6× · disputed by LP</span></div>
+          <div class="row" style="justify-content:flex-end;margin-top:6px"><span class="chip accent">⑂ fork with a different value</span></div></div>
+        <div class="card"><span class="label">Standing objections</span>
+          <ul class="plain" style="margin-top:5px"><li>Lena Park: customer SLAs are contractual</li></ul></div>
+        <div class="card row between"><span class="sm">👥 Participation</span><span class="muted">who spoke when ›</span></div>
+        <div class="card row between"><span class="sm">🔎 Research · 14 sources</span><span class="muted">›</span></div>
+        <div class="card row between"><span class="sm">⑂ Branch tree · 2</span><span class="muted">›</span></div>
+      </div>
+      <div class="sticky row" style="gap:8px">
+        <div class="btn" style="flex:1">💬 Asides</div><div class="btn" style="flex:1">⏱ Scrub</div><div class="btn primary" style="flex:1">📄 Brief</div>
+      </div>
+    </div>
+    <figcaption><b>Live view: Analysis (finished run)</b>The decision brief comes first. Summary, participation, research and branch tree fold into rows below. The three post-run actions sit in a thumb bar. Export, the model picker and "start fresh from this setup" are in ⋯.</figcaption>
+  </figure>
+
+  <!-- SCRUBBER / FORK -->
+  <figure>
+    <div class="phone">
+      <div class="status"><span>9:41</span><span>●●● 5G ▮</span></div>
+      <div class="top"><span class="back">‹</span><div class="title"><b>Scrub · trusted-robot</b><span>state as of turn 12</span></div><span class="t2">✕</span></div>
+      <div class="body">
+        <div class="card">
+          <div class="row between xs t2"><span>turn 1</span><b style="color:var(--t1);font-size:14px">Turn 12</b><span>24</span></div>
+          <div class="track"><div class="line"></div><div class="fill"></div><div class="tick" style="left:40%"></div><div class="tick v" style="left:52%"></div><div class="tick v" style="left:78%"></div><div class="knob"></div></div>
+          <div class="row" style="gap:10px"><span class="chip amber">▍ injection</span><span class="chip violet">▍ position shift</span><span class="muted" style="margin-left:auto">‹ ›  step</span></div>
+        </div>
+        <div class="msg"><div class="av a5">LP</div><div class="bub"><div class="who" style="color:#fca5a5">Lena Park <span>#12</span></div>Our enterprise SLAs don't have a Friday carve-out. That's contractual, not a preference.</div></div>
+        <div class="card"><span class="label">State at turn 12</span>
+          <div class="row" style="gap:6px;flex-wrap:wrap;margin-top:6px"><span class="chip">4 lean support</span><span class="chip">2 open threads</span><span class="chip">⚑ headcount flat</span></div></div>
+      </div>
+      <div class="sheet">
+        <div class="grab"></div>
+        <b>Fork from turn 12</b>
+        <div class="seg"><div class="on">Inject</div><div>Edit goal</div><div>Assumption</div><div>Cast</div></div>
+        <div class="field" style="min-height:52px">The CFO joins and says budget is frozen until Q3…</div>
+        <div class="row between sm"><span class="t2">Budget <b style="color:var(--t1)">12 more turns</b></span><span class="t2">Fork cost <b style="color:var(--t1)">≈ $0.16</b></span></div>
+        <div class="btn primary full">⑂ Create branch</div>
+      </div>
+    </div>
+    <figcaption><b>Scrubber &amp; fork</b>A thumb-sized slider with coloured ticks for injections and shifts. Fork options (inject, edit goal, change assumption, add or remove persona) live in one sheet with its cost shown before you commit.</figcaption>
+  </figure>
+
+  <!-- ASIDES -->
+  <figure>
+    <div class="phone">
+      <div class="status"><span>9:41</span><span>●●● 5G ▮</span></div>
+      <div class="top dim"><div class="title"><b>trusted-robot</b></div></div>
+      <div class="scrim"></div>
+      <div class="sheet" style="top:70px">
+        <div class="grab"></div>
+        <div class="row between"><b style="font-size:16px">Asides</b><span class="muted">read-only · doesn't change the run</span></div>
+        <div class="seg"><div class="on">Analyst</div><div>Persona</div><div>Room</div><div>Consultant</div></div>
+        <div style="flex:1;display:flex;flex-direction:column;gap:10px">
+          <div style="align-self:flex-end;max-width:80%;background:rgba(56,189,248,.15);border:1px solid rgba(56,189,248,.35);border-radius:14px 14px 4px 14px;padding:8px 10px;font-size:13px">Why did Lena never move?</div>
+          <div style="max-width:88%;background:var(--panel2);border:1px solid var(--border);border-radius:14px 14px 14px 4px;padding:8px 10px;font-size:13px">Her exit condition, a contract amendment, was never named in the room (turns 12, 18, 22). Nobody offered it.<div class="row" style="gap:6px;margin-top:6px"><span class="chip accent">#12</span><span class="chip accent">#18</span><span class="chip accent">#22</span></div></div>
+          <div style="max-width:88%;background:var(--panel2);border:1px solid var(--border);border-radius:14px 14px 14px 4px;padding:8px 10px;font-size:13px">
+            <div class="row" style="gap:6px;margin-bottom:4px"><span class="chip amber">promotable</span></div>
+            Want the room to hear this? Promote it into a branch from turn 22.
+            <div class="row" style="gap:6px;margin-top:8px"><div class="btn sm">⑂ Promote to branch</div></div>
+          </div>
+          <div class="muted" style="text-align:center">answered by background worker · 6s</div>
+        </div>
+        <div class="row" style="gap:8px"><div class="field" style="flex:1">Ask the analyst…</div><div class="btn primary sm" style="width:44px;height:40px">↑</div></div>
+      </div>
+    </div>
+    <figcaption><b>Asides: chat sheet</b>A familiar chat layout with a target picker (analyst, persona, room, consultant). Turn references are tappable chips that jump into the transcript, and an answer can be promoted to a branch.</figcaption>
+  </figure>
+
+  <!-- ENSEMBLE -->
+  <figure>
+    <div class="phone">
+      <div class="status"><span>9:41</span><span>●●● 5G ▮</span></div>
+      <div class="top"><span class="back">‹</span><div class="title"><b>pricing-tiers</b><span>Ensemble · 2 groups × 3 · $1.84</span></div><span class="t2" style="font-size:18px">⋯</span></div>
+      <div class="body">
+        <div class="card">
+          <span class="label">Varies one thing: assumption</span>
+          <div class="row" style="gap:6px;margin-top:6px"><span class="chip accent">A · transit +10%</span><span class="chip violet">B · transit flat</span></div>
+        </div>
+        <div class="card" style="display:flex;flex-direction:column;gap:8px">
+          <div class="row between"><span class="label">Conclusions · counted per group</span><span class="muted">never pooled</span></div>
+          <div class="sm">Adopt with off-peak tier</div>
+          <div class="grp"><span class="t2">A</span><div class="bar"><i style="width:100%"></i></div><b>3/3</b></div>
+          <div class="grp"><span class="t2">B</span><div class="bar b"><i style="width:33%"></i></div><b>1/3</b></div>
+          <div class="hr"></div>
+          <div class="sm">Delay until bus frequency rises</div>
+          <div class="grp"><span class="t2">A</span><div class="bar"><i style="width:0%"></i></div><b>0/3</b></div>
+          <div class="grp"><span class="t2">B</span><div class="bar b"><i style="width:67%"></i></div><b>2/3</b></div>
+        </div>
+        <div class="label" style="margin-top:2px">Members</div>
+        <div class="card row between"><span class="sm"><span class="chip accent">A</span> calm-river</span><span class="row" style="gap:6px"><span class="chip">📄</span><span class="muted">$0.30 ›</span></span></div>
+        <div class="card row between"><span class="sm"><span class="chip accent">A</span> bright-maple</span><span class="row" style="gap:6px"><span class="chip">📄</span><span class="muted">$0.29 ›</span></span></div>
+        <div class="card row between"><span class="sm"><span class="chip violet">B</span> iron-sparrow</span><span class="chip live"><span class="dot"></span> turn 19</span></div>
+      </div>
+      <div class="tabs"><div><i>☰</i>Runs</div><div class="on"><i>▦</i>Ensembles</div><div><i>📚</i>Knowledge</div><div><i>👥</i>Library</div></div>
+    </div>
+    <figcaption><b>Ensemble view</b>The single declared variable is stated at the top. Each conclusion gets one bar per group, labelled "never pooled" as the methodology requires. Members open as ordinary runs, and a live member shows its turn.</figcaption>
+  </figure>
+
+  <!-- KNOWLEDGE -->
+  <figure>
+    <div class="phone">
+      <div class="status"><span>9:41</span><span>●●● 5G ▮</span></div>
+      <div class="top"><div class="title"><b>Knowledge bases</b><span>4 collections · outlive any run</span></div><span class="chip accent">＋ New</span></div>
+      <div class="body">
+        <div class="card">
+          <div class="row between"><b class="sm">📚 City traffic studies</b><span class="chip live">ready</span></div>
+          <div class="muted" style="margin:3px 0 8px">9 documents · used by 3 runs</div>
+          <div class="row" style="gap:6px"><span class="chip">shared</span><span class="chip">bound: quiet-harbor</span></div>
+        </div>
+        <div class="card">
+          <div class="row between"><b class="sm">📚 Merchant interviews</b><span class="chip amber">indexing 2/5</span></div>
+          <div class="bar" style="margin:8px 0"><i style="width:40%;background:var(--amber)"></i></div>
+          <div class="muted">persona KB · Maria Reyes</div>
+        </div>
+        <div class="card" style="border-style:dashed;text-align:center;padding:22px 12px">
+          <div style="font-size:24px">⬆</div>
+          <div class="sm" style="margin-top:4px">Upload to <b>City traffic studies</b></div>
+          <div class="muted">PDF, Markdown, text · or share from Files</div>
+        </div>
+        <div class="label">Documents</div>
+        <div class="card row between"><span class="sm">📄 Peer-city pricing review.pdf</span><span class="muted">42 chunks ›</span></div>
+        <div class="card row between"><span class="sm">📄 Cordon study 2023.md</span><span class="muted">18 chunks ›</span></div>
+        <div class="card row between"><span class="sm">🔎 Research: 6 web sources</span><span class="muted">tiered ›</span></div>
+      </div>
+      <div class="tabs"><div><i>☰</i>Runs</div><div><i>▦</i>Ensembles</div><div class="on"><i>📚</i>Knowledge</div><div><i>👥</i>Library</div></div>
+    </div>
+    <figcaption><b>Knowledge bases</b>Collections as cards showing their bindings and indexing progress. Upload is a large drop target that also takes the phone's share sheet. Tapping a document opens the source viewer.</figcaption>
+  </figure>
+</div>
+
+<section class="h">4 · Same parts, wider screen (tablet / desktop ≥ 768px)</section>
+<div class="tablet">
+  <div class="top" style="padding:12px 16px">
+    <span class="back">‹</span>
+    <div class="title"><b>quiet-harbor</b><span><span style="color:var(--live)">● running</span> · turn 14/24 · Should the city adopt congestion pricing downtown?</span></div>
+    <div class="row" style="gap:8px"><span class="chip">$0.21 / $1.00</span><div class="btn danger sm">■ Stop</div><div class="btn sm">⏱ Scrub</div><div class="btn sm">💬 Asides</div><span class="t2" style="font-size:18px">⋯</span></div>
+  </div>
+  <div class="cols">
+    <div class="col">
+      <span class="label">Cast</span>
+      <div class="card row" style="border-color:rgba(34,197,94,.5)"><div class="av a2 ring">JT</div><div><b class="sm">James Tran</b><div class="muted">speaking</div></div></div>
+      <div class="card row"><div class="av a1">MR</div><div><b class="sm">Maria Reyes</b><div class="muted">moved @ #12</div></div></div>
+      <div class="card row"><div class="av a3">AK</div><div><b class="sm">Aisha Khan</b><div class="muted">1 dangling thread</div></div></div>
+      <div class="card row"><div class="av a4">DO</div><div><b class="sm">Dan O'Neil</b><div class="muted">lean: support</div></div></div>
+    </div>
+    <div class="col card" style="gap:12px">
+      <div class="msg"><div class="av a1">MR</div><div class="bub"><div class="who" style="color:#f0abfc">Maria Reyes <span>#12</span></div>Deliveries are 30% of my costs. If the zone's evening price is lower, I could shift<span class="cite">[2]</span>.<div class="flag shift">↻ Position shifted: credits “off-peak tiering”.</div></div></div>
+      <div class="msg"><div class="av a4">DO</div><div class="bub"><div class="who" style="color:#86efac">Dan O'Neil <span>#13</span></div>What would convince me is a peer city's ridership numbers.<div class="flag lean">⚖ Expects: ridership up 8–15%. Leans today: support.</div></div></div>
+      <div class="typing"><div class="av a2 ring" style="width:28px;height:28px;font-size:10px">JT</div>James is thinking…</div>
+    </div>
+    <div class="col">
+      <span class="label">Dossier · Maria Reyes</span>
+      <div class="card"><span class="label">Position</span><div class="sm" style="margin-top:3px">Oppose a flat fee; open to off-peak tiering</div><div class="xs t2" style="margin-top:4px">would change her mind: delivery-window exemption ✓</div></div>
+      <div class="card"><span class="label">Memory · last 3</span><ul class="plain" style="margin-top:5px"><li>Aisha raised night-shift equity</li><li>DOT letter mentions exemptions</li><li>Reflection: tiering may protect deliveries</li></ul></div>
+    </div>
+  </div>
+</div>
+<p class="lede" style="margin-top:12px">On wider screens the tabs become columns (cast · feed · dossier/analysis) and sheets become side panels. It's one component tree rearranged by breakpoint, not a separate desktop app.</p>
+
+</body>
+</html>
