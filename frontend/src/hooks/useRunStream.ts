@@ -250,6 +250,8 @@ export function useRunStream({ runId, cast, autoConnect = true, reloadKey = 0 }:
 
   return {
     state,
+    // Every buffered event, revealed or not. Read-only: for estimates such as a fork's cost.
+    events: buffer,
     connected,
     engineDone,
     stalled,

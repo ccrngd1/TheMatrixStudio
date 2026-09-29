@@ -4,6 +4,7 @@ import { api } from '../api'
 import type { Persona, SimEvent } from '../types'
 import { deriveState, initialState } from '../lib/simState'
 import { Hint } from './Hint'
+import { describeFork, forkEstimate } from '../lib/forkCost'
 import { CastBoard } from './CastBoard'
 import { ConversationFeed } from './ConversationFeed'
 
@@ -345,7 +346,8 @@ export function Scrubber({ runId, maxTurn, cast, defaultBudget, models = [], def
 
         <p className="mt-1 text-[11px] text-slate-500">
           Viewing state as of turn {turn}. Branching always forks a NEW run that replays to
-          here and then generates forward — this run is never modified. With no change it
+          here and then generates forward — this run is never modified. A branch from turn {turn}
+          costs {describeFork(forkEstimate(events, turn))}. With no change it
           asks “what else might have happened from here?”; with one, “what if this had been
           different?”
         </p>

@@ -144,8 +144,11 @@ def run_brief(model: Dict[str, Any]) -> Dict[str, Any]:
         # What the conclusion rests on. Capped like everything else, and the cut is said.
         **dict(zip(("assumptions", "assumptions_more"), _cap(
             # Statement only; the basis and who set it are in the full report.
-            [_clip(f"{a.get('id')}: {a.get('statement')}", MAX_ASSUMPTION_CHARS)
-             for a in model.get("assumptions") or []],
+            # Disputed ones first: a reader who sees only the top of this list must see those.
+            # Who disputed it, and the words, are in the full report; here only that it was.
+            [_clip(f"{a.get('id')}" + (f" (disputed ×{len(a['disputes'])})" if a.get("disputes") else "")
+                   + f": {a.get('statement')}", MAX_ASSUMPTION_CHARS + (6 if a.get("disputes") else 0))
+             for a in sorted(model.get("assumptions") or [], key=lambda a: not a.get("disputes"))],
             MAX_ASSUMPTIONS))),
         # Never a percentage. One conversation is one draw.
         "confidence": (

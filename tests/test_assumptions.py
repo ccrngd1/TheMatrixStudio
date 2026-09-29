@@ -399,3 +399,65 @@ async def test_the_api_normalises_the_two_kinds():
     assert {"replace_assumption", "withdraw_assumption"} <= _SUPPORTED_MUTATION_KINDS
     m = BranchMutationModel(kind="replace_assumption", assumption_id="A1", statement="  Churn  is 12% ")
     assert m.statement.strip() == "Churn  is 12%"
+
+
+# --------------------------------------------------------------------------- #
+# Cited and disputed
+# --------------------------------------------------------------------------- #
+
+_T = [
+    {"speaker": "Marcus", "turn": 1, "message": "Using A1's 2-5% range as our baseline, we ship."},
+    {"speaker": "Dana", "turn": 2, "message": "I can work with it. But A1 is a benchmark, not a guarantee our users behave the same way."},
+    {"speaker": "Marcus", "turn": 3, "message": "If A2 doesn't hold and we get 12 responses, we pause."},
+    {"speaker": "Dana", "turn": 4, "message": "A12 is irrelevant here. That 7% is soft."},
+]
+
+
+async def test_usage_counts_citations_and_flags_disputes_but_not_conditionals():
+    u = am.usage(["A1", "A2"], _T)
+    assert u["A1"]["cited"] == 2 and [d["speaker"] for d in u["A1"]["disputes"]] == ["Dana"]
+    assert "not a guarantee" in u["A1"]["disputes"][0]["sentence"]
+    # "If A2 doesn't hold" reasons from the assumption; it does not dispute it.
+    assert u["A2"] == {"cited": 1, "disputes": []}
+
+
+async def test_an_id_matches_as_a_word_only_and_an_unnamed_dispute_is_not_counted():
+    u = am.usage(["A1"], [_T[3]])
+    assert u["A1"] == {"cited": 0, "disputes": []}, "A12 is not A1, and 'that 7% is soft' names no id"
+
+
+async def test_the_brief_lists_disputed_ones_first_and_the_report_quotes_them():
+    from matrix_studio import brief as br
+    from matrix_studio import export as ex
+    from tests.test_export import _run_model
+
+    dispute = {"speaker": "Dana", "turn": 2, "sentence": "A2 is not a guarantee."}
+    m = _run_model(assumptions=[
+        {"id": "A1", "statement": "Churn is 7%", "basis": "", "source": "operator", "turn": 0, "cited": 3, "disputes": []},
+        {"id": "A2", "statement": "Launch in May", "basis": "", "source": "moderator", "turn": 2, "cited": 1,
+         "disputes": [dispute]},
+    ])
+    assert br.run_brief(m)["assumptions"] == ["A2 (disputed ×1): Launch in May", "A1: Churn is 7%"]
+    md = ex.render(m, "md")
+    assert "appears DISPUTED in 1: Dana (turn 2): “A2 is not a guarantee.”" in md
+    assert "cited in 3 message(s)" in md
+
+
+async def test_the_check_is_told_to_ask_a_consultant_first_only_when_there_is_one():
+    from matrix_studio.experts import Expert
+
+    with_c = am.propose_messages("t", [], [], consultants=[Expert("Ada", "the statute")])[0]["content"]
+    assert "Ada: the statute" in with_c and "the room should ask, not assume" in with_c
+    without = am.propose_messages("t", [], [])[0]["content"]
+    assert "consultant" not in without.lower()
+
+
+async def test_on_a_run_with_consultants_the_check_really_receives_them(db):
+    log, checks = [], []
+    req = _dyn_request(every=1, limit=1, turns=2)
+    req["config"]["retrieval"] = {"enabled": True, "k": 2, "max_chars": 900}
+    req["config"]["experts"] = [{"name": "Ada", "expertise": "the churn records",
+                                 "document_texts": [{"title": "n", "text": "Churn was 6% last year."}]}]
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake_dynamic(log, checks)):
+        await run_simulation(req, db=db, run_id="dy7")
+    assert checks and "Ada: the churn records" in checks[0] and "the room should ask" in checks[0]

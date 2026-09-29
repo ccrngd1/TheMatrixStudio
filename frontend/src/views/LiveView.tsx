@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
 import type { Persona, Quote, RunDetail, WorkingAssumption } from '../types'
+import { describeFork, forkEstimate } from '../lib/forkCost'
 import { useRunStream } from '../hooks/useRunStream'
 import { isLive, isResumable, isTerminal } from '../lib/runStatus'
 import { CastBoard } from '../components/CastBoard'
@@ -418,6 +419,7 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh }: Props) {
             quotes={quotes}
             assumptions={state.assumptions}
             onForkAssumption={state.status !== 'running' && state.status !== 'idle' ? forkAssumption : undefined}
+            forkCost={(t) => describeFork(forkEstimate(stream.events, t))}
           />
         </main>
       </div>

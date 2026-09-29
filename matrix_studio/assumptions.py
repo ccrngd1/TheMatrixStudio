@@ -179,7 +179,7 @@ Quote the asks: copy, word for word, at least two places in the conversation abo
 for this unknown or said they needed it. Copy exactly — the quotes are checked against the transcript, \
 and a proposal whose asks cannot be found is discarded.
 
-If there is no such unknown, the answer is null. Most of the time the answer is null.
+{consultants}If there is no such unknown, the answer is null. Most of the time the answer is null.
 
 Reply with ONLY a JSON object:
 {{"assumption": null}}
@@ -200,11 +200,29 @@ RECENT_MESSAGES = 12
 
 
 def propose_messages(topic: str, conversation: Sequence[Dict[str, Any]],
-                     ledger: Sequence[Assumption], recent: int = RECENT_MESSAGES) -> List[Dict[str, str]]:
+                     ledger: Sequence[Assumption], recent: int = RECENT_MESSAGES,
+                     consultants: Sequence[Any] = ()) -> List[Dict[str, str]]:
     lines = "\n".join(f"{m.get('speaker')}: {m.get('content')}" for m in list(conversation)[-recent:])
     held = "\n".join(f"- {a.id}: {a.statement}" for a in ledger) or "(none)"
     return [{"role": "user", "content": _PROPOSE_PROMPT.format(
-        topic=topic, ledger=held, conversation=lines or "(nothing yet)")}]
+        topic=topic, ledger=held, conversation=lines or "(nothing yet)",
+        consultants=consultants_note(consultants))}]
+
+
+def consultants_note(consultants: Sequence[Any]) -> str:
+    """Asking before assuming. A consultant (`experts.py`) answers from documents; an assumption is a
+    guess. When one could hold the answer and has not been asked, the room should ask. Empty when the
+    run has none, so the prompt is unchanged for every run without consultants."""
+    if not consultants:
+        return ""
+    names = "\n".join(f"- {e.name}: {e.expertise or 'a subject-matter expert'}" for e in consultants)
+    return (
+        "The room can ask these consultants, who answer from their own documents (their answers appear "
+        f"in the conversation as \"<name> (consultant)\"):\n{names}\n"
+        "If the unknown is something one of them could plausibly find in their documents and nobody has "
+        "asked them yet, the answer is null — the room should ask, not assume. Propose an assumption for "
+        "it only after a consultant has said it is not in their sources, or when none of them could know.\n\n"
+    )
 
 
 def _norm(text: str) -> str:
@@ -254,3 +272,50 @@ def parse_proposal(parsed: Optional[Dict[str, Any]],
 def next_id(ledger: Sequence[Assumption]) -> str:
     nums = [int(a.id[1:]) for a in ledger if a.id[:1] == "A" and a.id[1:].isdigit()]
     return f"A{max(nums, default=0) + 1}"
+
+
+# --------------------------------------------------------------------------- #
+# Used and disputed: what the room did with each assumption
+# --------------------------------------------------------------------------- #
+
+import re as _re
+
+#: Words that, in the same sentence as an assumption's id, mark the sentence as disputing it. A heuristic
+#: — personas are told to dispute an assumption "plainly, by its id", which is what makes one workable —
+#: and reported as such: every flagged sentence is quoted in the full report so a reader can overrule it.
+DISPUTE_CUES = _re.compile(
+    r"\b(?:wrong|doubt\w*|disagree\w*|don'?t (?:buy|accept|trust|believe)|not (?:a guarantee|realistic|"
+    r"convinced|credible|safe to assume)|too (?:optimistic|pessimistic|high|low|rosy|aggressive|"
+    r"conservative)|unrealistic|optimistic|skeptic\w*|sceptic\w*|reject\w*|push(?:ing)? back|"
+    r"can'?t accept|isn'?t (?:right|realistic|credible)|questionable|shaky|flawed|overstat\w*|"
+    r"understat\w*|soft|dispute\w*|won'?t hold|doesn'?t hold|unfounded)\b",
+    _re.IGNORECASE,
+)
+_SENTENCE = _re.compile(r"(?<=[.!?])\s+")
+
+
+def usage(assumption_ids: Sequence[str], transcript: Sequence[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Per assumption id: how many messages cite it, and the sentences that appear to dispute it.
+
+    ``transcript`` items carry ``speaker``, ``turn`` and ``message`` (the export's shape). An id is matched
+    as a word ("A1", "A1's"), so A1 never matches A12. A dispute that never names the id — "that 7% is
+    soft" — is not found: recall is limited to what the prompt asked personas to do.
+    """
+    out: Dict[str, Dict[str, Any]] = {a: {"cited": 0, "disputes": []} for a in assumption_ids}
+    patterns = {a: _re.compile(rf"\b{_re.escape(a)}\b") for a in assumption_ids}
+    for m in transcript:
+        text = str(m.get("message") or "")
+        for aid, pat in patterns.items():
+            if not pat.search(text):
+                continue
+            out[aid]["cited"] += 1
+            for sentence in _SENTENCE.split(text):
+                # "If A2 doesn't hold, we pause" reasons FROM the assumption; it does not dispute it.
+                # Measured on the first live runs: the only false positive was exactly that shape.
+                conditional = _re.search(rf"\b(?:if|unless|in case|should|whether)\b[^.;:]{{0,60}}\b{_re.escape(aid)}\b",
+                                         sentence, _re.IGNORECASE)
+                if pat.search(sentence) and DISPUTE_CUES.search(sentence) and not conditional:
+                    out[aid]["disputes"].append({"speaker": m.get("speaker"), "turn": m.get("turn"),
+                                                 "sentence": sentence.strip()[:300]})
+                    break
+    return out

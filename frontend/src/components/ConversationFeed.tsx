@@ -22,13 +22,17 @@ interface Props {
   assumptions?: WorkingAssumption[]
   /** Fork the run at the assumption's turn with it replaced (a statement) or withdrawn (null). */
   onForkAssumption?: (a: WorkingAssumption, statement: string | null) => Promise<void>
+  /** What a fork at a turn would cost, in words (`lib/forkCost.ts`). */
+  forkCost?: (turn: number) => string
 }
 
 export function ConversationFeed({
   feed, agents, activeSpeaker, thinking, jumpTo, runId, sourceIndex = {}, quotes = {}, assumptions = [],
-  onForkAssumption,
+  onForkAssumption, forkCost,
 }: Props) {
-  const card = (a: WorkingAssumption) => <AssumptionCard key={a.id} a={a} onFork={onForkAssumption} />
+  const card = (a: WorkingAssumption) => (
+    <AssumptionCard key={a.id} a={a} onFork={onForkAssumption} cost={forkCost?.(a.turn)} />
+  )
   // A claim is checked where it is read. The source viewer was reachable only from a persona's
   // dossier, so checking a sentence meant knowing who said it, opening their panel and finding the
   // turn; the message now links to the passage it drew on.
@@ -265,9 +269,11 @@ function MessageBody({
 function AssumptionCard({
   a,
   onFork,
+  cost,
 }: {
   a: WorkingAssumption
   onFork?: (a: WorkingAssumption, statement: string | null) => Promise<void>
+  cost?: string
 }) {
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState(a.statement)
@@ -335,7 +341,7 @@ function AssumptionCard({
           <span className="w-full text-[11px] text-slate-500">
             A new run replays this one to turn {a.turn} and continues with {a.id} changed; this run is not
             touched. Everything after turn {a.turn} is generated again, so the later the assumption, the
-            cheaper the fork.
+            cheaper the fork.{cost ? ` Cost: ${cost}.` : ''}
           </span>
           {error && <span className="w-full text-rose-300">{error}</span>}
         </div>

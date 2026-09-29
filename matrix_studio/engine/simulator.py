@@ -18,7 +18,7 @@ import re
 import time
 import uuid
 from collections import Counter
-from typing import Any, Awaitable, Callable, Dict, List, NamedTuple, Optional, Set, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, NamedTuple, Optional, Sequence, Set, Tuple
 
 # Deferred: importing litellm costs 1.7 s of the API Lambda's 1.9 s import, which
 # pushed its init phase past Lambda's hard 10 s limit. The proxy also applies
@@ -1567,6 +1567,7 @@ async def _consult(
 async def _propose_assumption(
     topic: str, conversation: List[Dict[str, Any]], ledger: List[Any], completed_turns: int, *,
     model: Any, settings: Any, emit: Callable[..., Awaitable[None]], next_seq: Callable[[], int],
+    consultants: Sequence[Any] = (),
 ) -> Optional[Any]:
     """Ask the moderator whether a gap is blocking the room, and record an assumption if so.
 
@@ -1580,7 +1581,7 @@ async def _propose_assumption(
     try:
         response = await litellm.acompletion(
             model=model_for(model, "speaker_selection") or settings.litellm_model,
-            messages=assumptions_mod.propose_messages(topic, conversation, ledger),
+            messages=assumptions_mod.propose_messages(topic, conversation, ledger, consultants=consultants),
             temperature=0.2,
             response_format={"type": "json_object"},
             drop_params=True,
@@ -1869,6 +1870,10 @@ async def _run_turns(
                 made = await _propose_assumption(
                     topic, conversation, ledger_assumptions, turn - 1,
                     model=model, settings=settings, emit=emit, next_seq=next_seq,
+                    # Only while consultations remain: a room that can no longer ask should assume.
+                    consultants=(experts or []) if (
+                        experts and consult_limit - experts_mod.consults_used(conversation) > 0
+                    ) else [],
                 )
                 if made is not None:
                     ledger_assumptions.append(made)

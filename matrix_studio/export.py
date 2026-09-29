@@ -144,14 +144,22 @@ def settings_lines(config: Dict[str, Any]) -> List[str]:
 
 #: Said wherever assumptions are listed, so a reader never takes one for a finding.
 ASSUMPTIONS_NOTE = ("Given to the cast to reason from, not established. Conclusions below may depend "
-                    "on them.")
+                    "on them. \"Disputed\" is a word-match on sentences naming the assumption's id, quoted so "
+                    "it can be checked; a dispute that does not name the id is not counted.")
 
 
 def assumption_line(a: Dict[str, Any]) -> str:
     who = "the operator" if a.get("source") == "operator" else str(a.get("source") or "")
     when = f", turn {a.get('turn')}" if a.get("turn") else ""
     basis = f" (basis: {a.get('basis')})" if a.get("basis") else ""
-    return f"{a.get('id')}: {a.get('statement')}{basis} — set by {who}{when}"
+    line = f"{a.get('id')}: {a.get('statement')}{basis} — set by {who}{when}"
+    if a.get("cited") is not None:
+        line += f"; cited in {a['cited']} message(s)"
+    disputes = a.get("disputes") or []
+    if disputes:
+        line += f"; appears DISPUTED in {len(disputes)}: " + " / ".join(
+            f"{d.get('speaker')} (turn {d.get('turn')}): \u201c{d.get('sentence')}\u201d" for d in disputes)
+    return line
 
 
 async def run_model(db: Any, run: Dict[str, Any]) -> Dict[str, Any]:
@@ -166,7 +174,6 @@ async def run_model(db: Any, run: Dict[str, Any]) -> Dict[str, Any]:
     retrieved: Dict[Any, List[Dict[str, Any]]] = {}
     transcript: List[Dict[str, Any]] = []
     converged: Optional[Dict[str, Any]] = None
-    assumptions: List[Dict[str, Any]] = []
     for e in events:
         p = _payload(e)
         if e["event_type"] == "document.retrieved":
@@ -193,10 +200,16 @@ async def run_model(db: Any, run: Dict[str, Any]) -> Dict[str, Any]:
                 "message": f"Asked by {p.get('asked_by')}: \u201c{p.get('question')}\u201d\n\n{p.get('answer') or ''}",
                 "passages": retrieved.get((e.get("turn"), expert), []),
             })
-        elif e["event_type"] == "assumption.made":
-            assumptions.append({k: p.get(k) for k in ("id", "statement", "basis", "source", "turn")})
         elif e["event_type"] == "sim.completed" and p.get("converged"):
             converged = {"at_turn": p.get("converged_at_turn"), "reason": p.get("converged_reason")}
+
+    # What the room did with each assumption: cited, and apparently disputed (a heuristic; the sentences
+    # are kept so the report can quote them and a reader can overrule it).
+    from matrix_studio.assumptions import from_events, usage
+
+    in_force = [a.payload() for a in from_events(events)]
+    used = usage([a["id"] for a in in_force], transcript)
+    assumptions = [{**a, **used.get(a["id"], {})} for a in in_force]
 
     summaries = await db.get_summaries(run_id)
     generated = next((s for s in summaries if s.get("kind") == "generated"), None)
