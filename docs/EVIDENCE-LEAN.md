@@ -98,3 +98,24 @@ here. The analyst that extracts the evidence plan is not stable on identical tra
 differences above (0.57 vs 0.36; 2 of 3 vs 1 of 3) are within its noise. The verdict is unchanged — the
 flag stays opt-in — but it should not be read as evidence the wording works. Scoring each run several
 times, or a deterministic measure, would be needed before running this comparison again.
+
+## Re-analysis — three analyst passes per run (2026-09-29, after the fact)
+
+Not part of the pre-registered verdict, which stands. `scripts/analyse_evidence_lean.py --repeats 3`
+scored each of the six runs three times ($~1.5).
+
+| | off | on |
+|---|---|---|
+| best-guess share, pooled over 9 passes | 0.53 | 0.67 |
+| one run's range across its 3 passes | up to **0.00–1.00** | up to 0.40–0.83 |
+| passes stating a current lean | **4 of 9** | **8 of 9** |
+| runs with a lean by majority of passes | 1 of 3 | 3 of 3 |
+
+- **The best-guess share is not a usable measure at this size.** A single off-arm run scored 0.00 on one
+  pass and 1.00 on another; the analyst also finds a different number of evidence requests each time
+  (32 and 39 across the arms' passes). The pooled difference (+0.14) is well inside that spread.
+- **The lean result is the robust one.** On-arm passes stated a lean 8 of 9 times, with every on run
+  leaning on a majority of passes; off-arm passes 4 of 9, with only one run doing so. That is the
+  direction the pre-registered primary 2 recorded, now seen across repeats rather than on one draw.
+- **What would make a re-run informative:** score by lean (majority of ≥ 3 passes) rather than
+  best-guess share, and pre-register that. The flag stays opt-in until such a comparison says otherwise.

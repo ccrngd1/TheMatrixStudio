@@ -26,7 +26,11 @@ from matrix_studio.storage import Database  # noqa: E402
 from scripts.measure_evidence_plan import FIELDS, score  # noqa: E402
 
 
-async def arm(store, run_ids):
+async def arm(store, run_ids, repeats: int = 1):
+    """One arm's metrics. With ``repeats`` > 1 the analyst scores each run that many times: the best-guess
+    share is pooled over every repeat, a run "states a lean" if most repeats say so, and each run's spread
+    is kept. Added after the same three runs scored 0.36 one day and 0.50 the next
+    (docs/MODERATOR-ASSUMPTIONS.md) — a single analyst pass is not a stable measurement."""
     rows, words, cost, dissenters = [], [], 0.0, []
     for rid in run_ids:
         run = await store.get_run(rid)
@@ -39,20 +43,29 @@ async def arm(store, run_ids):
                 words.append(len((p.get("message") or "").split()))
         auto = next((s for s in await store.get_summaries(rid) if s["kind"] == "generated"), None)
         dissenters.append(len(((auto or {}).get("payload") or {}).get("dissenters") or []))
-        result = await analysis.generate_summary(
-            await service._load_conversation(store, run), run.get("topic", ""), fields=FIELDS,
-            model=service.resolve_model(run, None),
-        )
-        s = score(result["payload"])
-        print(f"  {rid[:8]} status={run.get('status')} turns={stats.get('turn_count')} {s}")
-        rows.append({"run": rid, "score": s, "payload": result["payload"]})
-    requests = sum(r["score"]["requests"] for r in rows)
+        conversation = await service._load_conversation(store, run)
+        scores, payloads = [], []
+        for _ in range(max(1, repeats)):
+            result = await analysis.generate_summary(
+                conversation, run.get("topic", ""), fields=FIELDS, model=service.resolve_model(run, None),
+            )
+            scores.append(score(result["payload"]))
+            payloads.append(result["payload"])
+        shares = [s["stated"]["best_guess"] / s["requests"] for s in scores if s["requests"]]
+        leans = sum(s["lean_stated"] for s in scores)
+        print(f"  {rid[:8]} status={run.get('status')} turns={stats.get('turn_count')} "
+              f"best-guess share per repeat {[round(x, 2) for x in shares]}, lean {leans}/{len(scores)}")
+        rows.append({"run": rid, "scores": scores, "payloads": payloads,
+                     "lean_majority": leans * 2 > len(scores),
+                     "share_spread": [round(min(shares), 3), round(max(shares), 3)] if shares else None})
+    requests = sum(s["requests"] for r in rows for s in r["scores"])
+    stated = sum(s["stated"]["best_guess"] for r in rows for s in r["scores"])
     return {
         "runs": len(rows),
+        "repeats": max(1, repeats),
         "requests": requests,
-        "best_guess_share": (round(sum(r["score"]["stated"]["best_guess"] for r in rows) / requests, 3)
-                             if requests else None),
-        "runs_with_lean": sum(r["score"]["lean_stated"] for r in rows),
+        "best_guess_share": round(stated / requests, 3) if requests else None,
+        "runs_with_lean": sum(r["lean_majority"] for r in rows),
         "mean_dissenters": statistics.mean(dissenters) if dissenters else None,
         "median_words": statistics.median(words) if words else None,
         "cost_usd": round(cost, 4),
@@ -66,6 +79,8 @@ async def main() -> int:
     ap.add_argument("--off", nargs="+", required=True)
     ap.add_argument("--on", nargs="+", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--repeats", type=int, default=1,
+                    help="analyst passes per run; 1 reproduces the pre-registered scoring exactly")
     args = ap.parse_args()
     if not args.out.startswith("private/"):
         print("--out must be under private/: the rows quote real transcripts", file=sys.stderr)
@@ -74,8 +89,8 @@ async def main() -> int:
                   bucket=os.environ["DATA_BUCKET"], region=os.environ["AWS_REGION"])
     await db.connect()
     store = db.for_owner(args.owner)
-    print("off:"); off = await arm(store, args.off)
-    print("on:"); on = await arm(store, args.on)
+    print("off:"); off = await arm(store, args.off, args.repeats)
+    print("on:"); on = await arm(store, args.on, args.repeats)
     Path(args.out).write_text(json.dumps({"off": off, "on": on}, indent=2))
     for name, a in (("off", off), ("on", on)):
         print(name, json.dumps({k: v for k, v in a.items() if k != "rows"}))
