@@ -109,6 +109,24 @@ using.
   `src/views/LiveView.theatre.test.tsx` fails if it disappears from the run screen, which has
   happened once already.
 
+### Tests
+
+```bash
+cd frontend
+npm test            # vitest: the script, the blocking, the page, the sound
+npm run test:e2e    # playwright: what is actually drawn in the room
+```
+
+The unit suite covers everything except the canvas, which jsdom cannot render at all. The browser
+suite opens the built page in Chromium, stubs the API, and reads pixels back at logical room
+coordinates — the speaker's name tag is lit, a consultant is standing where the transcript says,
+the room is empty before the prologue walks it in. It is not image comparison: no assertion depends
+on a sprite's artwork.
+
+It uses the Chromium already in the Playwright cache rather than downloading one, since this host
+carries a newer build than any published Playwright ships. Set `CHROMIUM_PATH` to override, or run
+`npx playwright install chromium`.
+
 The tab is opened with `window.open` and deliberately **without** `noopener`: sign-in tokens live
 in `sessionStorage`, and a new tab only inherits a copy of them when it has an opener. A plain
 `target="_blank"` link would open the theatre signed out.
