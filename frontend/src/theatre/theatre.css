@@ -110,3 +110,5 @@
 /* A branch's title card says where it forked, because it opens there rather than at line 1. */
 .th-card-fork { margin: 8px 0 0; padding: 8px 10px; background: rgba(159, 200, 255, 0.1);
   border-left: 2px solid #9fc8ff; font: 500 12.5px/1.5 system-ui, sans-serif; text-align: left; color: var(--th-ink); }
+/* Sound off: the same glyph, struck through. */
+.th-btn.th-muted { color: var(--th-dim); text-decoration: line-through; text-decoration-thickness: 2px; }

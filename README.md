@@ -39,6 +39,7 @@ Screenshots are of a demonstration run on a neutral topic, captured from the dep
 - **Scheduled Messages** — A message that enters a run after a given turn (a customer, a regulator's letter), marked as injected; compare runs with and without it in an ensemble
 - **Decision Brief & Exports** — A one-page brief (bottom line, what would settle it, what was assumed, standing objections, how much to trust it) and full Markdown / HTML reports
 - **Cast Templates & Persona Library** — Save a cast and reuse it; start from ready-made archetypes, labelled "not yet qualified"
+- **8-bit Theatre** (optional view) — Replay a finished run as 8-bit characters around a conference table, the transcript read out through a dialogue box. Consultants walk in to answer, injected messages arrive by messenger, assumptions go up on the whiteboard. Every movement comes from a recorded event; nothing is invented. See `docs/THEATRE.md`
 - **Non-Photorealistic Avatars** — Anime-style character portraits generated via Stability SD3.5 on AWS Bedrock (optional, with graceful fallback to initials)
 - **Cost Visibility** — Live token/$ meter, optional hard spend cap per run, a forecast before every launch priced from your own past runs, and the cost of a fork shown before you make it
 - **Provider-Agnostic** — Bring your own API key for OpenAI, Anthropic, AWS Bedrock, OpenRouter, or local Ollama models via LiteLLM

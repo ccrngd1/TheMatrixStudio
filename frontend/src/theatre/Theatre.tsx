@@ -418,10 +418,12 @@ function Player({ detail, beats, performers, sprites, events, portraits, runRef,
           <button className="th-btn" onClick={() => step(1)} aria-label="Next page">▶▶</button>
           <button className="th-btn" onClick={() => setSpeed((s) => SPEEDS[(SPEEDS.indexOf(s) + 1) % SPEEDS.length])}
             aria-label="Speed">{speed}×</button>
-          <button className="th-btn" aria-pressed={sound}
+          {/* One glyph, struck through when muted: a combining slash renders as a stray bar in
+              most fonts, and two different music glyphs are not distinguishable at this size. */}
+          <button className={`th-btn${sound ? '' : ' th-muted'}`} aria-pressed={sound}
             aria-label={sound ? 'Sound on' : 'Sound off'}
             onClick={() => { const on = sfx.toggle(); setSound(on); if (on) sfx.play('page') }}>
-            {sound ? '\u266B' : '\u266B\u0338'}
+            &#9835;
           </button>
           <input className="th-scrub" type="range" min={0} max={Math.max(0, beats.length - 1)} value={Math.min(idx, beats.length - 1)}
             onChange={(e) => goTo(Number(e.target.value))} aria-label="Position in the transcript" />

@@ -13,6 +13,20 @@ live bugs surfaced on the way, two of which were invisible to the checks that we
 supposed to catch them.
 
 ### Added
+- **The 8-bit theatre** (`docs/THEATRE.md`). A second page, opened in its own tab from a
+  finished run, that replays it as 8-bit characters around a conference table with the
+  transcript read through a dialogue box. A consultant walks in to answer and the persona who
+  asked keeps their seat with a "?" over them; an injected outside voice arrives by messenger;
+  working assumptions go up on the whiteboard as they were pinned *at that line*; a position
+  shift and retrieved sources are marked over the speaker. A run that researched opens with the
+  room filing in from the library, and a branch opens at its fork rather than replaying what it
+  inherited.
+
+  Replay only, deliberately: it reads the stored events once, never opens the live stream, and
+  refuses a run that is still going rather than showing half a play. Every movement is caused by
+  a recorded event, and the blocking is a pure function of (beats, line), so scrubbing to a line
+  stages it exactly as playing through would. Sound is synthesised in code, muted until asked
+  for. Sprites are 39 sheets from the 8-Bit Agents activation demo (Apache 2.0, see `NOTICE`).
 - **Tenancy in the domain model** (plan item 0.2). Every run now has an `owner_sub`,
   and no route serves another user's run. There is no authentication yet — that is
   Phase 1's Cognito pool — but the ownership model, the storage scoping and the route
