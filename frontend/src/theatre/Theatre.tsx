@@ -19,6 +19,7 @@ import {
 } from './script'
 import type { Mark, Performer } from './stage'
 import type { VisitorSprite } from './Stage'
+import { Sfx } from './sfx'
 
 interface Props {
   runRef: string
@@ -171,6 +172,11 @@ function Player({ detail, beats, performers, sprites, events, portraits, runRef,
   const [playing, setPlaying] = useState(true)
   const [speed, setSpeed] = useState<(typeof SPEEDS)[number]>(1)
   const [stageW, setStageW] = useState<number | undefined>(undefined)
+  // One synth for the page. Built muted; the toggle is the only thing that starts it, which is
+  // also the click browsers require before any audio may play.
+  const sfx = useMemo(() => new Sfx(), [])
+  const [sound, setSound] = useState(() => sfx.enabled)
+  useEffect(() => () => sfx.close(), [sfx])
   const beat: Beat | undefined = beats[idx]
   const full = beat?.text.length ?? 0
   const done = started && idx >= beats.length
@@ -235,12 +241,13 @@ function Player({ detail, beats, performers, sprites, events, portraits, runRef,
         last.current = now
         return
       }
+      sfx.play('blip')
       const add = Math.max(1, Math.round(((now - last.current) / 1000) * TYPE_CPS * speed))
       last.current = now
       dispatch({ type: 'type', add })
     }, 30)
     return () => clearInterval(id)
-  }, [started, playing, done, pageComplete, full, speed, elapsed])
+  }, [started, playing, done, pageComplete, full, speed, elapsed, sfx])
 
   // Hold a finished page long enough to read, then move on.
   useEffect(() => {
@@ -251,6 +258,15 @@ function Player({ detail, beats, performers, sprites, events, portraits, runRef,
     const id = setTimeout(() => step(1), Math.max(holdMs(beat.text), remaining) / speed)
     return () => clearTimeout(id)
   }, [autoAdvance, started, playing, done, pageComplete, beat, idx, speed, step, blocking, elapsed])
+
+  // A sound per thing the line actually stages: a door for every arrival or departure, a chime
+  // for an arriving message. Keyed on the line so a re-render inside one does not repeat it.
+  useEffect(() => {
+    if (!started || done || !beat || beat.page > 0) return
+    if (blocking.moves.length) sfx.play('door')
+    if (beat.outsider) sfx.play('chime')
+    else if (beat.kind === 'prologue') sfx.play('page')
+  }, [started, done, beat, blocking, sfx])
 
   const advance = useCallback(() => {
     if (!started) {
@@ -402,6 +418,11 @@ function Player({ detail, beats, performers, sprites, events, portraits, runRef,
           <button className="th-btn" onClick={() => step(1)} aria-label="Next page">▶▶</button>
           <button className="th-btn" onClick={() => setSpeed((s) => SPEEDS[(SPEEDS.indexOf(s) + 1) % SPEEDS.length])}
             aria-label="Speed">{speed}×</button>
+          <button className="th-btn" aria-pressed={sound}
+            aria-label={sound ? 'Sound on' : 'Sound off'}
+            onClick={() => { const on = sfx.toggle(); setSound(on); if (on) sfx.play('page') }}>
+            {sound ? '\u266B' : '\u266B\u0338'}
+          </button>
           <input className="th-scrub" type="range" min={0} max={Math.max(0, beats.length - 1)} value={Math.min(idx, beats.length - 1)}
             onChange={(e) => goTo(Number(e.target.value))} aria-label="Position in the transcript" />
           <span className="th-pos">

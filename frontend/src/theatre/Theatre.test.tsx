@@ -258,6 +258,19 @@ describe('Theatre', () => {
     })
   })
 
+  it('is silent until the sound toggle is pressed', async () => {
+    vi.mocked(api.getRun).mockResolvedValue(run('complete') as never)
+    vi.mocked(api.getEvents).mockResolvedValue(events())
+    // No AudioContext exists in jsdom, so a theatre that tried to build one would throw here.
+    render(<Theatre runRef="r1" autoAdvance={false} />)
+    fireEvent.click(await screen.findByRole('button', { name: /Start/ }))
+    const toggle = screen.getByRole('button', { name: 'Sound off' })
+    expect(toggle).toHaveAttribute('aria-pressed', 'false')
+    fireEvent.click(dialogue())
+    fireEvent.click(toggle)
+    expect(screen.getByRole('button', { name: 'Sound on' })).toHaveAttribute('aria-pressed', 'true')
+  })
+
   it('will not replay a run that is still going', async () => {
     vi.mocked(api.getRun).mockResolvedValue(run('running') as never)
     vi.mocked(api.getEvents).mockResolvedValue(events().slice(0, 2))
