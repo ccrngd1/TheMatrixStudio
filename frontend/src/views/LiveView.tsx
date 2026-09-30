@@ -17,6 +17,7 @@ import { SummaryPanel } from '../components/SummaryPanel'
 import { AsidesDrawer } from '../components/AsidesDrawer'
 import { BranchTree } from '../components/BranchTree'
 import { Scrubber } from '../components/Scrubber'
+import { TheatreButton } from '../components/TheatreButton'
 import type { StoredSummary } from '../types'
 import { FaceStrip, RunHud, RunStatusTag, RunTabs, SideDrawer } from '../components/run/RunChrome'
 import { MessageContext } from '../components/run/MessageContext'
@@ -274,6 +275,8 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh, tab = 'conver
               <Icon name="resume" size={13} /> {resuming ? 'Resuming…' : 'Resume'}
             </Btn>
           )}
+          {/* The 8-bit theatre: on every run so it can be found, greyed out until the run ends. */}
+          <TheatreButton runId={runId} running={running} empty={state.feed.length === 0} />
           {wide && !scrubbing && (
             <>
               <button type="button" className={`cc-icon ${castOpen ? 'cc-on' : ''}`} aria-pressed={castOpen}
@@ -476,6 +479,8 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh, tab = 'conver
             <Icon name="chat" size={18} /> Asides
           </button>
         )}
+        <TheatreButton variant="menu" runId={runId} running={running} empty={state.feed.length === 0}
+          onOpened={() => setMenuOpen(false)} />
         {onStartFresh && (
           <button type="button" onClick={() => { setMenuOpen(false); onStartFresh(runId) }}>
             <Icon name="plus" size={18} /> Start fresh from this setup

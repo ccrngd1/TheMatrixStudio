@@ -13,6 +13,14 @@ export default defineConfig({
   build: {
     outDir,
     emptyOutDir: true,
+    // Two pages: the app, and the 8-bit theatre it opens in a new tab. Separate entries so the
+    // theatre's code and sprites are fetched only by someone who opens it.
+    rollupOptions: {
+      input: {
+        main: fileURLToPath(new URL('./index.html', import.meta.url)),
+        theatre: fileURLToPath(new URL('./theatre.html', import.meta.url)),
+      },
+    },
   },
   server: {
     // In dev, proxy API + WS calls to the FastAPI backend on :8000.
