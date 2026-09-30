@@ -7,6 +7,7 @@ import { Icon, type IconName } from '../ui/icons'
 import { Label, Seg, Sheet, Toggle } from '../ui/primitives'
 import { THEMES, useThemeState, type Theme } from '../ui/theme'
 import { useSession } from './AuthGate'
+import { Rain } from '../ui/Rain'
 
 export type DockItem = 'runs' | 'ensembles' | 'knowledge' | 'library'
 const DOCK: { id: DockItem; label: string; icon: IconName }[] = [
@@ -17,9 +18,10 @@ const DOCK: { id: DockItem; label: string; icon: IconName }[] = [
 ]
 
 /** The frame: fills the viewport, holds the view and the overlay layer sheets render into. */
-export function AppFrame({ children, fx }: { children: ReactNode; fx: boolean }) {
+export function AppFrame({ children, fx, theme = 'holo' }: { children: ReactNode; fx: boolean; theme?: Theme }) {
   return (
     <div className={`cc-app h-screen w-full ${fx ? '' : 'cc-nofx'}`} style={{ height: '100dvh' }}>
+      <Rain fx={fx} theme={theme} />
       <div id="cc-view">{children}</div>
       <div id="cc-overlay" />
     </div>

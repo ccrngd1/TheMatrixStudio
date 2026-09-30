@@ -29,6 +29,10 @@ interface Props {
   forkCost?: (turn: number) => string
   /** Open a speaker's dossier from their token. */
   onOpenDossier?: (name: string) => void
+  /** Tap a message for its context (who came before, why them, what it cost). */
+  onOpenMessage?: (seq: number) => void
+  /** The message whose context is open, marked in the feed. */
+  selectedSeq?: number | null
 }
 
 const pad = (n: number) => String(n).padStart(2, '0')
@@ -36,7 +40,7 @@ type Css = CSSProperties & Record<`--${string}`, string>
 
 export function ConversationFeed({
   feed, agents, activeSpeaker, thinking, jumpTo, runId, sourceIndex = {}, quotes = {}, assumptions = [],
-  onForkAssumption, forkCost, onOpenDossier,
+  onForkAssumption, forkCost, onOpenDossier, onOpenMessage, selectedSeq,
 }: Props) {
   // Identity slots in the cast's own order, so a persona keeps one colour on every surface.
   const castOrder = useMemo(() => Object.keys(agents), [agents])
@@ -130,8 +134,20 @@ export function ConversationFeed({
               ) : (
                 <div
                   id={`turn-${m.seq}`}
-                  className={`cc-msg ${m.consultant ? 'cc-consult' : ''} ${highlight === m.seq ? 'cc-jumped' : ''}`}
+                  className={`cc-msg ${m.consultant ? 'cc-consult' : ''} ${highlight === m.seq ? 'cc-jumped' : ''} ${
+                    selectedSeq === m.seq ? 'cc-selected' : ''
+                  } ${onOpenMessage ? 'cc-tappable' : ''}`}
                   style={{ '--c': identityColor(m.consultant ? 'a0' : slot) } as Css}
+                  // A tap anywhere on the bubble opens its context, except on the controls inside it (a
+                  // citation, a quote), which do their own thing. The turn number is the keyboard way in.
+                  onClick={
+                    onOpenMessage
+                      ? (e) => {
+                          if ((e.target as HTMLElement).closest('button, a, input, select, textarea')) return
+                          onOpenMessage(m.seq)
+                        }
+                      : undefined
+                  }
                 >
                   {onOpenDossier && !m.consultant && agents[m.speaker] ? (
                     <button type="button" onClick={() => onOpenDossier(m.speaker)} aria-label={`${m.speaker}: open dossier`}>
@@ -146,7 +162,18 @@ export function ConversationFeed({
                       <span className="cc-role">
                         {m.consultant ? 'consultant' : roundSize > 1 && !opensRound ? '· at the same time' : ''}
                       </span>
-                      {!m.consultant && <span className="cc-t">#{pad(m.turn)}</span>}
+                      {onOpenMessage ? (
+                        <button
+                          type="button"
+                          className="cc-t cc-t-btn"
+                          onClick={() => onOpenMessage(m.seq)}
+                          aria-label={`Context for ${m.speaker}'s message at turn ${m.turn}`}
+                        >
+                          {m.consultant ? 'ⓘ' : `#${pad(m.turn)}`}
+                        </button>
+                      ) : (
+                        !m.consultant && <span className="cc-t">#{pad(m.turn)}</span>
+                      )}
                     </div>
                     {m.consultant && (
                       <p className="cc-muted italic">

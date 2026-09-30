@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-import { Fragment, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api } from '../api'
 import type { Persona, Quote, RunDetail, WorkingAssumption } from '../types'
 import { describeFork, forkEstimate } from '../lib/forkCost'
@@ -18,14 +18,25 @@ import { AsidesDrawer } from '../components/AsidesDrawer'
 import { BranchTree } from '../components/BranchTree'
 import { Scrubber } from '../components/Scrubber'
 import type { StoredSummary } from '../types'
-import { FaceStrip, RunHud, RunStatusTag, RunTabs } from '../components/run/RunChrome'
-import { RoomCell, RoomMap, StanceCounts, StanceDial } from '../components/run/Stance'
+import { FaceStrip, RunHud, RunStatusTag, RunTabs, SideDrawer } from '../components/run/RunChrome'
+import { MessageContext } from '../components/run/MessageContext'
+import { RoomCell, RoomMap, RoomMapKey, StanceCounts, StanceDial } from '../components/run/Stance'
 import { Hint } from '../components/Hint'
 import { TopBar } from './Shell'
 import { navigate, type RunTab } from '../lib/route'
-import { Btn, Label, Panel, Sheet, Ticks } from '../ui/primitives'
+import { Btn, Label, Panel, Ticks } from '../ui/primitives'
 import { Icon } from '../ui/icons'
 import { useWide } from '../ui/useWide'
+
+type Side = { kind: 'analysis' } | { kind: 'options' } | { kind: 'message'; seq: number } | null
+const CAST_KEY = 'cc.castDrawer'
+const readCastOpen = () => {
+  try {
+    return localStorage.getItem(CAST_KEY) !== 'closed'
+  } catch {
+    return true
+  }
+}
 
 interface Props {
   runId: string
@@ -44,7 +55,24 @@ interface Props {
 // phone, columns from 768 px. Works identically for a live run and a replayed completed run.
 export function LiveView({ runId, onBack, onOpenRun, onStartFresh, tab = 'conversation', scrub = false }: Props) {
   const wide = useWide()
-  const [menuOpen, setMenuOpen] = useState(false)
+  // The right-hand drawer holds one thing at a time: the analysis, the run options, or one message's
+  // context. Opening one closes whichever was open, so they never compete for the width.
+  const [side, setSide] = useState<Side>(() => (tab === 'analysis' ? { kind: 'analysis' } : null))
+  const menuOpen = side?.kind === 'options'
+  const setMenuOpen = (open: boolean) => setSide(open ? { kind: 'options' } : null)
+  const toggleSide = (kind: 'analysis' | 'options') => setSide((cur) => (cur?.kind === kind ? null : { kind }))
+  // The cast drawer, on wide screens: open unless the operator closed it, and remembered.
+  const [castOpen, setCastOpenState] = useState(() => readCastOpen())
+  const setCastOpen = (v: boolean) => {
+    setCastOpenState(v)
+    try {
+      localStorage.setItem(CAST_KEY, v ? 'open' : 'closed')
+    } catch {
+      // ignore
+    }
+  }
+  // Where the scrubber opens, when a message's context sent the reader there.
+  const [scrubTurn, setScrubTurn] = useState<number | undefined>(undefined)
   const [briefOpen, setBriefOpen] = useState(false)
   const [detail, setDetail] = useState<RunDetail | null>(null)
   const [cast, setCast] = useState<Persona[]>([])
@@ -204,9 +232,13 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh, tab = 'conver
   const status = state.status === 'idle' ? (detail?.status ?? 'idle') : state.status
   const liveNow = status === 'running' && !stream.engineDone
   const next = state.thinking ? state.activeSpeaker : null
-  const openScrub = () => navigate({ name: 'scrub', runId })
+  const openScrub = (fromTurn?: number) => {
+    setScrubTurn(fromTurn)
+    setSide(null)
+    navigate({ name: 'scrub', runId })
+  }
   const openAsides = () => {
-    setMenuOpen(false)
+    setSide(null)
     setAsidesOpen(true)
   }
   const jump = (seq: number) => {
@@ -242,7 +274,20 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh, tab = 'conver
               <Icon name="resume" size={13} /> {resuming ? 'Resuming…' : 'Resume'}
             </Btn>
           )}
-          <button type="button" className="cc-icon" aria-label="More" onClick={() => setMenuOpen(true)}>
+          {wide && !scrubbing && (
+            <>
+              <button type="button" className={`cc-icon ${castOpen ? 'cc-on' : ''}`} aria-pressed={castOpen}
+                aria-label={castOpen ? 'Hide the cast' : 'Show the cast'} onClick={() => setCastOpen(!castOpen)}>
+                <Icon name="library" size={20} />
+              </button>
+              <button type="button" className={`cc-icon ${side?.kind === 'analysis' ? 'cc-on' : ''}`}
+                aria-pressed={side?.kind === 'analysis'} aria-label="Analysis" onClick={() => toggleSide('analysis')}>
+                <Icon name="spark" size={20} />
+              </button>
+            </>
+          )}
+          <button type="button" className={`cc-icon ${menuOpen ? 'cc-on' : ''}`} aria-pressed={menuOpen}
+            aria-label="More" onClick={() => toggleSide('options')}>
             <Icon name="more" size={22} />
           </button>
         </>
@@ -297,6 +342,8 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh, tab = 'conver
         onForkAssumption={state.status !== 'running' && state.status !== 'idle' ? forkAssumption : undefined}
         forkCost={(t) => describeFork(forkEstimate(stream.events, t))}
         onOpenDossier={setSelected}
+        onOpenMessage={(seq) => setSide({ kind: 'message', seq })}
+        selectedSeq={side?.kind === 'message' ? side.seq : null}
       />
       <PlaybackControls
         mode={stream.mode}
@@ -313,7 +360,7 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh, tab = 'conver
         ended={
           completed && (
             <>
-              <Btn size="sm" onClick={openScrub}>
+              <Btn size="sm" onClick={() => openScrub()}>
                 <Icon name="clock" size={14} /> Scrub
               </Btn>
               <Btn size="sm" onClick={openAsides}>
@@ -331,85 +378,177 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh, tab = 'conver
   const stance = completed ? (detail?.stance ?? null) : null
   const spoke = state.order.filter((n) => state.feed.some((m) => m.speaker === n && !m.consultant && !m.injected))
 
+  const castBody = (
+    <>
+    <Panel>
+      <div className="flex items-center justify-between gap-2">
+        <Label>Room map</Label>
+        {stance && <StanceCounts stance={stance} among={spoke} />}
+      </div>
+      <RoomMap order={state.order} feed={state.feed} stance={stance} next={next} onOpen={setSelected} />
+<RoomMapKey hasStance={Boolean(stance)} />
+    </Panel>
+    <CastBoard state={state} onSelect={setSelected} stance={stance} />
+    </>
+  )
   const castPane = (
     <div className="cc-pane">
-      <div className="cc-scroll">
-        <Panel>
-          <div className="flex items-center justify-between gap-2">
-            <Label>Room map</Label>
-            {stance && <StanceCounts stance={stance} among={spoke} />}
-          </div>
-          <RoomMap order={state.order} feed={state.feed} stance={stance} next={next} onOpen={setSelected} />
-          <p className="cc-legend justify-center text-center">
-            node size = turns · line = spoke one after the other (sequence, not replies) · ring = end stance
-          </p>
-        </Panel>
-        <CastBoard state={state} onSelect={setSelected} stance={stance} />
-      </div>
+      <div className="cc-scroll">{castBody}</div>
     </div>
   )
 
-  const analysisPane = (
-    <div className="cc-pane">
-      <div className="cc-scroll">
-        {!completed ? (
-          // Mid-run the counts change under the reader, and the questions this tab answers ("who spoke, what
-          // did it conclude?") are asked of a transcript rather than of a conversation in progress.
-          <Panel center>
-            <Label>
-              Analysis locked <span aria-hidden="true">◇</span>
-            </Label>
-            <p className="cc-muted mt-1.5">Opens when the run ends.</p>
-            {maxMessages ? (
-              <div className="mt-2">
-                <Ticks n={Math.min(turn, maxMessages)} max={maxMessages} live={liveNow} />
-              </div>
-            ) : null}
+  const analysisBody = (
+    <>
+    {!completed ? (
+      // Mid-run the counts change under the reader, and the questions this tab answers ("who spoke, what
+      // did it conclude?") are asked of a transcript rather than of a conversation in progress.
+      <Panel center>
+        <Label>
+          Analysis locked <span aria-hidden="true">◇</span>
+        </Label>
+        <p className="cc-muted mt-1.5">Opens when the run ends.</p>
+        {maxMessages ? (
+          <div className="mt-2">
+            <Ticks n={Math.min(turn, maxMessages)} max={maxMessages} live={liveNow} />
+          </div>
+        ) : null}
+      </Panel>
+    ) : (
+      <>
+        {stance ? (
+          <Panel>
+            <Label>Where the room ended</Label>
+            <StanceDial stance={stance} among={spoke} />
+            <p className="cc-muted mt-1.5">
+              Holding out: named among the summary's dissenters. Support: not a dissenter, and a position shift
+              was flagged for them. Not stated: neither. Read from the summary and the shift flags, not judged.
+            </p>
           </Panel>
         ) : (
-          <>
-            {stance ? (
-              <Panel>
-                <Label>Where the room ended</Label>
-                <StanceDial stance={stance} among={spoke} />
-                <p className="cc-muted mt-1.5">
-                  Holding out: named among the summary's dissenters. Support: not a dissenter, and a position shift
-                  was flagged for them. Not stated: neither. Read from the summary and the shift flags, not judged.
-                </p>
-              </Panel>
-            ) : (
-              <p className="cc-muted">Generate the summary to see where each persona ended.</p>
-            )}
-            <SummaryPanel
-              runId={runId}
-              generated={generated}
-              imported={imported}
-              defaultInstructions={defaultInstructions}
-              canGenerate={completed}
-              model={analysisModel || undefined}
-              onUpdated={(g) => {
-                setGenerated(g)
-                // A new summary rewrites the stances server-side; re-read them without restarting the stream.
-                api.getRun(runId).then(setDetail).catch(() => {})
-              }}
-            />
-            {/* Renders nothing unless this run researched, so it adds no section to the
-                conversations that did not. §5.3: nobody watches the pass, so this is
-                where an operator finds out what it did. */}
-            <ResearchPanel research={detail?.research ?? null} />
-            {/* Consultants and injected messages are not a share of the conversation; the panel filters
-                them itself. */}
-            <ParticipationPanel feed={state.feed} order={state.order} onJump={jump} />
-            <BranchTree runId={runId} onOpenRun={onOpenRun} />
-          </>
+          <p className="cc-muted">Generate the summary to see where each persona ended.</p>
         )}
-      </div>
+        <SummaryPanel
+          runId={runId}
+          generated={generated}
+          imported={imported}
+          defaultInstructions={defaultInstructions}
+          canGenerate={completed}
+          model={analysisModel || undefined}
+          onUpdated={(g) => {
+            setGenerated(g)
+            // A new summary rewrites the stances server-side; re-read them without restarting the stream.
+            api.getRun(runId).then(setDetail).catch(() => {})
+          }}
+        />
+        {/* Renders nothing unless this run researched, so it adds no section to the
+            conversations that did not. §5.3: nobody watches the pass, so this is
+            where an operator finds out what it did. */}
+        <ResearchPanel research={detail?.research ?? null} />
+        {/* Consultants and injected messages are not a share of the conversation; the panel filters
+            them itself. */}
+        <ParticipationPanel feed={state.feed} order={state.order} onJump={jump} />
+        <BranchTree runId={runId} onOpenRun={onOpenRun} />
+      </>
+    )}
+    </>
+  )
+  const analysisPane = (
+    <div className="cc-pane">
+      <div className="cc-scroll">{analysisBody}</div>
     </div>
   )
 
-  const panes = wide
-    ? [castPane, conversationPane, analysisPane]
-    : [tab === 'cast' ? castPane : tab === 'analysis' ? analysisPane : conversationPane]
+  const optionsBody = (
+    <>
+      <div className="cc-menu">
+        {completed && (
+          <button type="button" onClick={() => { setMenuOpen(false); setBriefOpen(true) }}>
+            <Icon name="doc" size={18} /> Decision brief
+          </button>
+        )}
+        {completed && (
+          <button type="button" onClick={() => openScrub()}>
+            <Icon name="clock" size={18} /> Scrub and branch
+          </button>
+        )}
+        {completed && (
+          <button type="button" onClick={openAsides}>
+            <Icon name="chat" size={18} /> Asides
+          </button>
+        )}
+        {onStartFresh && (
+          <button type="button" onClick={() => { setMenuOpen(false); onStartFresh(runId) }}>
+            <Icon name="plus" size={18} /> Start fresh from this setup
+          </button>
+        )}
+      </div>
+      {/* Offered only once the run has finished: an export mid-run would be a transcript that
+          stops at an arbitrary turn with no sign that more is coming. */}
+      {completed && <ExportMenu kind="run" id={runId} name={detail?.name ?? runId} />}
+      {models.length > 0 && (
+        <div className="cc-setting">
+          <span>
+            Model <Hint label="the run's model">Used for analysis (summary and asides) and for branching forward from this run.</Hint>
+          </span>
+          <select
+            value={analysisModel}
+            onChange={(e) => setAnalysisModel(e.target.value)}
+            aria-label="Model"
+            className="cc-field max-w-[14rem]"
+          >
+            {models.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+      {/* Which model the personas actually spoke with. A definition once asked for Opus 5 and
+          every run silently used Sonnet 5; this is where that becomes visible. */}
+      {detail?.models?.voice && (
+        <p className="cc-muted">
+          Models used:{' '}
+          {Object.entries(detail.models)
+            .map(([role, m]) => `${role} ${(m ?? 'default').split('/').pop()?.split('anthropic.').pop()}`)
+            .join(' · ')}
+        </p>
+      )}
+      <p className="cc-muted">
+        {stream.engineDone ? '✓ Replay complete' : stream.connected ? 'Connected' : 'Connecting…'}
+      </p>
+    </>
+  )
+
+  const message = side?.kind === 'message' ? state.feed.find((m) => m.seq === side.seq) : undefined
+  const messageBody = message && (
+    <MessageContext
+      message={message}
+      feed={state.feed}
+      events={stream.events}
+      assumptions={state.assumptions}
+      order={state.order}
+      runId={runId}
+      onOpenDossier={setSelected}
+      onJump={jump}
+      onScrubFrom={completed ? (t) => openScrub(t) : undefined}
+    />
+  )
+  // Analysis lives in the drawer on a wide screen and in its tab on a phone; the options and a message's
+  // context are drawers at every width.
+  const right =
+    side?.kind === 'options'
+      ? { title: 'Run options', body: optionsBody }
+      : side?.kind === 'message' && messageBody
+        ? { title: 'Message context', body: messageBody }
+        : side?.kind === 'analysis' && wide
+          ? { title: 'Analysis', body: analysisBody }
+          : null
+  const rightDrawer = right && (
+    <SideDrawer side="right" title={right.title} onClose={() => setSide(null)} overlay={!wide}>
+      {right.body}
+    </SideDrawer>
+  )
 
   return (
     <>
@@ -425,6 +564,7 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh, tab = 'conver
           onBranch={branchFrom}
           branching={branching}
           onStartFresh={onStartFresh ? () => onStartFresh(runId) : undefined}
+          initialTurn={scrubTurn}
         />
       ) : (
         <>
@@ -444,75 +584,26 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh, tab = 'conver
             </p>
           ))}
           <RunTabs runId={runId} tab={tab} locked={!completed} />
-          <div className="cc-panes">
-            {panes.map((p, i) => (
-              <Fragment key={i}>{p}</Fragment>
-            ))}
-          </div>
+          {wide ? (
+            <div className="cc-runrow">
+              {castOpen && (
+                <SideDrawer side="left" title="Cast" onClose={() => setCastOpen(false)}>
+                  {castBody}
+                </SideDrawer>
+              )}
+              {conversationPane}
+              {rightDrawer}
+            </div>
+          ) : (
+            <div className="cc-runrow">
+              {tab === 'cast' ? castPane : tab === 'analysis' ? analysisPane : conversationPane}
+            </div>
+          )}
         </>
       )}
 
-      {menuOpen && (
-        <Sheet title="Run options" onClose={() => setMenuOpen(false)}>
-          <div className="cc-menu">
-            {completed && (
-              <button type="button" onClick={() => { setMenuOpen(false); setBriefOpen(true) }}>
-                <Icon name="doc" size={18} /> Decision brief
-              </button>
-            )}
-            {completed && (
-              <button type="button" onClick={() => { setMenuOpen(false); openScrub() }}>
-                <Icon name="clock" size={18} /> Scrub and branch
-              </button>
-            )}
-            {completed && (
-              <button type="button" onClick={openAsides}>
-                <Icon name="chat" size={18} /> Asides
-              </button>
-            )}
-            {onStartFresh && (
-              <button type="button" onClick={() => { setMenuOpen(false); onStartFresh(runId) }}>
-                <Icon name="plus" size={18} /> Start fresh from this setup
-              </button>
-            )}
-          </div>
-          {/* Offered only once the run has finished: an export mid-run would be a transcript that
-              stops at an arbitrary turn with no sign that more is coming. */}
-          {completed && <ExportMenu kind="run" id={runId} name={detail?.name ?? runId} />}
-          {models.length > 0 && (
-            <div className="cc-setting">
-              <span>
-                Model <Hint label="the run's model">Used for analysis (summary and asides) and for branching forward from this run.</Hint>
-              </span>
-              <select
-                value={analysisModel}
-                onChange={(e) => setAnalysisModel(e.target.value)}
-                aria-label="Model"
-                className="cc-field max-w-[14rem]"
-              >
-                {models.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-          {/* Which model the personas actually spoke with. A definition once asked for Opus 5 and
-              every run silently used Sonnet 5; this is where that becomes visible. */}
-          {detail?.models?.voice && (
-            <p className="cc-muted">
-              Models used:{' '}
-              {Object.entries(detail.models)
-                .map(([role, m]) => `${role} ${(m ?? 'default').split('/').pop()?.split('anthropic.').pop()}`)
-                .join(' · ')}
-            </p>
-          )}
-          <p className="cc-muted">
-            {stream.engineDone ? '✓ Replay complete' : stream.connected ? 'Connected' : 'Connecting…'}
-          </p>
-        </Sheet>
-      )}
+
+      {!wide && !scrubbing && rightDrawer}
 
       {briefOpen && (
         <BriefDialog kind="run" id={runId} name={detail?.name ?? runId} onClose={() => setBriefOpen(false)} />

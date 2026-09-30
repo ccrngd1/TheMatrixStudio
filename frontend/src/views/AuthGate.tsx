@@ -21,6 +21,7 @@ import {
   validToken,
 } from '../lib/auth'
 import { loadConfig, type RuntimeConfig } from '../lib/config'
+import { clearListCache } from '../lib/listCache'
 
 type State =
   | { name: 'loading' }
@@ -168,7 +169,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   // settings sheet. Absent (null) for the local single-user tool, which has nobody to sign out.
   const cfg = state.config
   return (
-    <SessionContext.Provider value={{ signOut: cfg ? () => logout(cfg as RuntimeConfig) : null }}>
+    <SessionContext.Provider value={{ signOut: cfg ? () => (clearListCache(), logout(cfg as RuntimeConfig)) : null }}>
       {children}
     </SessionContext.Provider>
   )

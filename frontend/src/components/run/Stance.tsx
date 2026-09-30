@@ -5,7 +5,7 @@
 //
 // Never colour alone (§2 rule 2): every count carries its glyph, every bar and node its name for a screen
 // reader, and the dial prints its counts beneath it.
-import type { CSSProperties, KeyboardEvent } from 'react'
+import type { CSSProperties, KeyboardEvent, ReactNode } from 'react'
 import type { FeedMessage } from '../../types'
 import { STANCE_COLOR, STANCE_LABEL, Tag, identityOf, initials, type Stance } from '../../ui/primitives'
 import { phase } from '../../ui/theme'
@@ -217,5 +217,44 @@ export function StanceDial({ stance, among }: { stance: StanceMap; among?: strin
         ))}
       </div>
     </>
+  )
+}
+
+/**
+ * What the room map's marks mean, drawn with the marks themselves. The map is easy to over-read: a line
+ * looks like "these two argued", and what it records is only that one spoke straight after the other.
+ */
+export function RoomMapKey({ hasStance }: { hasStance: boolean }) {
+  const Row = ({ mark, children }: { mark: ReactNode; children: ReactNode }) => (
+    <div className="cc-mapkey-row">
+      <svg viewBox="0 0 40 16" width="40" height="16" aria-hidden="true" className="cc-radar">
+        {mark}
+      </svg>
+      <span>{children}</span>
+    </div>
+  )
+  return (
+    <div className="cc-mapkey">
+      <Row mark={<path d="M2,12 Q20,2 38,12" className="cc-edge" style={{ strokeOpacity: 0.7, strokeWidth: 3 }} />}>
+        <b>A line</b> joins two people who spoke <b>one straight after the other</b>. Thicker and brighter = that
+        hand-off happened more often. It shows who tends to follow whom, <i>not</i> who answered whom: the
+        app does not record who a message replies to.
+      </Row>
+      <Row mark={<path d="M2,12 Q20,2 38,12" className="cc-edge-live" />}>
+        <b>The moving dashed line</b> is the latest hand-off: the last two people to speak.
+      </Row>
+      <Row mark={<polygon points={hexPts(20, 8, 6)} fill="url(#cc-g-a2)" stroke="var(--t2)" />}>
+        <b>A hexagon</b> is a persona. Bigger = more turns taken. A small one with few lines is someone the room
+        left out. Tap one for their dossier.
+      </Row>
+      <Row mark={<polygon points={hexPts(20, 8, 7)} fill="none" stroke="var(--hold)" strokeWidth="2.2" />}>
+        <b>The ring colour</b> is where they ended:{' '}
+        {hasStance ? (
+          <>▲ support, ◆ not stated, ▼ holding out. The centre is the share who support.</>
+        ) : (
+          <>shown once the run is finished and summarised.</>
+        )}
+      </Row>
+    </div>
   )
 }

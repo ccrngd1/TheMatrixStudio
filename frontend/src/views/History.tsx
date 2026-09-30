@@ -8,6 +8,7 @@ import {
   Btn, Chip, Hex, HudCell, HudStrip, Panel, PanelButton, STANCE_COLOR, Tag, Ticks, identityOf, type RunState,
 } from '../ui/primitives'
 import { StanceCounts } from '../components/run/Stance'
+import { cached, remember } from '../lib/listCache'
 
 // How long a load may take before the view says why it is still waiting.
 //
@@ -17,6 +18,8 @@ import { StanceCounts } from '../components/run/Stance'
 // list was simply not on screen for 25 seconds, which reads as a broken app. Naming the
 // cause is the difference between waiting and reloading.
 const SLOW_AFTER_MS = 3000
+const RUNS_KEY = 'runs'
+const ENSEMBLES_KEY = 'ensembles'
 
 interface Props {
   onOpen: (runId: string) => void
@@ -31,38 +34,47 @@ interface Props {
 }
 
 export function History({ onOpen, onNew, onKnowledgeBases, onOpenEnsemble }: Props) {
-  const [runs, setRuns] = useState<RunSummary[]>([])
+  // Seeded from the last visit (lib/listCache.ts) and refreshed below, so backing out of a run shows the
+  // list at once instead of a blank page and a cold request.
+  const [runs, setRuns] = useState<RunSummary[]>(() => cached<RunSummary[]>(RUNS_KEY) ?? [])
   // Ensembles are listed ABOVE the runs rather than mixed into them. They are a different
   // kind of thing — no transcript, no turn count — and interleaving them by date would put a
   // row with no turns and no cost in a list whose columns are turns and cost. Their member
   // runs are nested under them, not repeated in the individual list.
-  const [ensembles, setEnsembles] = useState<EnsembleSummary[]>([])
+  const [ensembles, setEnsembles] = useState<EnsembleSummary[]>(() => cached<EnsembleSummary[]>(ENSEMBLES_KEY) ?? [])
   const [q, setQ] = useState('')
   const [branchesOnly, setBranchesOnly] = useState(false)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(() => cached(RUNS_KEY) === undefined)
+  // A background refresh of a list already on screen: no spinner, the rows stay put.
+  const [refreshing, setRefreshing] = useState(false)
   const [slow, setSlow] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const load = (query?: string) => {
-    setLoading(true)
+    // Only the unfiltered list is cached: a search is a different question with its own answer.
+    const background = !query && cached(RUNS_KEY) !== undefined
+    if (background) setRefreshing(true)
+    else setLoading(true)
     setSlow(false)
     const slowTimer = setTimeout(() => setSlow(true), SLOW_AFTER_MS)
     api
       .listRuns(query)
       .then((rows) => {
-        setRuns(rows)
+        setRuns(query ? rows : remember(RUNS_KEY, rows))
         setError(null)
       })
       .catch((err) => {
         // A failure used to be swallowed into an empty list, which renders as "No runs
         // yet" — indistinguishable from an account with no runs. On a cold start that
         // times out, that tells the user their history is gone when it is not.
-        setRuns([])
+        // A failed background refresh keeps the rows already shown: they are stale, not gone.
+        if (!background) setRuns([])
         setError(err instanceof Error ? err.message : String(err))
       })
       .finally(() => {
         clearTimeout(slowTimer)
         setLoading(false)
+        setRefreshing(false)
         setSlow(false)
       })
   }
@@ -103,10 +115,10 @@ export function History({ onOpen, onNew, onKnowledgeBases, onOpenEnsemble }: Pro
     api
       .listEnsembles()
       .then((rows) => {
-        if (live) setEnsembles(rows)
+        if (live) setEnsembles(remember(ENSEMBLES_KEY, rows))
       })
       .catch(() => {
-        if (live) setEnsembles([])
+        if (live && cached(ENSEMBLES_KEY) === undefined) setEnsembles([])
       })
     return () => {
       live = false
@@ -285,7 +297,7 @@ export function History({ onOpen, onNew, onKnowledgeBases, onOpenEnsemble }: Pro
             </p>
           )}
         </div>
-      ) : error ? (
+      ) : error && runs.length === 0 ? (
         <Panel>
           <p className="text-sm" style={{ color: 'var(--danger)' }}>Could not load your runs: {error}</p>
           <Btn size="sm" className="mt-3" onClick={() => load(q || undefined)}>
@@ -296,6 +308,11 @@ export function History({ onOpen, onNew, onKnowledgeBases, onOpenEnsemble }: Pro
         <p className="cc-empty">No runs yet. Start one with “New run”.</p>
       ) : (
         <>
+          {(refreshing || error) && (
+            <p className="cc-muted" role="status">
+              {refreshing ? 'Refreshing…' : `Showing the last list loaded; refreshing failed: ${error}`}
+            </p>
+          )}
           {liveRuns.length > 0 && (
             <Section id="live" title="Live now" count={liveRuns.length} open={openSections.live} onToggle={() => toggleSection('live')}>
               <div className="cc-list">

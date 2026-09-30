@@ -39,7 +39,7 @@ input, textarea, select { font:inherit; color:var(--t1); }
     -webkit-mask-image:linear-gradient(0deg,#000,transparent 90%); mask-image:linear-gradient(0deg,#000,transparent 90%); animation:floor 3s linear infinite; }
 @keyframes floor { to { background-position:0 44px; } }
 .cc-app::after { content:""; position:absolute; inset:0; z-index:80; pointer-events:none; background:repeating-linear-gradient(180deg,rgba(255,255,255,.03) 0 1px,transparent 1px 3px); mix-blend-mode:overlay; }
-.cc-app.cc-nofx #cc-rain, .cc-app.cc-nofx #cc-floor, .cc-app.cc-nofx .cc-app::after { display:none; }
+.cc-app.cc-nofx #cc-rain, .cc-app.cc-nofx #cc-floor, .cc-app.cc-nofx::after { display:none; }
 #cc-view { position:absolute; inset:0; z-index:1; display:flex; flex-direction:column; }
 #cc-boot { position:absolute; inset:0; z-index:95; background:radial-gradient(60% 40% at 50% 45%, color-mix(in srgb,var(--accent) 14%,transparent), transparent 70%), var(--bg0);
     display:flex; flex-direction:column; align-items:center; justify-content:center; gap:20px; transition:opacity .45s; }
@@ -404,3 +404,28 @@ option { background:var(--panel); }
 .cc-scrub-controls { max-height:none; }
 .cc-scrub-feed { border-top:none; border-left:1px solid var(--line); }
 }
+/* Run-screen drawers. Beside the conversation from 768 px; over it, from its side, on a phone. */
+.cc-runrow { flex:1; min-height:0; display:flex; }
+.cc-runrow > .cc-pane { flex:1; min-width:0; }
+.cc-drawer { flex:none; min-height:0; min-width:0; display:flex; flex-direction:column; background:color-mix(in srgb,var(--bg0) 88%,transparent); }
+.cc-drawer-left { width:340px; border-right:1px solid var(--line); }
+.cc-drawer-right { width:440px; border-left:1px solid var(--line); }
+.cc-drawer-h { padding:10px 14px 6px; flex:none; }
+.cc-drawer-b { flex:1; min-height:0; min-width:0; overflow-y:auto; overflow-x:hidden; padding:4px 14px 16px; display:flex; flex-direction:column; gap:10px; overflow-wrap:break-word; }
+.cc-drawer-b > * { max-width:100%; }
+.cc-drawer.cc-over { position:absolute; top:0; bottom:0; z-index:26; width:min(92vw,440px); background:var(--bg1); box-shadow:0 0 40px rgba(0,0,0,.6); animation:fade .2s; }
+.cc-drawer-left.cc-over { left:0; }
+.cc-drawer-right.cc-over { right:0; }
+.cc-drawer-scrim { z-index:25; }
+.cc-drawer-scrim + .cc-drawer, .cc-drawer.cc-over { pointer-events:auto; }
+.cc-icon.cc-on { color:var(--accent); background:color-mix(in srgb,var(--accent) 14%,transparent); }
+/* A tappable message, and the one whose context is open. */
+.cc-msg.cc-tappable .cc-tx { cursor:pointer; }
+.cc-msg.cc-selected .cc-tx { outline:1px solid var(--accent); outline-offset:2px; }
+.cc-t-btn { min-width:32px; min-height:28px; text-align:right; }
+.cc-t-btn:hover, .cc-t-btn:focus-visible { color:var(--accent); }
+.cc-mapkey { display:flex; flex-direction:column; gap:8px; margin-top:8px; font-size:12.5px; line-height:1.45; color:var(--t2); }
+.cc-mapkey-row { display:flex; gap:10px; align-items:flex-start; }
+.cc-mapkey-row svg { flex:none; width:40px; margin-top:2px; }
+.cc-mapkey b { color:var(--t1); font-weight:600; }
+[data-theme=matrix] #cc-rain { opacity:.32; }

@@ -5,16 +5,18 @@ import { useEffect, useState } from 'react'
 import { api, type EnsembleSummary } from '../api'
 import { Icon } from '../ui/icons'
 import { Btn, PanelButton, Tag } from '../ui/primitives'
+import { cached, remember } from '../lib/listCache'
 
 export function EnsembleList({ onOpen, onNew }: { onOpen: (id: string) => void; onNew: () => void }) {
-  const [rows, setRows] = useState<EnsembleSummary[] | null>(null)
+  // Seeded from the last visit and refreshed (lib/listCache.ts), shared with the Runs screen's copy.
+  const [rows, setRows] = useState<EnsembleSummary[] | null>(() => cached<EnsembleSummary[]>('ensembles') ?? null)
   const [error, setError] = useState<string | null>(null)
   useEffect(() => {
     let live = true
     api
       .listEnsembles()
-      .then((r) => live && setRows(r))
-      .catch((e) => live && setError(e instanceof Error ? e.message : String(e)))
+      .then((r) => live && setRows(remember('ensembles', r)))
+      .catch((e) => live && cached('ensembles') === undefined && setError(e instanceof Error ? e.message : String(e)))
     return () => {
       live = false
     }

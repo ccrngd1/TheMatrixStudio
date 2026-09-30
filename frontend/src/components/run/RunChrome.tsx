@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // What sits around a run's panes (docs/MOBILE-UI.md §4.2): the status tag, the HUD, the tabs and the face
 // strip. The HUD's third cell, the room, is passed in once the run has a stance (§6.1: post-run only).
-import type { ReactNode } from 'react'
+import { useEffect, type ReactNode } from 'react'
+import { Icon } from '../../ui/icons'
 import { hrefOf, type RunTab } from '../../lib/route'
 import { Hex, HudCell, HudStrip, Meter, Tag, Ticks, identityOf } from '../../ui/primitives'
 
@@ -108,5 +109,45 @@ export function FaceStrip({
         Tap → dossier
       </span>
     </div>
+  )
+}
+
+/**
+ * A side panel on the run screen. From 768 px it sits in the row beside the conversation and pushes it over;
+ * on a phone (`overlay`) it slides over the screen from its side with a scrim. Escape and the close button
+ * shut it.
+ */
+export function SideDrawer({
+  side, title, onClose, overlay, children,
+}: { side: 'left' | 'right'; title: string; onClose: () => void; overlay?: boolean; children: ReactNode }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+  const panel = (
+    // Over the screen it is modal, so it is a dialog; beside the conversation it is a complementary panel.
+    <aside
+      className={`cc-drawer cc-drawer-${side} ${overlay ? 'cc-over' : ''}`}
+      aria-label={title}
+      {...(overlay ? { role: 'dialog', 'aria-modal': true } : {})}
+    >
+      <div className="cc-sh-h cc-drawer-h">
+        <div className="cc-grow">
+          <span className="cc-label">{title}</span>
+        </div>
+        <button type="button" className="cc-icon" onClick={onClose} aria-label={`Close ${title}`}>
+          <Icon name="close" size={18} />
+        </button>
+      </div>
+      <div className="cc-drawer-b">{children}</div>
+    </aside>
+  )
+  if (!overlay) return panel
+  return (
+    <>
+      <div className="cc-scrim cc-drawer-scrim" onClick={onClose} aria-hidden="true" />
+      {panel}
+    </>
   )
 }

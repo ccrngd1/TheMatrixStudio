@@ -27,12 +27,14 @@ interface Props {
   branching?: boolean
   // Open the new-run form prefilled with this run's setup. Absent = not offered.
   onStartFresh?: () => void
+  // The turn to open at (a message's "Branch from turn n"); the last turn otherwise.
+  initialTurn?: number
 }
 
 // Checkpoint scrubber (Phase 2a+2b): read-only turn slider + Phase 2b intervention panel.
-export function Scrubber({ runId, maxTurn, cast, defaultBudget, models = [], defaultModel, onBranch, branching = false, onStartFresh }: Props) {
+export function Scrubber({ runId, maxTurn, cast, defaultBudget, models = [], defaultModel, onBranch, branching = false, onStartFresh, initialTurn }: Props) {
   const [events, setEvents] = useState<SimEvent[]>([])
-  const [turn, setTurn] = useState(maxTurn)
+  const [turn, setTurn] = useState(initialTurn ?? maxTurn)
   const [loading, setLoading] = useState(true)
   // 'none' means a plain fork: same state, no change applied. It is the default
   // because forking as-is is the safe, common action, and because the previous UI
@@ -62,8 +64,10 @@ export function Scrubber({ runId, maxTurn, cast, defaultBudget, models = [], def
 
   useEffect(() => {
     setLoading(true)
-    api.getEvents(runId).then((evts) => { setEvents(evts); setTurn(maxTurn) })
+    api.getEvents(runId).then((evts) => { setEvents(evts); setTurn(Math.min(initialTurn ?? maxTurn, maxTurn)) })
       .catch(() => setEvents([])).finally(() => setLoading(false))
+  // `initialTurn` is where the scrubber OPENS; changing it later must not yank the cursor.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId, maxTurn])
 
   const state = useMemo(() => {

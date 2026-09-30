@@ -17,7 +17,7 @@ export default function App() {
   const themeState = useThemeState()
   return (
     <AuthGate>
-      <AppFrame fx={themeState.fx}>
+      <AppFrame fx={themeState.fx} theme={themeState.theme}>
         <Views themeState={themeState} />
       </AppFrame>
     </AuthGate>

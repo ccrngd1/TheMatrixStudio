@@ -20,3 +20,10 @@ if (!globalThis.crypto?.subtle) {
     configurable: true,
   })
 }
+
+// The list cache (lib/listCache.ts) lives for the page, and a test file is one page: without this, the
+// second test in a file would start from the first one's rows.
+import { beforeEach } from 'vitest'
+import { clearListCache } from '../lib/listCache'
+
+beforeEach(() => clearListCache())
