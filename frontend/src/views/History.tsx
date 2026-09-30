@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api, type EnsembleSummary } from '../api'
 import type { RunSummary } from '../types'
 import { isStalled } from '../lib/runStatus'
@@ -19,6 +19,8 @@ import { cached, remember } from '../lib/listCache'
 // cause is the difference between waiting and reloading.
 const SLOW_AFTER_MS = 3000
 const RUNS_KEY = 'runs'
+/** The run list route's cap (`list_runs(limit=200)`): past it, older runs are not in the list to search. */
+const LIST_LIMIT = 200
 const ENSEMBLES_KEY = 'ensembles'
 
 interface Props {
@@ -79,23 +81,31 @@ export function History({ onOpen, onNew, onKnowledgeBases, onOpenEnsemble }: Pro
       })
   }
 
-  // One fetch on mount, then debounced fetches as the query changes.
+  // One fetch on mount. Search then runs HERE, over the list already loaded, instead of a request per
+  // keystroke: the server's search was the same case-insensitive substring match over the same rows, so a
+  // round trip (a cold Lambda's ~5.7 s, at worst) bought nothing.
   //
-  // This used to be two effects, and both fired on mount: an immediate `load()` and the
-  // debounced one 250 ms later with an identical query. Two identical requests is
-  // ordinarily just waste, but against a cold Lambda each one starts its OWN sandbox and
-  // pays its own ~5.7 s init — the deployed logs show three concurrent cold starts for
-  // one page load. The ref keeps the first load immediate while removing the duplicate.
-  const firstLoad = useRef(true)
+  // The one thing only the server can do is look past the list's cap: `/api/runs` returns the newest
+  // LIST_LIMIT runs, so once an account has more than that, an older run is not in the list to be found.
+  // A full list therefore still asks the server, debounced, as it always did.
+  const [serverHits, setServerHits] = useState<RunSummary[] | null>(null)
+  useEffect(() => load(), [])
+  const listFull = runs.length >= LIST_LIMIT
   useEffect(() => {
-    if (firstLoad.current) {
-      firstLoad.current = false
-      load()
-      return
+    setServerHits(null)
+    if (!q || !listFull) return
+    let live = true
+    const id = setTimeout(() => {
+      api
+        .listRuns(q)
+        .then((rows) => live && setServerHits(rows))
+        .catch(() => live && setServerHits(null)) // the client-side matches stand
+    }, 250)
+    return () => {
+      live = false
+      clearTimeout(id)
     }
-    const id = setTimeout(() => load(q || undefined), 250)
-    return () => clearTimeout(id)
-  }, [q])
+  }, [q, listFull])
 
   // Ensembles load once and are not searched. Separate from `load` on purpose: the run list
   // must not depend on this request succeeding, because an older deployment has no
@@ -153,7 +163,8 @@ export function History({ onOpen, onNew, onKnowledgeBases, onOpenEnsemble }: Pro
   const listed = new Set(ensembles.map((e) => e.ensemble_id))
   const membersOf = new Map<string, RunSummary[]>()
   const individual: RunSummary[] = []
-  for (const r of runs) {
+  const pool = q ? (serverHits ?? runs.filter((r) => runMatches(r, q))) : runs
+  for (const r of pool) {
     if (onOpenEnsemble && r.ensemble_id && listed.has(r.ensemble_id)) {
       const list = membersOf.get(r.ensemble_id) ?? []
       list.push(r)
@@ -170,6 +181,15 @@ export function History({ onOpen, onNew, onKnowledgeBases, onOpenEnsemble }: Pro
         (a.created_at ?? 0) - (b.created_at ?? 0),
     )
   }
+
+  // While searching, an ensemble is shown if it matches itself or holds a run that does.
+  const shownEnsembles = q
+    ? ensembles.filter(
+        (e) =>
+          membersOf.has(e.ensemble_id) ||
+          [e.name, e.description, e.topic].some((f) => (f ?? '').toLowerCase().includes(q.trim().toLowerCase())),
+      )
+    : ensembles
 
   // §4.1: live runs first, then everything that has stopped; branches are a filter, not a section.
   const shown = branchesOnly ? individual.filter((r) => r.parent_run_id) : individual
@@ -191,9 +211,10 @@ export function History({ onOpen, onNew, onKnowledgeBases, onOpenEnsemble }: Pro
       <div className="cc-searchbox">
         <Icon name="search" />
         <input
+          type="search"
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          placeholder="Search by name, description, or topic…"
+          placeholder="Search by name, description, topic or persona…"
           aria-label="Search runs"
         />
       </div>
@@ -216,16 +237,16 @@ export function History({ onOpen, onNew, onKnowledgeBases, onOpenEnsemble }: Pro
         )}
       </div>
 
-      {onOpenEnsemble && ensembles.length > 0 && (
+      {onOpenEnsemble && shownEnsembles.length > 0 && (
         <Section
           id="ensembles"
           title="Ensembles"
-          count={ensembles.length}
+          count={shownEnsembles.length}
           open={openSections.ensembles}
           onToggle={() => toggleSection('ensembles')}
         >
           <div className="cc-list">
-            {ensembles.map((e) => {
+            {shownEnsembles.map((e) => {
               const planned = (e.spec ?? []).reduce((n, c) => n + (c.n ?? 0), 0)
               const members = membersOf.get(e.ensemble_id) ?? []
               const expanded = openEnsembles.has(e.ensemble_id)
@@ -300,7 +321,7 @@ export function History({ onOpen, onNew, onKnowledgeBases, onOpenEnsemble }: Pro
       ) : error && runs.length === 0 ? (
         <Panel>
           <p className="text-sm" style={{ color: 'var(--danger)' }}>Could not load your runs: {error}</p>
-          <Btn size="sm" className="mt-3" onClick={() => load(q || undefined)}>
+          <Btn size="sm" className="mt-3" onClick={() => load()}>
             Try again
           </Btn>
         </Panel>
@@ -514,3 +535,11 @@ const isLiveStatus = (r: RunSummary) =>
   !isStalled(r.status, r.last_event_at, r.created_at, STALL_SECONDS)
 
 const pad = (n: number) => String(n).padStart(2, '0')
+
+/** The server's search, on the client: a case-insensitive substring of the name, description or topic,
+ *  and, since the list carries them, the names of the cast. */
+export function runMatches(r: RunSummary, q: string): boolean {
+  const needle = q.trim().toLowerCase()
+  if (!needle) return true
+  return [r.name, r.description, r.topic, ...(r.cast_names ?? [])].some((f) => (f ?? '').toLowerCase().includes(needle))
+}

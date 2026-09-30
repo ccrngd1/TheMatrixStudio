@@ -73,11 +73,23 @@ describe('the initial load', () => {
     expect(listRuns).toHaveBeenCalledTimes(1)
   })
 
-  it('still debounces as the query changes', async () => {
+  it('searches the loaded list without a request per keystroke', async () => {
     listRuns.mockResolvedValue([])
     render(<History onOpen={() => {}} onNew={() => {}} />)
     await waitFor(() => expect(listRuns).toHaveBeenCalledTimes(1))
+    const input = screen.getByPlaceholderText(/search/i)
+    for (const value of ['h', 'ha', 'har', 'harb', 'harbo', 'harbou', 'harbour']) {
+      fireEvent.change(input, { target: { value } })
+    }
+    await new Promise((r) => setTimeout(r, 400))
+    expect(listRuns).toHaveBeenCalledTimes(1)
+  })
 
+  it('still debounces when a full list sends the search to the server', async () => {
+    const full = Array.from({ length: 200 }, (_, i) => ({ run_id: `r${i}`, topic: 't', status: 'complete' }))
+    listRuns.mockResolvedValue(full)
+    render(<History onOpen={() => {}} onNew={() => {}} />)
+    await waitFor(() => expect(listRuns).toHaveBeenCalledTimes(1))
     // Seven keystrokes must not be seven requests.
     const input = screen.getByPlaceholderText(/search/i)
     for (const value of ['h', 'ha', 'har', 'harb', 'harbo', 'harbou', 'harbour']) {
