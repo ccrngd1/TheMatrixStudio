@@ -429,6 +429,25 @@ class MatrixStudioStack(Stack):
             ),
         )
 
+        # The 8-bit theatre's sprite sheets. Hand-placed files, so their names carry no content
+        # hash and `immutable` would be a lie: a corrected sheet under the same name has to be
+        # reachable. A day is the compromise — long enough that a replay does not re-fetch 600 kB
+        # of sprites on every open, short enough that a fix lands without an invalidation.
+        a_day = cloudfront.ResponseHeadersPolicy(
+            self,
+            "TheatreSpritesPolicy",
+            response_headers_policy_name=f"{self.config.prefix}-theatre-a-day",
+            custom_headers_behavior=cloudfront.ResponseCustomHeadersBehavior(
+                custom_headers=[
+                    cloudfront.ResponseCustomHeader(
+                        header="Cache-Control",
+                        value="public, max-age=86400",
+                        override=True,
+                    )
+                ]
+            ),
+        )
+
         # SPA deep links, WITHOUT letting the fallback reach the API.
         #
         # This was `error_responses` mapping 403 and 404 to `/index.html` with a 200.
@@ -490,6 +509,19 @@ function handler(event) {
                     ),
                     cache_policy=cloudfront.CachePolicy.CACHING_OPTIMIZED,
                     response_headers_policy=immutable,
+                    allowed_methods=(
+                        cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS
+                    ),
+                ),
+                # Without this the sprites fall to the default behaviour, which is
+                # `no-store`: every open of the theatre re-downloaded all 40 sheets.
+                "/theatre/*": cloudfront.BehaviorOptions(
+                    origin=spa_origin,
+                    viewer_protocol_policy=(
+                        cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS
+                    ),
+                    cache_policy=cloudfront.CachePolicy.CACHING_OPTIMIZED,
+                    response_headers_policy=a_day,
                     allowed_methods=(
                         cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS
                     ),

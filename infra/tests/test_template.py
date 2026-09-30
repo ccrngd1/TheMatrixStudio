@@ -229,6 +229,32 @@ def test_index_html_is_never_cached_and_assets_are(template: Template):
     assert default_policy != assets_policy
 
 
+def test_theatre_sprites_are_cached_but_not_forever(template: Template):
+    """The sprite sheets are hand-placed, so their names carry no content hash.
+
+    Without a behaviour of their own they fall to the default, which is `no-store`: every open of
+    the 8-bit theatre re-downloaded all 40 sheets. `immutable` would be the opposite mistake — a
+    corrected sheet keeps its name, so a year-long cache could never be displaced.
+    """
+    dist = next(iter(template.find_resources("AWS::CloudFront::Distribution").values()))
+    config = dist["Properties"]["DistributionConfig"]
+    behaviours = {b["PathPattern"]: b for b in config["CacheBehaviors"]}
+    assert "/theatre/*" in behaviours, "the theatre's sprites fall to the no-store default"
+
+    # CachingOptimized, the same policy the hashed assets use, so the edge holds them.
+    assert behaviours["/theatre/*"]["CachePolicyId"] == "658327ea-f89d-4fab-a63d-7e88639e58f6"
+
+    policies = template.find_resources("AWS::CloudFront::ResponseHeadersPolicy")
+    attached = behaviours["/theatre/*"]["ResponseHeadersPolicyId"]["Ref"]
+    items = policies[attached]["Properties"]["ResponseHeadersPolicyConfig"][
+        "CustomHeadersConfig"
+    ]["Items"]
+    entry = next(i for i in items if i["Header"] == "Cache-Control")
+    assert entry["Override"] is True, entry
+    assert entry["Value"] == "public, max-age=86400", entry["Value"]
+    assert "immutable" not in entry["Value"], "a hand-placed name cannot promise immutability"
+
+
 def test_deep_links_fall_back_to_the_spa(template: Template):
     """S3 has no object at `/runs/trusted-robot`, so a refresh on a client-side route
     needs the shell — otherwise the app works until somebody bookmarks a page.
