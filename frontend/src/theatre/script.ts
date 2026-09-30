@@ -6,7 +6,7 @@
 // may be theatrical about HOW a line is delivered; it may not add a line, drop one, or change
 // who said it.
 
-import type { FeedMessage, SimEvent } from '../types'
+import type { FeedMessage, ResearchRecord, SimEvent } from '../types'
 
 /**
  * The character sheets shipped in `public/theatre/sprites`. `char17` and `char23` are absent on
@@ -49,7 +49,10 @@ export function assignSprites(names: readonly string[]): Record<string, string> 
   return out
 }
 
-export type BeatKind = 'speech' | 'consultant' | 'injected'
+// 'prologue' is the one beat that is not a transcript line: the research pass, which happened
+// before turn 1. It is built from the run's own research record, never invented, and is only ever
+// created when that record says research ran.
+export type BeatKind = 'speech' | 'consultant' | 'injected' | 'prologue'
 
 export interface Beat {
   /** Index of the feed message this beat came from, so every beat traces to a real message. */
@@ -115,10 +118,13 @@ export function paginate(text: string, max = PAGE_CHARS): string[] {
 
 export function buildScript(
   feed: readonly FeedMessage[],
-  { max = PAGE_CHARS, cast = [] }: { max?: number; cast?: readonly string[] } = {},
+  { max = PAGE_CHARS, cast = [], research = null }:
+    { max?: number; cast?: readonly string[]; research?: ResearchRecord | null } = {},
 ): Beat[] {
   const inCast = new Set(cast)
   const beats: Beat[] = []
+  const prologue = researchPrologue(research, feed[0]?.seq ?? 0)
+  if (prologue) beats.push(prologue)
   feed.forEach((m, line) => {
     const kind: BeatKind = m.consultant ? 'consultant' : m.injected ? 'injected' : 'speech'
     const pages = paginate(m.content, max)
@@ -142,6 +148,43 @@ export function buildScript(
     })
   })
   return beats
+}
+
+/**
+ * The opening scene, when a run researched before turn 1: the cast walk in from the library with
+ * what they found. Its text is a count of the run's own research record — how many sources, how
+ * many of them controlling, and for whom — and it is null for every run that did not research, so
+ * those runs open on their first line exactly as before.
+ */
+export function researchPrologue(research: ResearchRecord | null | undefined, seq: number): Beat | null {
+  if (!research || research.status !== 'researched') return null
+  const scopes = research.scopes ?? []
+  // A consultant's library is not the room reading up: the consultant is outside the room and
+  // answers only from it. Counting it here would overstate what the personas actually hold.
+  const roomScopes = scopes.filter((s) => !s.consultant)
+  const docs = roomScopes.reduce((n, s) => n + (s.documents ?? 0), 0)
+  if (!docs) return null
+  const controlling = roomScopes.reduce((n, s) => n + (s.controlling ?? 0), 0)
+  const shared = roomScopes.find((s) => s.scope === 'shared')?.documents ?? 0
+  const people = roomScopes.filter((s) => s.scope !== 'shared' && (s.documents ?? 0) > 0)
+  const libraries = scopes.filter((s) => s.consultant && (s.documents ?? 0) > 0)
+  const shelved = libraries.reduce((n, s) => n + (s.documents ?? 0), 0)
+  const parts = [
+    `Before the room met, it read up: ${docs} ${docs === 1 ? 'source' : 'sources'}`,
+    controlling ? `, ${controlling} of them controlling authority` : '',
+    '.',
+    shared ? ` ${shared} went to a corpus everyone can see.` : '',
+    people.length
+      ? ` ${people.map((s) => `${s.scope} brought ${s.documents}`).join(', ')}.`
+      : '',
+    libraries.length
+      ? ` Outside the room, ${libraries.length === 1 ? 'a consultant keeps' : `${libraries.length} consultants keep`} a library of ${shelved}.`
+      : '',
+  ]
+  return {
+    line: -1, seq, page: 0, pages: 1, kind: 'prologue', speaker: 'Research', turn: 0,
+    text: parts.join('').replace(/\s+/g, ' ').trim(),
+  }
 }
 
 /** A working assumption on the whiteboard, and when it went up. */

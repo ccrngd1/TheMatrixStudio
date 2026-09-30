@@ -25,13 +25,13 @@ export interface Performer {
 }
 
 /** Something drawn above an actor's head, each caused by a recorded event on the current line. */
-export type Mark = 'shift' | 'book' | 'letter'
+export type Mark = 'shift' | 'book' | 'letter' | 'ask'
 
 /** Someone on stage this frame: a cast member wherever the blocking has put them, or the messenger. */
 export interface Actor {
-  /** Identity: the cast member's name, or the messenger's key. */
+  /** Identity: the cast member's name, or a visitor's key. */
   key: string
-  /** What the name tag says. */
+  /** The short form on the name tag: a first name, or a visitor's noun. */
   label: string
   sprite: string
   pose: Pose
@@ -245,7 +245,7 @@ function drawActor(ctx: CanvasRenderingContext2D, img: HTMLImageElement | undefi
 }
 
 function drawNameTag(ctx: CanvasRenderingContext2D, a: Actor, active: boolean) {
-  const first = a.label.split(/\s+/)[0].toUpperCase()
+  const first = a.label.toUpperCase()
   ctx.save()
   ctx.font = `bold ${active ? 7 : 6}px ui-monospace, monospace`
   const w = Math.ceil(ctx.measureText(first).width) + 6
@@ -301,6 +301,9 @@ function drawMarks(ctx: CanvasRenderingContext2D, emotes: HTMLImageElement | und
       drawBook(ctx, a.pose.x - 6, top + (a.marks.includes('shift') ? -12 : 2))
     } else if (m === 'letter' && !a.pose.walking) {
       drawLetter(ctx, a.pose.x - 6, top + 2)
+    } else if (m === 'ask') {
+      // The "?" bubble, on the same side as the speech bubble: whoever asked the consultant.
+      drawEmote(ctx, emotes, 3, 7, a.pose.x + 4, top)
     }
   }
 }
@@ -319,7 +322,9 @@ export function drawScene(ctx: CanvasRenderingContext2D, images: SpriteImages, f
   for (const [a, i] of front) drawActor(ctx, images[a.sprite], a, i, f)
   for (const a of f.actors) {
     const active = a.key === f.speaker
-    if (a.pose.visible && (f.allNames || active)) drawNameTag(ctx, a, active)
+    // Not while they are still in the doorway: a tag half outside the room reads as a glitch.
+    const inside = a.pose.x > 24 && a.pose.x < ROOM_W - 24
+    if (a.pose.visible && inside && (f.allNames || active)) drawNameTag(ctx, a, active)
   }
   for (const a of f.actors) drawMarks(ctx, images.emotes, a, f)
   const speaking = f.actors.find((a) => a.key === f.speaker && a.pose.visible && !a.pose.walking)

@@ -100,3 +100,13 @@
 .th-board-note b { color: #b3121f; font: 800 10px ui-monospace, monospace; letter-spacing: 0.1em; }
 .th-tag { display: inline-block; margin-right: 8px; padding: 0 5px; border: 1px solid currentColor; font-size: 10px; letter-spacing: 0.12em; color: var(--th-dim); }
 .th-tag-shift { color: #c9a7ff; }
+
+/* The research prologue: the one beat that is not a transcript line. */
+.th-dialogue.th-prologue { --th-edge: #9ad8a0; }
+.th-prologue .th-name { color: #9ad8a0; }
+.th-prologue .th-line { font-style: italic; }
+/* A generated avatar in the portrait slot: pixelated so it sits beside 8-bit sprites. */
+.th-portrait-av { background-size: cover; background-position: center top; }
+/* A branch's title card says where it forked, because it opens there rather than at line 1. */
+.th-card-fork { margin: 8px 0 0; padding: 8px 10px; background: rgba(159, 200, 255, 0.1);
+  border-left: 2px solid #9fc8ff; font: 500 12.5px/1.5 system-ui, sans-serif; text-align: left; color: var(--th-ink); }

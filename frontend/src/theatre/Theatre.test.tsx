@@ -3,8 +3,14 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import type { SimEvent } from '../types'
 
-vi.mock('../api', () => ({ api: { getRun: vi.fn(), getEvents: vi.fn() } }))
-import { api } from '../api'
+// `avatarUrl` is called by the run-state reducer, not by this page, so it keeps its real behaviour.
+vi.mock('../api', () => ({
+  api: { getRun: vi.fn(), getEvents: vi.fn() },
+  loadAvatar: vi.fn(),
+  avatarUrl: (runId: string, name: string, key: string | null) =>
+    key ? `/api/runs/${runId}/agents/${name}/avatar?v=${key}` : null,
+}))
+import { api, loadAvatar } from '../api'
 import { Theatre } from './Theatre'
 
 // jsdom has no 2D canvas; the stage must still mount and the dialogue must still play.
@@ -36,6 +42,7 @@ const run = (status: string) => ({
 
 beforeEach(() => {
   seq = 0
+  vi.mocked(loadAvatar).mockReset().mockResolvedValue(null)
   vi.mocked(api.getRun).mockReset()
   vi.mocked(api.getEvents).mockReset()
 })
@@ -189,6 +196,66 @@ describe('Theatre', () => {
     expect(visibleLine().replace('▼', '').trim()).toBe('')
     fireEvent.click(dialogue())
     expect(visibleLine()).toContain('It shifts a fifth of deliveries.')
+  })
+
+  it('walks the room in from the library first when the run researched, and says what it read', async () => {
+    vi.mocked(api.getRun).mockResolvedValue({
+      ...run('complete'),
+      research: { status: 'researched', scopes: [{ scope: 'shared', documents: 6, controlling: 2 }] },
+    } as never)
+    vi.mocked(api.getEvents).mockResolvedValue(events())
+    render(<Theatre runRef="r1" autoAdvance={false} />)
+    fireEvent.click(await screen.findByRole('button', { name: /Start/ }))
+    expect(nameplate()).toMatch(/Research · before the room met/)
+    expect(nameplate()).toMatch(/PROLOGUE/)
+    fireEvent.click(dialogue())
+    expect(visibleLine()).toContain('6 sources, 2 of them controlling authority')
+    expect(screen.getByText(/BEFORE TURN 1/)).toBeInTheDocument()
+    // The transcript's own line count is unchanged by it.
+    nextPage()
+    expect(screen.getByText(/LINE 1\/4 · TURN 1/)).toBeInTheDocument()
+  })
+
+  it('opens on the first line for a run that did not research', async () => {
+    vi.mocked(api.getRun).mockResolvedValue({ ...run('complete'), research: { status: 'skipped' } } as never)
+    vi.mocked(api.getEvents).mockResolvedValue(events())
+    render(<Theatre runRef="r1" autoAdvance={false} />)
+    fireEvent.click(await screen.findByRole('button', { name: /Start/ }))
+    expect(nameplate()).toMatch(/^Ana Silva/)
+  })
+
+  it('opens a branch at its fork, and says how much it inherited', async () => {
+    vi.mocked(api.getRun).mockResolvedValue({
+      ...run('complete'),
+      lineage: { parent: { run_id: 'p1', name: 'trusted-robot', branch_turn: 2 }, branches: [] },
+    } as never)
+    vi.mocked(api.getEvents).mockResolvedValue(events())
+    render(<Theatre runRef="r1" autoAdvance={false} />)
+    const start = await screen.findByRole('button', { name: /Start/ })
+    // One sentence across several elements, so it is read whole.
+    const card = document.querySelector('.th-card-fork')?.textContent?.replace(/\s+/g, ' ')
+    expect(card).toContain('Forked from trusted-robot at turn 2')
+    // Only Ana's turn-1 line was inherited; the turn-2 injection is this branch's own start.
+    expect(card).toContain('scrub back for the 1 inherited line')
+    fireEvent.click(start)
+    expect(screen.getByText(/LINE 2\/4/)).toBeInTheDocument()
+    // The inherited line is still reachable behind it.
+    fireEvent.click(screen.getByRole('button', { name: 'Previous page' }))
+    expect(screen.getByText(/LINE 1\/4 · TURN 1/)).toBeInTheDocument()
+  })
+
+  it('shows the run\'s own avatar in the dialogue box when it generated one', async () => {
+    vi.mocked(api.getRun).mockResolvedValue(run('complete') as never)
+    vi.mocked(api.getEvents).mockResolvedValue([
+      ...events(),
+      ev(1, 'avatar.ready', { agent_name: 'Ana Silva', portrait_key: 'k1' }, 'Ana Silva'),
+    ])
+    vi.mocked(loadAvatar).mockResolvedValue('blob:ana')
+    const { container } = render(<Theatre runRef="r1" autoAdvance={false} />)
+    fireEvent.click(await screen.findByRole('button', { name: /Start/ }))
+    await vi.waitFor(() => {
+      expect(container.querySelector('.th-portrait-av')).toHaveStyle({ backgroundImage: 'url(blob:ana)' })
+    })
   })
 
   it('will not replay a run that is still going', async () => {

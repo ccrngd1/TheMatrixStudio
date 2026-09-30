@@ -8,16 +8,17 @@
 // or a reload can still arrive here, so the page checks for itself.
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
-import { api } from '../api'
+import { api, loadAvatar } from '../api'
 import { deriveState, initialState } from '../lib/simState'
 import { isLive, isTerminal } from '../lib/runStatus'
 import type { RunDetail, SimEvent } from '../types'
-import { MESSENGER, computeBlocking } from './blocking'
+import { SME_PREFIX, computeBlocking, visitorsIn } from './blocking'
 import { Stage } from './Stage'
 import {
   SPRITE_IDS, TYPE_CPS, assignSprites, boardAt, buildScript, holdMs, seatLayout, spriteUrl, type Beat,
 } from './script'
 import type { Mark, Performer } from './stage'
+import type { VisitorSprite } from './Stage'
 
 interface Props {
   runRef: string
@@ -31,6 +32,8 @@ type Loaded =
   | { kind: 'running'; detail: RunDetail }
   | {
       kind: 'ready'; detail: RunDetail; beats: Beat[]; performers: Performer[]; sprites: Record<string, string>
+      /** Each persona's generated avatar URL, where the run generated one. */
+      portraits: Record<string, string>
       /** The raw log, for what the whiteboard shows at each line. */
       events: SimEvent[]
     }
@@ -42,6 +45,17 @@ type PlayAction =
   | { type: 'step'; by: number }
   | { type: 'type'; add: number }
   | { type: 'press' }
+
+/**
+ * The word on a visitor's name tag. A consultant's title ends in its noun ("Employment lawyer" →
+ * LAWYER), where a first word would read "EMPLOYMENT"; a message is known by who sent it
+ * ("Customer email" → CUSTOMER).
+ */
+function tagFor(key: string, label: string): string {
+  const words = label.split(/\s+/).filter(Boolean)
+  if (!words.length) return label
+  return key.startsWith(SME_PREFIX) ? words[words.length - 1] : words[0]
+}
 
 const reducedMotion = () =>
   typeof window !== 'undefined' && !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
@@ -65,9 +79,12 @@ export function Theatre({ runRef, autoAdvance = true }: Props) {
         setLoaded({
           kind: 'ready',
           detail,
-          beats: buildScript(state.feed, { cast: names }),
+          beats: buildScript(state.feed, { cast: names, research: detail.research }),
           sprites,
           events,
+          portraits: Object.fromEntries(
+            names.flatMap((n) => (state.agents[n]?.portraitUrl ? [[n, state.agents[n].portraitUrl as string]] : [])),
+          ),
           performers: names.map((name, i) => ({ name, sprite: sprites[name], seat: seats[i] })),
         })
       })
@@ -113,10 +130,23 @@ function Shell({ title, width, children }: { title?: string; width?: number; chi
   )
 }
 
-function Player({ detail, beats, performers, sprites, events, runRef, autoAdvance }: Extract<Loaded, { kind: 'ready' }> & {
+function Player({ detail, beats, performers, sprites, events, portraits, runRef, autoAdvance }: Extract<Loaded, { kind: 'ready' }> & {
   runRef: string; autoAdvance: boolean
 }) {
   const motion = useMemo(() => !reducedMotion(), [])
+
+  // A branch inherits every line up to its fork, so playing from line 1 would replay the parent
+  // before reaching anything new. It opens at the fork instead; the scrubber still goes back over
+  // what was inherited.
+  const fork = useMemo(() => {
+    const parent = detail.lineage?.parent
+    const at = parent?.branch_turn
+    if (!parent || at == null) return null
+    const from = beats.findIndex((b) => b.kind !== 'prologue' && (b.turn > at || (b.outsider && b.turn >= at)))
+    if (from <= 0) return null
+    return { parent, at, from, inherited: beats[from].line }
+  }, [detail.lineage, beats])
+
   const [started, setStarted] = useState(false)
   // Position and typing progress change together, and every move is relative to the CURRENT
   // position: a reducer, not two useStates read from a closure. With closures, five quick
@@ -225,13 +255,13 @@ function Player({ detail, beats, performers, sprites, events, runRef, autoAdvanc
   const advance = useCallback(() => {
     if (!started) {
       setStarted(true)
-      goTo(0)
+      goTo(fork?.from ?? 0)
       return
     }
     if (done) return
     if (!pageComplete) settle()
     dispatch({ type: 'press' })
-  }, [started, done, goTo, pageComplete, settle])
+  }, [started, done, goTo, pageComplete, settle, fork])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -245,9 +275,47 @@ function Player({ detail, beats, performers, sprites, events, runRef, autoAdvanc
     return () => window.removeEventListener('keydown', onKey)
   }, [advance, step])
 
+  // The generated avatars, for the dialogue-box portrait: pixelated in CSS so an anime face sits
+  // beside 8-bit sprites without looking pasted in. A run that generated none keeps the sprite
+  // crop, which is what every persona had before.
+  const [avatars, setAvatars] = useState<Record<string, string>>({})
+  useEffect(() => {
+    let live = true
+    for (const p of performers) {
+      const url = portraits[p.name]
+      if (!url) continue
+      loadAvatar(url).then((blob) => {
+        if (live && blob) setAvatars((cur) => (cur[p.name] ? cur : { ...cur, [p.name]: blob }))
+      })
+    }
+    return () => {
+      live = false
+    }
+  }, [performers, portraits])
+
+  const prevLine = useMemo(() => {
+    for (let j = idx - 1; j >= 0; j--) if (beats[j].line !== beat?.line) return beats[j]
+    return undefined
+  }, [beats, idx, beat])
+
+  // Every consultant and messenger the run brings in, each in a sheet nobody in the cast is
+  // wearing and nobody else is using, so one expert looks the same each time it is called.
+  const visitors: VisitorSprite[] = useMemo(() => {
+    const used = new Set(Object.values(sprites))
+    const free = SPRITE_IDS.filter((id) => !used.has(id))
+    return visitorsIn(beats).map((v, i) => ({
+      key: v.key, label: tagFor(v.key, v.label), sprite: free[i % Math.max(1, free.length)] ?? SPRITE_IDS[0],
+    }))
+  }, [beats, sprites])
+
   const inRoom = started && beat?.kind === 'speech' && seats[beat.speaker] ? beat.speaker : null
-  const speaker = inRoom ?? (started && beat?.outsider ? MESSENGER : null)
-  const lines = beats.length ? beats[beats.length - 1].line + 1 : 0
+  // A visitor delivering their own line: the consultant standing in the room, or the messenger.
+  const visitorSpeaking = started && beat
+    ? (beat.kind === 'consultant' ? SME_PREFIX + beat.speaker : beat.outsider ? visitors.find((v) => v.label === beat.speaker)?.key ?? null : null)
+    : null
+  const speaker = inRoom ?? visitorSpeaking
+  // The prologue is not a transcript line, so it is not counted as one.
+  const lines = beats.reduce((n, b) => Math.max(n, b.line + 1), 0)
   const title = detail.name ?? runRef
 
   // Above-the-head marks, each caused by something this line recorded.
@@ -257,22 +325,12 @@ function Player({ detail, beats, performers, sprites, events, runRef, autoAdvanc
     if (inRoom) {
       m[inRoom] = [...(beat.shifted ? (['shift'] as const) : []), ...(beat.consulted ? (['book'] as const) : [])]
     }
-    if (beat.outsider) m[MESSENGER] = ['letter']
+    // The asker keeps their seat, so a "?" over them is how you can still see who asked.
+    if (beat.kind === 'consultant' && beat.askedBy && seats[beat.askedBy]) m[beat.askedBy] = ['ask']
+    if (beat.outsider && visitorSpeaking) m[visitorSpeaking] = ['letter']
     return m
-  }, [beat, started, inRoom])
+  }, [beat, started, inRoom, seats, visitorSpeaking])
 
-  // One messenger for the whole run, in a sheet nobody in the cast is wearing. Its tag names
-  // whose message it carries: this line's, or the one it is walking out after.
-  const prevLine = useMemo(() => {
-    for (let j = idx - 1; j >= 0; j--) if (beats[j].line !== beat?.line) return beats[j]
-    return undefined
-  }, [beats, idx, beat])
-  const messengerSprite = useMemo(() => {
-    const used = new Set(Object.values(sprites))
-    return SPRITE_IDS.find((id) => !used.has(id)) ?? SPRITE_IDS[0]
-  }, [sprites])
-  const carrying = beat?.outsider ? beat.speaker : prevLine?.outsider ? prevLine.speaker : null
-  const messenger = beats.some((b) => b.outsider) ? { label: carrying ?? 'Messenger', sprite: messengerSprite } : null
 
   // The whiteboard: what was pinned at this point in the log, and what went up since the last line.
   const board = useMemo(
@@ -287,7 +345,7 @@ function Player({ detail, beats, performers, sprites, events, runRef, autoAdvanc
   return (
     <Shell title={title} width={stageW}>
       <div className="th-stagebox">
-        <Stage performers={performers} messenger={messenger} blocking={blocking} clock={elapsed}
+        <Stage performers={performers} visitors={visitors} blocking={blocking} clock={elapsed}
           speaker={speaker} bubble={!!inRoom && !pageComplete} marks={marks} board={board} fresh={fresh}
           motion={motion} onWidth={setStageW} />
         {!started && (
@@ -296,6 +354,13 @@ function Player({ detail, beats, performers, sprites, events, runRef, autoAdvanc
             <h1 className="th-card-title">{title}</h1>
             <p className="th-card-topic">{detail.topic}</p>
             <p className="th-card-meta">{performers.length} personas · {lines} lines</p>
+            {fork && (
+              <p className="th-card-fork">
+                Forked from <b>{fork.parent.name ?? fork.parent.run_id}</b> at turn {fork.at}.
+                Starts at the fork; scrub back for the {fork.inherited} inherited{' '}
+                {fork.inherited === 1 ? 'line' : 'lines'}.
+              </p>
+            )}
             <button className="th-btn th-btn-go" onClick={advance} disabled={!beats.length}>
               {beats.length ? '▶ Start' : 'Nothing was said in this run'}
             </button>
@@ -306,7 +371,7 @@ function Player({ detail, beats, performers, sprites, events, runRef, autoAdvanc
             <p className="th-card-kicker">End of transcript</p>
             <h1 className="th-card-title">{title}</h1>
             <p className="th-card-meta">The run ended {detail.status === 'complete' ? 'normally' : `as ${detail.status}`}.</p>
-            <button className="th-btn th-btn-go" onClick={() => goTo(0)}>↻ Replay</button>
+            <button className="th-btn th-btn-go" onClick={() => goTo(fork?.from ?? 0)}>↻ Replay</button>
           </div>
         )}
       </div>
@@ -323,7 +388,8 @@ function Player({ detail, beats, performers, sprites, events, runRef, autoAdvanc
       )}
 
       {started && !done && beat && (
-        <Dialogue beat={beat} typed={typed} complete={pageComplete} sprite={sprites[beat.speaker] ?? null} onAdvance={advance} />
+        <Dialogue beat={beat} typed={typed} complete={pageComplete} sprite={sprites[beat.speaker] ?? null}
+          avatar={avatars[beat.speaker] ?? null} onAdvance={advance} />
       )}
 
       {started && (
@@ -339,7 +405,9 @@ function Player({ detail, beats, performers, sprites, events, runRef, autoAdvanc
           <input className="th-scrub" type="range" min={0} max={Math.max(0, beats.length - 1)} value={Math.min(idx, beats.length - 1)}
             onChange={(e) => goTo(Number(e.target.value))} aria-label="Position in the transcript" />
           <span className="th-pos">
-            {beat ? `LINE ${beat.line + 1}/${lines} · TURN ${beat.turn}` : `${lines}/${lines}`}
+            {!beat ? `${lines}/${lines}`
+              : beat.kind === 'prologue' ? 'BEFORE TURN 1'
+                : `LINE ${beat.line + 1}/${lines} · TURN ${beat.turn}`}
           </span>
         </nav>
       )}
@@ -347,21 +415,24 @@ function Player({ detail, beats, performers, sprites, events, runRef, autoAdvanc
   )
 }
 
-function Portrait({ sprite, label }: { sprite: string | null; label: string }) {
+function Portrait({ sprite, avatar, label }: { sprite: string | null; avatar: string | null; label: string }) {
+  // The run's own generated avatar where there is one, pixelated by CSS to match the sprites.
+  if (avatar) return <div className="th-portrait th-portrait-av" aria-hidden style={{ backgroundImage: `url(${avatar})` }} />
   if (!sprite) return <div className="th-portrait th-portrait-none" aria-hidden>{label}</div>
   // The head and shoulders of the front-facing idle frame, at 3×.
   return <div className="th-portrait" aria-hidden style={{ backgroundImage: `url(${spriteUrl(sprite)})` }} />
 }
 
-function Dialogue({ beat, typed, complete, sprite, onAdvance }: {
-  beat: Beat; typed: number; complete: boolean; sprite: string | null; onAdvance: () => void
+function Dialogue({ beat, typed, complete, sprite, avatar, onAdvance }: {
+  beat: Beat; typed: number; complete: boolean; sprite: string | null; avatar: string | null; onAdvance: () => void
 }) {
   const shown = beat.text.slice(0, typed)
   const hidden = beat.text.slice(typed)
   const label =
-    beat.kind === 'consultant' ? `${beat.speaker} · consultant${beat.askedBy ? `, answering ${beat.askedBy}` : ''}`
-      : beat.kind === 'injected' ? `${beat.speaker} · injected into the conversation`
-        : beat.speaker
+    beat.kind === 'prologue' ? 'Research · before the room met'
+      : beat.kind === 'consultant' ? `${beat.speaker} · consultant${beat.askedBy ? `, answering ${beat.askedBy}` : ''}`
+        : beat.kind === 'injected' ? `${beat.speaker} · injected into the conversation`
+          : beat.speaker
   return (
     // Space and Enter do the same from anywhere on the page (see the key handler above).
     <section className={`th-dialogue th-${beat.kind}`} onClick={onAdvance} aria-label="Dialogue: tap to continue">
@@ -371,15 +442,16 @@ function Dialogue({ beat, typed, complete, sprite, onAdvance }: {
         {beat.shifted ? ' Their position moved.' : ''}
         {beat.consulted ? ' They drew on their sources.' : ''}
       </p>
-      <Portrait sprite={beat.kind === 'consultant' ? null : sprite}
-        label={beat.kind === 'consultant' ? 'SME' : beat.kind === 'injected' ? '✉' : '?'} />
+      <Portrait sprite={beat.kind === 'speech' ? sprite : null} avatar={beat.kind === 'speech' ? avatar : null}
+        label={beat.kind === 'prologue' ? 'READ' : beat.kind === 'consultant' ? 'SME' : '\u2709'} />
       <div className="th-text">
         <div className="th-name">
           <span>{label}</span>
           <span className="th-turn">
+            {beat.kind === 'prologue' && <span className="th-tag">PROLOGUE</span>}
             {beat.shifted && <span className="th-tag th-tag-shift" title="The engine recorded a change of position in this message">SHIFT</span>}
             {beat.consulted && <span className="th-tag" title="Retrieved passages were in this message's prompt">SOURCES</span>}
-            #{String(beat.turn).padStart(2, '0')}{beat.pages > 1 ? ` · ${beat.page + 1}/${beat.pages}` : ''}
+            {beat.kind === 'prologue' ? '' : `#${String(beat.turn).padStart(2, '0')}`}{beat.pages > 1 ? ` · ${beat.page + 1}/${beat.pages}` : ''}
           </span>
         </div>
         <p className="th-line" aria-hidden>

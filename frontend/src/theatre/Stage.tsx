@@ -15,14 +15,22 @@
 // when playback pauses and runs faster at 2×.
 
 import { useEffect, useRef, useState } from 'react'
-import { MESSENGER, poseAt, type Blocking } from './blocking'
+import { poseAt, type Blocking } from './blocking'
 import { EMOTES_URL, ROOM_H, ROOM_W, spriteUrl, type BoardNote } from './script'
 import { drawScene, type Actor, type Mark, type Performer, type SpriteImages } from './stage'
 
+/** Someone not in the cast who comes in to say one thing: a consultant, or a messenger. */
+export interface VisitorSprite {
+  key: string
+  /** The short form for their name tag: a consultant's noun, or who a message is from. */
+  label: string
+  sprite: string
+}
+
 interface Props {
   performers: Performer[]
-  /** The stand-in carrying an outside voice, when the script has one. */
-  messenger: { label: string; sprite: string } | null
+  /** Every visitor the run brings in. Each is drawn only where the blocking has them on stage. */
+  visitors: VisitorSprite[]
   blocking: Blocking
   /** Playback milliseconds (1× units) since the current line started. */
   clock: () => number
@@ -44,7 +52,7 @@ const RESERVE_H = 330
 const FRAME_PX = 8
 
 export function Stage(props: Props) {
-  const { performers, messenger, speaker, onWidth } = props
+  const { performers, visitors, speaker, onWidth } = props
   const wrap = useRef<HTMLDivElement>(null)
   const canvas = useRef<HTMLCanvasElement>(null)
   const images = useRef<SpriteImages>({})
@@ -54,7 +62,7 @@ export function Stage(props: Props) {
 
   // Load each sheet once; the loop draws whichever have arrived.
   useEffect(() => {
-    const want = new Set([...performers.map((p) => p.sprite), ...(messenger ? [messenger.sprite] : [])])
+    const want = new Set([...performers.map((p) => p.sprite), ...visitors.map((v) => v.sprite)])
     for (const id of want) {
       if (images.current[id]) continue
       const img = new Image()
@@ -66,7 +74,7 @@ export function Stage(props: Props) {
       img.src = EMOTES_URL
       images.current.emotes = img
     }
-  }, [performers, messenger])
+  }, [performers, visitors])
 
   const widthCb = useRef(onWidth)
   widthCb.current = onWidth
@@ -103,13 +111,13 @@ export function Stage(props: Props) {
       const cur = latest.current
       const elapsed = cur.clock()
       const actors: Actor[] = cur.performers.map((p) => ({
-        key: p.name, label: p.name, sprite: p.sprite,
+        key: p.name, label: p.name.split(/\s+/)[0], sprite: p.sprite,
         pose: poseAt(cur.blocking, p.name, p.seat, elapsed), marks: cur.marks[p.name] ?? [],
       }))
-      if (cur.messenger) {
+      for (const v of cur.visitors) {
         actors.push({
-          key: MESSENGER, label: cur.messenger.label, sprite: cur.messenger.sprite,
-          pose: poseAt(cur.blocking, MESSENGER, null, elapsed), marks: cur.marks[MESSENGER] ?? [],
+          key: v.key, label: v.label, sprite: v.sprite,
+          pose: poseAt(cur.blocking, v.key, null, elapsed), marks: cur.marks[v.key] ?? [],
         })
       }
       ctx.setTransform(scale * dpr, 0, 0, scale * dpr, 0, 0)
@@ -137,7 +145,8 @@ export function Stage(props: Props) {
       <canvas
         ref={canvas}
         role="img"
-        aria-label={`Conference room with ${performers.length} personas${speaker && speaker !== MESSENGER ? `; ${speaker} is speaking` : ''}`}
+        aria-label={`Conference room with ${performers.length} personas${
+          speaker && !visitors.some((v) => v.key === speaker) ? `; ${speaker} is speaking` : ''}`}
         style={{ width: ROOM_W * scale, height: ROOM_H * scale }}
       />
     </div>
