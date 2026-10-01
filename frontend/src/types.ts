@@ -461,6 +461,18 @@ export interface StructuredPersona {
   viewpoints?: StructuredViewpoint[]
 }
 
+/** Phase 4b: a setup, promise or deferred consequence this persona opened (`matrix_studio/state.py`). */
+export interface DossierThread {
+  id: string
+  description: string
+  thread_type: string
+  origin_turn: number
+  status: string
+  resolved_turn: number | null
+  /** Still open after the run's `thread_stale_after` turns: planted and never paid off. */
+  stale?: boolean
+}
+
 export interface AgentDossier {
   run_id: string
   agent: string
@@ -469,6 +481,9 @@ export interface AgentDossier {
   memory_stream: DossierMemory[]
   beliefs: DossierMemory[]
   relationships: Record<string, string>
+  // Only the threads this persona opened. Optional because the fixtures and any older backend omit it,
+  // and threads are tracked only when cognition is on, so absent and empty mean the same thing.
+  pending_threads?: DossierThread[]
   // Phase 5. Optional so a dossier from an older backend still parses.
   documents?: DossierDocument[]
   /** Knowledge bases this persona searches: the run's and its own. `readable` is re-checked on
@@ -478,7 +493,7 @@ export interface AgentDossier {
   // Phase 6. Null for a run that used no structured personas. The backend has
   // already stripped `underlying_concern` and `validity` — both are private to
   // the operator by design, so they are absent from this type on purpose rather
-  // than by omission. No UI renders this yet (see private/docs/BACKLOG.md).
+  // than by omission. The dossier's Convictions tab renders the rest.
   structured?: StructuredPersona | null
   // Whether cognition was CONFIGURED on the run, which is not the same question as
   // whether it produced anything. Optional so a dossier from an older backend parses;

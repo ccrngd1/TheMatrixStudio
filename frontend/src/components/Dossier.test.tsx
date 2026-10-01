@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { Dossier } from './Dossier'
 import type { AgentView } from '../types'
 import { api } from '../api'
@@ -28,6 +28,13 @@ const agent: AgentView = {
 
 const feed = [{ turn: 1, seq: 2, speaker: 'Ada', content: 'Hello there' }]
 
+// The dossier is four tabs (docs/MOBILE-UI.md §4.4) and renders only the open one, so a test opens the tab
+// its content lives on before asserting on it.
+function openTab(name: 'Convictions' | 'Memory' | 'Threads' | 'Why?') {
+  fireEvent.click(screen.getByRole('tab', { name }))
+}
+const tabPanel = () => screen.getByRole('tabpanel')
+
 describe('Dossier', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -43,6 +50,8 @@ describe('Dossier', () => {
 
     expect(screen.getByText('A cautious ethicist')).toBeInTheDocument()
     expect(screen.getByText('Raise risks')).toBeInTheDocument()
+    // The messages, and the "why?" buttons this test says are absent, are on the Why? tab.
+    openTab('Why?')
     expect(screen.getByText('Hello there')).toBeInTheDocument()
 
     // Honesty gate: no fabricated cognition; explicit not-captured message.
@@ -64,6 +73,7 @@ describe('Dossier', () => {
       tokens_in: 10, tokens_out: 5, cost_usd: 0.001, portrait_b64: null,
     })
     render(<Dossier agent={agent} feed={feed} runId="r1" onClose={() => {}} />)
+    openTab('Memory')
 
     await waitFor(() =>
       expect(screen.getByText(/could not be read/i)).toBeInTheDocument(),
@@ -80,6 +90,7 @@ describe('Dossier', () => {
       tokens_in: 10, tokens_out: 5, cost_usd: 0.001, portrait_b64: null,
     })
     render(<Dossier agent={agent} feed={feed} runId="r1" onClose={() => {}} />)
+    openTab('Memory')
 
     await waitFor(() =>
       expect(screen.getByText(/did not form any memories/i)).toBeInTheDocument(),
@@ -98,13 +109,16 @@ describe('Dossier', () => {
       tokens_in: 10, tokens_out: 5, cost_usd: 0.001, portrait_b64: null,
     })
     render(<Dossier agent={agent} feed={feed} runId="r1" onClose={() => {}} />)
+    openTab('Memory')
 
     await waitFor(() =>
       expect(screen.getByText('the group values consent')).toBeInTheDocument(),
     )
     expect(screen.getByText('consent is the crux')).toBeInTheDocument()
+    openTab('Threads')
     expect(screen.getByText('trusted ally')).toBeInTheDocument()
     // The "why did it say that?" affordance is present for a captured run.
+    openTab('Why?')
     expect(screen.getByText('why?')).toBeInTheDocument()
   })
 
@@ -127,6 +141,7 @@ describe('Dossier', () => {
       run_id: 'r1', turn: 1, available: true, speaker: 'Ada', ...trace,
     })
     render(<Dossier agent={agent} feed={feed} runId="r1" onClose={() => {}} />)
+    openTab('Why?')
     await waitFor(() => expect(screen.getByText('why?')).toBeInTheDocument())
     screen.getByText('why?').click()
   }
@@ -214,7 +229,8 @@ describe('Dossier', () => {
     await waitFor(() =>
       expect(screen.getByText('No feature may add a stateful external service')).toBeInTheDocument(),
     )
-    expect(screen.getByText('firm')).toBeInTheDocument()
+    // The HUD shows the firmness as well; this is the position's own tag, on the Convictions tab.
+    expect(within(tabPanel()).getByText('firm')).toBeInTheDocument()
     expect(screen.getByText(/an embedded index that is a file/)).toBeInTheDocument()
     expect(screen.getByText(/The 2023 product that stalled/)).toBeInTheDocument()
     expect(screen.getByText(/time-to-first-run/)).toBeInTheDocument()
@@ -263,7 +279,7 @@ describe('Dossier', () => {
     })
     render(<Dossier agent={agent} feed={feed} runId="r1" onClose={() => {}} />)
 
-    await waitFor(() => expect(screen.getByText('requires-escalation')).toBeInTheDocument())
+    await waitFor(() => expect(within(tabPanel()).getByText('requires-escalation')).toBeInTheDocument())
     expect(screen.getByText(/no exit condition named/i)).toBeInTheDocument()
   })
 
@@ -271,8 +287,15 @@ describe('Dossier', () => {
     ;(api.getDossier as ReturnType<typeof vi.fn>).mockResolvedValue({ ...baseDossier })
     render(<Dossier agent={agent} feed={feed} runId="r1" onClose={() => {}} />)
 
-    await waitFor(() => expect(screen.getByText('A cautious ethicist')).toBeInTheDocument())
-    expect(screen.queryByText(/Convictions/i)).not.toBeInTheDocument()
+    // Waits for the dossier itself: the persona prose is on the agent and renders before it arrives.
+    expect(await screen.findByText('no structured persona')).toBeInTheDocument()
+    expect(screen.getByText('A cautious ethicist')).toBeInTheDocument()
+    // The tab is always called Convictions; nothing else may be, and nothing a structured block draws may
+    // appear under it.
+    expect(screen.queryByText(/Convictions/i, { ignore: '[role=tab]' })).not.toBeInTheDocument()
+    expect(within(tabPanel()).queryByText(/position/i)).not.toBeInTheDocument()
+    expect(within(tabPanel()).queryByText(/withheld/i)).not.toBeInTheDocument()
+    expect(within(tabPanel()).queryByText('Hidden')).not.toBeInTheDocument()
   })
 })
 // PERSONA-RESEARCH.md §5.1. The floor reserves a slot per COLLECTION, not per kind of thing in
@@ -293,6 +316,7 @@ describe('Dossier — researched vs curated passages', () => {
       document_retrievals: retrievals,
     })
     render(<Dossier agent={agent} runId="r1" feed={feed} onClose={vi.fn()} />)
+    openTab('Memory')
   }
 
   const passage = (over: Record<string, unknown> = {}) => ({
@@ -358,9 +382,219 @@ describe('Dossier knowledge bases', () => {
       ],
     })
     render(<Dossier agent={agent} feed={feed} runId="r1" onClose={() => {}} />)
+    openTab('Memory')
     expect(await screen.findByText('Knowledge bases searched (2)')).toBeInTheDocument()
     expect(screen.getByText('statutes')).toBeInTheDocument()
     expect(screen.getByText('A collection you can no longer read')).toBeInTheDocument()
     expect(screen.getByText('whole cast')).toBeInTheDocument()
+  })
+})
+
+// docs/MOBILE-UI.md §4.4: a HUD of turns, stance and firmness over four tabs. Everything the dossier showed as
+// one column has to still be reachable on some tab, and the withheld concern on none of them.
+describe('Dossier — HUD and tabs', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  const shift = {
+    sentences: ['I have changed my mind'],
+    credits: [{ kind: 'persona', name: 'Bo' }],
+    conditions: [],
+    matched_conditions: [],
+    no_listed_condition: false,
+  }
+  const longFeed = [
+    { turn: 1, seq: 2, speaker: 'Ada', content: 'Hello there' },
+    { turn: 2, seq: 3, speaker: 'Bo', content: 'Not one of hers' },
+    { turn: 3, seq: 4, speaker: 'Ada', content: 'I have changed my mind on the pilot', shift },
+    { turn: 4, seq: 5, speaker: 'Ada', content: 'Words the operator wrote', injected: true },
+  ]
+
+  const full = {
+    run_id: 'r1', agent: 'Ada', persona: 'A cautious ethicist', goals: ['Raise risks'],
+    memory_stream: [
+      { id: 'm1', content: 'Bo wants a pilot first', importance: 0.5, tags: ['fact'], timestamp: 1 },
+    ],
+    beliefs: [{ id: 'b1', content: 'a pilot is only a delay', importance: 0.9, tags: ['reflection'], timestamp: 2 }],
+    relationships: { Bo: 'wary but listening' },
+    pending_threads: [
+      { id: 't1', description: 'Promised a cost table', thread_type: 'promise', origin_turn: 1,
+        status: 'open', resolved_turn: null, stale: true },
+      { id: 't2', description: 'Asked who signs off', thread_type: 'deferred-consequence', origin_turn: 3,
+        status: 'resolved', resolved_turn: 4, stale: false },
+    ],
+    documents: [
+      { document_id: 'd1', title: 'handbook.md', media_type: 'text/markdown', char_count: 1200,
+        chunk_count: 3, cast_wide: false },
+    ],
+    knowledge_bases: [{ id: 'k1', name: 'policies', scope: 'persona', readable: true }],
+    document_retrievals: [
+      { turn: 3, query: 'q', total_chars: 100,
+        passages: [{ chunk_id: 1, document_id: 'd1', title: 'handbook.md', ordinal: 2, score: 0.73, chars: 100 }] },
+    ],
+    structured: {
+      role: 'Operations lead',
+      background: { formative_events: [{ year: 2021, event: 'A winter short of staff', lesson: 'Rotas break first' }] },
+      preferences: { dismisses: ['morale surveys'], optimises_for: ['cover on every shift'], persuaded_by: ['a pilot'] },
+      viewpoints: [
+        { position: 'No change without a rota', formed_by: 'Ran the desk alone for a month',
+          firmness: 'firm' as const, evidence_that_shifts: ['a tested rota'] },
+        { position: 'Legal must sign first', firmness: 'requires-escalation' as const,
+          evidence_that_shifts: ['a signed waiver'] },
+      ],
+    },
+    cognition_enabled: true, cognition_lost_turns: 0,
+    tokens_in: 10, tokens_out: 5, cost_usd: 0.001, portrait_b64: null,
+  }
+
+  function renderFull(stance?: 'support' | 'unstated' | 'holding', dossier: Record<string, unknown> = full) {
+    ;(api.getDossier as ReturnType<typeof vi.fn>).mockResolvedValue(dossier)
+    render(<Dossier agent={agent} feed={longFeed} runId="r1" stance={stance} onClose={() => {}} />)
+  }
+  const hud = () => within(screen.getByRole('dialog').querySelector('.cc-hudstrip') as HTMLElement)
+
+  it('has four tabs, opens on Convictions, and switches on a tap and on the arrow keys', async () => {
+    renderFull()
+    const tabs = screen.getAllByRole('tab')
+    expect(tabs.map((t) => t.textContent)).toEqual(['Convictions', 'Memory', 'Threads', 'Why?'])
+    expect(screen.getByRole('tab', { name: 'Convictions' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tabpanel', { name: 'Convictions' })).toBeInTheDocument()
+    expect(await screen.findByText('No change without a rota')).toBeInTheDocument()
+
+    openTab('Memory')
+    expect(screen.getByRole('tab', { name: 'Memory' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tab', { name: 'Convictions' })).toHaveAttribute('aria-selected', 'false')
+    expect(screen.getByRole('tabpanel', { name: 'Memory' })).toBeInTheDocument()
+    // Only the open tab renders.
+    expect(screen.queryByText('No change without a rota')).not.toBeInTheDocument()
+
+    // Roving focus, as a tablist is expected to behave: arrows move along it and wrap at the ends.
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Memory' }), { key: 'ArrowRight' })
+    expect(screen.getByRole('tab', { name: 'Threads' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tab', { name: 'Threads' })).toHaveFocus()
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Threads' }), { key: 'End' })
+    expect(screen.getByRole('tab', { name: 'Why?' })).toHaveAttribute('aria-selected', 'true')
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Why?' }), { key: 'ArrowRight' })
+    expect(screen.getByRole('tab', { name: 'Convictions' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tab', { name: 'Memory' })).toHaveAttribute('tabindex', '-1')
+  })
+
+  it('HUD: counts turns taken, not words put in their mouth, and shows the firmest position', async () => {
+    renderFull('holding')
+    // Three messages carry Ada's name; the operator wrote one of them.
+    expect(hud().getByText('02')).toBeInTheDocument()
+    // Stance in a glyph and a word, never colour alone.
+    expect(hud().getByText('▼ holding out')).toBeInTheDocument()
+    // `requires-escalation` outranks `firm` (matrix_studio/personas.py orders them), and is shown as itself.
+    expect(await hud().findByText('requires-escalation')).toBeInTheDocument()
+    expect(hud().getByText('firmest of 2')).toBeInTheDocument()
+  })
+
+  it('HUD says "not yet" for stance when the run has none, and a dash when there is no structured persona', async () => {
+    renderFull(undefined, { ...full, structured: null })
+    expect(hud().getByText('not yet')).toBeInTheDocument()
+    expect(hud().queryByText(/support|holding|not stated/)).not.toBeInTheDocument()
+    expect(await hud().findByText('no structured persona')).toBeInTheDocument()
+    expect(hud().getByText('—')).toBeInTheDocument()
+  })
+
+  it.each([
+    ['support' as const, '▲ support'],
+    ['unstated' as const, '◆ not stated'],
+  ])('HUD shows the %s stance by glyph and word', (stance, label) => {
+    renderFull(stance)
+    expect(hud().getByText(label)).toBeInTheDocument()
+    expect(hud().queryByText('not yet')).not.toBeInTheDocument()
+  })
+
+  it('renders every tab’s content', async () => {
+    renderFull()
+
+    // Convictions: position, firmness, FORMED BY, WOULD MOVE, will not weigh, the hidden note, the move.
+    expect(await screen.findByText('No change without a rota')).toBeInTheDocument()
+    const c = within(tabPanel())
+    expect(screen.getByText('Operations lead')).toBeInTheDocument()
+    expect(c.getByText('Position 1')).toBeInTheDocument()
+    expect(c.getByText('firm')).toBeInTheDocument()
+    expect(c.getByText('FORMED BY')).toBeInTheDocument()
+    expect(c.getByText('Ran the desk alone for a month')).toBeInTheDocument()
+    expect(c.getAllByText('WOULD MOVE')).toHaveLength(2)
+    expect(c.getByText('a tested rota')).toBeInTheDocument()
+    expect(c.getByText('morale surveys')).toBeInTheDocument()
+    expect(c.getByText('cover on every shift')).toBeInTheDocument()
+    expect(c.getByText('a pilot')).toBeInTheDocument()
+    expect(c.getByText(/Rotas break first/)).toBeInTheDocument()
+    expect(c.getByText('Withheld concern')).toBeInTheDocument()
+    expect(c.getByText('Hidden')).toBeInTheDocument()
+    expect(c.getByText('MOVED @03')).toBeInTheDocument()
+    expect(c.getByText('A cautious ethicist')).toBeInTheDocument()
+    expect(c.getByText('Raise risks')).toBeInTheDocument()
+
+    // Memory: the last three things said (latest first), memory, reflections, passages, documents, usage.
+    openTab('Memory')
+    const m = within(tabPanel())
+    const said = m.getByText('Last said').parentElement!.querySelectorAll('li')
+    expect([...said].map((li) => li.textContent)).toEqual([
+      '#04 · injected “Words the operator wrote”',
+      '#03 “I have changed my mind on the pilot”',
+      '#01 “Hello there”',
+    ])
+    expect(m.getByText('Bo wants a pilot first')).toBeInTheDocument()
+    expect(m.getByText('a pilot is only a delay')).toBeInTheDocument()
+    expect(m.getByText('handbook.md #2')).toBeInTheDocument()
+    expect(m.getByText('score 0.73')).toBeInTheDocument()
+    expect(m.getByText('handbook.md')).toBeInTheDocument()
+    expect(m.getByText('Knowledge bases searched (1)')).toBeInTheDocument()
+    expect(m.getByText('policies')).toBeInTheDocument()
+    expect(m.getByText('Messages')).toBeInTheDocument()
+    expect(m.getByText('$0.0010')).toBeInTheDocument()
+    expect(m.getByText('10 in · 5 out')).toBeInTheDocument()
+
+    // Threads: what they opened, its state in words, and the relationships.
+    openTab('Threads')
+    const t = within(tabPanel())
+    expect(t.getByText('Pending threads (1 open)')).toBeInTheDocument()
+    expect(t.getByText('Promised a cost table')).toBeInTheDocument()
+    expect(t.getByText('#01 · promise · open, dangling')).toBeInTheDocument()
+    expect(t.getByText('#03 · deferred consequence · resolved @04')).toBeInTheDocument()
+    expect(t.getByText('wary but listening')).toBeInTheDocument()
+
+    // Why?: every message, latest first, each with its trace button.
+    openTab('Why?')
+    const w = within(tabPanel())
+    expect(w.getByText('Messages (3)')).toBeInTheDocument()
+    expect(w.getAllByText('why?')).toHaveLength(3)
+    const order = ['Words the operator wrote', 'I have changed my mind on the pilot', 'Hello there'].map((text) =>
+      w.getByText(text),
+    )
+    expect(order[0].compareDocumentPosition(order[1]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(order[1].compareDocumentPosition(order[2]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('says threads need cognition when the run had it off, rather than that none were opened', async () => {
+    renderFull(undefined, {
+      ...full, pending_threads: [], memory_stream: [], beliefs: [], relationships: {}, cognition_enabled: false,
+    })
+    openTab('Threads')
+    expect(await screen.findByText(/tracked only when a run has cognition on/)).toBeInTheDocument()
+    expect(screen.queryByText(/No threads opened/)).not.toBeInTheDocument()
+  })
+
+  it('NEVER renders a withheld concern or a validity note on any tab', async () => {
+    // The same guard as above, across the whole dossier rather than only the tab it opens on.
+    renderFull(undefined, {
+      ...full,
+      structured: {
+        ...full.structured,
+        viewpoints: full.structured.viewpoints.map((vp) => ({
+          ...vp, underlying_concern: 'THE REAL WORRY IS A BUDGET CUT', validity: 'overgeneralised',
+        })),
+      },
+    })
+    expect(await screen.findByText('No change without a rota')).toBeInTheDocument()
+    for (const name of ['Convictions', 'Memory', 'Threads', 'Why?'] as const) {
+      openTab(name)
+      expect(screen.queryByText(/THE REAL WORRY/i)).not.toBeInTheDocument()
+      expect(screen.queryByText(/overgeneralised/i)).not.toBeInTheDocument()
+    }
   })
 })
