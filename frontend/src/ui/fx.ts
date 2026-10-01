@@ -16,10 +16,19 @@ export const FxContext = createContext(false)
  * do: it changes `animation-delay` under a loop that is already running, and the browser moves a running
  * animation to match its new delay, so the loop jumps ahead by the time since it mounted on every re-render
  * (measured in Chromium). Taken once, the loop starts in step with the others and is never moved.
+ *
+ * `key` is for a loop that starts after its component mounted: a pulse that moves to the next tick, a glow
+ * that passes to the next speaker. A phase from mount would start that loop out of step, so a fresh one is
+ * taken when `key` changes, which is when the new loop starts. Re-renders that keep `key` leave it alone.
  */
-export function usePhase(): string {
-  const [ph] = useState(phase)
-  return ph
+export function usePhase(key?: unknown): string {
+  const [taken, setTaken] = useState(() => ({ key, ph: phase() }))
+  if (Object.is(taken.key, key)) return taken.ph
+  // State derived from a changed prop, set during render: React renders again at once, before anything is
+  // committed, so no frame paints the new loop with the old phase.
+  const next = { key, ph: phase() }
+  setTaken(next)
+  return next.ph
 }
 
 export function prefersReducedMotion(): boolean {

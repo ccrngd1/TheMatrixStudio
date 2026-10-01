@@ -5,8 +5,9 @@
 import type { ButtonHTMLAttributes, CSSProperties, HTMLAttributes, ReactNode } from 'react'
 import { useEffect } from 'react'
 import { createPortal } from 'react-dom'
+import { usePhase } from './fx'
 import { Icon } from './icons'
-import { phase } from './theme'
+import './primitives.css'
 
 const cx = (...parts: (string | false | null | undefined)[]) => parts.filter(Boolean).join(' ')
 type Css = CSSProperties & Record<`--${string}`, string | number>
@@ -56,11 +57,13 @@ export function Panel({
   edge?: RunState; hero?: boolean; live?: boolean; center?: boolean; as?: 'div' | 'section' | 'article'
 }) {
   const Tag = as
+  // The sweep's phase (§5.4, `usePhase`), taken when it starts and kept while the card re-renders.
+  const ph = usePhase(live)
   return (
     <Tag
       className={cx('cc-card', hero && 'cc-hero', live && 'cc-livecard', center && 'cc-center', className)}
       data-s={edge}
-      style={live ? ({ '--ph': phase(), ...style } as Css) : style}
+      style={live ? ({ '--ph': ph, ...style } as Css) : style}
       {...rest}
     >
       {children}
@@ -72,12 +75,13 @@ export function Panel({
 export function PanelButton({
   children, className, edge, live, style, ...rest
 }: ButtonHTMLAttributes<HTMLButtonElement> & { edge?: RunState; live?: boolean }) {
+  const ph = usePhase(live)
   return (
     <button
       type="button"
       className={cx('cc-card', live && 'cc-livecard', className)}
       data-s={edge}
-      style={live ? ({ '--ph': phase(), ...style } as Css) : style}
+      style={live ? ({ '--ph': ph, ...style } as Css) : style}
       {...rest}
     >
       {children}
@@ -90,11 +94,14 @@ export function Btn({
 }: ButtonHTMLAttributes<HTMLButtonElement> & {
   variant?: 'primary' | 'danger' | 'warn'; size?: 'sm'; full?: boolean
 }) {
+  // The primary button's shine is a loop too (§5.4).
+  const primary = variant === 'primary'
+  const ph = usePhase(primary)
   return (
     <button
       type={type}
       className={cx('cc-btn', variant && `cc-${variant}`, size && `cc-${size}`, full && 'cc-full', className)}
-      style={variant === 'primary' ? ({ '--ph': phase() } as Css) : undefined}
+      style={primary ? ({ '--ph': ph } as Css) : undefined}
       {...rest}
     >
       {children}
@@ -106,9 +113,11 @@ export type TagTone = 'live' | 'ok' | 'warn' | 'danger' | 'ens' | 'shiftc'
 export function Tag({
   children, tone, color, pulse, className,
 }: { children: ReactNode; tone?: TagTone; color?: string; pulse?: boolean; className?: string }) {
+  // Keyed on `pulse`: the dot mounts when it turns on, and its loop starts then.
+  const ph = usePhase(pulse)
   return (
     <span className={cx('cc-tag', tone && `cc-${tone}`, className)} style={color ? ({ '--c': color } as Css) : undefined}>
-      {pulse && <i className="cc-pulse" style={{ '--ph': phase() } as Css} />}
+      {pulse && <i className="cc-pulse" style={{ '--ph': ph } as Css} />}
       {children}
     </span>
   )
@@ -135,6 +144,9 @@ export function Label({ children, className, as = 'p' }: { children: ReactNode; 
 
 /** One tick per turn while that is legible; a plain meter once there are too many to count. */
 export function Ticks({ n, max, live }: { n: number; max: number; live?: boolean }) {
+  // The pulse moves to the next tick with each turn and starts again there, so its phase is taken per turn;
+  // re-renders within a turn keep it. Above the early return: a hook is never skipped.
+  const ph = usePhase(live ? n : null)
   if (max > 30) return <Meter value={max ? n / max : 0} />
   return (
     <div className={cx('cc-ticks', live && 'cc-livet')} role="img" aria-label={`${n} of ${max} turns`}>
@@ -142,7 +154,7 @@ export function Ticks({ n, max, live }: { n: number; max: number; live?: boolean
         <i
           key={i}
           className={cx(i < n && 'cc-on', live && i === n - 1 && 'cc-head')}
-          style={live && i === n - 1 ? ({ '--ph': phase() } as Css) : undefined}
+          style={live && i === n - 1 ? ({ '--ph': ph } as Css) : undefined}
         />
       ))}
     </div>
@@ -162,10 +174,12 @@ export function Meter({ value, warn }: { value: number; warn?: boolean }) {
 export function Hex({
   name, slot, size, ring, active,
 }: { name?: string; slot: string; size?: 'xs' | 'sm' | 'lg'; ring?: string; active?: boolean }) {
+  // The glow passes from token to token as speakers change, so each token's phase is taken as it lights.
+  const ph = usePhase(active)
   return (
     <span
       className={cx('cc-hx', size && `cc-${size}`, active && 'cc-active')}
-      style={{ '--ring': ring ?? 'var(--line-hi)', ...(active ? { '--ph': phase() } : {}) } as Css}
+      style={{ '--ring': ring ?? 'var(--line-hi)', ...(active ? { '--ph': ph } : {}) } as Css}
       aria-label={name}
     >
       <i className={`cc-${name ? slot : 'a0'}`}>{name ? initials(name) : '◆'}</i>
@@ -252,7 +266,7 @@ export function Sheet({
       <div className={cx('cc-sheet', tall && 'cc-tall')} role="dialog" aria-modal="true" aria-label={title}>
         <div className="cc-sh-h">
           <div className="cc-grow">{header ?? <b>{title}</b>}</div>
-          <button type="button" className="cc-icon" onClick={onClose} aria-label="Close">
+          <button type="button" className="cc-icon cc-sh-x" onClick={onClose} aria-label="Close">
             <Icon name="close" size={18} />
           </button>
         </div>

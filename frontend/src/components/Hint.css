@@ -1,0 +1,8 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* The ⓘ's tap target (docs/MOBILE-UI.md §7: every target ≥ 44 px). It sits in running text and in label rows,
+   where a 44 px box would push the lines apart, so the box is 44 px and a -8 px margin gives 16 px of it back:
+   the layout keeps the 28 px the ⓘ has always taken, the icon stays centred where it was, and only the area
+   that answers a tap grows, 8 px each way into the space around it. Left unpositioned on purpose, so where that
+   space holds a control painted after it, the control keeps its own taps.
+   Two classes: this file loads before command.css (main.tsx imports App first), where a tie would lose. */
+.cc-info.cc-hint { width:44px; height:44px; margin:-8px; }

@@ -8,10 +8,12 @@
  *   announces it without opening anything, find-in-page reaches it, and a test can assert it. It keeps
  *   `role="tooltip"`, which is what nine test files query.
  * - `type="button"`: this sits inside forms, and a bare <button> would submit them.
+ * - **The tap target is 44 px** (§7) while the ⓘ keeps the 28 px it always took in the line (Hint.css).
  */
 import { useId, useState, type ReactNode } from 'react'
 import { Sheet } from '../ui/primitives'
 import { Icon } from '../ui/icons'
+import './Hint.css'
 
 export function Hint({ children, label }: { children: ReactNode; label?: string }) {
   const [open, setOpen] = useState(false)
@@ -29,7 +31,7 @@ export function Hint({ children, label }: { children: ReactNode; label?: string 
           e.stopPropagation()
           setOpen(true)
         }}
-        className="cc-info inline-flex min-h-[28px] min-w-[28px] items-center justify-center"
+        className="cc-info cc-hint inline-flex items-center justify-center"
       >
         <Icon name="info" size={15} />
       </button>

@@ -1,0 +1,8 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Rules for the primitives that command.css does not carry. Selectors here outrank command.css's on purpose:
+   this file is imported from a component, which main.tsx loads before index.css, so a tie would lose. */
+
+/* The sheet's close button (docs/MOBILE-UI.md §7: every target ≥ 44 px). `.cc-icon` is 36 px and the header is
+   laid out around that, so the box is 44 px and a -4 px margin gives the extra back on every side: the
+   header keeps its height, the ✕ stays exactly where it was, and only the area that answers a tap grows. */
+.cc-icon.cc-sh-x { width:44px; height:44px; margin:-4px; }
