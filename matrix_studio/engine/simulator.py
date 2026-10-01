@@ -428,6 +428,7 @@ Respond with ONLY the name of the persona who should speak next. Choose naturall
 #: A pass declared in prose rather than by setting the field. The backstop exists because
 #: the field is the contract and the prose is what a model does when it ignores contracts;
 #: when the two disagree the engine logs it, so "the filter ate a real turn" is answerable.
+#: Never applied in the closing round, where it did exactly that (see `offer_pass`).
 _PROSE_PASS = re.compile(
     r"^\W*(?:i(?:'| a)?m going to |i(?:'ll| will) )?(?:pass|skip)\b"
     r"|^\W*(?:i have |i've got )?nothing (?:to add|further|else)\b"
@@ -501,7 +502,8 @@ async def _generate_response(
     # the failure the sequential engine spent all of §13 learning to avoid.
     allow_pass: bool = False,
     # The last round, run when a conversation hits its ceiling without finishing. Changes
-    # what is asked for, not who is asked.
+    # what is asked for, not who is asked — and it OVERRIDES `allow_pass`: the closing round
+    # is a round, so its callers pass both, but nobody may pass in it (see `offer_pass`).
     closing: bool = False,
     cognition: Optional[CognitionConfig] = None,
     retrieved_memories: Optional[List["MemoryItem"]] = None,
@@ -541,6 +543,19 @@ async def _generate_response(
     relationships_on = bool(cognition_on and cognition.relationships)
     threads_on = bool(cognition_on and cognition.threads)
     personas_on = bool(personas and personas.enabled)
+    # No passing in the closing round: no pass field, no pass instruction, and no prose
+    # backstop. The round runs once to collect one statement from everybody, and the pass
+    # instruction ("your position is already on the record and unchanged") describes the
+    # very reply it exists to collect — "nothing further, I'd sign it as written" IS a final
+    # position. Run `8b4c59b6` lost 2 of its 6 closing statements that way: "Nothing further
+    # from me — the doc as closed is the one I'd sign, …" and "Nothing to add — the doc
+    # matches what I said last round: …" were each ~600 tokens of final position, neither set
+    # the field (`field=False prose=True`), and `_PROSE_PASS` recorded both as passes.
+    #
+    # §13's reason for offering passes does not carry over. That was fifteen turns of
+    # "confirmed, nothing to add" bought after the argument was over; this is one statement
+    # per persona, once, and a short "I'd sign it" is the information the round is for.
+    offer_pass = allow_pass and not closing
 
     # Phase 6: the speaker's own persona text, with its structured identity —
     # background, formative lessons, positions with firmness, the re-tuned
@@ -629,7 +644,7 @@ async def _generate_response(
             "goal_served": {"type": "string"},
         }
         extra_instr = ""
-        if allow_pass:
+        if offer_pass:
             # Declared, not detected. A boolean the persona sets is unambiguous; deciding
             # from the prose whether "Nothing here changes my position, but —" is a pass
             # would drop real turns, and that is a silent loss of content.
@@ -825,6 +840,11 @@ Respond naturally as this character. Keep responses conversational (2-4 sentence
         raw = response.choices[0].message.content.strip()
 
         content = raw
+        # The words the persona actually spoke, before the fallback below substitutes the raw
+        # reply for a blank utterance. Only the closing round reads it: there a blank
+        # utterance is a missing statement, and recording the JSON object as one would put a
+        # blob in the transcript under the name of somebody who said nothing.
+        said = raw
         rationale: Optional[str] = None
         goal_served: Optional[str] = None
         formed_memories: List[Dict[str, Any]] = []
@@ -853,7 +873,8 @@ Respond naturally as this character. Keep responses conversational (2-4 sentence
                     speaker_name, len(raw),
                 )
             else:
-                content = str(parsed.get("utterance", "")).strip() or raw
+                said = str(parsed.get("utterance", "")).strip()
+                content = said or raw
                 rat = parsed.get("rationale")
                 rationale = str(rat).strip() if rat else None
                 gs = parsed.get("goal_served")
@@ -933,7 +954,7 @@ Respond naturally as this character. Keep responses conversational (2-4 sentence
         }
         # Additive only when cognition is on, so the cognition-off event/result
         # payloads stay byte-for-byte identical to pre-2c.
-        if allow_pass:
+        if offer_pass:
             # The field wins; the prose is a backstop for a model that ignored the field.
             declared = bool((parsed or {}).get("pass")) if cognition_on else False
             prose = bool(_PROSE_PASS.search((content or "").strip()[:80]))
@@ -942,6 +963,25 @@ Respond naturally as this character. Keep responses conversational (2-4 sentence
                 logger.info(
                     "%s pass signal: field=%s prose=%s — %r",
                     speaker_name, declared, prose, (content or "")[:90],
+                )
+        elif closing:
+            # Whatever words came back are the closing statement, pass field or not. The field
+            # is not offered in this round, so one that arrives anyway is a habit carried over
+            # from earlier rounds rather than an answer to anything asked — logged, because
+            # "did the model try to pass?" is the first question a missing statement raises.
+            declared = bool((parsed or {}).get("pass")) if cognition_on else False
+            if not said:
+                # No words at all. Not a pass — nobody was offered one — and not a statement,
+                # so nothing goes in the transcript; the engine records it as
+                # `closing.missing`, with what the model did return, so it cannot vanish.
+                result["content"] = ""
+                result["closing_missing"] = True
+                result["declared_pass"] = declared
+                result["raw_reply"] = raw
+            elif declared:
+                logger.info(
+                    "%s set pass in the closing round, where it is not offered; kept as "
+                    "its statement — %r", speaker_name, said[:90],
                 )
         if cognition_on:
             result["rationale"] = rationale
@@ -2159,6 +2199,8 @@ async def _run_turns(
                 model=model, cognition=cognition, retrieved_memories=retrieved,
                 open_threads=open_threads, retrieved_passages=passages,
                 disclose_unsupported=disclose, personas=personas,
+                # `closing` overrides `allow_pass`: the closing round is a round, but nobody
+                # may pass in it (`offer_pass` in `_generate_response` says why).
                 allow_pass=rounds_now,
                 closing=in_closing,
                 cite_inline=bool(retrieval_on and retrieval.cite_inline),
@@ -2287,12 +2329,27 @@ async def _run_turns(
             # A pass never reaches the transcript. Emitted, so the run can say who was
             # asked and declined — the whole convergence signal in this mode is "everybody
             # passed", and that is only auditable if each pass is on the record.
-            if rounds_now and response_data.get("passed"):
-                round_passed.append(speaker_name)
+            #
+            # A closing reply with no words in it takes the same path out — there is nothing
+            # to put in the transcript, and the round still has to end — but under its own
+            # event. Passing is not offered in the closing round, so an empty reply there is
+            # the model failing to answer, not the persona declining; as `agent.passed` it
+            # would read as a choice nobody made, and "who passed" would stop being a count
+            # of decisions.
+            missing = bool(response_data.get("closing_missing"))
+            if rounds_now and (response_data.get("passed") or missing):
+                if missing:
+                    logger.warning(
+                        "Simulation %s: %s returned no closing statement (round %d); "
+                        "recorded as closing.missing",
+                        run_id, speaker_name, turn,
+                    )
+                else:
+                    round_passed.append(speaker_name)
                 await emit(
                     turn=turn,
                     seq=next_seq(),
-                    event_type="agent.passed",
+                    event_type="closing.missing" if missing else "agent.passed",
                     agent_name=speaker_name,
                     payload={
                         "speaker": speaker_name,
@@ -2303,6 +2360,12 @@ async def _run_turns(
                         "tokens_in": response_data.get("tokens_in", 0),
                         "tokens_out": response_data.get("tokens_out", 0),
                         "cost_usd": response_data.get("cost_usd", 0.0),
+                        # What the model did send, capped like `rejected_text`: with no
+                        # message on the record, this is the only way to tell a blank reply
+                        # from a JSON object whose utterance was left empty.
+                        **({"declared_pass": bool(response_data.get("declared_pass")),
+                            "reply": str(response_data.get("raw_reply") or "")[:1500]}
+                           if missing else {}),
                     },
                 )
                 speaker.total_tokens_in += response_data.get("tokens_in", 0)
@@ -2313,8 +2376,9 @@ async def _run_turns(
                     if in_closing:
                         in_closing, closing_done = False, True
                         if not round_spoke:
-                            # Everybody declined their closing statement. The turn number is
-                            # KEPT even though the round produced no messages, because
+                            # Every closing reply came back empty — a `closing.missing` each,
+                            # since nobody can pass here. The turn number is KEPT even
+                            # though the round produced no messages, because
                             # `turn > max_messages` is how the next Lambda invocation knows
                             # the closing round already happened — decrementing it made the
                             # next slice open another one, for ever. Recorded on
@@ -2787,8 +2851,9 @@ async def _run_turns(
                 # actually needs is not a new lifecycle state but the reason this run has
                 # 26 turns when it asked for 40 — which is a payload field.
                 # An empty closing round is a real outcome — everybody was asked for a
-                # final position and nobody had one — and it is the only case where a turn
-                # number counts a round that produced no messages.
+                # final position and every reply came back empty, each one on the record as
+                # `closing.missing` — and it is the only case where a turn number counts a
+                # round that produced no messages.
                 **({"closing_round_empty": True} if closing_empty else {}),
                 **({"converged": True,
                     "converged_at_turn": converged["at_turn"],

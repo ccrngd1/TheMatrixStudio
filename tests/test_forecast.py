@@ -101,6 +101,11 @@ class TestObservations:
         obs = fc.observe(_row(kinds={"agent.passed": 0.1, "agent.reflected": 0.2}), None, 20)
         assert obs.conversation_cost == pytest.approx(0.02 * 40 + 0.3)
 
+    def test_the_conversation_counts_missing_closing_statements(self):
+        """An empty closing reply puts nothing in the transcript, but it was a voice call."""
+        obs = fc.observe(_row(kinds={"closing.missing": 0.05}), None, 20)
+        assert obs.conversation_cost == pytest.approx(0.02 * 40 + 0.05)
+
 
 class TestForecastRun:
     def test_prices_from_the_range_comparable_runs_covered(self):
