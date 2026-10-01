@@ -25,6 +25,9 @@ vi.mock('../api', () => ({
     grantKb: vi.fn(),
     revokeKb: vi.fn(),
     extractDocument: vi.fn(),
+    // Called by the drop target to narrow its picker. Left returning nothing by default, which
+    // is the "server did not answer" case: the picker offers every known format.
+    getDocumentFormats: vi.fn(),
   },
 }))
 import { api } from '../api'
@@ -254,5 +257,171 @@ describe('the list', () => {
     })
     fireEvent.click(screen.getByRole('button', { name: /^create$/i }))
     expect(mocked.createKnowledgeBase).not.toHaveBeenCalled()
+  })
+})
+
+// --------------------------------------------------------------------------- //
+// The inside of a collection (docs/MOBILE-UI.md §4.10)
+// --------------------------------------------------------------------------- //
+
+const pdf = (name = 'policy.pdf') => new File(['x'], name, { type: 'application/pdf' })
+const picker = () => screen.getByLabelText(/choose file/i, { selector: 'input' }) as HTMLInputElement
+const dropTarget = () => picker().closest('label') as HTMLLabelElement
+
+describe('the drop target', () => {
+  const mine = kb()
+
+  it('starts the extraction when a file is dropped on it, and stores nothing yet', async () => {
+    await open([mine], detail())
+    mocked.extractDocument.mockResolvedValue({ title: 'policy.pdf', text: 'egress rules', chars: 12 })
+
+    const file = pdf()
+    fireEvent.drop(dropTarget(), { dataTransfer: { files: [file] } })
+
+    await waitFor(() => expect(mocked.extractDocument).toHaveBeenCalledWith(file, 'policy.pdf'))
+    // The same review the picker leads to: the text is shown, and storing waits to be asked.
+    await waitFor(() => expect(screen.getByDisplayValue('egress rules')).toBeTruthy())
+    expect(mocked.addKbDocument).not.toHaveBeenCalled()
+  })
+
+  it('says, in words, that a held file will be read on release', async () => {
+    // The highlight alone would be colour alone.
+    await open([mine], detail())
+    // Held once: while a file is over it the target's words, and so its label, change.
+    const target = dropTarget()
+    fireEvent.dragEnter(target)
+    expect(screen.getByText(/release to read it/i)).toBeTruthy()
+    fireEvent.dragLeave(target)
+    expect(screen.queryByText(/release to read it/i)).toBeNull()
+  })
+
+  it('reads one of several dropped files, and says what happened to the rest', async () => {
+    // One at a time because each one's text is reviewed before it is stored.
+    await open([mine], detail())
+    mocked.extractDocument.mockResolvedValue({ title: 'a.pdf', text: 'first', chars: 5 })
+    fireEvent.drop(dropTarget(), { dataTransfer: { files: [pdf('a.pdf'), pdf('b.pdf'), pdf('c.pdf')] } })
+
+    await waitFor(() => expect(screen.getByText(/other 2 one at a time/i)).toBeTruthy())
+    expect(mocked.extractDocument).toHaveBeenCalledTimes(1)
+  })
+
+  it('is a real, labelled, keyboard-reachable file input that a tap on the target opens', async () => {
+    await open([mine], detail())
+    const input = picker()
+    expect(input.type).toBe('file')
+    // Visually hidden, not `display: none`: a hidden input is out of the tab order.
+    expect(input).not.toHaveClass('hidden')
+    expect(input.disabled).toBe(false)
+    // Every format the server extracts, so a phone's picker does not grey them out.
+    for (const suffix of ['.txt', '.md', '.pdf', '.docx']) expect(input.accept).toContain(suffix)
+
+    const clicked = vi.fn()
+    input.addEventListener('click', clicked)
+    fireEvent.click(dropTarget())
+    expect(clicked).toHaveBeenCalled()
+  })
+
+  it('offers only what this server can read, and refuses the rest before uploading it', async () => {
+    // Once: `clearAllMocks` does not reset implementations, and a persistent "no PDFs here"
+    // would quietly refuse every PDF in the tests after this one.
+    mocked.getDocumentFormats.mockResolvedValueOnce({
+      formats: [
+        { suffix: '.md', media_type: 'md', available: true, needs: null },
+        { suffix: '.pdf', media_type: 'pdf', available: false, needs: 'pypdf' },
+        { suffix: '.txt', media_type: 'txt', available: true, needs: null },
+      ],
+      max_upload_bytes: 10 * 1024 * 1024,
+      max_document_chars: 400000,
+    })
+    await open([mine], detail())
+    await waitFor(() => expect(picker().accept).not.toContain('.pdf'))
+    expect(screen.getByText(/markdown or text, up to 10 MB/i)).toBeTruthy()
+
+    // A drop bypasses `accept`, so the drop is checked too.
+    fireEvent.drop(dropTarget(), { dataTransfer: { files: [pdf('scan.pdf')] } })
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toMatch(/not a format this can read/i))
+    expect(mocked.extractDocument).not.toHaveBeenCalled()
+  })
+
+  it('replaces a title the last file filled in, but not one the operator typed', async () => {
+    await open([mine], detail())
+    mocked.extractDocument.mockResolvedValueOnce({ title: 'wrong.pdf', text: 'one', chars: 3 })
+    fireEvent.drop(dropTarget(), { dataTransfer: { files: [pdf('wrong.pdf')] } })
+    await waitFor(() => expect(screen.getByDisplayValue('wrong.pdf')).toBeTruthy())
+
+    mocked.extractDocument.mockResolvedValueOnce({ title: 'right.pdf', text: 'two', chars: 3 })
+    fireEvent.drop(dropTarget(), { dataTransfer: { files: [pdf('right.pdf')] } })
+    await waitFor(() => expect(screen.getByDisplayValue('right.pdf')).toBeTruthy())
+
+    fireEvent.change(screen.getByLabelText(/document title/i), { target: { value: 'Egress policy' } })
+    mocked.extractDocument.mockResolvedValueOnce({ title: 'third.pdf', text: 'three', chars: 5 })
+    fireEvent.drop(dropTarget(), { dataTransfer: { files: [pdf('third.pdf')] } })
+    await waitFor(() => expect(screen.getByDisplayValue('three')).toBeTruthy())
+    expect(screen.getByDisplayValue('Egress policy')).toBeTruthy()
+  })
+
+  it('says it is embedding while the add is in flight, without inventing a count', async () => {
+    // The add route embeds inline and reports nothing until it is done, so there is no n/m.
+    await open([mine], detail())
+    let finish: (v: unknown) => void = () => {}
+    mocked.addKbDocument.mockReturnValue(new Promise((resolve) => { finish = resolve }))
+    fireEvent.change(screen.getByPlaceholderText(/paste text/i), { target: { value: 'some material' } })
+    fireEvent.click(screen.getByRole('button', { name: /add and embed/i }))
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /embedding/i })).toBeDisabled())
+    expect(screen.getByRole('status').textContent).toMatch(/embedding/i)
+    expect(screen.queryByRole('meter')).toBeNull()
+
+    finish({ document_id: 'd9', kb_id: 'kb-1', embedded: 2, cost_usd: 0, model: 'm' })
+    // The note outlives the refresh of the list that adding triggers.
+    await waitFor(() => expect(mocked.listKnowledgeBases).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.getByText(/added and embedded 2 chunks/i)).toBeTruthy())
+  })
+
+  it('refreshes after a failed embed, so the stored document can be found, and keeps the text', async () => {
+    // A 502 here means the document WAS stored and could not be embedded.
+    await open([mine], detail())
+    mocked.addKbDocument.mockRejectedValue(new Error('502: stored as d9 but could not be embedded'))
+    fireEvent.change(screen.getByPlaceholderText(/paste text/i), { target: { value: 'only copy' } })
+    fireEvent.click(screen.getByRole('button', { name: /add and embed/i }))
+
+    await waitFor(() => expect(screen.getByText(/could not be embedded/i)).toBeTruthy())
+    await waitFor(() => expect(mocked.getKnowledgeBase).toHaveBeenCalledTimes(2))
+    expect(screen.getByDisplayValue('only copy')).toBeTruthy()
+  })
+})
+
+describe('the documents in a collection', () => {
+  const docs = detail({
+    documents: [
+      { id: 'd1', title: 'policy.md', char_count: 1200, chunk_count: 3, created_at: 2 },
+      { id: 'd2', title: 'short.txt', char_count: 80, chunk_count: 1, created_at: 1 },
+      { id: 'd3', title: 'legacy.txt', char_count: null, chunk_count: null, created_at: 0 },
+    ],
+  })
+
+  it('shows each document with its chunk count', async () => {
+    await open([kb({ document_count: 3 })], docs)
+    expect(screen.getByText('Documents · 03')).toBeTruthy()
+    expect(screen.getByText('3 chunks')).toBeTruthy()
+    expect(screen.getByText('1 chunk')).toBeTruthy()
+    // A row from before counts were stored is unknown, which is not the same as empty.
+    expect(screen.getByText('chunks unknown')).toBeTruthy()
+  })
+
+  it('names each remove button after its document', async () => {
+    await open([kb({ document_count: 3 })], docs)
+    expect(screen.getByRole('button', { name: 'Remove short.txt' })).toBeTruthy()
+  })
+
+  it('keeps the documents on screen when a remove fails', async () => {
+    // The failure used to replace the whole collection with the error.
+    await open([kb({ document_count: 3 })], docs)
+    mocked.deleteKbDocument.mockRejectedValue(new Error('503: Service Unavailable'))
+    fireEvent.click(screen.getByRole('button', { name: 'Remove policy.md' }))
+
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toMatch(/503/))
+    expect(screen.getByText('policy.md')).toBeTruthy()
+    expect(screen.getByText('short.txt')).toBeTruthy()
   })
 })
