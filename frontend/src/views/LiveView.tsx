@@ -619,6 +619,7 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh, tab = 'conver
           agent={state.agents[selected]}
           feed={state.feed}
           runId={runId}
+          stance={stance?.[selected]}
           onClose={() => setSelected(null)}
         />
       )}

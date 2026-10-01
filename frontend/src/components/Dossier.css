@@ -1,0 +1,42 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* The dossier's tabbed layout (docs/MOBILE-UI.md §4.4). Selectors here outrank command.css's on purpose:
+   this file is imported from a component, which main.tsx loads before index.css, so a tie would lose. */
+
+/* The HUD and the tabs stay put and only the open tab scrolls, as in the prototype. Left to the sheet body,
+   a long Memory tab scrolled the tabs out of reach. */
+.cc-sbody > .cc-dz { flex:1 1 0; min-height:0; display:flex; flex-direction:column; gap:10px; }
+.cc-dz > .cc-hudstrip, .cc-dz > .cc-htabs { flex:none; }
+.cc-dz-panel { flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; display:flex; flex-direction:column; gap:10px;
+    overflow-wrap:anywhere; }
+.cc-dz-panel > * { flex-shrink:0; }
+
+/* The shared tab is 31 px tall; these are tapped, so 44. Tracking is a little tighter because at the shared
+   .16em CONVICTIONS is a full quarter of a 360 px sheet, edge to edge, and wider than that on anything
+   narrower. */
+.cc-dz .cc-htabs button { min-width:0; min-height:44px; padding:0 2px; letter-spacing:.1em; }
+
+/* A word in a HUD cell (stance, firmness). Smaller than a number readout and allowed to wrap: "requires-
+   escalation" and "holding out" do not fit one line of a third of a phone. */
+.cc-dz-word { display:block; margin-top:4px; font-size:13px; line-height:1.25; text-transform:uppercase; overflow-wrap:anywhere; }
+
+.cc-dz-pos { font-size:15.5px; }
+.cc-flag.cc-dz-formed { --fc:var(--t3); }
+.cc-flag.cc-dz-move { --fc:var(--live); }
+
+.cc-dz-dl { display:flex; flex-direction:column; gap:10px; }
+.cc-dz-dl dd { margin-top:4px; font-size:13.5px; color:var(--t2); }
+
+.cc-dz-t1 { color:var(--t1); font-weight:600; }
+.cc-dz-meta { display:block; margin-top:2px; font:500 10.5px/1.4 var(--mono); letter-spacing:.04em; color:var(--t3); }
+
+.cc-dz-turn + .cc-dz-turn { margin-top:10px; padding-top:8px; border-top:1px solid var(--line); }
+.cc-dz-turn:first-of-type { margin-top:8px; }
+.cc-dz-passages { margin-top:4px; font-size:12.5px; color:var(--t2); }
+.cc-dz-passages li { display:flex; flex-wrap:wrap; align-items:center; column-gap:4px; }
+.cc-dz-src { min-height:44px; display:inline-flex; align-items:center; text-align:left; color:var(--accent); }
+.cc-dz-src:hover, .cc-dz-src:focus-visible { text-decoration:underline; }
+
+.cc-dz-msg { padding:8px 10px; border:1px solid var(--line); background:color-mix(in srgb,var(--panel) 70%,transparent); }
+
+/* The shared small button is 34 px tall; anything tapped in the dossier gets the full 44. */
+.cc-btn.cc-sm.cc-dz-tap { min-height:44px; flex:none; }
