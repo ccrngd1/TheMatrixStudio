@@ -181,7 +181,10 @@ reveal path is untested").
 Reading order is decision first, supporting detail after:
 
 1. **Bottom line**, in a gradient-bordered hero panel, with *trust* and *dissenter* tags.
-2. **Where the room ended:** a half-dial split by stance, with % support and the three counts.
+2. **Where the room ended:** a half-dial split by stance, with % support and the counts (◐ *with
+   conditions* as a fourth, and as its own share beside the %, when anyone accepted with conditions),
+   then each persona's stance with its basis: the quote, and whether the closing statement or the summary
+   decided it (§6.1).
 3. **What would settle it.**
 4. **Assumed:** each assumption with its citation count and who disputes it, and
    **Fork with a different value**.
@@ -313,6 +316,7 @@ is magenta and cyan.
 | `accent2` | `#a78bfa` | `#7dffcf` | `#00e5ff` | Ensembles, group B, gradients |
 | `live` | `#34f5a0` | `#00ff9c` | `#00ffa3` | Running, next speaker |
 | `support` | `#34f5a0` | `#6ff7ff` | `#00ffa3` | ▲ stance |
+| `conditional` | `#ff9a52` | `#ffa94d` | `#ff9f43` | ◐ stance (accepts with conditions, §6.1) |
 | `undecided` | `#7d8fa9` | `#5d7d6d` → **`#739a86`** | `#8a8fb5` | ◆ stance |
 | `hold` / `danger` | `#ff4d78` | `#ff5f5f` | `#ff4d4d` | ▼ stance, Stop, capped |
 | `inject` | `#ffc53d` | `#e6ff5c` | `#ffe600` | Injections, lean flags, stopped, the 80% spend warning |
@@ -324,6 +328,13 @@ every theme. **The prototype's `t3` fails WCAG AA** at 3.7–4.0:1, and Matrix's
 The bold values in the table pass (5.07–5.46:1) and are what an implementation should use. The
 prototype still carries the failing values. Persona identity colours (the hex fills) are fixed
 pastels and do not change with the theme.
+
+`conditional` (added 2026-10-01) is an orange in every theme, apart from `inject`'s amber/yellow:
+8.1:1 (Holo), 9.0:1 (Matrix) and 8.8:1 (Neon) against the lighter panel colour, and CIEDE2000 ≥ 19
+from every other stance colour and from `inject` in normal colour vision. Under simulated deutan and
+protan vision its nearest stance colour is 11–21 away, no closer than the existing pairs already are
+(▲/▼ in Holo under deutan, 14; ◆/▼ in Matrix under protan, 10), which is why every stance carries its
+glyph and word.
 
 ### 5.2 Type
 
@@ -408,6 +419,42 @@ The options, in the order to try them:
 
 **DECIDED 2026-09-29 by the owner: option 1.** Stance is computed after a run ends, from the dissenter list
 and position shifts; a live run shows turn and spend but no stance. No classifier.
+
+**DECIDED 2026-10-01 by the owner: stance reads the closing statements, and there is a fourth state,
+◐ *with conditions*.** Still post-run only. Why: run `8b4c59b6`, the first live run with the closing
+round on, showed option 1 cannot express acceptance. Four of its six personas had plainly accepted the
+final plan and read as ◆ "not stated", because accepting is not a shift; two who signed while keeping a
+standing objection read as ▼, which hid that they signed; and the shift detector that feeds ▲ produced a
+false positive and a miss in the same run. The closing round (`selection.closing_round`) already asks every
+persona, blind, for their final position, what they can and cannot accept, and what moved them, which is
+what a stance is. So, per persona (`matrix_studio/stance.py`):
+
+1. **Their closing statement, where it decides.** At summary time one model call for the room classifies
+   each closing statement as *accepts* (▲ support), *accepts with conditions* (◐), *rejects* (▼ holding
+   out) or *unclear*. The model must quote the deciding sentence **verbatim**, and the code checks the quote
+   is in that persona's statement (case, curly quotes and spacing aside); a quote that is not there makes
+   the verdict *unclear*. The stance role's model is Haiku 4.5 at temperature 0 (`models.py`), so a
+   regenerated summary gets the same verdicts.
+2. **Option 1, for everyone else:** no closing statement, *unclear*, an unverified quote, or a classifier
+   call that failed. A run with no closing round gets exactly option 1, unchanged.
+
+Each persona's stance is stored with its basis (class, quote, and source: closing statement or summary)
+and shown where a reader asks "why": the Dossier and the Analysis tab's *Where the room ended*. The
+classifier's cost is charged with the summary and itemised in the run's cost. **Not backfilled**: only
+summaries generated from 2026-10-01 carry it.
+
+**% support counts ▲ alone.** ◐ is printed beside it as its own share (`50% support · +17% with
+conditions`), because conditions that are never met would make a combined figure overstate the room.
+
+**What has been measured, and what has not.** A live smoke check on the four closing statements that run
+`8b4c59b6` kept agreed with a careful human read four times out of four, with every quote verified, and
+gave the same verdicts on three repeats (Sonnet 5, tried for comparison, also 4/4 at about four times the
+cost). The prompt was revised once during development, after an invented statement showed two class
+definitions overlapping (a signature with an objection said not to block it); the live check was re-run
+on the final prompt. Four statements, none of them a rejection, is a smoke check and not a validation. Before any surface presents this as more than "what the statement appears to say", it
+needs a pre-registered held-out check: closing statements from runs the prompt was not written against,
+spanning all four classes (rejections and real ambiguity included), labelled by a person before the
+classifier is run, with the agreement target and the per-class confusion stated in advance.
 
 The prototype's own rule is: latest lean or shift wins, and a non-soft persona who has spoken
 without either is *holding out*. That last clause is a guess. It must not ship.

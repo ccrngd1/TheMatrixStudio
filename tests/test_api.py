@@ -297,6 +297,43 @@ def test_the_run_detail_carries_the_research_record(client):
     assert got["scopes"][0]["negative"] is True
 
 
+def test_the_run_detail_carries_the_stance_basis_and_its_cost(client):
+    """Why each persona has its stance (`stance.py`) is on the run's page, and the classifier that decided
+    it is a line in the itemised cost. The run list carries only the states."""
+    # No auto-summary, so nothing races the record written below.
+    request = {**REQUEST, "summary": {"enabled": False}}
+    with patch("matrix_studio.api.manager.run_simulation", make_fake_run(turns=1)):
+        run_id = client.post("/api/runs", json=request).json()["run_id"]
+        _wait_complete(client, run_id)
+
+    from matrix_studio.storage import Database
+    from matrix_studio.tenancy import LOCAL_USER_SUB
+
+    basis = {"personas": {"Ada": {"stance": "conditional", "source": "closing", "class": "accepts_with_conditions",
+                                  "quote": "I sign if the audit runs first"}},
+             "classifier": {"model": "m", "tokens_in": 300, "tokens_out": 90, "cost_usd": 0.003, "error": None}}
+
+    async def record():
+        # `LOCAL_USER_SUB` for the reason the research test above gives.
+        store = Database(); await store.connect()
+        try:
+            await store.for_owner(LOCAL_USER_SUB).set_run_stance(
+                run_id, {"Ada": "conditional", "Ben": "unstated"}, basis=basis)
+        finally:
+            await store.close()
+
+    before = client.get(f"/api/runs/{run_id}").json()
+    asyncio.get_event_loop_policy().new_event_loop().run_until_complete(record())
+    got = client.get(f"/api/runs/{run_id}").json()
+    assert got["stance"] == {"Ada": "conditional", "Ben": "unstated"}
+    assert got["stance_basis"] == basis
+    assert got["cost"]["stance"] == 0.003
+    assert got["cost"]["total"] == pytest.approx(before["cost"]["total"] + 0.003)
+    listed = next(r for r in client.get("/api/runs").json()["runs"] if r["run_id"] == run_id)
+    assert listed["stance"] == {"Ada": "conditional", "Ben": "unstated"}
+    assert "stance_basis" not in listed
+
+
 def test_events_endpoint_and_after_seq(client):
     with patch("matrix_studio.api.manager.run_simulation", make_fake_run(turns=2)):
         run_id = client.post("/api/runs", json=REQUEST).json()["run_id"]

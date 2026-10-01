@@ -163,6 +163,12 @@ _RUN_FIELDS = (
     # run list can draw it without reading every run's summary and event log. Absent until then, and
     # for every run summarised before the field existed.
     "stance_json",
+    # Why each persona has that stance: the class, the quote and the source (closing statement or
+    # summary), plus what the closing-statement classifier cost. Separate from `stance_json` so the run
+    # list keeps reading a plain {name: state} map; only the run's own page needs the reasons. Written in
+    # the same update as `stance_json`, so the two cannot disagree. Absent for every run summarised before
+    # 2026-10-01: not backfilled, by the owner's decision.
+    "stance_basis_json",
 )
 _ENSEMBLE_FIELDS = (
     "id", "owner_sub", "topic", "name", "description", "slug", "status", "created_at",
@@ -1159,9 +1165,14 @@ class DynamoStorage:
         run_id: str,
         stance: Optional[Dict[str, str]],
         *,
+        basis: Optional[Dict[str, Any]] = None,
         owner_sub: Optional[str] = None,
     ) -> bool:
-        """Record each persona's end stance (`stance.py`), or clear it with None. Returns whether it stuck.
+        """Record each persona's end stance (`stance.py`) and its basis, or clear them with None. Returns
+        whether it stuck.
+
+        Both in one update, and both every time: a regenerated summary replaces the pair, so a stance is
+        never shown beside the reasons for an earlier one.
 
         Conditional on the run existing, for the reason `set_run_research` gives: `UpdateItem` upserts, and
         a write to a missing run would manufacture a phantom row in the owner's history.
@@ -1171,8 +1182,11 @@ class DynamoStorage:
             await self._call(
                 self._table("runs").update_item,
                 Key={"pk": _user_pk(owner_sub), "sk": _run_sk(run_id)},
-                UpdateExpression="SET stance_json = :v",
-                ExpressionAttributeValues={":v": json.dumps(stance) if stance is not None else None},
+                UpdateExpression="SET stance_json = :v, stance_basis_json = :b",
+                ExpressionAttributeValues={
+                    ":v": json.dumps(stance) if stance is not None else None,
+                    ":b": json.dumps(basis) if basis is not None else None,
+                },
                 ConditionExpression="attribute_exists(sk)",
             )
             return True

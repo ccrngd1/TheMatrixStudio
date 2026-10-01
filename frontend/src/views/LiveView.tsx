@@ -21,7 +21,7 @@ import { TheatreButton } from '../components/TheatreButton'
 import type { StoredSummary } from '../types'
 import { FaceStrip, RunHud, RunStatusTag, RunTabs, SideDrawer } from '../components/run/RunChrome'
 import { MessageContext } from '../components/run/MessageContext'
-import { RoomCell, RoomMap, RoomMapKey, StanceCounts, StanceDial } from '../components/run/Stance'
+import { RoomCell, RoomMap, RoomMapKey, StanceBasisList, StanceCounts, StanceDial } from '../components/run/Stance'
 import { Hint } from '../components/Hint'
 import { TopBar } from './Shell'
 import { navigate, type RunTab } from '../lib/route'
@@ -380,6 +380,8 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh, tab = 'conver
   // Where each persona ended (`matrix_studio/stance.py`). Only once the run is summarised: a live run has no
   // stance (§6.1), so every surface below draws without one until then.
   const stance = completed ? (detail?.stance ?? null) : null
+  // Why each has that stance; absent for runs summarised before 2026-10-01, which show the states alone.
+  const basis = stance ? (detail?.stance_basis?.personas ?? null) : null
   const spoke = state.order.filter((n) => state.feed.some((m) => m.speaker === n && !m.consultant && !m.injected))
 
   const castBody = (
@@ -424,9 +426,13 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh, tab = 'conver
             <Label>Where the room ended</Label>
             <StanceDial stance={stance} among={spoke} />
             <p className="cc-muted mt-1.5">
-              Holding out: named among the summary's dissenters. Support: not a dissenter, and a position shift
-              was flagged for them. Not stated: neither. Read from the summary and the shift flags, not judged.
+              Where the run had a closing round, each persona's closing statement decides first: a model reads it as
+              accepting (▲ support), accepting with conditions (◐) or rejecting (▼ holding out), and the verdict
+              counts only if the sentence it quotes is really in the statement. Otherwise the summary decides:
+              ▼ named among its dissenters, ▲ not a dissenter and a position shift was flagged, ◆ neither. The %
+              counts ▲ alone; ◐ is shown as its own share beside it.
             </p>
+            {basis && <StanceBasisList basis={basis} order={spoke} />}
           </Panel>
         ) : (
           <p className="cc-muted">Generate the summary to see where each persona ended.</p>
@@ -621,6 +627,7 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh, tab = 'conver
           feed={state.feed}
           runId={runId}
           stance={stance?.[selected]}
+          basis={basis?.[selected]}
           onClose={() => setSelected(null)}
         />
       )}

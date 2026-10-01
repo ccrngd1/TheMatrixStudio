@@ -2,7 +2,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { Dossier } from './Dossier'
-import type { AgentView } from '../types'
+import type { AgentView, StanceBasisEntry, StanceState } from '../types'
 import { api } from '../api'
 
 vi.mock('../api', () => ({
@@ -446,9 +446,9 @@ describe('Dossier — HUD and tabs', () => {
     tokens_in: 10, tokens_out: 5, cost_usd: 0.001, portrait_b64: null,
   }
 
-  function renderFull(stance?: 'support' | 'unstated' | 'holding', dossier: Record<string, unknown> = full) {
+  function renderFull(stance?: StanceState, dossier: Record<string, unknown> = full, basis?: StanceBasisEntry) {
     ;(api.getDossier as ReturnType<typeof vi.fn>).mockResolvedValue(dossier)
-    render(<Dossier agent={agent} feed={longFeed} runId="r1" stance={stance} onClose={() => {}} />)
+    render(<Dossier agent={agent} feed={longFeed} runId="r1" stance={stance} basis={basis} onClose={() => {}} />)
   }
   const hud = () => within(screen.getByRole('dialog').querySelector('.cc-hudstrip') as HTMLElement)
 
@@ -499,11 +499,44 @@ describe('Dossier — HUD and tabs', () => {
 
   it.each([
     ['support' as const, '▲ support'],
+    ['conditional' as const, '◐ with conditions'],
     ['unstated' as const, '◆ not stated'],
   ])('HUD shows the %s stance by glyph and word', (stance, label) => {
     renderFull(stance)
     expect(hud().getByText(label)).toBeInTheDocument()
     expect(hud().queryByText('not yet')).not.toBeInTheDocument()
+  })
+
+  it('says where the stance came from: the closing statement, quoted', async () => {
+    renderFull('conditional', full, {
+      stance: 'conditional', source: 'closing', class: 'accepts_with_conditions',
+      quote: 'I sign, provided the rota is tested first',
+    })
+    expect(hud().getByText('◐ with conditions')).toBeInTheDocument()
+    expect(hud().getByText('from closing statement')).toBeInTheDocument()
+    const c = within(tabPanel())
+    expect(c.getByText('Where they ended')).toBeInTheDocument()
+    expect(c.getByText(/From their closing statement/)).toBeInTheDocument()
+    expect(c.getByText('“I sign, provided the rota is tested first”')).toBeInTheDocument()
+    expect(await screen.findByText('No change without a rota')).toBeInTheDocument()
+  })
+
+  it('says when the summary decided instead, in whose words, and why the closing statement did not', () => {
+    renderFull('holding', full, {
+      stance: 'holding', source: 'summary', class: 'unclear', quote: 'Objects to the start date',
+      fallback: 'unverified_quote', claimed: 'accepts',
+    })
+    expect(hud().getByText('from summary')).toBeInTheDocument()
+    const c = within(tabPanel())
+    expect(c.getByText(/In the summary's words/)).toBeInTheDocument()
+    expect(c.getByText('“Objects to the start date”')).toBeInTheDocument()
+    expect(c.getByText(/the sentence the classifier quoted is not in their statement/)).toBeInTheDocument()
+  })
+
+  it('shows no basis panel for a run summarised before stances carried one', () => {
+    renderFull('support')
+    expect(screen.queryByText('Where they ended')).not.toBeInTheDocument()
+    expect(hud().queryByText(/from (closing statement|summary)/)).not.toBeInTheDocument()
   })
 
   it('renders every tab’s content', async () => {

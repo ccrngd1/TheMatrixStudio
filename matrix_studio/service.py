@@ -149,7 +149,7 @@ async def generate_and_store_summary(
 
     events = await db.get_events(run["id"])
 
-    result = await analysis.generate_summary(
+    summarising = analysis.generate_summary(
         conversation=conversation,
         topic=topic,
         fields=fields,
@@ -158,6 +158,24 @@ async def generate_and_store_summary(
         instructions=instructions,
         context=assumptions_mod.summary_note(assumptions_mod.from_events(events)),
     )
+    # A run with a closing round has each persona's final position in their own words, and stance reads
+    # those first (docs/MOBILE-UI.md §6.1, decided 2026-10-01). One call for the room, alongside the summary
+    # rather than after it: it does not need the summary, and the summary is the slow call. No closing
+    # statements, no call — the run gets the summary rule exactly as before. `classify_closing` never raises.
+    statements = stance_mod.closing_statements(events)
+    if statements:
+        from matrix_studio.models import model_for
+
+        result, (classifier, verdicts) = await asyncio.gather(
+            summarising,
+            stance_mod.classify_closing(
+                statements, topic,
+                model_for(resolve_model(run, role="stance"), "stance") or get_settings().litellm_model,
+            ),
+        )
+    else:
+        result = await summarising
+        classifier, verdicts = None, None
     saved = await db.save_summary(
         run_id=run["id"],
         payload=result["payload"],
@@ -168,17 +186,22 @@ async def generate_and_store_summary(
         instructions=result["instructions"],
     )
     saved["parsed"] = result["parsed"]
-    # Where each persona ended (docs/MOBILE-UI.md §6.1), from this summary's dissenters and the run's
-    # flagged shifts. Written every time, None included, so a regenerated summary that lost its
-    # dissenter list does not leave the previous one's stances standing. Best-effort: a stance is a view
-    # of the summary, and failing to store it must not lose the summary itself.
+    # Where each persona ended (docs/MOBILE-UI.md §6.1): their closing statement where it says, else this
+    # summary's dissenters and the run's flagged shifts. Written every time, None included, so a
+    # regenerated summary that lost its dissenter list does not leave the previous one's stances standing.
+    # The basis travels with it — per persona the class, the quote and which source decided — and so does
+    # the classifier's cost, which the run detail itemises. Best-effort: a stance is a view of the run, and
+    # failing to store it must not lose the summary itself.
     try:
-        by_persona = stance_mod.stances(
+        by_persona, basis = stance_mod.resolve(
             [m.get("name") for m in _load_cast(run) if isinstance(m, dict)],
             result["payload"] if result.get("parsed") else None,
-            stance_mod.shifted_speakers(events),
+            events, statements, verdicts,
         )
-        await db.set_run_stance(run["id"], by_persona, owner_sub=run.get("owner_sub"))
+        record = None
+        if basis is not None or classifier is not None:
+            record = {"personas": basis or {}, "classifier": classifier}
+        await db.set_run_stance(run["id"], by_persona, basis=record, owner_sub=run.get("owner_sub"))
     except Exception as exc:  # noqa: BLE001
         logger.warning("Could not record stances for run %s: %s", run.get("id"), exc)
     # Charged to the owner's month, here rather than in the auto-summary path, because every
@@ -186,8 +209,9 @@ async def generate_and_store_summary(
     # a real model call over the whole transcript. It was charged to nobody: measured on
     # brainstorm-opus as ~$0.21, the largest single uncounted call in the run. Best-effort, for
     # the reason `record_spend` gives: a missed increment delays the cap rather than losing a
-    # summary that has already been paid for and stored.
-    cost = float(result.get("cost_usd") or 0.0)
+    # summary that has already been paid for and stored. The stance classifier rides along: it is a
+    # real call too, paid whether or not its reply could be used.
+    cost = float(result.get("cost_usd") or 0.0) + float((classifier or {}).get("cost_usd") or 0.0)
     owner = run.get("owner_sub")
     if cost > 0 and owner:
         try:
