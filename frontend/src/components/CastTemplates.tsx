@@ -13,6 +13,16 @@ interface Props {
   hasCast: boolean
 }
 
+/**
+ * Fetch a saved cast as the form's draft personas. The one path a template takes into the form — the picker
+ * below and the Library tab's "Start a run with this cast" both come through here, so a template cannot load
+ * differently depending on where it was chosen.
+ */
+export async function loadCastTemplate(templateName: string) {
+  const t = await api.getCastTemplate(templateName)
+  return { name: t.name, ...parseCast(t.cast) }
+}
+
 // Save the cast under a name, and start a later conversation from it.
 //
 // The cast is the slowest part of a setup to get right — convictions, what would change each
@@ -46,10 +56,9 @@ export function CastTemplates({ getCast, onLoad, hasCast }: Props) {
     setBusy(true)
     setMessage(null)
     try {
-      const t = await api.getCastTemplate(templateName)
-      const { cast, warnings } = parseCast(t.cast)
-      onLoad(cast, warnings)
-      setMessage({ text: `Loaded “${t.name}” — ${cast.length} persona${cast.length === 1 ? '' : 's'}.` })
+      const t = await loadCastTemplate(templateName)
+      onLoad(t.cast, t.warnings)
+      setMessage({ text: `Loaded “${t.name}” — ${t.cast.length} persona${t.cast.length === 1 ? '' : 's'}.` })
     } catch (e) {
       setMessage({ text: `Could not load it: ${(e as Error).message}`, error: true })
     } finally {

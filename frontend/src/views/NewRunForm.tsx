@@ -2,8 +2,8 @@
 import { useEffect, useState } from 'react'
 import { api, type Forecast } from '../api'
 import { CostForecast } from '../components/CostForecast'
-import { CastTemplates } from '../components/CastTemplates'
-import { PersonaLibrary } from '../components/PersonaLibrary'
+import { CastTemplates, loadCastTemplate } from '../components/CastTemplates'
+import { PersonaLibrary, draftFromPack } from '../components/PersonaLibrary'
 import { ConsultantsEditor, consultantsConfig, type DraftConsultant } from '../components/ConsultantsEditor'
 import { AssumptionsEditor, assumptionsConfig, type DraftAssumption } from '../components/AssumptionsEditor'
 import { InjectionsEditor, injectionsConfig, type DraftInjection } from '../components/InjectionsEditor'
@@ -36,6 +36,10 @@ interface Props {
    * source run is not touched.
    */
   fromRunId?: string
+  /** Open with this saved cast loaded (the Library tab's "Start a run with this cast"). */
+  castTemplate?: string
+  /** Open with this persona archetype added to the cast (the Library tab's "Add to a new run"). */
+  packId?: string
   /** The wizard step, 1–5, when the caller routes it. */
   step?: number
   onStep?: (step: WizardStep) => void
@@ -59,10 +63,13 @@ const EXAMPLE = {
   ],
 }
 
-export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId, step: routeStep, onStep }: Props) {
+export function NewRunForm({
+  onStarted, onEnsembleStarted, onCancel, fromRunId, castTemplate, packId, step: routeStep, onStep,
+}: Props) {
   // The step lives in the URL when the app routes it (`#/new/3`), so the back button steps back; standalone
-  // (the tests, a caller without a router) the form keeps it itself.
-  const [ownStep, setOwnStep] = useState<WizardStep>(1)
+  // (the tests, a caller without a router) the form keeps it itself. Opened from the Library it starts on the
+  // Cast step, so what was loaded is the first thing on screen.
+  const [ownStep, setOwnStep] = useState<WizardStep>(castTemplate || packId ? 2 : 1)
   const step = (routeStep ?? ownStep) as WizardStep
   const goStep = (s: WizardStep) => (onStep ? onStep(s) : setOwnStep(s))
   const [topic, setTopic] = useState('')
@@ -190,6 +197,14 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId, 
   const updatePersona = (i: number, patch: Partial<DraftPersona>) =>
     setCast((prev) => prev.map((p, idx) => (idx === i ? { ...p, ...patch } : p)))
 
+  // Add one persona (a library archetype). Replaces the form's untouched starting row rather than leaving an
+  // empty one above it.
+  const addToCast = (persona: DraftPersona) =>
+    setCast((prev) => {
+      const blank = (c: DraftPersona) => !c.name.trim() && !c.persona.trim()
+      return prev.length === 1 && blank(prev[0]) ? [persona] : [...prev, persona]
+    })
+
   // Persona wizard. Authoring assistance only: it fills the form, and the operator
   // edits and submits. Nothing it returns starts a run by itself.
   const [wizardBrief, setWizardBrief] = useState('')
@@ -311,6 +326,67 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId, 
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fromRunId])
+
+  // Opened from the Library tab with a saved cast and/or an archetype. Loaded through the same helpers as the
+  // Cast step's own pickers, so it arrives exactly as it would from there. Either can have gone since the
+  // Library was drawn (deleted, renamed, a pack retired), so a miss is reported rather than leaving a blank
+  // cast that looks like the load worked.
+  const [libraryLoading, setLibraryLoading] = useState(Boolean(castTemplate || packId))
+  const [libraryLoaded, setLibraryLoaded] = useState<{ cast?: string; count?: number; pack?: string } | null>(null)
+  const [libraryErrors, setLibraryErrors] = useState<string[]>([])
+  const [libraryWarnings, setLibraryWarnings] = useState<string[]>([])
+
+  useEffect(() => {
+    if (!castTemplate && !packId) return
+    let cancelled = false
+    void (async () => {
+      const loaded: { cast?: string; count?: number; pack?: string } = {}
+      const errors: string[] = []
+      let taken: string[] = []
+      if (castTemplate) {
+        try {
+          const t = await loadCastTemplate(castTemplate)
+          if (cancelled) return
+          // An empty result keeps the starting row, so the step still has somewhere to type.
+          if (t.cast.length) setCast(t.cast)
+          setLibraryWarnings(t.warnings)
+          taken = t.cast.map((c) => c.name)
+          loaded.cast = t.name
+          loaded.count = t.cast.length
+        } catch (e) {
+          if (cancelled) return
+          const msg = describeFailure(e, 'the request failed')
+          errors.push(
+            msg.startsWith('404')
+              ? `The saved cast “${castTemplate}” is no longer in the library — it may have been deleted or renamed.`
+              : `Could not load the saved cast “${castTemplate}”: ${msg}`,
+          )
+        }
+      }
+      if (packId) {
+        try {
+          const pack = (await api.listPersonaPacks()).find((p) => p.id === packId)
+          if (cancelled) return
+          // Renamed against the template just loaded, as the picker renames against the cast on screen.
+          const draft = pack && draftFromPack(pack, taken)
+          if (draft) {
+            addToCast(draft)
+            loaded.pack = `${pack.label} (${pack.qualification})`
+          } else {
+            errors.push(`The archetype “${packId}” is no longer in the library on this deployment.`)
+          }
+        } catch (e) {
+          if (cancelled) return
+          errors.push(`Could not load the archetype “${packId}”: ${describeFailure(e, 'the request failed')}`)
+        }
+      }
+      setLibraryErrors(errors)
+      setLibraryLoaded(loaded.cast || loaded.pack ? loaded : null)
+      setLibraryLoading(false)
+    })()
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [castTemplate, packId])
 
   // Knowledge-base file upload. The server extracts the text and stores nothing, so
   // an uploaded file becomes an ordinary pasted-document entry: one ingest path, and
@@ -670,6 +746,43 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId, 
             transcript carries over.
           </p>
         )}
+
+        {libraryLoading && (
+          <p className="mb-3 rounded border border-matrix-border bg-matrix-panel p-2 text-sm text-slate-300">
+            Loading from the library…
+          </p>
+        )}
+
+        {libraryLoaded && !libraryLoading && (
+          <div className="mb-3 rounded border border-matrix-accent/40 bg-matrix-accent/10 p-2 text-sm text-slate-200">
+            <p>
+              {libraryLoaded.cast && (
+                <>
+                  Loaded the saved cast <strong>{libraryLoaded.cast}</strong> from the library
+                  ({libraryLoaded.count} persona{libraryLoaded.count === 1 ? '' : 's'}).{' '}
+                </>
+              )}
+              {libraryLoaded.pack && (
+                <>
+                  Added the archetype <strong>{libraryLoaded.pack}</strong> from the library.{' '}
+                </>
+              )}
+              Edit anything here; the library copy is unchanged.
+            </p>
+            {libraryWarnings.length > 0 && (
+              // Shown here rather than with the importer's warnings on step 1, which this opens past.
+              <ul className="mt-1 list-inside list-disc text-xs text-amber-500/90">
+                {libraryWarnings.map((w, i) => (
+                  <li key={i}>{w}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+
+        {libraryErrors.map((e) => (
+          <p key={e} role="alert" className="mb-3 rounded bg-red-950/50 p-2 text-sm text-red-300">{e}</p>
+        ))}
 
         {error && <p className="mb-3 rounded bg-red-950/50 p-2 text-sm text-red-300">{error}</p>}
 
@@ -1330,16 +1443,7 @@ export function NewRunForm({ onStarted, onEnsembleStarted, onCancel, fromRunId, 
             <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
               <h2 className="text-sm font-semibold text-slate-300">Cast</h2>
               <div className="flex min-w-0 flex-wrap items-center gap-2">
-                <PersonaLibrary
-                  taken={cast.map((c) => c.name)}
-                  onAdd={(persona) =>
-                    // Replaces the form's untouched starting row rather than leaving an empty one above it.
-                    setCast((prev) => {
-                      const blank = (c: DraftPersona) => !c.name.trim() && !c.persona.trim()
-                      return prev.length === 1 && blank(prev[0]) ? [persona] : [...prev, persona]
-                    })
-                  }
-                />
+                <PersonaLibrary taken={cast.map((c) => c.name)} onAdd={addToCast} />
                 <button
                   onClick={() => setCast((p) => [...p, blankPersona()])}
                   className="rounded border border-matrix-border px-2 py-1 text-xs hover:border-matrix-accent"

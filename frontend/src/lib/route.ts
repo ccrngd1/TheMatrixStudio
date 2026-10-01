@@ -12,7 +12,8 @@ export type Route =
   | { name: 'ensembles' }
   | { name: 'knowledge'; kbId?: string }
   | { name: 'library' }
-  | { name: 'new'; step?: number; fromRunId?: string }
+  // `castTemplate` / `packId`: open the wizard with a saved cast loaded, or an archetype added (the Library tab).
+  | { name: 'new'; step?: number; fromRunId?: string; castTemplate?: string; packId?: string }
   | { name: 'run'; runId: string; tab: RunTab }
   | { name: 'scrub'; runId: string }
   | { name: 'ensemble'; ensembleId: string }
@@ -35,6 +36,8 @@ export function parseHash(hash: string): Route {
         name: 'new',
         ...(Number.isInteger(step) && step >= 1 && step <= 5 ? { step } : {}),
         ...(params.get('from') ? { fromRunId: params.get('from')! } : {}),
+        ...(params.get('cast') ? { castTemplate: params.get('cast')! } : {}),
+        ...(params.get('pack') ? { packId: params.get('pack')! } : {}),
       }
     }
     case 'run':
@@ -64,8 +67,14 @@ export function hrefOf(r: Route): string {
       return r.kbId ? `#/knowledge/${e(r.kbId)}` : '#/knowledge'
     case 'library':
       return '#/library'
-    case 'new':
-      return `#/new${r.step ? `/${r.step}` : ''}${r.fromRunId ? `?from=${e(r.fromRunId)}` : ''}`
+    case 'new': {
+      const q = [
+        r.fromRunId && `from=${e(r.fromRunId)}`,
+        r.castTemplate && `cast=${e(r.castTemplate)}`,
+        r.packId && `pack=${e(r.packId)}`,
+      ].filter(Boolean)
+      return `#/new${r.step ? `/${r.step}` : ''}${q.length ? `?${q.join('&')}` : ''}`
+    }
     case 'run':
       return `#/run/${e(r.runId)}${r.tab && r.tab !== 'conversation' ? `/${r.tab}` : ''}`
     case 'scrub':

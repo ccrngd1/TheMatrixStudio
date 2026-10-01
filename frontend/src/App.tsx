@@ -36,10 +36,14 @@ function Views({ themeState }: { themeState: ReturnType<typeof useThemeState> })
     case 'new':
       return (
         <NewRunForm
-          key={route.fromRunId ?? 'blank'}
+          // Remounted when what it was opened with changes, so a new source loads into a fresh form; the step
+          // is left out because moving between steps must keep the form's state.
+          key={`${route.fromRunId ?? ''}|${route.castTemplate ?? ''}|${route.packId ?? ''}`}
           fromRunId={route.fromRunId}
+          castTemplate={route.castTemplate}
+          packId={route.packId}
           step={route.step}
-          onStep={(step) => navigate({ name: 'new', step, fromRunId: route.fromRunId })}
+          onStep={(step) => navigate({ ...route, step })}
           onStarted={(runId) => go({ name: 'run', runId, tab: 'conversation' })}
           onEnsembleStarted={(ensembleId) => go({ name: 'ensemble', ensembleId })}
           onCancel={() => window.history.back()}
@@ -87,7 +91,7 @@ function Views({ themeState }: { themeState: ReturnType<typeof useThemeState> })
     case 'library':
       return (
         <ListScreen dock="library" top={<TopBar title="Library" sub="archetypes and saved casts" right={settings} />}>
-          <Library onNewRun={() => go({ name: 'new' })} />
+          <Library onNavigate={go} />
         </ListScreen>
       )
     case 'runs':

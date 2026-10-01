@@ -11,6 +11,20 @@ interface Props {
   onAdd: (persona: DraftPersona) => void
 }
 
+/**
+ * A pack as a draft persona, renamed if its name is already `taken` (case-insensitively) so it never collides
+ * with someone in the cast. Shared with the Library tab's "Add to a new run", which lands in the same form.
+ */
+export function draftFromPack(pack: PersonaPack, taken: string[]): DraftPersona | null {
+  const [draft] = parseCast([pack.persona]).cast
+  if (!draft) return null
+  let name = draft.name
+  for (let n = 2; taken.some((t) => t.trim().toLowerCase() === name.toLowerCase()); n++) {
+    name = `${draft.name} ${n}`
+  }
+  return { ...draft, name }
+}
+
 // Add a ready-made archetype to the cast. Each pack is a persona someone else wrote and nobody has
 // yet measured, so the choice is labelled "not yet qualified" where it is made, not in a footnote.
 // Once added it is an ordinary persona in the form and can be edited like any other.
@@ -29,14 +43,8 @@ export function PersonaLibrary({ taken, onAdd }: Props) {
 
   const add = (id: string) => {
     const pack = packs.find((p) => p.id === id)
-    if (!pack) return
-    const [draft] = parseCast([pack.persona]).cast
-    if (!draft) return
-    let name = draft.name
-    for (let n = 2; taken.some((t) => t.trim().toLowerCase() === name.toLowerCase()); n++) {
-      name = `${draft.name} ${n}`
-    }
-    onAdd({ ...draft, name })
+    const draft = pack && draftFromPack(pack, taken)
+    if (draft) onAdd(draft)
   }
 
   return (

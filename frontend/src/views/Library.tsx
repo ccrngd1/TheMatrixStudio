@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // The Library tab (docs/MOBILE-UI.md §3): the ready-made persona archetypes and the casts you have saved. Both
-// used to be reachable only from inside the new-run form; here they can be browsed before starting anything.
+// used to be reachable only from inside the new-run form; here they can be browsed before starting anything,
+// and each one starts a run from itself rather than leaving you to find it again in the wizard.
 import { useEffect, useState } from 'react'
 import { api, type CastTemplateSummary, type PersonaPack } from '../api'
+import type { Route } from '../lib/route'
 import { Icon } from '../ui/icons'
 import { Btn, Hex, Label, Panel, Tag, identityOf } from '../ui/primitives'
 
-export function Library({ onNewRun }: { onNewRun: () => void }) {
+// Both open the wizard on the Cast step (2), where what was loaded is shown and can be edited.
+export function Library({ onNavigate }: { onNavigate: (r: Route) => void }) {
   const [packs, setPacks] = useState<PersonaPack[] | null>(null)
   const [casts, setCasts] = useState<CastTemplateSummary[] | null>(null)
 
@@ -45,6 +48,13 @@ export function Library({ onNewRun }: { onNewRun: () => void }) {
                 </div>
                 {c.description && <p className="cc-topic">{c.description}</p>}
                 <p className="cc-meta">{c.personas.join(' · ')}</p>
+                <div className="mt-2">
+                  <Btn onClick={() => onNavigate({ name: 'new', step: 2, castTemplate: c.name })}>
+                    <Icon name="play" /> Start a run with this cast
+                    {/* Every card has this button; the name tells them apart for a screen reader. */}
+                    <span className="sr-only">: {c.name}</span>
+                  </Btn>
+                </div>
               </Panel>
             ))}
           </div>
@@ -70,6 +80,12 @@ export function Library({ onNewRun }: { onNewRun: () => void }) {
                   </div>
                 </div>
                 <p className="cc-topic">{p.summary}</p>
+                <div className="mt-2">
+                  <Btn onClick={() => onNavigate({ name: 'new', step: 2, packId: p.id })}>
+                    <Icon name="plus" /> Add to a new run
+                    <span className="sr-only">: {p.label}</span>
+                  </Btn>
+                </div>
               </Panel>
             ))}
           </div>
@@ -77,8 +93,9 @@ export function Library({ onNewRun }: { onNewRun: () => void }) {
       </section>
 
       <div>
-        <Btn variant="primary" size="sm" onClick={onNewRun}>
-          <Icon name="plus" /> Start a run with these
+        {/* Says "blank" because it is: starting from a saved cast or an archetype is on its card above. */}
+        <Btn variant="primary" onClick={() => onNavigate({ name: 'new' })}>
+          <Icon name="plus" /> Start a blank run
         </Btn>
       </div>
     </div>
