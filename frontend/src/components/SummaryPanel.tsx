@@ -176,9 +176,22 @@ export function SummaryPanel({
               The model did not return structured JSON; showing a plain-text overview.
             </p>
           )}
-          {p.overview && (
+          {typeof p.overview === 'string' && (
             <Block title="Overview">
-              <p className="whitespace-pre-wrap text-sm text-slate-300">{p.overview}</p>
+              {p.overview.trim() ? (
+                <p className="whitespace-pre-wrap text-sm text-slate-300">{p.overview}</p>
+              ) : (
+                // Requested and not written: the analyst's reply left it out (`omitted`; a summary stored
+                // before that flag existed holds just ""). This block used to vanish instead, and
+                // nothing said an overview was missing.
+                <p className="text-sm">
+                  <span className="italic text-amber-400/80">{NOT_STATED}</span>
+                  <span className="text-[11px] text-slate-500">
+                    {' '}
+                    — the analyst's reply left it out; regenerating may supply one.
+                  </span>
+                </p>
+              )}
             </Block>
           )}
           {p.consensus && p.consensus.length > 0 && (

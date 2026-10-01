@@ -134,7 +134,9 @@ def run_brief(model: Dict[str, Any]) -> Dict[str, Any]:
         "name": model["name"],
         "question": _question(model.get("topic")),
         "has_analysis": bool(s),
-        "bottom_line": _clip(s.get("overview"), MAX_BOTTOM_LINE_CHARS),
+        # A summary whose reply left the overview out (analysis `omitted`) has no bottom line to give,
+        # and says so; left blank, the brief told the reader no summary had been generated at all.
+        "bottom_line": _clip(s.get("overview"), MAX_BOTTOM_LINE_CHARS) or (NOT_STATED if s else ""),
         "agreed": agreed, "agreed_more": agreed_more,
         "open": open_, "open_more": open_more,
         "dissent": dissent, "dissent_more": dissent_more,

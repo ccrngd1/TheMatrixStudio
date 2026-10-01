@@ -73,6 +73,43 @@ describe('SummaryPanel', () => {
     expect(screen.getByText('not stated')).toHaveClass('italic')
   })
 
+  // A reply that left the overview out is stored with overview "" (and, since 2026-10-01, `omitted`).
+  // It used to make the Overview block vanish, so the panel looked like a summary without one.
+  it.each([
+    ['flagged as omitted', { overview: '', omitted: ['overview'] }],
+    ['stored before the flag existed', { overview: '' }],
+  ])('says an overview the reply left out is not stated (%s)', (_, missing) => {
+    render(
+      <SummaryPanel
+        runId="r1"
+        generated={{ ...generated, payload: { ...generated.payload, ...missing } }}
+        imported={null}
+        defaultInstructions={DEFAULT_INSTRUCTIONS}
+        canGenerate
+        onUpdated={() => {}}
+      />,
+    )
+    expect(screen.getByText('Overview')).toBeInTheDocument()
+    expect(screen.getByText('not stated')).toHaveClass('italic')
+    // The rest of the summary is still shown.
+    expect(screen.getByText('A provider sign-off gate is needed')).toBeInTheDocument()
+  })
+
+  it('shows no Overview block when the overview was not requested', () => {
+    render(
+      <SummaryPanel
+        runId="r1"
+        generated={{ ...generated, payload: { consensus: ['A provider sign-off gate is needed'] } }}
+        imported={null}
+        defaultInstructions={DEFAULT_INSTRUCTIONS}
+        canGenerate
+        onUpdated={() => {}}
+      />,
+    )
+    expect(screen.queryByText('Overview')).not.toBeInTheDocument()
+    expect(screen.queryByText('not stated')).not.toBeInTheDocument()
+  })
+
   it('renders structured fields and labels analysis as model-generated', () => {
     render(
       <SummaryPanel

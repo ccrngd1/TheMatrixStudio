@@ -276,3 +276,126 @@ def test_a_missing_evidence_column_reads_not_stated_and_a_row_without_data_is_dr
 def test_an_empty_summary_has_an_empty_plan():
     empty = analysis._empty_summary(list(analysis.DEFAULT_SUMMARY_FIELDS))
     assert empty["evidence_plan"] == [] and empty["conditional_recommendation"] == ""
+
+
+# --------------------------------------------------------------------------- #
+# The overview a reply leaves out (found 2026-10-01)
+#
+# With the evidence plan and the conditional recommendation added, the prompt asked for the overview
+# LAST, after the recommendation, and the model would end on the recommendation and close the object.
+# The reply parsed, was not truncated, and was stored with overview "" and nothing saying so.
+# --------------------------------------------------------------------------- #
+
+#: Shaped like the real failing reply: fenced, the fence never closed, every other field complete,
+#: an evidence plan with unstated columns, a recommendation that reads as the conclusion — and the
+#: object closed straight after it, with no overview key at all.
+REPLY_WITHOUT_OVERVIEW = "```json\n" + json.dumps({
+    "consensus": ["Open on weekends for a one-term pilot", "Staff the desk from the existing rota"],
+    "dissenters": [{"speaker": "Ben", "position": "The rota cannot absorb another shift"}],
+    "key_ideas": ["Measure demand before committing to a permanent change"],
+    "open_questions": ["Who covers the desk when the rota is short?"],
+    "evidence_plan": [
+        {"data": "Weekend footfall at the branch next door", "asked_by": "Ben",
+         "decision": "pilot or not", "moves_them": "over 200 visits a day and Ben is in",
+         "best_guess": "Ada expects about 150", "cheapest_way": "not stated"},
+        {"data": "Overtime cost per shift", "asked_by": "Ada", "decision": "how to staff it",
+         "moves_them": "not stated", "best_guess": "not stated", "cheapest_way": "ask payroll"},
+    ],
+    "conditional_recommendation": (
+        "If weekend footfall is over 200 a day, run the pilot; if not, hold. The cast's best guess is "
+        "about 150, so lean hold."
+    ),
+}, indent=2) + "\n"
+
+
+def _reply(content, finish_reason="stop", tokens_out=4870):
+    async def _fake(messages, model=None, temperature=0.4, max_tokens=None):
+        return {"content": content, "tokens_in": 13000, "tokens_out": tokens_out, "cost_usd": 0.07,
+                "finish_reason": finish_reason}
+
+    return _fake
+
+
+def _shape_lines(prompt):
+    """The lines of the JSON shape the prompt shows: between the opening "{" line and the closing "}"."""
+    lines = prompt.split("\n")
+    return lines[lines.index("{") + 1:lines.index("}")]
+
+
+def test_the_prompt_asks_for_the_overview_first():
+    shape = _shape_lines(analysis._summary_system_prompt(list(analysis.DEFAULT_SUMMARY_FIELDS), focus=None))
+    assert shape[0].strip().startswith('"overview":')
+    # Whatever order a caller sends the fields in.
+    shape = _shape_lines(analysis._summary_system_prompt(
+        ["consensus", "conditional_recommendation", "overview"], focus=None))
+    assert [line.strip().split('"')[1] for line in shape] == ["overview", "consensus", "conditional_recommendation"]
+
+
+def test_the_shape_is_only_json_and_the_field_rules_follow_it():
+    prompt = analysis._summary_system_prompt(list(analysis.DEFAULT_SUMMARY_FIELDS), focus=None)
+    # Every line of the shape is one key and its value, nothing after it. The rules used to trail the
+    # evidence plan and the recommendation as prose inside the shape.
+    for line in _shape_lines(prompt):
+        assert line.rstrip(",").endswith(('"', "]")), line
+    after = prompt.split("\n}\n", 1)[1]
+    assert "Write every key above, the overview included" in after
+    assert "never fill a gap yourself" in after and "empty string if nobody asked for evidence" in after
+
+
+@pytest.mark.asyncio
+async def test_a_reply_without_an_overview_is_named_omitted_and_logged(monkeypatch, caplog):
+    monkeypatch.setattr(analysis, "_acompletion", _reply(REPLY_WITHOUT_OVERVIEW))
+    with caplog.at_level("WARNING", logger="matrix_studio.analysis"):
+        result = await analysis.generate_summary(CONVERSATION, topic="weekend opening")
+    payload = result["payload"]
+    # It parsed, and every field it did supply is kept.
+    assert result["parsed"] is True
+    assert payload["conditional_recommendation"].endswith("lean hold.")
+    assert len(payload["evidence_plan"]) == 2
+    # The overview keeps its empty value, so every reader still finds a string, and is NAMED as left
+    # out. Never filled in by the code, from another field or otherwise.
+    assert payload["overview"] == ""
+    assert payload["omitted"] == ["overview"]
+    [record] = [r for r in caplog.records if "did not supply" in r.getMessage()]
+    assert "overview" in record.getMessage() and "finish_reason=stop" in record.getMessage()
+
+
+@pytest.mark.asyncio
+async def test_a_complete_reply_has_no_omitted_key(monkeypatch, caplog):
+    complete = {"overview": "A debate about weekend opening.",
+                **json.loads(REPLY_WITHOUT_OVERVIEW.removeprefix("```json\n"))}
+    monkeypatch.setattr(analysis, "_acompletion", _reply(json.dumps(complete)))
+    with caplog.at_level("WARNING", logger="matrix_studio.analysis"):
+        result = await analysis.generate_summary(CONVERSATION, topic="weekend opening")
+    assert "omitted" not in result["payload"]
+    assert result["payload"]["overview"] == "A debate about weekend opening."
+    assert not [r for r in caplog.records if "did not supply" in r.getMessage()]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("overview", ["", "   ", None])
+async def test_a_blank_or_null_overview_is_omitted_and_never_the_string_null(monkeypatch, overview):
+    reply = {"overview": overview, "consensus": ["c"], "dissenters": [], "key_ideas": [], "open_questions": [],
+             "evidence_plan": [], "conditional_recommendation": ""}
+    monkeypatch.setattr(analysis, "_acompletion", _reply(json.dumps(reply)))
+    result = await analysis.generate_summary(CONVERSATION, topic="t")
+    assert result["payload"]["omitted"] == ["overview"]
+    assert result["payload"]["overview"].strip() == ""
+    # An empty list or an empty recommendation is a legitimate answer, not an omission.
+    assert result["payload"]["consensus"] == ["c"]
+
+
+@pytest.mark.asyncio
+async def test_a_truncated_reply_keeps_the_overview_and_names_what_it_lost(monkeypatch, caplog):
+    """Overview first is also what survives the budget: `jsonio` keeps the leading complete fields."""
+    cut = (
+        '{\n  "overview": "A debate about weekend opening.",\n  "consensus": ["a pilot"],\n'
+        '  "dissenters": [],\n  "key_ideas": [],\n  "open_questions": [],\n'
+        '  "evidence_plan": [ {"data": "weekend footfall", "asked_by": "Be'
+    )
+    monkeypatch.setattr(analysis, "_acompletion", _reply(cut, finish_reason="length", tokens_out=8000))
+    with caplog.at_level("WARNING", logger="matrix_studio.analysis"):
+        result = await analysis.generate_summary(CONVERSATION, topic="weekend opening")
+    assert result["payload"]["overview"] == "A debate about weekend opening."
+    assert result["payload"]["omitted"] == ["evidence_plan", "conditional_recommendation"]
+    assert any("finish_reason=length" in r.getMessage() for r in caplog.records)

@@ -38,14 +38,16 @@ logger = logging.getLogger(__name__)
 
 # The standard structured-summary field set. `overview` is always produced; the
 # others are lists (possibly empty). Callers may request a subset via `fields`.
+# `overview` comes first because that is where the prompt asks for it; see
+# `_summary_system_prompt` for why.
 DEFAULT_SUMMARY_FIELDS = [
+    "overview",
     "consensus",
     "dissenters",
     "key_ideas",
     "open_questions",
     "evidence_plan",
     "conditional_recommendation",
-    "overview",
 ]
 
 #: What the analyst writes in an evidence-plan column the conversation never supplied. Fixed wording,
@@ -167,8 +169,27 @@ def _summary_system_prompt(
       (c) the "respond with ONLY a single JSON object" instruction.
     This keeps structured output parseable and the honesty gate intact even with
     a fully custom prompt.
+
+    The overview is asked for FIRST. Until 2026-10-01 it came last, straight
+    after the conditional recommendation ("... so lean A"), and the model
+    would end its reply on that recommendation and close the object without
+    writing an overview. Such a reply parses, so the summary was stored with
+    every field but the one the UI shows first. Measured on the latest stored
+    summary of each run: 0 of 77 from before the evidence plan and
+    conditional recommendation were added (2026-09-28) lacked an overview;
+    10 of the 50 after did, untruncated. Replayed on one of those
+    transcripts (both of its stored summaries lacked it): the old prompt
+    dropped it again, finish_reason "stop"; the overview first, all else
+    unchanged, kept it 2 of 2; the overview still last with the field rules
+    moved out of the shape dropped it 1 of 2; this prompt kept it 3 of 3.
+    First is also the place a truncated reply keeps (`jsonio` salvages the
+    leading fields); 2 more of those 50 were truncated and lost it that way.
+
+    The field rules sit AFTER the shape rather than inside it, so the shape
+    is a JSON object a model can copy and every line of it is a key to write.
     """
     field_specs = {
+        "overview": '"overview": "a 2-4 sentence plain-English overview"',
         "consensus": '"consensus": [ "point the group converged on", ... ]',
         "dissenters": '"dissenters": [ {"speaker": "name", "position": "what they objected to"}, ... ]',
         "key_ideas": '"key_ideas": [ "interesting idea / fact / novel framing surfaced", ... ]',
@@ -178,19 +199,35 @@ def _summary_system_prompt(
             '"asked_by": "who asked for it", "decision": "the decision it would unlock", '
             '"moves_them": "the result that would move them, each way", '
             '"best_guess": "what anyone in the conversation expected it to show", '
-            '"cheapest_way": "the cheapest way to get it that was mentioned"}, ... ]  '
-            f'(one row per distinct evidence request; any value the conversation did not supply is '
-            f'exactly "{NOT_STATED}" — never fill a gap yourself)'
+            '"cheapest_way": "the cheapest way to get it that was mentioned"}, ... ]'
         ),
         "conditional_recommendation": (
             '"conditional_recommendation": "If <the result>, do <A>; if not, do <B>. The cast\'s best '
-            'guess is <guess>, so lean <A or B>." — built only from the evidence plan; where no '
-            f'best guess was stated say the lean is {NOT_STATED}; empty string if nobody asked for evidence'
+            'guess is <guess>, so lean <A or B>."'
         ),
-        "overview": '"overview": "a 2-4 sentence plain-English overview"',
     }
-    requested = [field_specs[f] for f in fields if f in field_specs]
-    schema_block = ",\n  ".join(requested)
+    # What a field must and must not contain; see the docstring for why it is not in the shape.
+    field_rules = {
+        "evidence_plan": (
+            f'"evidence_plan": one row per distinct evidence request; any value the conversation did not '
+            f'supply is exactly "{NOT_STATED}" — never fill a gap yourself.'
+        ),
+        "conditional_recommendation": (
+            '"conditional_recommendation": built only from the evidence plan; where no best guess was '
+            f'stated say the lean is {NOT_STATED}; an empty string if nobody asked for evidence.'
+        ),
+    }
+    # `fields` may come from a client in any order, so the overview is moved to the front here, not
+    # only in DEFAULT_SUMMARY_FIELDS.
+    ordered = sorted((f for f in fields if f in field_specs), key=lambda f: f != "overview")
+    schema_block = ",\n  ".join(field_specs[f] for f in ordered)
+    rules = [field_rules[f] for f in ordered if f in field_rules]
+    rules_block = (
+        "\n\nWrite every key above"
+        + (", the overview included" if "overview" in ordered else "")
+        + "; a list with nothing in it is []."
+        + "".join(f"\n- {r}" for r in rules)
+    )
     focus_line = (
         f"\n\nApply this focus when analyzing: {focus.strip()}"
         if focus and focus.strip()
@@ -209,7 +246,7 @@ def _summary_system_prompt(
         "content, positions, or speakers. Lists may be empty if nothing "
         "qualifies.\n\n"
         "Respond with ONLY a single JSON object of this exact shape (no prose, "
-        "no code fence):\n{\n  " + schema_block + "\n}" + focus_line
+        "no code fence):\n{\n  " + schema_block + "\n}" + rules_block + focus_line
     )
 
 
@@ -221,10 +258,21 @@ def _empty_summary(fields: List[str]) -> Dict[str, Any]:
 
 
 def _coerce_summary(obj: Dict[str, Any], fields: List[str]) -> Dict[str, Any]:
-    """Keep only requested fields and coerce them to the expected shapes."""
+    """Keep only requested fields and coerce them to the expected shapes.
+
+    A requested field the reply did not supply still gets its empty value, so
+    every reader finds the shape it expects, and is NAMED in ``omitted``, which
+    is present only when something was. Without that name an overview the model
+    left out was a silent "" that every surface hid, and a reply cut off at the
+    budget looked the same as one that was complete: `jsonio` returns the
+    fields a truncated reply finished precisely so the missing ones can be
+    seen, and padding them erased that. An overview of only whitespace counts
+    as omitted too: unlike a list, it is never legitimately empty.
+    """
     out = _empty_summary(fields)
     for f in fields:
-        if f not in obj:
+        # A null is no value, not the string "null".
+        if obj.get(f) is None:
             continue
         val = obj[f]
         if f in ("overview", "conditional_recommendation"):
@@ -256,6 +304,12 @@ def _coerce_summary(obj: Dict[str, Any], fields: List[str]) -> Dict[str, Any]:
                 out[f] = [str(x) for x in val]
             elif isinstance(val, str) and val:
                 out[f] = [val]
+    omitted = [
+        f for f in fields
+        if obj.get(f) is None or (f == "overview" and not out[f].strip())
+    ]
+    if omitted:
+        out["omitted"] = omitted
     return out
 
 
@@ -334,8 +388,16 @@ async def generate_summary(
 
         obj = _extract_json(last_content)
         if obj is not None:
+            payload = _coerce_summary(obj, fields)
+            if payload.get("omitted"):
+                # finish_reason tells a model that left a field out ("stop") from a reply cut off at
+                # the budget ("length"); the stored summary cannot.
+                logger.warning(
+                    "Summary reply did not supply %s (finish_reason=%s, %s tokens out)",
+                    ", ".join(payload["omitted"]), result.get("finish_reason"), result["tokens_out"],
+                )
             return {
-                "payload": _coerce_summary(obj, fields),
+                "payload": payload,
                 "tokens_in": tokens_in,
                 "tokens_out": tokens_out,
                 "cost_usd": cost_usd,

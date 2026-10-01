@@ -187,6 +187,25 @@ def test_custom_instructions_thread_persist_and_prefill(client):
     assert summ["generated"]["instructions"] == custom
 
 
+def test_an_overview_the_reply_left_out_is_stored_as_omitted(client):
+    """The `omitted` flag survives storage, so a reloaded summary can say "not stated" rather than hide it."""
+    from tests.test_analysis import REPLY_WITHOUT_OVERVIEW
+
+    async def _reply(messages, model=None, temperature=0.4, max_tokens=None):
+        return {"content": REPLY_WITHOUT_OVERVIEW, "tokens_in": 1, "tokens_out": 1, "cost_usd": 0.0,
+                "finish_reason": "stop"}
+
+    with patch("matrix_studio.api.manager.run_simulation", make_fake_run(turns=1)):
+        run_id = _start(client, {"summary": {"enabled": False}})["run_id"]
+        _wait_complete(client, run_id)
+
+    with patch("matrix_studio.analysis._acompletion", _reply):
+        client.post(f"/api/runs/{run_id}/summary")
+    payload = client.get(f"/api/runs/{run_id}/summary").json()["generated"]["payload"]
+    assert payload["overview"] == "" and payload["omitted"] == ["overview"]
+    assert payload["conditional_recommendation"]
+
+
 def test_default_instructions_persist_as_null_via_api(client):
     """Backward compat: omitting instructions uses the default → NULL persisted
     so the client falls back to default_instructions for the prefill."""

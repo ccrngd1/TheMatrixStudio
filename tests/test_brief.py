@@ -157,6 +157,24 @@ def test_structured_key_ideas_and_consensus_items_render_as_text():
     assert br.run_brief(m)["agreed"] == ["ship templates — Priya"]
 
 
+@pytest.mark.parametrize("fmt", ["md", "html"])
+def test_a_summary_without_an_overview_has_a_bottom_line_that_says_so(fmt):
+    # How a reply that left the overview out is stored (`analysis._coerce_summary`). The brief used to
+    # print "No summary has been generated" over a summary that had every other field.
+    m = _run_model(summary={"overview": "", "omitted": ["overview"], "consensus": ["a pilot"],
+                            "open_questions": [], "key_ideas": [], "dissenters": []})
+    b = br.run_brief(m)
+    assert b["bottom_line"] == br.NOT_STATED
+    out = br.render(b, fmt)
+    assert "No summary has been generated" not in out and "a pilot" in out
+
+
+def test_a_run_with_no_summary_still_says_none_was_generated():
+    b = br.run_brief(_run_model(summary=None))
+    assert b["bottom_line"] == ""
+    assert "No summary has been generated" in br.render_markdown(b)
+
+
 def test_filenames_say_it_is_a_brief():
     assert br.filename(br.run_brief(_run_model()), "md") == "renewal-take-2-run-brief.md"
     assert br.filename(br.ensemble_brief(_ensemble_model()), "html") == "renewal-cells-ensemble-brief.html"

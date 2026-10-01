@@ -272,6 +272,9 @@ export interface SummaryPayload {
   }[]
   conditional_recommendation?: string
   overview?: string
+  // Requested fields the analyst's reply did not supply (they hold their empty value). Present only
+  // when there were any; summaries stored before 2026-10-01 never carry it.
+  omitted?: string[]
 }
 
 export interface StoredSummary {

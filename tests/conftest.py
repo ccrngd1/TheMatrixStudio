@@ -90,13 +90,16 @@ def mock_analysis_llm(monkeypatch):
         # otherwise. Detection is heuristic on the system prompt.
         system = messages[0]["content"] if messages else ""
         if "STRUCTURED analysis" in system or "JSON object" in system:
+            # Every default field, so the mocked summary is not one flagged as `omitted`.
             content = _json.dumps(
                 {
+                    "overview": "Mocked analyst overview of the transcript.",
                     "consensus": ["mocked consensus point"],
                     "dissenters": [{"speaker": "Mock", "position": "mocked dissent"}],
                     "key_ideas": ["mocked idea"],
                     "open_questions": ["mocked question"],
-                    "overview": "Mocked analyst overview of the transcript.",
+                    "evidence_plan": [],
+                    "conditional_recommendation": "",
                 }
             )
         else:
