@@ -1,0 +1,24 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Atmosphere (docs/MOBILE-UI.md §5.4, §7 stage 6): the floor, the boot log, title decode and type-in.
+   command.css carries the prototype's #cc-floor and #cc-boot rules; this file adds only what the app needs on
+   top. It can load before command.css (it is imported by components, command.css by index.css), so every
+   override here leads with `.cc-app` to win on specificity rather than on order. FX off (`.cc-nofx`) and the
+   reduced-motion media query in command.css stop every animation here too. */
+
+/* The floor's loop resumes in phase with every other loop (§5.4): `--ph` is set once, when the frame mounts. */
+.cc-app #cc-floor { animation-delay:var(--ph, 0s); }
+
+/* Boot: lines tick in one after another, and the bar fills in the time the log is shown (Boot.tsx), not the
+   prototype's 1.5 s, so it is full as the fade starts. Without animation the lines simply show. */
+.cc-app #cc-boot .cc-bootline { animation:cc-tick 1ms steps(1) backwards; animation-delay:calc(120ms + var(--i) * 200ms); }
+@keyframes cc-tick { from { opacity:0; } }
+.cc-app #cc-boot .cc-bb i { animation-duration:1s; }
+
+/* Type-in (TypeIn.tsx): the real text, the wrapper's first child, keeps its space and stays readable to assistive
+   tech while the typed copy is drawn over it. */
+.cc-typein { position:relative; }
+.cc-typein.cc-typing > :first-child { opacity:0; }
+.cc-typein-fx { position:absolute; inset:0; pointer-events:none; }
+/* The untyped rest: laid out, so lines wrap where the final text does, but neither seen nor DOM text. */
+.cc-typein-fx .cc-ghost { visibility:hidden; }
+.cc-typein-fx .cc-ghost::before { content:attr(data-rest); }

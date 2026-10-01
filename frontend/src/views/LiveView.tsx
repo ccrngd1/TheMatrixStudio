@@ -337,6 +337,7 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh, tab = 'conver
         agents={state.agents}
         activeSpeaker={state.activeSpeaker}
         thinking={state.thinking}
+        liveFrom={stream.liveFrom}
         jumpTo={jumpTo}
         runId={runId}
         sourceIndex={state.sourceIndex}

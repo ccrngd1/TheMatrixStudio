@@ -60,6 +60,10 @@ export function useRunStream({ runId, cast, autoConnect = true, reloadKey = 0 }:
   const [lastEventAt, setLastEventAt] = useState<number | null>(null)
   // A ticking clock so the stalled flag re-evaluates without a new event.
   const [nowMs, setNowMs] = useState<number>(Date.now())
+  // The seq of the last event in the backlog the prime (below) reveals at once. Anything after it arrived
+  // while the view was open, which is what the feed types in (docs/MOBILE-UI.md §4.2); the backlog itself is
+  // history and shows as it is. Null until primed, and after a failed prime, when the two cannot be told apart.
+  const [liveFrom, setLiveFrom] = useState<number | null>(null)
 
   const seenSeqs = useRef<Set<number>>(new Set())
   // Highest seq seen, so a poll asks only for what is new. Tracked as a ref
@@ -76,6 +80,7 @@ export function useRunStream({ runId, cast, autoConnect = true, reloadKey = 0 }:
     setEngineDone(false)
     setLastEventAt(null)
     setPrimed(false)
+    setLiveFrom(null)
     seenSeqs.current = new Set()
     maxSeq.current = -1
   }, [runId, reloadKey])
@@ -152,6 +157,7 @@ export function useRunStream({ runId, cast, autoConnect = true, reloadKey = 0 }:
         // The backlog is the lowest-seq `evts.length` events (seq is monotonic;
         // any live event already received has a higher seq and stays unrevealed).
         setCursor((c) => Math.max(c, evts.length))
+        setLiveFrom(evts.reduce((m, e) => Math.max(m, e.seq), -1))
         setPrimed(true)
       })
       .catch(() => {
@@ -261,6 +267,7 @@ export function useRunStream({ runId, cast, autoConnect = true, reloadKey = 0 }:
     cursor,
     bufferLength: buffer.length,
     behind,
+    liveFrom,
     pause,
     resume,
     stepForward,
