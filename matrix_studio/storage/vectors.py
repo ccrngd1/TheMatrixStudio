@@ -303,9 +303,10 @@ def merge_with_authority_floor(
     ## Why this is not `merge_with_source_floor`
 
     That one reserves per COLLECTION, so every bound collection can contribute. This reserves
-    per AUTHORITY, and the two do not substitute for each other: research ingests into the
-    collection already bound at a scope, so a statute and thirty commentary chunks live in the
-    *same* collection and compete for the *same* reserved slot. A source floor is satisfied the
+    per AUTHORITY, and the two do not substitute for each other: research ingests a scope's whole
+    corpus into one collection (its own since 2026-10-01; the bound curated one before that), so a
+    statute and thirty commentary chunks live in the *same* collection and compete for the *same*
+    reserved slot. A source floor is satisfied the
     moment any one of them wins it, and the one that wins is whichever matches the query — which
     for a term bag drawn from conversation text is the commentary, because commentary is written
     in the conversation's vocabulary and a statute is not.

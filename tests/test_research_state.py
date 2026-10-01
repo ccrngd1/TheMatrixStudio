@@ -89,7 +89,7 @@ def test_targets_are_read_but_never_trusted():
 
 
 # --------------------------------------------------------------------------- #
-# Allocation: reuse a bound KB, create one only where there is none
+# Allocation: always a NEW collection per scope, bound alongside what was there
 # --------------------------------------------------------------------------- #
 
 
@@ -104,52 +104,90 @@ def _request(**config):
     }
 
 
+#: The pass most allocation tests allocate for. A run id, as `create_run` passes.
+FOR = st.for_run("r1")
+
+
+async def _allocate(db, request, *, research_for=FOR, **kw):
+    return await st.allocate_targets(
+        db, request, owner_sub=OWNER, label=kw.pop("label", "run"), research_for=research_for, **kw,
+    )
+
+
 async def test_allocation_is_a_no_op_when_research_is_off(db):
     """A run without research must be byte-identical to one created before the feature."""
     request = {"topic": "t", "cast": [{"name": "Casey"}], "config": {"max_messages": 4}}
-    out = await st.allocate_targets(db, dict(request), owner_sub=OWNER, label="run")
+    out = await _allocate(db, dict(request))
     assert out == request
 
 
-async def test_a_bound_kb_the_caller_owns_is_reused_rather_than_duplicated(db):
-    """§5.1: a persona with a curated collection AND a research collection would be two
-    places to look for the same kind of thing, and retrieval would split a budget between
-    them for no reason."""
+async def test_a_bound_kb_the_caller_owns_is_NOT_the_target_a_new_one_is_bound_beside_it(db):
+    """The 2026-09-30 incident, at the allocation step.
+
+    This used to reuse an owned bound collection as the target. A run created from another run's
+    setup inherits that run's bindings, so reuse pointed both runs' research at the same curated
+    collection — and the second pass replaced the first's batch inside it. Now the curated one
+    stays bound, exactly where the operator put it, and research gets a collection of its own.
+    """
     existing = await db.create_knowledge_base("Casey's statutes", owner_sub=OWNER)
-    request = _request(knowledge_bases=[existing["id"]])
+    out = await _allocate(db, _request(knowledge_bases=[existing["id"]]))
 
-    out = await st.allocate_targets(db, request, owner_sub=OWNER, label="run")
-
-    targets = out["config"]["research"]["targets"]
-    assert targets["shared"] == existing["id"]
-    # No second collection at the cast-wide scope.
-    assert out["config"]["knowledge_bases"] == [existing["id"]]
+    shared = out["config"]["research"]["targets"]["shared"]
+    assert shared != existing["id"]
+    # Kept, and kept FIRST: the binding the operator made is untouched, research is appended.
+    assert out["config"]["knowledge_bases"] == [existing["id"], shared]
 
 
-async def test_a_new_kb_is_created_and_BOUND_when_nothing_is_bound(db):
-    """The id is pre-allocated into the bindings before anything is searched.
+async def test_a_persona_s_curated_binding_is_kept_and_their_research_goes_beside_it(db):
+    """The same at a persona's scope, which is where six of the seven incident collections were."""
+    hers = await db.create_knowledge_base("Casey's own", owner_sub=OWNER)
+    request = _request()
+    request["cast"][0]["knowledge_bases"] = [hers["id"]]
+
+    out = await _allocate(db, request)
+
+    target = out["config"]["research"]["targets"]["personas"]["Casey"]
+    assert target != hers["id"]
+    casey = next(m for m in out["cast"] if m["name"] == "Casey")
+    assert casey["knowledge_bases"] == [hers["id"], target]
+
+
+async def test_a_new_kb_is_created_MARKED_and_BOUND(db):
+    """The id is pre-allocated into the bindings before anything is searched, and the row says
+    which pass it belongs to — the one fact the Research state checks before writing.
 
     A run's bindings live in `config_json`, written once, so "research then associate the KB"
     would be a read-modify-write of a JSON blob from a state the machine can retry.
     """
-    out = await st.allocate_targets(db, _request(), owner_sub=OWNER, label="renewal")
+    out = await _allocate(db, _request(), label="renewal")
 
     shared = out["config"]["research"]["targets"]["shared"]
     assert out["config"]["knowledge_bases"] == [shared]
     row = await db.get_knowledge_base(shared)
     assert row["owner_sub"] == OWNER
-    assert "renewal" in row["name"]
+    assert row["research_for"] == FOR
+    # Named for the run AND the scope, so a list of seven of them says which is whose.
+    assert "renewal" in row["name"] and "shared" in row["name"]
+    casey = out["config"]["research"]["targets"]["personas"]["Casey"]
+    assert "Casey" in (await db.get_knowledge_base(casey))["name"]
+
+
+async def test_allocation_refuses_to_run_without_knowing_its_pass(db):
+    """An unmarked collection is one the Research state will refuse to write into, so allocating
+    one would make a run that searches, pays, and stores nothing."""
+    with pytest.raises(ValueError):
+        await st.allocate_targets(db, _request(), owner_sub=OWNER, label="run", research_for="")
 
 
 async def test_each_persona_gets_their_OWN_target_not_the_cast_wide_one(db):
     """§2.2: a private corpus holds the persona's stance AND the opposition's case.
 
-    Resolved against the persona's own bindings only. `bindings.bound_kbs` returns the union,
-    which is right for a TURN — a persona may search the cast-wide collection — and wrong here:
-    it would put one persona's research, including the case against them, into the collection
-    every other persona reads.
+    Bound at the persona's own scope only. `bindings.bound_kbs` returns the union, which is right
+    for a TURN — a persona may search the cast-wide collection — and wrong here: it would put one
+    persona's research, including the case against them, into the collection every other persona
+    reads.
     """
-    out = await st.allocate_targets(db, _request(), owner_sub=OWNER, label="run")
+    out = await _allocate(db, _request())
 
     targets = out["config"]["research"]["targets"]
     casey, jordan, shared = (
@@ -166,7 +204,7 @@ async def test_a_persona_with_no_viewpoint_gets_no_collection(db):
     empty collection bound to them for ever."""
     request = _request()
     request["cast"].append({"name": "Silent"})
-    out = await st.allocate_targets(db, request, owner_sub=OWNER, label="run")
+    out = await _allocate(db, request)
 
     assert "Silent" not in out["config"]["research"]["targets"]["personas"]
     assert not [m for m in out["cast"] if m["name"] == "Silent"][0].get("knowledge_bases")
@@ -179,9 +217,7 @@ async def test_a_kb_the_caller_does_not_own_is_left_read_only_and_a_new_one_is_a
     they cannot see. So research creates its own and binds that IN ADDITION.
     """
     theirs = await db.create_knowledge_base("Somebody else's", owner_sub=STRANGER)
-    out = await st.allocate_targets(
-        db, _request(knowledge_bases=[theirs["id"]]), owner_sub=OWNER, label="run",
-    )
+    out = await _allocate(db, _request(knowledge_bases=[theirs["id"]]))
 
     shared = out["config"]["research"]["targets"]["shared"]
     assert shared != theirs["id"]
@@ -195,10 +231,8 @@ async def test_a_caller_supplied_targets_block_is_overwritten_not_merged(db):
     The API model does not declare the field, so it is normally dropped before reaching here —
     this asserts the server-side half, which is what holds if that model ever changes.
     """
-    out = await st.allocate_targets(
-        db,
-        _request(research={"enabled": True, "targets": {"shared": "kb-somebody-elses"}}),
-        owner_sub=OWNER, label="run",
+    out = await _allocate(
+        db, _request(research={"enabled": True, "targets": {"shared": "kb-somebody-elses"}}),
     )
     assert out["config"]["research"]["targets"]["shared"] != "kb-somebody-elses"
 
@@ -218,34 +252,18 @@ async def test_the_vector_index_is_ensured_with_PRIVILEGED_credentials(db, monke
 
     monkeypatch.setattr("matrix_studio.storage.vectors.ensure_index_for_kb", ensure)
     sentinel = object()
-    out = await st.allocate_targets(
-        db, _request(), owner_sub=OWNER, label="run", privileged=sentinel,
-    )
+    curated = await db.create_knowledge_base("curated", owner_sub=OWNER)
+    out = await _allocate(db, _request(knowledge_bases=[curated["id"]]), privileged=sentinel)
 
     targets = out["config"]["research"]["targets"]
     every = {targets["shared"], *targets["personas"].values()}
+    # Exactly the new ones. A bound collection is read, never written, so its index is the
+    # upload route's business and not this one's.
     assert {kb for _s, kb in seen} == every
+    assert curated["id"] not in {kb for _s, kb in seen}
     assert all(store is sentinel for store, _kb in seen), (
         "the index must be created with the unscoped store, not the tenant-bound one"
     )
-
-
-async def test_a_reused_target_also_gets_its_index_ensured(db, monkeypatch):
-    """A KB created before the index was made eagerly, or one whose creation half-failed,
-    would otherwise be permanently unwritable."""
-    existing = await db.create_knowledge_base("curated", owner_sub=OWNER)
-    seen = []
-
-    async def ensure(store, kb_id):
-        seen.append(kb_id)
-        return True
-
-    monkeypatch.setattr("matrix_studio.storage.vectors.ensure_index_for_kb", ensure)
-    await st.allocate_targets(
-        db, _request(knowledge_bases=[existing["id"]]), owner_sub=OWNER, label="run",
-        privileged=object(),
-    )
-    assert existing["id"] in seen
 
 
 # --------------------------------------------------------------------------- #
@@ -373,7 +391,7 @@ def _wire(monkeypatch, provider, *, documents=1):
 
 
 async def test_a_successful_pass_ingests_embeds_and_records(db, monkeypatch):
-    kb = await db.create_knowledge_base("target", owner_sub=OWNER)
+    kb = await db.create_knowledge_base("target", owner_sub=OWNER, research_for=FOR)
     config = {"research": {"enabled": True, "personas": False,
                            "targets": {"shared": kb["id"], "personas": {}}}}
     run_id = await _run_row(db, config=config)
@@ -407,7 +425,7 @@ async def test_a_successful_pass_ingests_embeds_and_records(db, monkeypatch):
 
 async def test_the_pass_is_recorded_on_the_run_row(db, monkeypatch):
     """§5.2: the record is what lets an operator tell "found nothing" from "failed"."""
-    kb = await db.create_knowledge_base("target", owner_sub=OWNER)
+    kb = await db.create_knowledge_base("target", owner_sub=OWNER, research_for=FOR)
     run_id = await _run_row(db, config={
         "research": {"enabled": True, "personas": False,
                      "targets": {"shared": kb["id"], "personas": {}}},
@@ -434,7 +452,7 @@ async def test_finding_nothing_is_a_SUCCESS_not_a_failure(db, monkeypatch):
     """A brief whose authorities are not on the open web is a real answer, and §4's documented
     negative is the artefact that says so. "Nobody looked" and "we looked and there is nothing"
     are different facts, and only the second is reusable."""
-    kb = await db.create_knowledge_base("target", owner_sub=OWNER)
+    kb = await db.create_knowledge_base("target", owner_sub=OWNER, research_for=FOR)
     run_id = await _run_row(db, config={
         "research": {"enabled": True, "personas": False,
                      "targets": {"shared": kb["id"], "personas": {}}},
@@ -457,7 +475,7 @@ async def test_finding_nothing_is_a_SUCCESS_not_a_failure(db, monkeypatch):
 
 async def test_a_provider_that_raises_does_not_fail_the_run(db, monkeypatch):
     """One failed query loses that query. A structural failure loses the pass, not the run."""
-    kb = await db.create_knowledge_base("target", owner_sub=OWNER)
+    kb = await db.create_knowledge_base("target", owner_sub=OWNER, research_for=FOR)
     run_id = await _run_row(db, config={
         "research": {"enabled": True, "personas": False,
                      "targets": {"shared": kb["id"], "personas": {}}},
@@ -521,7 +539,7 @@ async def test_an_embedding_failure_keeps_the_documents_and_says_they_are_not_re
     """The documents are stored and a model mismatch is fixed by configuration rather than by
     re-running the search. So the pass keeps what it found and says plainly that no turn can
     see it yet — which is the difference between a reported problem and an inert feature."""
-    kb = await db.create_knowledge_base("target", owner_sub=OWNER)
+    kb = await db.create_knowledge_base("target", owner_sub=OWNER, research_for=FOR)
     run_id = await _run_row(db, config={
         "research": {"enabled": True, "personas": False,
                      "targets": {"shared": kb["id"], "personas": {}}},
@@ -540,7 +558,7 @@ async def test_an_embedding_failure_keeps_the_documents_and_says_they_are_not_re
 async def test_research_spend_is_metered(db, monkeypatch):
     """Without this, research is UNMETERED. A dozen model calls per run before turn 1, charged
     nowhere, while the cap's whole job is to refuse the NEXT thing."""
-    kb = await db.create_knowledge_base("target", owner_sub=OWNER)
+    kb = await db.create_knowledge_base("target", owner_sub=OWNER, research_for=FOR)
     run_id = await _run_row(db, config={
         "research": {"enabled": True, "personas": False,
                      "targets": {"shared": kb["id"], "personas": {}}},
@@ -566,32 +584,66 @@ async def test_research_spend_is_metered(db, monkeypatch):
 # --------------------------------------------------------------------------- #
 
 
-async def test_a_second_pass_replaces_the_first_and_leaves_curation_alone(db, monkeypatch):
-    """§5.1: run the same definition twice and the collection would otherwise hold two copies.
+async def test_a_retried_research_step_replaces_its_own_attempt_and_creates_no_collection(
+    db, monkeypatch,
+):
+    """A retried Lambda must be idempotent: the same collections, one batch, nothing new.
 
-    The curated document is the control. An operator who assembled a collection by hand and
-    then enabled research must be able to undo the research without rebuilding their own work.
+    Collections are created once, by the API at allocation, and the Research state never creates
+    one — so a retry can only write into what this run was allocated, and write-then-replace means
+    its batch supersedes the failed attempt's inside them rather than adding a second copy.
+    Driven through the state machine's own entry point, twice, as a Lambda retry would.
     """
-    kb = await db.create_knowledge_base("target", owner_sub=OWNER)
-    curated = await db.add_kb_document(
-        kb["id"], title="hand-written", text="y" * 400, char_count=400,
-    )
-    config = {"research": {"enabled": True, "personas": False,
-                           "targets": {"shared": kb["id"], "personas": {}}}}
-    run_id = await _run_row(db, config=config)
+    from matrix_studio import step_handlers
+
+    request = await _allocate(db, _searchable_request())
+    config, cast = request["config"], request["cast"]
+    await db.create_run(run_id="r1", topic="t", cast=cast, name="r1", config=config,
+                        owner_sub=OWNER)
     _wire(monkeypatch, _Provider([_Hit("https://example.gov/s")]))
     monkeypatch.setattr(
         "matrix_studio.retrieval.embed_pending_kb_chunks",
         lambda *a, **k: _done({"embedded": 1, "cost_usd": 0.0}),
     )
 
-    first = await st.run_research(db, run_id, owner_sub=OWNER)
-    second = await st.run_research(db, run_id, owner_sub=OWNER)
+    async def bound(_owner):
+        return db
 
+    monkeypatch.setattr(step_handlers, "_bound", bound)
+    event = {"run_id": "r1", "owner_sub": OWNER, "mode": "fresh"}
+    collections_before = {k["id"] for k in await db.list_knowledge_bases(owner_sub=OWNER)}
+
+    await step_handlers._research(event)
+    first = json.loads((await db.get_run("r1"))["research_json"])
+    await step_handlers._research(event)
+    second = json.loads((await db.get_run("r1"))["research_json"])
+
+    assert {k["id"] for k in await db.list_knowledge_bases(owner_sub=OWNER)} == collections_before
+    assert [sc["kb_id"] for sc in first["scopes"]] == [sc["kb_id"] for sc in second["scopes"]]
     assert first["batch"] != second["batch"]
-    batches = {d.get("research_batch") for d in await db.list_kb_documents(kb["id"])}
-    assert batches == {None, second["batch"]}, "the earlier batch must be gone"
-    assert curated in [d["id"] for d in await db.list_kb_documents(kb["id"])]
+    for scope in second["scopes"]:
+        docs = await db.list_kb_documents(scope["kb_id"])
+        assert docs and {d["research_batch"] for d in docs} == {second["batch"]}, (
+            "the retry's batch must replace the failed attempt's, not sit beside it"
+        )
+
+
+async def test_a_research_collection_somebody_uploaded_into_is_left_alone(db, monkeypatch):
+    """A research collection is a normal collection, and an operator may add their own document
+    to it. From then on it is partly curated, and the replace step must not run against it."""
+    kb = await db.create_knowledge_base("target", owner_sub=OWNER, research_for=FOR)
+    mine = await db.add_kb_document(kb["id"], title="hand-written", text="y" * 400,
+                                    char_count=400)
+    run_id = await _run_row(db, config={
+        "research": {"enabled": True, "personas": False,
+                     "targets": {"shared": kb["id"], "personas": {}}},
+    })
+    _wire(monkeypatch, _Provider([_Hit("https://example.gov/s")]))
+
+    record = await st.run_research(db, run_id, owner_sub=OWNER)
+
+    assert "somebody uploaded" in record["scopes"][0]["refused"]
+    assert [d["id"] for d in await db.list_kb_documents(kb["id"])] == [mine]
 
 
 async def test_the_record_holds_counts_rather_than_contents(db, monkeypatch):
@@ -601,7 +653,7 @@ async def test_the_record_holds_counts_rather_than_contents(db, monkeypatch):
     (§5.3) — and duplicating passages onto the run row would put a 400 KB item limit between a
     run and a large research pass.
     """
-    kb = await db.create_knowledge_base("target", owner_sub=OWNER)
+    kb = await db.create_knowledge_base("target", owner_sub=OWNER, research_for=FOR)
     run_id = await _run_row(db, config={
         "research": {"enabled": True, "personas": False,
                      "targets": {"shared": kb["id"], "personas": {}}},
@@ -842,7 +894,7 @@ def _with_consultant(**research):
 
 
 async def test_a_consultant_gets_its_OWN_collection_bound_to_it(db):
-    out = await st.allocate_targets(db, _with_consultant(), owner_sub=OWNER, label="run")
+    out = await _allocate(db, _with_consultant())
     targets = out["config"]["research"]["targets"]
     ada = targets["consultants"]["Ada"]
     assert ada not in {targets["shared"], *targets["personas"].values()}
@@ -852,7 +904,7 @@ async def test_a_consultant_gets_its_OWN_collection_bound_to_it(db):
 
 
 async def test_consultant_research_can_be_switched_off(db):
-    out = await st.allocate_targets(db, _with_consultant(consultants=False), owner_sub=OWNER, label="run")
+    out = await _allocate(db, _with_consultant(consultants=False))
     assert out["config"]["research"]["targets"]["consultants"] == {}
     assert "knowledge_bases" not in out["config"]["experts"][0]
 
@@ -865,7 +917,7 @@ async def test_a_consultant_target_never_resolves_to_a_persona_of_the_same_name(
 
 
 async def test_the_pass_fills_the_consultant_s_library(db, monkeypatch):
-    kb = await db.create_knowledge_base("Ada's library", owner_sub=OWNER)
+    kb = await db.create_knowledge_base("Ada's library", owner_sub=OWNER, research_for=FOR)
     config = {
         "research": {"enabled": True, "shared": False, "personas": False,
                      "targets": {"consultants": {"Ada": kb["id"]}}},
@@ -909,3 +961,240 @@ def test_the_forecast_counts_a_collection_per_consultant():
     assert forecast.research_collections(request) == 4
     request["config"]["research"]["consultants"] = False
     assert forecast.research_collections(request) == 3
+
+
+# --------------------------------------------------------------------------- #
+# Research writes only into collections created for the pass (2026-09-30)
+# --------------------------------------------------------------------------- #
+#
+# Observed on the deployed system: a run created from an earlier run's setup, with research on,
+# wrote its research INTO the seven curated collections that setup was bound to, and a later run
+# from the same setup REPLACED the earlier run's researched documents there. Curated passages were
+# crowded out of retrieval, every other run bound to those collections — no-research baselines
+# included — read web material it never asked for, and one run's sources were swapped for
+# another's. These pin the rule that prevents it: a pass creates its own collections, binds them
+# beside the curated ones, and writes nowhere else.
+
+
+def _wired(monkeypatch, url="https://example.gov/statute"):
+    _wire(monkeypatch, _Provider([_Hit(url)]))
+    monkeypatch.setattr(
+        "matrix_studio.retrieval.embed_pending_kb_chunks",
+        lambda *a, **k: _done({"embedded": 1, "cost_usd": 0.0}),
+    )
+
+
+async def _curated(db, name, *, earlier_research=False):
+    """A hand-curated collection: two uploaded documents and, optionally, a researched one an
+    earlier pass left behind — the shape the deployed collections are in today."""
+    kb = await db.create_knowledge_base(name, owner_sub=OWNER)
+    for title in ("Source material", "Meeting notes"):
+        await db.add_kb_document(kb["id"], title=f"{title} — {name}", text="c" * 400,
+                                 char_count=400)
+    if earlier_research:
+        await db.add_kb_document(kb["id"], title="found earlier", text="e" * 400,
+                                 char_count=400, origin="researched", authority="commentary",
+                                 research_batch="earlier-batch")
+    return kb["id"]
+
+
+async def _snapshot(db, kb_ids):
+    return {kb: sorted(d["id"] for d in await db.list_kb_documents(kb)) for kb in kb_ids}
+
+
+def _searchable_request(**config):
+    """`_request`, with viewpoints the query planner can actually read (position + shift)."""
+    request = _request(**config)
+    for member, position in zip(request["cast"], ("The statute governs", "Continuity matters")):
+        member["structured"] = {"viewpoints": [
+            {"position": position, "evidence_that_shifts": ["a board ruling on renewals"]},
+        ]}
+    return request
+
+
+def _setup(curated_shared, curated_casey):
+    """The setup both runs are created from: curated bindings at the run AND persona level."""
+    request = _searchable_request(knowledge_bases=[curated_shared])
+    request["cast"][0]["knowledge_bases"] = [curated_casey]
+    return request
+
+
+async def _create_and_research(db, request, run_id):
+    """`create_run` then the Research state, as the deployed path does them."""
+    request = await st.allocate_targets(
+        db, json.loads(json.dumps(request)), owner_sub=OWNER, label=run_id,
+        research_for=st.for_run(run_id),
+    )
+    await db.create_run(run_id=run_id, topic=request["topic"], cast=request["cast"],
+                        name=run_id, config=request["config"], owner_sub=OWNER)
+    record = await st.run_research(db, run_id, owner_sub=OWNER)
+    return request, record
+
+
+async def test_research_on_a_run_bound_to_curated_collections_leaves_them_untouched(
+    db, monkeypatch,
+):
+    """Not one document added, replaced or deleted in a collection the run merely inherited —
+    including the researched document an earlier pass left there, which the old replace step
+    would have deleted as "the predecessor"."""
+    shared = await _curated(db, "proposal", earlier_research=True)
+    casey = await _curated(db, "casey-own", earlier_research=True)
+    before = await _snapshot(db, [shared, casey])
+    _wired(monkeypatch)
+
+    request, record = await _create_and_research(db, _setup(shared, casey), "run-a")
+
+    assert await _snapshot(db, [shared, casey]) == before
+    written = {sc["kb_id"] for sc in record["scopes"] if sc.get("written")}
+    assert written and not written & {shared, casey}
+    # Bound ALONGSIDE, not instead: the curated collections are still read by every turn.
+    targets = request["config"]["research"]["targets"]
+    assert request["config"]["knowledge_bases"] == [shared, targets["shared"]]
+    by_name = {m["name"]: m for m in request["cast"]}
+    assert by_name["Casey"]["knowledge_bases"] == [casey, targets["personas"]["Casey"]]
+    for kb_id in written:
+        docs = await db.list_kb_documents(kb_id)
+        assert docs and all(d["origin"] == "researched" for d in docs)
+        assert (await db.get_knowledge_base(kb_id))["research_for"] == st.for_run("run-a")
+
+
+async def test_two_runs_from_the_same_setup_do_not_touch_each_others_research(db, monkeypatch):
+    """The incident's second half: the later run REPLACED the earlier run's research.
+
+    Run B is built the worst way a copy can be: from A's stored config, so it binds A's research
+    collections as well as the curated ones and even carries A's targets block. Allocation
+    overwrites the targets, so B researches into its own; A's research is exactly as it was.
+    """
+    shared, casey = await _curated(db, "proposal"), await _curated(db, "casey-own")
+    _wired(monkeypatch)
+    a_request, a_record = await _create_and_research(db, _setup(shared, casey), "run-a")
+    a_research = [sc["kb_id"] for sc in a_record["scopes"]]
+    a_before = await _snapshot(db, a_research + [shared, casey])
+
+    copied = {"topic": a_request["topic"], "cast": a_request["cast"],
+              "config": a_request["config"]}
+    _wired(monkeypatch, url="https://example.gov/a-different-page")
+    b_request, b_record = await _create_and_research(db, copied, "run-b")
+    b_research = [sc["kb_id"] for sc in b_record["scopes"]]
+
+    assert len(b_research) == 3 and not set(a_research) & set(b_research)
+    assert await _snapshot(db, a_research + [shared, casey]) == a_before
+    for kb_id in b_research:
+        batches = {d["research_batch"] for d in await db.list_kb_documents(kb_id)}
+        assert batches == {b_record["batch"]}
+    # B READS A's research here, because this copy bound it explicitly — and only reads it.
+    b_bound = list(b_request["config"]["knowledge_bases"])
+    for member in b_request["cast"]:
+        b_bound += member.get("knowledge_bases") or []
+    assert set(a_research) <= set(b_bound)
+
+
+async def test_a_stored_target_from_another_run_is_refused_not_written(db, monkeypatch):
+    """The state's own check, without allocation in front of it: a run row whose targets name
+    another run's research collections — a crafted config, or a copy that bypassed allocation."""
+    shared, casey = await _curated(db, "proposal"), await _curated(db, "casey-own")
+    _wired(monkeypatch)
+    a_request, a_record = await _create_and_research(db, _setup(shared, casey), "run-a")
+    a_research = [sc["kb_id"] for sc in a_record["scopes"]]
+    a_before = await _snapshot(db, a_research)
+
+    await db.create_run(run_id="run-b", topic="t", cast=a_request["cast"], name="run-b",
+                        config=a_request["config"], owner_sub=OWNER)
+    record = await st.run_research(db, "run-b", owner_sub=OWNER)
+
+    assert record["scopes"]
+    assert all("not created for this research pass" in sc["refused"] for sc in record["scopes"])
+    assert await _snapshot(db, a_research) == a_before
+
+
+async def test_a_run_created_before_the_fix_cannot_write_into_its_curated_targets(
+    db, monkeypatch,
+):
+    """Runs created before 2026-10-01 carry targets that ARE their curated collections. If such a
+    run's Research state ever executes again — an execution in flight across the deploy — it must
+    refuse rather than resume writing into them."""
+    shared = await _curated(db, "proposal", earlier_research=True)
+    before = await _snapshot(db, [shared])
+    run_id = await _run_row(db, run_id="legacy", config={
+        "knowledge_bases": [shared],
+        "research": {"enabled": True, "personas": False,
+                     "targets": {"shared": shared, "personas": {}}},
+    })
+    _wired(monkeypatch)
+
+    record = await st.run_research(db, run_id, owner_sub=OWNER)
+
+    assert "not created for this research pass" in record["scopes"][0]["refused"]
+    assert await _snapshot(db, [shared]) == before
+
+
+async def test_an_ensemble_researches_once_into_fresh_collections_every_member_shares(
+    db, monkeypatch,
+):
+    """§6 with the fix: one pass, into collections marked for the ENSEMBLE, bound beside the
+    curated ones — and every member reads that one set. Nothing per member, nothing curated."""
+    from matrix_studio import ensemble_spec
+    from matrix_studio.api.manager import RunManager
+
+    shared, casey = await _curated(db, "proposal"), await _curated(db, "casey-own")
+    before = await _snapshot(db, [shared, casey])
+    _wired(monkeypatch)
+    monkeypatch.setattr(
+        "matrix_studio.orchestration.turn_loop_arn", lambda: "arn:aws:states:::sm/x",
+    )
+
+    async def start(*a, **k):
+        return {"executionArn": "x"}
+
+    async def no_index(*a, **k):
+        return True
+
+    monkeypatch.setattr("matrix_studio.orchestration.start_execution", start)
+    monkeypatch.setattr("matrix_studio.storage.vectors.ensure_index_for_kb", no_index)
+    store = type("S", (), {"for_owner": lambda _self, _sub: db})()
+    collections_before = {k["id"] for k in await db.list_knowledge_bases(owner_sub=OWNER)}
+
+    request = {**_setup(shared, casey), "name": "renewal-ens"}
+    out = await RunManager(store).create_ensemble(
+        request, ensemble_spec.replicates(n=3), owner_sub=OWNER,
+    )
+
+    eid = out["ensemble_id"]
+    after = {k["id"] for k in await db.list_knowledge_bases(owner_sub=OWNER)}
+    created = after - collections_before
+    # 1 shared + 2 personas with viewpoints — once for the ensemble, not once per member.
+    assert len(created) == 3
+    for kb_id in created:
+        assert (await db.get_knowledge_base(kb_id))["research_for"] == st.for_ensemble(eid)
+        assert await db.list_kb_documents(kb_id), "the one pass wrote nothing"
+    assert await _snapshot(db, [shared, casey]) == before
+
+    rows = [await db.get_run(m["run_id"]) for m in out["members"]]
+    assert len(rows) == 3 and all(rows)
+    configs = [json.loads(r["config_json"]) for r in rows]
+    casts = [json.loads(r["cast_json"]) for r in rows]
+    assert all(c["knowledge_bases"] == configs[0]["knowledge_bases"] for c in configs)
+    assert configs[0]["knowledge_bases"][0] == shared
+    assert set(configs[0]["knowledge_bases"][1:]) <= created
+    member_casey = [next(m for m in c if m["name"] == "Casey")["knowledge_bases"] for c in casts]
+    assert all(b == member_casey[0] for b in member_casey)
+    assert member_casey[0][0] == casey and set(member_casey[0][1:]) <= created
+
+
+async def test_a_copied_setup_leaves_the_earlier_run_s_research_behind(db, monkeypatch):
+    """What a copy of a setup must not carry: the collections research added.
+
+    And for a run from before the fix, whose targets WERE its curated collections, those are kept
+    — they hold the operator's own documents and are the bindings they chose.
+    """
+    shared, casey = await _curated(db, "proposal"), await _curated(db, "casey-own")
+    _wired(monkeypatch)
+    a_request, a_record = await _create_and_research(db, _setup(shared, casey), "run-a")
+
+    dropped = await st.research_collections_of(db, a_request["config"])
+    assert set(dropped) == {sc["kb_id"] for sc in a_record["scopes"]}
+    assert shared not in dropped and casey not in dropped
+
+    legacy = {"research": {"enabled": True, "targets": {"shared": shared,
+                                                       "personas": {"Casey": casey}}}}
+    assert await st.research_collections_of(db, legacy) == []

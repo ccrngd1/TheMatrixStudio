@@ -70,6 +70,16 @@ supposed to catch them.
   it off.
 
 ### Fixed
+- **Pre-conversation research wrote into curated collections, and a later run replaced an
+  earlier run's research there** (`docs/PERSONA-RESEARCH.md` §5.1, reversed 2026-10-01). Research
+  reused any bound collection the operator owned as its target, so a run started from another
+  run's setup researched into the same curated collections, and its replace-the-previous-batch
+  step deleted the earlier run's documents. Curated passages were crowded out of retrieval and
+  no-research runs bound to those collections read web material. Every pass now creates its own
+  collections — marked on the row with the run or ensemble they belong to, bound beside the
+  curated ones — and the Research state refuses to write anywhere else. "Start fresh from this
+  setup" no longer carries the earlier run's research collections, and says so. No existing data
+  is changed.
 - **Vector-only retrieval went silent instead of degrading**, in the two commonest
   cases. `retrieve_for_turn` had a lexical fallback whose stated intent was "degrading
   beats going silent", but it was nested inside the `vec_available` guard as an `elif`
