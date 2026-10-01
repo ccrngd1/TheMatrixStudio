@@ -1,0 +1,52 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* The inside of a knowledge collection (docs/MOBILE-UI.md §4.10). Composes styles/command.css (`.cc-drop`,
+   `.cc-sec`, `.cc-field`, the primitives) and adds only what this view needs.
+
+   Every rule is scoped under `.cc-kb-inside`, and that is load-bearing rather than tidiness: this file is
+   imported by the view, which App imports BEFORE index.css, so it lands earlier in the bundle than
+   command.css and a rule of equal specificity there would win. */
+
+.cc-kb-inside { display:flex; flex-direction:column; gap:16px; margin-top:12px; padding-top:12px; border-top:1px solid var(--line); }
+.cc-kb-inside > * { min-width:0; }
+
+/* Tap targets: the design system's small button is 34 px, under the 44 px floor (§2). Kept small in
+   padding and type, raised in height. */
+.cc-kb-inside .cc-btn.cc-sm { min-height:44px; }
+.cc-kb-inside .cc-field { min-height:44px; }
+
+/* The drop target. Its focus ring is drawn on the label, because the real control is a visually hidden
+   file input inside it — without this a keyboard user would tab to an invisible element. */
+.cc-kb-inside .cc-drop { display:flex; flex-direction:column; align-items:center; gap:4px; min-height:44px; padding:20px 12px; }
+.cc-kb-inside .cc-drop:focus-within { outline:2px solid var(--accent); outline-offset:3px; }
+.cc-kb-inside .cc-kb-droptext { font:700 12px/1.3 var(--mono); letter-spacing:.12em; text-transform:uppercase; color:var(--t1); }
+/* A file held over it. Drawn with a glow rather than a new background, which would have to restate the
+   marching-ants layers; and the words change too ("Release to read it"), so it is not colour alone. */
+.cc-kb-inside .cc-drop.cc-kb-over { color:var(--t1);
+    box-shadow:inset 0 0 0 2px var(--accent), 0 0 22px color-mix(in srgb,var(--accent) 35%,transparent); }
+.cc-kb-inside .cc-drop.cc-kb-busy { cursor:progress; opacity:.65; }
+
+/* Document and grant rows. Names wrap anywhere: a file name or a Cognito sub has no spaces, and at
+   360 px an unbreakable one would scroll the whole screen sideways. */
+.cc-kb-inside .cc-kb-rows { display:flex; flex-direction:column; }
+.cc-kb-inside .cc-kb-row { display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--line); }
+.cc-kb-inside .cc-kb-row:first-child { border-top:1px solid var(--line); }
+.cc-kb-inside .cc-kb-name { display:block; font-size:13.5px; color:var(--t1); overflow-wrap:anywhere; }
+.cc-kb-inside .cc-kb-sub { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:4px; }
+
+.cc-kb-inside .cc-kb-note { min-height:1.4em; font-size:12.5px; color:var(--t2); display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
+.cc-kb-inside .cc-kb-note:empty { display:none; }
+.cc-kb-inside .cc-kb-warn { color:var(--inject); }
+.cc-kb-inside .cc-kb-err { font-size:12.5px; color:var(--danger); overflow-wrap:anywhere; }
+
+/* Kind, principal, Share: one row while it fits, the principal on its own line when it does not. */
+.cc-kb-inside .cc-kb-share { display:flex; flex-wrap:wrap; gap:8px; }
+.cc-kb-inside .cc-kb-share select { flex:none; }
+.cc-kb-inside .cc-kb-share input { flex:1 1 150px; min-width:0; width:auto; }
+
+/* Wide (§4.11): the open collection takes the grid's whole row, and an owner's adds sit beside what is
+   already in it. */
+@media (min-width: 768px) {
+  .cc-list > .cc-card.cc-kb-open { grid-column:1 / -1; }
+  .cc-kb-inside.cc-kb-owner { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); align-items:start; column-gap:24px; }
+  .cc-kb-inside.cc-kb-owner > .cc-kb-add { grid-row:span 2; }
+}
