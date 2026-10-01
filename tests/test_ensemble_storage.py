@@ -280,11 +280,21 @@ class TestMembersCarryTheirDerivedStats:
 class TestResearchProvenanceOnDocuments:
     """`origin`, `authority` and `research_batch` — docs/PERSONA-RESEARCH.md §5.1.
 
-    These exist because research ingests into the collection ALREADY BOUND at a scope. Without them
-    a curated collection and a researched one are indistinguishable, and two things become
-    impossible: telling a reader what they are looking at, and undoing a research pass without
-    rebuilding somebody's hand-assembled work.
+    These exist because research ingested into the collection ALREADY BOUND at a scope until
+    2026-10-01, and collections written then hold both kinds. Without them a curated collection and
+    a researched one are indistinguishable, and two things become impossible: telling a reader what
+    they are looking at, and undoing a research pass without rebuilding somebody's hand-assembled
+    work. They are also how the setup route tells a research collection from a curated one.
     """
+
+    async def test_only_a_collection_made_FOR_research_carries_the_marker(self, db):
+        # The Research state writes only where `research_for` names its own pass, so a
+        # collection a person made must never carry one — absent, as every older row reads.
+        mine = await db.create_knowledge_base(name="hand made", description="d")
+        found = await db.create_knowledge_base(name="Research — r · shared",
+                                               research_for="run:r")
+        assert (await db.get_knowledge_base(mine["id"]))["research_for"] is None
+        assert (await db.get_knowledge_base(found["id"]))["research_for"] == "run:r"
 
     async def _kb(self, db):
         return (await db.create_knowledge_base(name="provider law", description="d"))["id"]

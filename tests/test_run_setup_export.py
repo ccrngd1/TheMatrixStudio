@@ -164,6 +164,99 @@ def test_setup_preserves_convictions_including_the_private_concern(client):
     assert setup["name"].lower() == "migration debate"
 
 
+def _store_call(fn):
+    """Run one coroutine against a fresh store on the same mocked account as the app."""
+    from matrix_studio.api import identity
+    from matrix_studio.storage import Database
+
+    async def go():
+        db = Database(
+            table_prefix=os.environ["TABLE_PREFIX"],
+            bucket=os.environ["DATA_BUCKET"],
+            region="us-east-1",
+        )
+        await db.connect()
+        try:
+            return await fn(db.for_owner(identity.LOCAL_USER_SUB), identity.LOCAL_USER_SUB)
+        finally:
+            await db.close()
+
+    return asyncio.run(go())
+
+
+def _research_record(client, ref, tries=400):
+    """On the local path the record is written AFTER the conversation, so wait for it."""
+    for _ in range(tries):
+        record = client.get(f"/api/runs/{ref}").json().get("research")
+        if record:
+            return record
+        time.sleep(0.02)
+    raise AssertionError(f"run {ref} never recorded its research")
+
+
+def test_start_fresh_keeps_curated_bindings_and_leaves_the_research_behind(client, monkeypatch):
+    """PERSONA-RESEARCH.md §5.1, 2026-10-01 — the incident, through the routes an operator uses.
+
+    A run with research on, bound to curated collections; "Start fresh from this setup"; the new
+    run researches too. Before the fix both passes wrote into the curated collections and the
+    second replaced the first's documents. Now: the setup carries the curated bindings and not
+    the earlier research, the second run researches into collections of its own, and nothing
+    the first run or the operator owns changes.
+    """
+    from tests.test_research_state import _Hit, _Provider, _wire
+
+    async def make(db, sub):
+        cast_wide = await db.create_knowledge_base("migration-plan", owner_sub=sub)
+        hers = await db.create_knowledge_base("priyas-runbooks", owner_sub=sub)
+        for kb in (cast_wide, hers):
+            await db.add_kb_document(kb["id"], title=f"curated {kb['name']}", text="c" * 400,
+                                     char_count=400)
+        return cast_wide["id"], hers["id"]
+
+    cast_wide, hers = _store_call(make)
+
+    async def snapshot(db, _sub, ids):
+        return {kb: sorted(d["id"] for d in await db.list_kb_documents(kb)) for kb in ids}
+
+    _wire(monkeypatch, _Provider([_Hit("https://example.gov/runbook-standard")]))
+
+    async def embedded(*a, **k):
+        return {"embedded": 1, "cost_usd": 0.0}
+
+    monkeypatch.setattr("matrix_studio.retrieval.embed_pending_kb_chunks", embedded)
+
+    body = json.loads(json.dumps(REQUEST))
+    body["name"] = "researched-run"
+    body["config"]["knowledge_bases"] = [cast_wide]
+    body["config"]["research"] = {"enabled": True}
+    body["cast"][0]["knowledge_bases"] = [hers]
+
+    first = _start(client, body)
+    a_research = {sc["kb_id"] for sc in _research_record(client, first)["scopes"]}
+    # Shared + Priya; Dan has no viewpoint to research.
+    assert len(a_research) == 2 and not a_research & {cast_wide, hers}
+    before = _store_call(lambda db, sub: snapshot(db, sub, [cast_wide, hers, *a_research]))
+
+    payload = client.get(f"/api/runs/{first}/setup").json()
+    setup = payload["setup"]
+    assert setup["config"]["knowledge_bases"] == [cast_wide]
+    assert next(c for c in setup["cast"] if c["name"] == "Priya")["knowledge_bases"] == [hers]
+    assert setup["config"]["research"]["enabled"] is True
+    assert "targets" not in setup["config"]["research"]
+    assert any("not carried over" in w for w in payload["warnings"])
+
+    second = _start(client, setup)
+    b_research = {sc["kb_id"] for sc in _research_record(client, second)["scopes"]}
+
+    assert len(b_research) == 2 and not b_research & (a_research | {cast_wide, hers})
+    assert _store_call(
+        lambda db, sub: snapshot(db, sub, [cast_wide, hers, *a_research])
+    ) == before, "the second run changed a collection it did not create"
+    config = client.get(f"/api/runs/{second}").json()["config"]
+    assert config["knowledge_bases"][0] == cast_wide
+    assert not a_research & set(config["knowledge_bases"])
+
+
 def test_documents_come_back_as_text_without_duplicated_overlap(client):
     """
     A persona's document is exported as inline text, reassembled from its chunks.

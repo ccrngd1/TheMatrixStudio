@@ -209,45 +209,55 @@ async def describe_research(db: Database, request: Dict[str, Any], owner: str) -
     reuse working correctly, and was not what the operator was told would happen.
 
     An ingest target is the one thing about this feature that cannot be undone by reading a log
-    afterwards: by then the documents are in somebody's collection. So it is printed as a plan,
-    REUSE or CREATE per scope, and `--dry-run` shows it without writing anything.
+    afterwards: by then the documents are in somebody's collection. So it is printed as a plan per
+    scope, and `--dry-run` shows it without writing anything.
 
-    Deliberately resolved the same way the real path resolves it — `_first_owned` over the same
-    bindings — rather than by a second implementation that could disagree with it.
+    Since 2026-10-01 every scope is CREATE — research writes only into collections made for the
+    run (`research_state.allocate_targets`), never into one that is bound — so what this prints
+    that an operator still needs is the READ side: which bound collections the run will search
+    alongside its research, how many curated documents each holds, and whether one of them is an
+    EARLIER pass's research. That last case is legal (it is read-only to this run) and is how a
+    hand-copied definition ends up reading two passes at once, so it is said out loud.
     """
     from matrix_studio import research_state as rs
+    from matrix_studio.bindings import _clean
 
     settings = rs.settings_from(request.get("config"))
     if not settings.enabled:
         return
 
-    print(f"  research    ON — shared={settings.shared} personas={settings.personas}")
+    config = request.get("config") or {}
+    print(f"  research    ON — shared={settings.shared} personas={settings.personas} "
+          f"consultants={settings.consultants}")
     scopes: list = []
     if settings.shared:
-        from matrix_studio.bindings import _clean
-
-        scopes.append(("shared (whole cast)", _clean((request.get("config") or {}).get(
-            "knowledge_bases"))))
+        scopes.append(("shared (whole cast)", _clean(config.get("knowledge_bases"))))
     if settings.personas:
         for member in request.get("cast") or []:
             viewpoints = ((member.get("structured") or {}).get("viewpoints")) or []
             if str(member.get("name") or "").strip() and viewpoints:
                 scopes.append((str(member["name"]), rs._persona_kbs(member)))
+    if settings.consultants:
+        for expert in config.get("experts") or []:
+            if isinstance(expert, dict) and str(expert.get("name") or "").strip():
+                scopes.append((f"consultant {expert['name']}", rs._persona_kbs(expert)))
 
     for who, bound in scopes:
-        target = await rs._first_owned(db, bound, owner)
-        if target:
-            kb = await db.get_knowledge_base(target)
-            docs = await db.list_kb_documents(target)
+        print(f"    CREATE  {who:<22} (a new collection for this run's research)")
+        for kb_id in bound:
+            kb = await db.get_knowledge_base(kb_id)
+            if kb is None:
+                print(f"      read  {kb_id}  (does not exist — the create will refuse it)")
+                continue
+            docs = await db.list_kb_documents(kb_id)
             curated = [d for d in docs if str(d.get("origin") or "") != "researched"]
-            # The curated count is the number that matters. Reuse is correct and asked for; what
-            # an operator needs to see is whether they are about to add found material to a
-            # collection they assembled by hand.
-            print(f"    REUSE   {who:<22} {target}  {str(kb.get('name'))[:28]:<30}"
-                  f"  {len(curated)} curated doc(s) already there")
-        else:
-            why = "nothing bound" if not bound else "bound, but not owned by this caller"
-            print(f"    CREATE  {who:<22} (new collection — {why})")
+            note = ""
+            if kb.get("research_for") or (docs and not curated):
+                note = "  << an EARLIER research pass — read alongside this one"
+            elif len(curated) < len(docs):
+                note = f"  ({len(docs) - len(curated)} researched doc(s) from before 2026-10-01)"
+            print(f"      read  {kb_id}  {str(kb.get('name'))[:28]:<30}"
+                  f"  {len(curated)} curated doc(s){note}")
 
 
 def describe(request: Dict[str, Any]) -> None:

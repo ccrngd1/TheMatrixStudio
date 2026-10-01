@@ -240,6 +240,17 @@ _KB_FIELDS = (
     # document. A derived value that no write path maintains can only be wrong, so it is
     # counted where it is served instead.
     "created_at",
+    # Set ONLY on a collection created by a research pass, naming what it was created for:
+    # `run:{id}` or `ensemble:{id}` (`research_state.for_run` / `for_ensemble`). Absent on
+    # every collection a person made, and on every research collection made before
+    # 2026-10-01, when research still wrote into whatever was bound.
+    #
+    # Load-bearing. The Research state writes only into a collection whose marker names the
+    # pass doing the writing (`research_state._verified_target`), which is what stops a run
+    # started from another run's setup writing into — and replacing — that run's research, or
+    # into a collection somebody curated. On the row rather than inferred from the name,
+    # because a name is display text and a user can choose any name they like.
+    "research_for",
 )
 _GRANT_FIELDS = ("kb_id", "principal", "kind", "granted_by", "created_at")
 _DOCUMENT_FIELDS = (
@@ -255,11 +266,14 @@ _DOCUMENT_FIELDS = (
     # (a search found it). Absent reads as None, which every document written before
     # this existed is — and None means uploaded, since research did not exist then.
     #
-    # Load-bearing rather than descriptive. Research ingests into the collection
-    # ALREADY BOUND at a scope (PERSONA-RESEARCH.md §5.1), so without this a curated
-    # collection and a researched one become indistinguishable, and two things become
-    # impossible: telling a reader what they are looking at, and undoing a research
-    # pass without rebuilding curation by hand.
+    # Load-bearing rather than descriptive. Until 2026-10-01 research ingested into the
+    # collection ALREADY BOUND at a scope (PERSONA-RESEARCH.md §5.1), so without this a
+    # curated collection and a researched one became indistinguishable, and two things
+    # became impossible: telling a reader what they are looking at, and undoing a research
+    # pass without rebuilding curation by hand. Research now writes only into collections
+    # of its own (`_KB_FIELDS.research_for`), and this is still what separates the two in
+    # every collection written before that — and what tells the setup route that a
+    # collection holds nothing a person put there.
     "origin",
     # The authority tier a researched document was judged to be: controlling,
     # persuasive, commentary or unknown. §3 — the retrieval floor reads this, so a
@@ -2399,6 +2413,7 @@ class DynamoStorage:
         description: Optional[str] = None,
         kb_id: Optional[str] = None,
         embedding_model: Optional[str] = None,
+        research_for: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Create a KB. Returns the row, including its generated id.
 
@@ -2408,6 +2423,10 @@ class DynamoStorage:
         with one against an index built with the other returns confident nonsense, so
         the model has to be a property of the collection being searched. `None` means
         "not yet indexed", set on the first `PutVectors`.
+
+        `research_for` marks a collection a research pass created — see `_KB_FIELDS`.
+        Written once, here, and never updated: a collection becomes a research target by
+        being created as one, not by being relabelled later.
         """
         owner_sub = self._owner(owner_sub)
         kb_id = kb_id or uuid.uuid4().hex[:12]
@@ -2419,6 +2438,9 @@ class DynamoStorage:
             "embedding_model": embedding_model,
             "document_count": 0,
             "created_at": int(time.time()),
+            # `None` is dropped by `_to_ddb`, so a collection a person made carries no marker
+            # at all rather than an empty one — the same "absent" every older row reads as.
+            "research_for": research_for,
         }
         await self._call(
             self._table("knowledge-bases").put_item,
@@ -3104,8 +3126,15 @@ class DynamoStorage:
         """Delete this KB's researched documents from EARLIER batches. Returns their ids.
 
         The other half of "a re-run replaces its predecessor rather than accumulating"
-        (PERSONA-RESEARCH.md §5.1). Run the same definition twice with research on and the
-        collection would otherwise hold two copies of everything.
+        (PERSONA-RESEARCH.md §5.1). A retried Research state would otherwise leave the
+        collection holding two copies of everything.
+
+        **The predecessor is only ever this pass's own earlier attempt.** Before 2026-10-01
+        research wrote into whatever collection was bound, so a run started from another run's
+        setup reached here holding the OTHER run's collection, and this deleted that run's
+        research to make room for its own. The caller now guarantees the collection was created
+        for the pass doing the writing (`research_state._verified_target`); this method does not
+        know about runs and does not try to.
 
         **Only `origin == "researched"` is ever removed.** A curated document has no origin, or
         `uploaded`, and must survive untouched — that is the entire reason the field exists. An

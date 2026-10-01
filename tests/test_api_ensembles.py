@@ -604,9 +604,11 @@ class TestAnEnsembleResearchesOnce:
 
         calls = []
 
-        async def fake_definition(db, *, topic, cast, settings, owner_sub, label="", experts=()):
+        async def fake_definition(db, *, topic, cast, settings, owner_sub, research_for,
+                                  label="", experts=()):
             calls.append({"topic": topic, "cast": [c.get("name") for c in cast],
-                          "label": label})
+                          "label": label, "research_for": research_for,
+                          "targets": settings.targets})
             return research_state._record(
                 research_state.RESEARCHED, batch="b1", provider="fake", cost_usd=0.25,
                 scopes=[{"scope": "shared", "documents": 4, "controlling": 1,
@@ -621,9 +623,12 @@ class TestAnEnsembleResearchesOnce:
         return res.json(), calls
 
     def test_the_pass_runs_exactly_once_for_the_whole_fan_out(self, researched):
-        _body, calls = researched
+        body, calls = researched
         assert len(calls) == 1, f"research ran {len(calls)} times; §6 requires once"
         assert calls[0]["label"].startswith("ensemble ")
+        # For the ENSEMBLE, which is what its collections are marked with — so the one pass may
+        # write them and no member, and no other run, ever can.
+        assert calls[0]["research_for"] == f"ensemble:{body['ensemble_id']}"
 
     def test_every_member_binds_the_SAME_collections(self, client, researched):
         # The property §6 exists to guarantee. Two members reading different corpora are not

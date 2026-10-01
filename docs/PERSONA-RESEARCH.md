@@ -17,13 +17,21 @@ this design, the design is corrected in place and says so rather than being quie
 Verified on the deployed path: single run `602ddffe` (94 sources, 18 controlling, $0.2581) and
 ensemble `7c3448ee` (one pass for two members, identical bindings, $0.0935).
 
+**Corrected 2026-10-01: research no longer writes into a collection that is already bound.** Every
+pass creates its own collections, marked as that pass's, and binds them beside the curated ones.
+Reuse composed with "a re-run replaces its predecessor" across runs: a run started from another
+run's setup wrote into the same curated collections and replaced the earlier run's research there.
+§5.1 records what was observed, the reversal and its cost; the passages below that describe reuse
+are kept as the record and marked where they no longer hold.
+
 **The short version.** Every renewal conversation asked for a citation nobody in the room could
 produce, and none of the nine ever got one. This feature answers that request: before turn 1, a
 **researcher** builds a shared corpus, and each persona researches **their own stance and its
 opposition** into a private one. It reuses the Phase 6 knowledge-base machinery wholesale — the
 two scopes already exist — so the new code is a search adapter, an authority tier, and one state
-machine state. **Research ingests into the KB already bound at that scope** where there is one, and
-creates a collection only where there is not.
+machine state. ~~**Research ingests into the KB already bound at that scope** where there is one, and
+creates a collection only where there is not.~~ **Research creates a collection per scope for each
+pass and binds it beside whatever is bound there** (corrected 2026-10-01, §5.1).
 
 Two things make it more than "personas with footnotes", and both come from the discussion that
 produced this doc. **Authorities are tiered and controlling ones get a retrieval floor**, so a
@@ -69,9 +77,10 @@ The narrow version of that concern survives, and it is a constraint on output sh
 | **shared** | `config.knowledge_bases` — every persona may search | the researcher | the subject matter as it stands: authorities, their disagreements, documented negatives |
 | **private** | `cast[].knowledge_bases` — this persona alone | that persona | evidence for their stance **and** the evidence they said would change their mind |
 
-Each tier writes into the collection **already bound at that scope**, and only creates one when
-nothing is bound — with the ownership and provenance conditions in §5.1, which are what make
-writing into a curated collection safe rather than merely convenient.
+Each tier writes into a collection **created for the pass at that scope** and bound there beside
+whatever the operator bound. As first built it wrote into the collection already bound and created
+one only when nothing was; §5.1 records why that was reversed on 2026-10-01 — the ownership and
+provenance conditions made writing into a curated collection safe for one run and not for two.
 
 Phase 6 built both scopes and the query-time grant re-check that governs them. Using that
 distinction for its natural purpose is most of why this design is small.
@@ -117,10 +126,12 @@ to compete for 1,200 characters against thirty commentary chunks, the feature ha
 and hidden it.
 
 Implemented as `vectors.apply_floors`, and the composition with the existing per-collection floor is
-where the difficulty lives. `merge_with_source_floor` reserves per COLLECTION; research ingests into
-the collection already bound at a scope, so a statute and thirty commentary chunks sit in the SAME
+where the difficulty lives. `merge_with_source_floor` reserves per COLLECTION; research ingests a
+scope's whole corpus into one collection, so a statute and thirty commentary chunks sit in the SAME
 collection competing for the SAME reserved slot — and the winner is whichever matches a query drawn
-from conversation text, which is the commentary. The `2d2ac45b` bug one level down.
+from conversation text, which is the commentary. The `2d2ac45b` bug one level down. (Written when
+that collection was the curated one already bound; it is now the pass's own, and the argument is
+unchanged, because the statute and the commentary still share it.)
 
 So the source floor selects first, and only if its selection holds no controlling authority is one
 slot bought. **Only a SURPLUS row may pay** — one whose collection has more than one passage in the
@@ -170,8 +181,8 @@ watch**. The run exists immediately, researches, then talks.
 
 ```
 POST /api/runs  ──▶  run row written (status: pending)
-                     ├─ bound KBs are the ingest target; an id is pre-allocated
-                     │  ONLY for a scope with nothing bound yet  (§5.1)
+                     ├─ a NEW collection per scope is pre-allocated, marked for
+                     │  this run, and bound beside what is bound  (§5.1)
                      └─ StartExecution
                               │
                     ┌─────────▼─────────┐
@@ -187,7 +198,12 @@ A new state machine state, not a background task: **Lambda freezes the sandbox w
 returns**, so an `asyncio` task started from the API dies. That mistake is on the record three
 times in this project. The machine also supplies retry, a timeout and visibility for free.
 
-### 5.1 Ingest into the KB that is already bound, when there is one
+### 5.1 Ingest into the KB that is already bound, when there is one — REVERSED 2026-10-01
+
+**Reversed: research writes only into collections created for its own pass.** The design below is
+kept as written, because the reasons it gives are real and the reversal is only legible against
+them; the record of why it did not survive two runs, and what replaced it, is at the end of this
+section (*Reversed 2026-10-01*).
 
 **An existing collection is the target.** If the cast-wide binding or a persona's binding already
 names a KB, research ingests into it rather than creating a second one. A persona with a curated
@@ -243,7 +259,8 @@ same reasoning applies to curated versus found material the moment they share a 
 difference is that **curation is the thing a human chose**, which makes its silent displacement the
 more surprising failure of the two.
 
-**Decided: accept the behaviour and make it visible.** A third floor keyed on `origin` was
+**Decided: accept the behaviour and make it visible.** *(Superseded 2026-10-01 — the rejected
+"research in its own collection" option is now the design; see the end of this section.)* A third floor keyed on `origin` was
 rejected — at `k=3`, three floors leave every slot reserved and ranking stops deciding anything, and
 an irrelevant reserved passage in every prompt is worse than a missing one because it reads as the
 room citing at random. Always giving research its own collection was rejected too: it reverses the
@@ -273,7 +290,7 @@ copies `authority` through to a curated document, so that inference would be wro
 That converts the failure from *invisible* to *legible*: an operator sees "3 of 3 researched" on a
 turn where their own upload should have appeared. It does not prevent the displacement, and the
 honest version of that is a per-run "keep research in its own collection" option if it turns out to
-matter — a cleaner lever than a floor. Tracked in `private/private/docs/BACKLOG.md` (kept out of git).
+matter — a cleaner lever than a floor. Tracked in `private/docs/BACKLOG.md` (kept out of git).
 
 #### Research documents must be distinguishable from curated ones
 
@@ -296,6 +313,78 @@ Run the same definition twice with research on and the collection gets two copie
 So a research pass carries a batch identity, and a later pass over the same scope **replaces its
 predecessor** rather than adding to it. Deduplicating by URL alone is not enough: the same page can
 legitimately be re-fetched with different content, and the newer fetch is the one that should win.
+
+*(2026-10-01: this rule is the half of the incident below that did the damage. Composed with reuse,
+"a later pass over the same scope" meant a later RUN over the same curated collection, and its
+predecessor was another run's research. With a collection per pass, the only predecessor a pass
+can have is its own failed attempt — a retried Research state — which is the case the rule is for.)*
+
+#### Reversed 2026-10-01: research writes only into collections of its own
+
+**What was observed**, on the deployed system on 2026-09-30 and 2026-10-01. A run created from an
+earlier run's setup, with research on, wrote its researched documents into the collections that
+setup was bound to: seven hand-curated ones, the run-level collection and each persona's. A later
+run with the same setup then **replaced** the earlier run's researched documents in those same
+collections — the shared one had all 23 of the earlier run's documents replaced. Measured
+consequences:
+
+- curated material was crowded out of retrieval — one persona's curated passages fell from 37 to 8
+  across five runs, which is the displacement measured on `602ddffe` above, compounding;
+- every other run bound to those collections, including other ensembles' no-research baselines,
+  now retrieves web material it never asked for — the §9 control-arm contamination of 2026-09-24
+  again, this time without anyone choosing it;
+- an earlier run's research sources were silently swapped for a later run's, so its transcript's
+  citations now point at documents that are gone.
+
+**Why the guardrails did not catch it.** Each rule was correct for one run. Reuse targeted the bound
+collection the caller owned — and the operator owned all seven. `origin` kept curated documents
+from ever being deleted — and none was. Replace-the-predecessor removed the previous batch — which
+was another run's. No check could see the problem, because nothing in the design said a collection
+*belonged to a pass*; a run inherited its bindings from a copied setup, and its research inherited
+them as targets.
+
+**What it does now** (`research_state.py`):
+
+- **Allocation always creates.** Each scope — shared, each persona with a viewpoint, each
+  consultant — gets a new collection named `Research — {run} · {scope}`, owned by the run's owner,
+  carrying `research_for = run:{id}` (or `ensemble:{id}`) on its row, and appended to that scope's
+  bindings after whatever was bound. Nothing bound is reused as a target, and nothing bound is
+  dropped: curated collections stay bound and are read exactly as before.
+- **The Research state writes only where the marker matches.** `_verified_target` refuses a target
+  that is not owned by the run's owner, not marked for this pass, or holding any document somebody
+  uploaded. That also makes a run created *before* this change — whose stored targets are its
+  curated collections — refuse to write into them if its Research state ever runs again.
+- **A copied setup leaves the earlier run's research behind.** `GET /api/runs/{ref}/setup` drops the
+  collections that run's research wrote into, when they hold nothing a person uploaded, removes
+  `research.targets`, and says so in a warning. Decided, rather than defaulted: those collections
+  are an *output* of the earlier run, like its transcript, and a copy carries what the operator set
+  up. Carried forward, a run that researches itself would read two passes — one stale — and spend a
+  reserved slot on each, and a run that does not research would read web material it never asked
+  for, which is the baseline contamination above. An operator who wants the earlier corpus binds it
+  by name; it is then a choice, and read-only to the new run's research either way. A run from
+  before the fix keeps its curated targets in the copy, because they hold uploaded documents.
+- **Ensembles** allocate once, against the base config, marked for the ensemble; every member binds
+  that one fresh set and none writes (§6, unchanged). **Branches and resumes** read the parent's
+  research, which is what the conversation up to the branch point saw, and never search.
+- **Retries are idempotent.** Collections are created once, in the request, and the Research state
+  never creates one; a retried Lambda writes into the same collections and its batch replaces the
+  failed attempt's.
+
+**What it costs — the reason it was rejected above, accepted now.** A persona bound to a curated
+collection now has two collections of their own, and the source floor reserves a slot for each.
+With a run-level curated collection and the shared research one as well, that is four collections
+for `k=3`: `prefer` reserves the speaker's own two first, the run-level two compete for the third
+by rank, and the authority floor can still buy a slot only from a surplus row. So rank decides less
+than it did, exactly as predicted. The trade is accepted because the alternative's cost turned out
+to be different in kind: a budget split is predictable, visible in every `document.retrieved`
+event, and adjustable by raising `k`; silently rewriting curated collections that other runs and
+other users' baselines read is none of those things. It also fixes what the badges only exposed:
+the curated collection's reservation is no longer one its own research can win.
+
+**Migration.** No data is changed by this code. Runs created before it keep their bindings and
+their stored targets; their curated collections still hold whatever research was written into them
+until the separately approved cleanup runs (`scripts/clone_curated_documents.py` already makes
+clean copies). New runs never add to them.
 
 ### 5.2 Research failing must not fail the run
 
@@ -776,7 +865,10 @@ its search date so a later reader knows what it was.
 **Writing into a collection somebody curated.** Reuse is what the operator asked for and it is
 right, but it means a research pass mutates hand-assembled data. Ownership is checked (§5.1), origin
 is recorded so curation and research stay separable, and a re-run replaces rather than accumulates
-— three guardrails for one convenience, and all three are load-bearing.
+— three guardrails for one convenience, and all three are load-bearing. **The risk materialised on
+2026-09-30**, through a combination none of the three could see — a second run from the same setup
+replacing the first run's research inside the curated collections — and is now removed rather than
+guarded: research writes only into collections created for its own pass (§5.1, *Reversed*).
 
 **No provider existed in the repo.** Decided 2026-09-23 — see §12.
 
@@ -811,7 +903,9 @@ is recorded so curation and research stay separable, and a re-run replaces rathe
 
    `vectors.apply_floors` composes the two floors, and the composition is the whole difficulty.
 4. **The Research state** in the machine, reusing a bound KB where there is one, pre-allocating an
-   id where there is not, and failing additively (§5.1, §5.2). **DONE.**
+   id where there is not, and failing additively (§5.1, §5.2). **DONE.** *(Reuse reversed
+   2026-10-01: an id is now pre-allocated for every scope, and the state writes only into
+   collections marked for its own pass — §5.1.)*
 
    `research_state.py` holds the three decisions the searcher must not make for itself:
    `allocate_targets` (creation time, in the API), `run_research` / `research_definition` (state
@@ -833,11 +927,15 @@ is recorded so curation and research stay separable, and a re-run replaces rathe
      `s3vectors:GetIndex` and deliberately not `CreateIndex`, so the worker running the Research
      state physically cannot create one. `allocate_targets` takes the unscoped store for exactly
      this, and does it for a REUSED target too — a KB created before indexes were made eagerly
-     would otherwise be permanently unwritable.
+     would otherwise be permanently unwritable. *(Since 2026-10-01 there is no reused target;
+     every target is created here, so every target gets its index here.)*
    - **Ownership is checked twice.** `allocate_targets` resolves targets at creation, but they
      live in `config_json`, which is built from a request body — so between the two there is a
      blob the caller controls. Without the second check, naming another user's KB in
-     `config.research.targets` would write research into their collection.
+     `config.research.targets` would write research into their collection. *(2026-10-01: the
+     second check now also requires the collection's `research_for` marker to name this pass and
+     the collection to hold no uploaded document — ownership alone could not tell one of the
+     operator's runs from another.)*
    - **The status cannot be derived from rows written.** Every pass writes at least one row,
      because the documented negative is itself a document. Counting writes would report
      `researched` for a pass that found no source at all, and the one distinction §5.2 asks for

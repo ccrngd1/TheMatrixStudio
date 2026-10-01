@@ -221,10 +221,15 @@ class RunManager:
             # Phase 0 feature, so we only record it for now (kept additive).
             engine_request["model"] = model
 
-        # PERSONA-RESEARCH.md §5.1: resolve where each corpus may be stored, BEFORE the run
-        # row is written. A run's bindings live in `config_json`, which is written once, so
-        # "research, then associate the KB" would mean a read-modify-write of a JSON blob
+        # PERSONA-RESEARCH.md §5.1: create the collections each corpus will be stored in, BEFORE
+        # the run row is written. A run's bindings live in `config_json`, which is written once,
+        # so "research, then associate the KB" would mean a read-modify-write of a JSON blob
         # from a state the machine can retry.
+        #
+        # Always NEW collections, marked for this run and bound alongside whatever the request
+        # bound — never the bound ones. A request built from another run's setup carries that
+        # run's bindings, and reusing them is how one run's research replaced another's inside
+        # somebody's curated collections (2026-09-30).
         #
         # Here rather than in `_preflight` because this MUTATES the request — it appends a
         # pre-allocated KB id to a binding — and `_preflight` is shared with the ensemble
@@ -246,6 +251,7 @@ class RunManager:
         if not ensemble_id:
             engine_request = await research_state.allocate_targets(
                 owned, engine_request, owner_sub=owner_sub, label=name,
+                research_for=research_state.for_run(run_id),
                 # The UNSCOPED store, for creating a KB's vector index and nothing else. The
                 # tenant role holds `GetIndex` and deliberately not `CreateIndex`, so this is
                 # the last moment privileged credentials are in reach — the Research state
@@ -353,6 +359,7 @@ class RunManager:
                         cast=engine_request.get("cast") or [],
                         settings=research_settings,
                         owner_sub=owner_sub,
+                        research_for=research_state.for_run(run_id),
                         label=run_id,
                         experts=(engine_request.get("config") or {}).get("experts") or [],
                     )
@@ -479,6 +486,9 @@ class RunManager:
         if researching:
             request = await research_state.allocate_targets(
                 owned, dict(request), owner_sub=owner_sub, label=base_name,
+                # Marked for the ENSEMBLE: the one pass writes them, and every member reads
+                # them. A member never allocates (`create_run` skips it) and never writes.
+                research_for=research_state.for_ensemble(ensemble_id),
                 privileged=self.db,
             )
             # `plan` again, because the base config changed underneath the first plan: the

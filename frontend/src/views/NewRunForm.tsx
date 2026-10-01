@@ -1806,8 +1806,11 @@ export function NewRunForm({
                 Before turn 1, a researcher searches the open web for the AUTHORITIES on your
                 topic — statutes, regulations, board opinions, decided cases — and each persona
                 researches their own position <em>and the evidence they said would change their
-                mind</em>. What it finds is ingested into knowledge bases and bound here, so the
-                conversation reads it like any other collection.
+                mind</em>. What it finds is ingested into new collections made for this run —
+                one shared, one per persona — and bound alongside the ones you chose here, so
+                the conversation reads it like any other collection. It never writes into a
+                collection you bound yourself, so your own documents keep their place in the
+                prompt and other conversations bound to them are not changed.
                 <br />
                 <br />
                 This exists because of a measured gap: across five replicate runs of one brief,

@@ -4,10 +4,11 @@
 
 ## Why this exists
 
-`docs/PERSONA-RESEARCH.md` §5.1 has research ingest into the collection already bound at a scope,
-which is right — a persona with a curated collection and a research collection would be two places
-to look for the same kind of thing. The consequence is that a collection can hold both, and the
-`origin` field is what tells them apart.
+`docs/PERSONA-RESEARCH.md` §5.1 had research ingest into the collection already bound at a scope,
+on the argument that a persona with a curated collection and a research collection would be two
+places to look for the same kind of thing. The consequence is that a collection can hold both, and
+the `origin` field is what tells them apart. (Reversed 2026-10-01: research now writes only into
+collections created for its own pass, so this is needed for collections written before that.)
 
 On 2026-09-24 that consequence arrived by accident: run `602ddffe` wrote research into the six
 `renewal-*` persona collections, because the verify definition kept their persona-level bindings and

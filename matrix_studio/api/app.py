@@ -2425,13 +2425,50 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             #
             # `selection`, `research` and `models` were missing for the same reason, found while
             # fixing `config.model`: "start over" silently lost the speaker method, the research
-            # toggle and the per-role model choices. `research.targets` is dropped by its own model
-            # and re-allocated on creation, which is right — a copied target would point the new run
+            # toggle and the per-role model choices. `research.targets` is removed below and
+            # re-allocated on creation, which is right — a copied target would point the new run
             # at the old run's collections.
             ("max_messages", "generate_avatars", "cognition", "retrieval", "personas",
              "knowledge_bases", "selection", "research", "models")
             if k in config and config[k] is not None
         }
+
+        # PERSONA-RESEARCH.md §5.1, 2026-10-01: what this run's research ADDED to its bindings is
+        # not part of its setup. The collections it researched into were appended by allocation,
+        # not chosen by the operator, so a copy carries the bindings the operator made and leaves
+        # the research behind: the new run researches into collections of its own, or reads none
+        # if it does not research. `research_collections_of` keeps any target holding an uploaded
+        # document, so a run from before the fix, whose targets WERE its curated collections,
+        # still copies those as the bindings they are.
+        from matrix_studio import research_state
+
+        if isinstance(setup_config.get("research"), dict):
+            # Not left for `ResearchConfigModel` to drop. It names collections to WRITE into, and
+            # a setup is a document a client keeps and edits; it should not carry them at all.
+            setup_config["research"] = {
+                k: v for k, v in setup_config["research"].items() if k != "targets"
+            }
+        researched = set(
+            await research_state.research_collections_of(db.for_owner(user), config)
+        )
+        if researched:
+            def _without(values: Any) -> Any:
+                if not isinstance(values, list):
+                    return values
+                return [v for v in values if v not in researched]
+
+            if "knowledge_bases" in setup_config:
+                setup_config["knowledge_bases"] = _without(setup_config["knowledge_bases"])
+            for member in setup_cast:
+                if "knowledge_bases" in member:
+                    member["knowledge_bases"] = _without(member["knowledge_bases"])
+            warnings.append(
+                f"{len(researched)} collection(s) this run's research wrote into were not "
+                "carried over: they hold what that pass found, and are not part of the setup. "
+                "With research on, the new run researches into collections of its own. To have "
+                "it read the earlier research instead, bind those collections by name — they "
+                "begin \"Research —\"."
+            )
 
         setup: Dict[str, Any] = {
             "topic": run["topic"],

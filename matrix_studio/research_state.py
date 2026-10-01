@@ -7,15 +7,32 @@ failure, none of which belongs in the searcher.
 
 Three jobs, and the split between the first two is the whole design:
 
-- `allocate_targets` runs at **creation time**, inside `POST /api/runs`, and decides the ingest
-  target for every scope: the KB already bound there if the caller owns it, otherwise a new one
-  whose id is written into the bindings before anything is searched (§5.1).
+- `allocate_targets` runs at **creation time**, inside `POST /api/runs`, and creates the ingest
+  target for every scope: a NEW collection, marked as this pass's, whose id is appended to that
+  scope's bindings before anything is searched (§5.1). Never a collection that was already bound.
 - `run_research` runs **in the state machine**, minutes later, and does the searching. It re-checks
-  ownership of every target it was handed, because the targets travel in `config_json`, which came
-  from a request body. `research_definition` is the half of it that takes a definition rather than a
-  run id, because on the LOCAL path the run row does not exist yet — `run_simulation` writes it — and
-  the searching must not care which.
+  every target it was handed — owned by the run's owner, created for THIS pass, holding nothing a
+  person uploaded — because the targets travel in `config_json`, which came from a request body.
+  `research_definition` is the half of it that takes a definition rather than a run id, because on
+  the LOCAL path the run row does not exist yet — `run_simulation` writes it — and the searching
+  must not care which.
 - `_record` compresses the outcome to something small enough to live on the run row.
+
+## Research writes only into collections of its own
+
+Decided 2026-10-01, reversing §5.1 as first built. Research used to ingest into the collection
+already bound at a scope whenever the caller owned it. That is safe for exactly one run. A run
+created from another run's setup inherits that run's bindings, so its research went into the same
+curated collections — and because a later pass replaces its predecessor's batch, the second run
+silently deleted the first run's research and wrote its own. Every other run bound to those
+collections, including no-research baselines, then retrieved web material it never asked for, and
+curated passages lost their slots to found ones, more of them with every pass.
+
+So every pass now creates its own collections, marked `research_for` on the KB row, and the state
+refuses any target whose marker does not name the pass doing the writing. Curated material keeps a
+retrieval slot of its own as a result — the source floor reserves one per COLLECTION — which is the
+displacement §5.1 measured and had accepted as visible-but-unprevented. `docs/PERSONA-RESEARCH.md`
+§5.1 records the reversal and what it costs.
 
 ## The corpus is embedded here, and nothing else would do it
 
@@ -74,9 +91,25 @@ SKIPPED = "skipped"
 #: code, short enough that a stack of them cannot threaten the item size limit.
 MAX_ERROR_CHARS = 300
 
-#: Name given to a knowledge base created for research, with the run's codename appended. Named for
-#: the run rather than "Research" alone so a KB list stays readable after a few passes.
-NEW_KB_NAME = "Research — {label}"
+#: Name given to a knowledge base created for research: the run's (or ensemble's) name, then the
+#: scope. Both, because every pass now creates its own set — one shared, one per persona, one per
+#: consultant — and seven rows reading "Research — quiet-harbor" would not say which is whose.
+NEW_KB_NAME = "Research — {label} · {scope}"
+
+
+def for_run(run_id: str) -> str:
+    """The `research_for` marker of a collection created for one run's research pass."""
+    return f"run:{run_id}"
+
+
+def for_ensemble(ensemble_id: str) -> str:
+    """The marker of a collection created for an ensemble's single pass (§6).
+
+    The ENSEMBLE, not a member: the pass happens once, before any member exists, and every member
+    reads the same collections. A member never writes — `run_research` skips it — so no member id
+    ever needs to match.
+    """
+    return f"ensemble:{ensemble_id}"
 
 
 class ResearchRefused(ValueError):
@@ -171,34 +204,16 @@ def _persona_kbs(member: Dict[str, Any]) -> List[str]:
     return _clean(member.get("knowledge_bases"))
 
 
-async def _first_owned(db: Any, kb_ids: Sequence[str], owner_sub: str) -> Optional[str]:
-    """The first of these KBs that this caller OWNS, or None.
-
-    Ownership, not readability, and that distinction is the point. Phase 6 is explicit that write
-    permission is ownership alone — "a grant says *may read*, and §8b defines no other kind" — so a
-    cast-wide binding to somebody else's shared collection is not a place research may write. Doing
-    so would be a side effect on data another user curated, arriving from a run they cannot see.
-    """
-    for kb_id in kb_ids:
-        try:
-            row = await db.get_knowledge_base(kb_id)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Could not read KB %s while resolving a research target: %s", kb_id, exc)
-            continue
-        if row and str(row.get("owner_sub") or "") == owner_sub:
-            return kb_id
-    return None
-
-
 async def allocate_targets(
     db: Any,
     request: Dict[str, Any],
     *,
     owner_sub: str,
     label: str,
+    research_for: str,
     privileged: Any = None,
 ) -> Dict[str, Any]:
-    """Resolve every research target and write it into the request. Mutates and returns it.
+    """Create every research target and bind it into the request. Mutates and returns it.
 
     Called from `POST /api/runs` **before the run row is written**, because a run's bindings live in
     `config_json`, which is written once. "Research, then associate the KB" would be a
@@ -206,22 +221,45 @@ async def allocate_targets(
     refuses that shape once, for `budget`, with a comment saying why. Same pattern as the ensemble
     parent row, which lists member ids before any member exists.
 
-    Two outcomes per scope:
+    **One outcome per scope: a new collection**, owned by the caller, named for this run and scope,
+    marked ``research_for`` on its row, and appended to that scope's bindings AFTER whatever was
+    already bound there. Nothing that was bound is reused as a target, and nothing is dropped: a
+    curated collection stays bound and is read exactly as before, and research never writes into
+    it. ``research_for`` is `for_run(run_id)` or `for_ensemble(ensemble_id)`, and it is what the
+    Research state checks before it writes a single document (`_verified_target`).
 
-    - **A bound KB the caller owns** → that is the target, and nothing is created. A persona with a
-      curated collection and a research collection would be two places to look for the same kind of
-      thing, and retrieval would split a budget between them for no reason (§5.1).
-    - **Nothing bound, or nothing bound that they own** → a new KB, appended to that scope's
-      bindings **in addition**, leaving anything shared read-only as intended.
+    ## Why never the collection that is already bound
 
-    A persona's target is resolved against **their own** bindings only, never the run-level ones.
+    This function used to reuse the first bound collection the caller owned, on §5.1's argument
+    that a persona with a curated collection and a research collection has two places to look for
+    the same kind of thing. That holds for one run. It fails for the second: a run created from
+    another run's setup ("Start fresh", the setup route, a hand-copied definition) inherits that
+    run's bindings, so reuse pointed its research at the SAME collections — and a pass replaces its
+    predecessor's batch, so the second run deleted the first run's research and wrote its own.
+    Every run bound to those collections, including no-research baselines, then read web material it
+    never asked for, and curated passages lost their slots to found ones. Measured on the deployed
+    system 2026-09-30/10-01; see `docs/PERSONA-RESEARCH.md` §5.1.
+
+    The cost is the one §5.1 rejected this for: a persona bound to a curated collection now has two
+    collections, and the source floor reserves a slot for each before rank decides the rest. That is
+    also the fix for the displacement §5.1 measured — the curated collection's reservation is no
+    longer one its own research can win.
+
+    A persona's collection is bound to **their own** scope only, never the run-level one.
     `bindings.bound_kbs` returns the union, which is the right answer for a *turn* — a persona may
     search the cast-wide collection — and the wrong one here: it would put one persona's private
     research, including the opposition's case, into the collection every other persona reads.
 
     Returns the request. `config.research.targets` is **overwritten**, never merged: it arrives from
     a request body, and a caller naming somebody else's KB as a target must not be able to make this
-    the thing that resolves it. `run_research` re-checks ownership anyway.
+    the thing that resolves it. `run_research` re-checks every target anyway.
+
+    ## Idempotence
+
+    This runs once per run, in the request, and the Research state never creates a collection — so
+    a retried Research Lambda writes into the collections allocated here and nowhere else, and a
+    retry's batch replaces the failed attempt's inside them. A retried REQUEST is a new run with a
+    new id, and gets new collections, which is correct: it is a different run.
 
     ## The vector index is created HERE, and it has to be
 
@@ -232,14 +270,16 @@ async def allocate_targets(
     That is the API's job because the API is where the privileged client is, and it is done at
     allocation time rather than on first write for the reason `POST /api/knowledge-bases` gives: a
     collection whose index appears later has a window in which it exists and cannot be written to.
-
-    Done for a REUSED target as well as a new one. A KB created before the index was made eagerly,
-    or one whose creation half-failed, would otherwise be permanently unwritable.
     """
     config = dict(request.get("config") or {})
     settings = settings_from(config)
     if not settings.enabled:
         return request
+    if not research_for:
+        # Refused rather than defaulted: an unmarked collection is one the Research state will
+        # refuse to write into, so allocating it would create a run that searches, pays, and
+        # stores nothing — the silent failure this module exists to prevent.
+        raise ValueError("allocate_targets needs the pass it allocates for (research_for)")
 
     targets: Dict[str, Any] = {"personas": {}, "consultants": {}}
 
@@ -259,29 +299,30 @@ async def allocate_targets(
         try:
             await ensure_index_for_kb(privileged, kb_id)
         except Exception as exc:  # noqa: BLE001
-            # Not fatal to the run: the KB may already have an index, and `ensure_kb_index` is
-            # idempotent. Loud, because the failure it cannot rule out is the unretrievable one.
+            # Not fatal to the run: `ensure_kb_index` is idempotent and the index may exist.
+            # Loud, because the failure it cannot rule out is the unretrievable one.
             logger.warning("Could not ensure a vector index for KB %s: %s", kb_id, exc)
 
-    async def resolve(bound: List[str], scope: str) -> Tuple[str, List[str]]:
-        owned = await _first_owned(db, bound, owner_sub)
-        if owned:
-            await ensure_index(owned)
-            return owned, bound
+    async def create(bound: List[str], scope: str, short: str) -> Tuple[str, List[str]]:
         created = await db.create_knowledge_base(
-            NEW_KB_NAME.format(label=label)[:120],
+            NEW_KB_NAME.format(label=label, scope=short)[:120],
             owner_sub=owner_sub,
             description=f"Documents found by pre-conversation research for {scope}.",
+            research_for=research_for,
         )
         kb_id = str(created["id"])
         await ensure_index(kb_id)
-        logger.info("Research will ingest %s into a new KB %s", scope, kb_id)
+        logger.info("Research will ingest %s into a new KB %s (%s)", scope, kb_id, research_for)
+        # Appended AFTER the existing bindings, which are kept whole: the curated collections
+        # stay where the operator put them, and `bound_kbs`' deterministic order is preserved.
         return kb_id, bound + [kb_id]
 
     if settings.shared:
         from matrix_studio.bindings import _clean
 
-        kb_id, bound = await resolve(_clean(config.get("knowledge_bases")), "the whole cast")
+        kb_id, bound = await create(
+            _clean(config.get("knowledge_bases")), "the whole cast", "shared",
+        )
         targets["shared"] = kb_id
         config["knowledge_bases"] = bound
 
@@ -294,7 +335,7 @@ async def allocate_targets(
             # A persona with no viewpoint has no stance to research and no opposition to find, so
             # they get no KB. Creating one would leave an empty collection bound to them for ever.
             if name and viewpoints:
-                kb_id, bound = await resolve(_persona_kbs(member), name)
+                kb_id, bound = await create(_persona_kbs(member), name, name)
                 targets["personas"][name] = kb_id
                 member["knowledge_bases"] = bound
             cast.append(member)
@@ -308,7 +349,9 @@ async def allocate_targets(
             if name:
                 # The consultant's OWN bindings only, as for a persona: its library must not land in
                 # a collection the cast reads, or every persona would hold the consultant's sources.
-                kb_id, bound = await resolve(_persona_kbs(expert), f"consultant {name}")
+                kb_id, bound = await create(
+                    _persona_kbs(expert), f"consultant {name}", f"consultant {name}",
+                )
                 targets["consultants"][name] = kb_id
                 expert["knowledge_bases"] = bound
             experts.append(expert)
@@ -323,22 +366,89 @@ async def allocate_targets(
 
 
 # --------------------------------------------------------------------------- #
+# Copying a setup: what a run's research added is not part of its setup
+# --------------------------------------------------------------------------- #
+
+
+def _target_ids(settings: Settings) -> List[str]:
+    from matrix_studio.bindings import _clean
+
+    ids: List[Any] = [settings.targets.get("shared")]
+    for key in ("personas", "consultants"):
+        scoped = settings.targets.get(key)
+        if isinstance(scoped, dict):
+            ids.extend(scoped.values())
+    return _clean(ids)
+
+
+async def research_collections_of(db: Any, config: Optional[Dict[str, Any]]) -> List[str]:
+    """The collections a run's research pass wrote into and that hold nothing a person put there.
+
+    For the setup route ("Start fresh from this setup"), which must not carry them into the new run.
+    They are an OUTPUT of the earlier run, like its transcript, not part of what the operator set up:
+    allocation appended them to the bindings, the operator never chose them. Carried forward, a run
+    that researches itself would read two research passes — the earlier one stale — and spend a
+    reserved retrieval slot on each; a run that does not research would read web material it never
+    asked for, which is exactly what made the no-research baselines of 2026-09-30 unreliable. An
+    operator who does want the earlier corpus can bind it by name in the KB picker; it is then a
+    choice, and it is read-only to the new run's research either way (`_verified_target`).
+
+    Read from `config.research.targets`, the only record of what a pass wrote into, and kept to the
+    targets holding no uploaded document. That second condition is what makes it right for a run
+    created BEFORE 2026-10-01, whose targets may BE the curated collections it was bound to: those
+    hold the operator's own documents, so they stay in the setup as the bindings the operator chose.
+    A collection research created for itself holds only researched documents, before the fix or
+    after it, and is dropped either way. One that cannot be read is kept — it will be re-validated
+    when the new run is created, and keeping a binding is the behaviour this route had before.
+    """
+    out: List[str] = []
+    for kb_id in _target_ids(settings_from(config)):
+        try:
+            docs = await db.list_kb_documents(kb_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not read KB %s while copying a setup: %s", kb_id, exc)
+            continue
+        if all(str(d.get("origin") or "") == "researched" for d in docs):
+            out.append(kb_id)
+    return out
+
+
+# --------------------------------------------------------------------------- #
 # State time: doing the research
 # --------------------------------------------------------------------------- #
 
 
 async def _verified_target(
-    db: Any, settings: Settings, persona: Optional[str], owner_sub: str, *, consultant: bool = False
+    db: Any,
+    settings: Settings,
+    persona: Optional[str],
+    owner_sub: str,
+    *,
+    research_for: str,
+    consultant: bool = False,
 ) -> str:
     """The ingest target for one scope, or `ResearchRefused` with the reason.
 
-    The ownership check is repeated here and that is not belt-and-braces. `allocate_targets` resolved
-    these ids at creation time, but they were stored in `config_json` — which is built from a request
-    body — so between the two there is a JSON blob a caller controls. Without this check, naming
-    another user's KB in `config.research.targets` would write research into their collection.
+    Three checks, each closing a different way research could write somewhere it must not. They are
+    repeated here rather than trusted from `allocate_targets` because the targets were stored in
+    `config_json`, which is built from a request body — so between allocation and use there is a
+    JSON blob a caller controls, and a run row written before these rules existed.
+
+    - **Owned by the run's owner.** A read grant is not a write grant; without this, naming another
+      user's KB in `config.research.targets` would write research into their collection.
+    - **Created for THIS pass** — its `research_for` marker names the run (or ensemble) researching.
+      This is the check the 2026-09-30 incident needed. A run created from another run's setup
+      carried targets — or, before allocation stopped reusing bindings, was allocated targets —
+      that were the curated collections it inherited, and the replace step then deleted the earlier
+      run's research from them. A curated collection carries no marker and another run's carries
+      that run's, so neither passes. It also stops a run created BEFORE the fix, whose stored
+      targets are curated collections, from writing into them if its Research state ever runs again.
+    - **Holding nothing a person uploaded.** A research collection is a normal collection, and an
+      operator may add their own document to it; from then on it is partly curated, and the replace
+      step must not run against it. Rare, and the refusal says why.
 
     It is a refusal rather than a silent fallback to a new KB: a run whose target was rejected should
-    say so, because the reason is either a revoked grant or an attempt to write somewhere it may not.
+    say so, and creating one here is not possible anyway — the worker cannot create a vector index.
     """
     kb_id = settings.target_for(persona, consultant=consultant)
     who = (f"consultant {persona}" if consultant else persona) or "the shared corpus"
@@ -352,6 +462,21 @@ async def _verified_target(
     if str(row.get("owner_sub") or "") != owner_sub:
         raise ResearchRefused(
             f"{kb_id} is not owned by this run's owner, and a read grant is not a write grant"
+        )
+    if str(row.get("research_for") or "") != research_for:
+        raise ResearchRefused(
+            f"{kb_id} was not created for this research pass, and research writes only into "
+            "collections created for it — never one a run inherited, somebody curated, or "
+            "another run researched into"
+        )
+    uploaded = [
+        d for d in await db.list_kb_documents(kb_id)
+        if str(d.get("origin") or "") != "researched"
+    ]
+    if uploaded:
+        raise ResearchRefused(
+            f"{kb_id} holds {len(uploaded)} document(s) somebody uploaded, so research leaves it "
+            "alone rather than replace anything in it"
         )
     return kb_id
 
@@ -404,9 +529,11 @@ async def run_research(
     Skipped, with a reason recorded, in three cases:
 
     - research is not enabled, which is every run today;
-    - `mode` is not `fresh`. A branch or a resume inherits the parent's bindings, and researching
-      again would ingest a second batch into collections the parent already filled. A branch exists
-      to vary *one* thing from a run that happened, and re-searching would vary the evidence too.
+    - `mode` is not `fresh`. A branch or a resume inherits the parent's bindings and READS the
+      parent's research, which is what the conversation up to the branch point was informed by. A
+      branch exists to vary *one* thing from a run that happened, and re-searching would vary the
+      evidence too. (Were it ever to search, `_verified_target` would still refuse to write: the
+      collections are marked for the parent, not for the branch.)
     - the run is an **ensemble member**. §6: an ensemble researches ONCE, before its members exist,
       and every member binds the same KBs. Live search per member would give replicates different
       inputs, and `ENSEMBLE-CONVERSATIONS.md` §2 rests on the opposite — same config, same brief, so
@@ -438,6 +565,7 @@ async def run_research(
         cast=_cast(run),
         settings=settings,
         owner_sub=owner_sub,
+        research_for=for_run(run_id),
         label=run_id,
         experts=_config(run).get("experts") or [],
     )
@@ -548,6 +676,9 @@ async def research_ensemble(db: Any, ensemble_id: str, *, owner_sub: str) -> Dic
         cast=cast,
         settings=settings,
         owner_sub=owner_sub,
+        # The ENSEMBLE's marker: `create_ensemble` allocated these collections for the parent, and
+        # every member reads them without ever writing (§6).
+        research_for=for_ensemble(ensemble_id),
         label=f"ensemble {ensemble_id}",
         experts=base_config.get("experts") or [],
     )
@@ -567,6 +698,7 @@ async def research_definition(
     cast: Sequence[Dict[str, Any]],
     settings: Settings,
     owner_sub: str,
+    research_for: str,
     label: str = "",
     experts: Sequence[Dict[str, Any]] = (),
 ) -> Dict[str, Any]:
@@ -577,6 +709,11 @@ async def research_definition(
     is written by `run_simulation` and does not exist until the conversation starts. Making this
     depend on the row would have meant either a second implementation or a synthesised row, and a
     synthesised row is a lie that tests would then be written against.
+
+    ``research_for`` names the pass — `for_run(run_id)` or `for_ensemble(ensemble_id)` — and a
+    target is written only if its collection was created for exactly that (`_verified_target`).
+    Required, with no default, because every caller knows which pass it is and a default would be
+    the one place a pass could write into somebody else's collection without saying so.
 
     Every failure path records what happened and returns (§5.2). A search outage is not a reason to
     lose a conversation somebody asked for.
@@ -646,7 +783,8 @@ async def research_definition(
         }
         try:
             kb_id = await _verified_target(
-                db, settings, corpus.persona, owner_sub, consultant=corpus.consultant,
+                db, settings, corpus.persona, owner_sub,
+                research_for=research_for, consultant=corpus.consultant,
             )
         except ResearchRefused as exc:
             scope["refused"] = str(exc)[:MAX_ERROR_CHARS]
