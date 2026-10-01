@@ -62,7 +62,46 @@ export interface RunSummary {
   max_messages?: number | null
   cast_names?: string[]
   /** Where each persona ended (`matrix_studio/stance.py`): set once the run is summarised, never while live. */
-  stance?: Record<string, 'support' | 'unstated' | 'holding'> | null
+  stance?: Record<string, StanceState> | null
+}
+
+export type StanceState = 'support' | 'conditional' | 'unstated' | 'holding'
+
+/**
+ * Why one persona has its stance (`matrix_studio/stance.py`, docs/MOBILE-UI.md §6.1).
+ *
+ * `source: 'closing'`: their closing statement decided it, and `quote` is their own words from it, checked to be
+ * in the statement. `source: 'summary'`: the summary rule decided it, and `quote` is the summary's account of their
+ * objection (holding), their own flagged shift sentence (support), or null (unstated); `fallback` says why the
+ * closing statement did not decide.
+ */
+export interface StanceBasisEntry {
+  stance: StanceState
+  source: 'closing' | 'summary'
+  /** The classifier's verdict on their closing statement, when there was one to give. */
+  class: 'accepts' | 'accepts_with_conditions' | 'rejects' | 'unclear' | null
+  quote: string | null
+  fallback?:
+    | 'no_closing_round'
+    | 'no_statement'
+    | 'classifier_failed'
+    | 'no_verdict'
+    | 'unclear'
+    | 'unverified_quote'
+  /** What the classifier claimed when its quote was not in the statement and the claim was discarded. */
+  claimed?: string
+}
+
+export interface StanceBasis {
+  personas: Record<string, StanceBasisEntry>
+  /** The closing-statement classifier call, or null when the run had no closing statements. */
+  classifier: {
+    model: string | null
+    tokens_in: number
+    tokens_out: number
+    cost_usd: number
+    error: string | null
+  } | null
 }
 
 export interface AgentResult {
@@ -96,6 +135,8 @@ export interface RunDetail extends RunSummary {
   // Each model role -> the model it resolved to, from the stored config via the engine's own
   // ModelSet. Shown so a run cannot use a different model than it asked for without anyone seeing.
   models?: Record<string, string | null>
+  // Why each persona has its stance. Absent for every run summarised before 2026-10-01 (not backfilled).
+  stance_basis?: StanceBasis | null
 }
 
 // -------- Pre-conversation research (docs/PERSONA-RESEARCH.md) --------- //

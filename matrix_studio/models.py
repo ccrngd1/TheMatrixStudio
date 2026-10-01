@@ -41,6 +41,7 @@ cost a test failure to get right — and the residual risk is handled by logging
 | `naming` | two words, ≤60 tokens | 0.9 | once per run | cheapest available |
 | `wizard` | ≤16000 tokens, drafts a cast | 1.0 | once, pre-run | strong — authoring quality |
 | `pressure` | ≤300 tokens | 0.7 | experimental | follows the conversation model |
+| `stance` | a class and a quoted sentence per persona, ≤3000 tokens | **0.0** | once per summary | the same verdict twice |
 
 Note what the frequency column does to the cost argument. `summary`, `naming` and `wizard`
 run **once**, so the model chosen for them barely moves the bill — which is why `summary`
@@ -92,6 +93,7 @@ ROLES = (
     "naming",
     "wizard",
     "pressure",
+    "stance",
 )
 
 #: Roles that do NOT inherit the conversation's model, and why each one does not.
@@ -109,6 +111,13 @@ ROLE_DEFAULTS: Dict[str, str] = {
     "speaker_selection": LOW_VARIANCE_MODEL,
     # Two words. There is nothing a larger model can add.
     "naming": LOW_VARIANCE_MODEL,
+    # temperature=0.0, for the gate's reason: a regenerated summary re-reads the same closing statements,
+    # and a stance that flips on the re-read is noise on the run card (`stance.py`); Sonnet 5 would drop
+    # the 0.0. Four classes and a quote over a few short statements is not where a frontier model earns
+    # its price, and the quote is checked in code rather than trusted. On four live statements Haiku
+    # matched the hand labels 4/4, identically on three repeats, at ~$0.003 a call; Sonnet 5 also 4/4, at
+    # ~$0.013. A smoke check, not a measurement (docs/MOBILE-UI.md §6.1).
+    "stance": LOW_VARIANCE_MODEL,
 }
 
 

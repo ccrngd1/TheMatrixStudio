@@ -32,15 +32,22 @@ export const initials = (name: string) =>
 
 // ─── stance (§6.1, decided: post-run only) ────────────────────────────────────────────────────────────────
 
-/** Where a persona ended up. `unstated` is not "undecided": nothing recorded says which way they went. */
-export type Stance = 'support' | 'unstated' | 'holding'
+/**
+ * Where a persona ended up. `unstated` is not "undecided": nothing recorded says which way they went.
+ * `conditional` (2026-10-01) is a closing statement that accepts with conditions: signed, but on something not
+ * yet done, or with an objection of their own left standing. A state of its own because folding it into support
+ * hides the conditions, and into holding hides the signature.
+ */
+export type Stance = 'support' | 'conditional' | 'unstated' | 'holding'
 export const STANCE_COLOR: Record<Stance, string> = {
   support: 'var(--support)',
+  conditional: 'var(--conditional)',
   unstated: 'var(--undecided)',
   holding: 'var(--hold)',
 }
 export const STANCE_LABEL: Record<Stance, string> = {
   support: '▲ support',
+  conditional: '◐ with conditions',
   unstated: '◆ not stated',
   holding: '▼ holding out',
 }

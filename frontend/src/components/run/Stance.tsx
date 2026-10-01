@@ -5,31 +5,56 @@
 //
 // Never colour alone (§2 rule 2): every count carries its glyph, every bar and node its name for a screen
 // reader, and the dial prints its counts beneath it.
+//
+// "% support" counts ▲ alone. Accepting with conditions (◐, 2026-10-01) is not folded into it, because the
+// conditions may never be met and the headline would then overstate the room; it is printed beside it instead,
+// as its own share, wherever there is any.
 import type { CSSProperties, KeyboardEvent, ReactNode } from 'react'
-import type { FeedMessage } from '../../types'
+import type { FeedMessage, StanceBasisEntry } from '../../types'
 import { STANCE_COLOR, STANCE_LABEL, Tag, identityOf, initials, type Stance } from '../../ui/primitives'
-import { phase } from '../../ui/theme'
+import { usePhase } from '../../ui/fx'
 
 export type StanceMap = Record<string, Stance>
 type Css = CSSProperties & Record<`--${string}`, string>
-const ORDER: Stance[] = ['support', 'unstated', 'holding']
-const GLYPH: Record<Stance, string> = { support: '▲', unstated: '◆', holding: '▼' }
-const COUNT_CLASS: Record<Stance, string> = { support: 'cc-c-support', unstated: 'cc-c-undecided', holding: 'cc-c-holding' }
-const WORD: Record<Stance, string> = { support: 'support', unstated: 'not stated', holding: 'holding out' }
+const ORDER: Stance[] = ['support', 'conditional', 'unstated', 'holding']
+const GLYPH: Record<Stance, string> = { support: '▲', conditional: '◐', unstated: '◆', holding: '▼' }
+export const STANCE_CLASS: Record<Stance, string> = {
+  support: 'cc-c-support',
+  conditional: 'cc-c-conditional',
+  unstated: 'cc-c-undecided',
+  holding: 'cc-c-holding',
+}
+const WORD: Record<Stance, string> = {
+  support: 'support',
+  conditional: 'with conditions',
+  unstated: 'not stated',
+  holding: 'holding out',
+}
+/**
+ * The states a count row shows. ◐ only where there is one: a run with no closing round cannot have it, and
+ * "0 with conditions" on every older run would read as a finding rather than as a state it never had.
+ */
+const shown = (c: Record<Stance, number>) => ORDER.filter((k) => k !== 'conditional' || c.conditional > 0)
 
 export function countStances(stance: StanceMap, among?: string[]) {
   const names = among ?? Object.keys(stance)
-  const c: Record<Stance, number> = { support: 0, unstated: 0, holding: 0 }
+  const c: Record<Stance, number> = { support: 0, conditional: 0, unstated: 0, holding: 0 }
   for (const n of names) c[stance[n] ?? 'unstated']++
-  return { ...c, total: names.length, pct: names.length ? Math.round((100 * c.support) / names.length) : 0 }
+  const share = (k: Stance) => (names.length ? Math.round((100 * c[k]) / names.length) : 0)
+  return { ...c, total: names.length, pct: share('support'), pctConditional: share('conditional') }
+}
+
+/** "50% support", and "· +17% with conditions" when anyone accepted with conditions. */
+function supportLine(c: ReturnType<typeof countStances>) {
+  return `${c.pct}% support${c.conditional ? ` · +${c.pctConditional}% with conditions` : ''}`
 }
 
 export function StanceCounts({ stance, among }: { stance: StanceMap; among?: string[] }) {
   const c = countStances(stance, among)
   return (
     <span className="cc-counts">
-      {ORDER.map((k) => (
-        <b key={k} className={COUNT_CLASS[k]}>
+      {shown(c).map((k) => (
+        <b key={k} className={STANCE_CLASS[k]}>
           {GLYPH[k]}
           {c[k]}
           <span className="sr-only"> {WORD[k]}</span>
@@ -43,7 +68,7 @@ export function StanceTag({ stance }: { stance: Stance }) {
   return <Tag color={STANCE_COLOR[stance]}>{STANCE_LABEL[stance]}</Tag>
 }
 
-/** One slanted bar per persona, ordered support → not stated → holding out. */
+/** One slanted bar per persona, ordered support → with conditions → not stated → holding out. */
 export function StanceBar({ stance, order }: { stance: StanceMap; order: string[] }) {
   const ks = [...order].sort((a, b) => ORDER.indexOf(stance[a] ?? 'unstated') - ORDER.indexOf(stance[b] ?? 'unstated'))
   return (
@@ -65,7 +90,7 @@ export function RoomCell({ stance, order }: { stance: StanceMap; order: string[]
         <StanceCounts stance={stance} among={order} />
       </div>
       <StanceBar stance={stance} order={order} />
-      <div className="cc-rsub">{c.pct}% support</div>
+      <div className="cc-rsub">{supportLine(c)}</div>
     </div>
   )
 }
@@ -93,6 +118,9 @@ const GRAD: Record<string, [string, string]> = {
 export function RoomMap({
   order, feed, stance, next, onOpen,
 }: { order: string[]; feed: FeedMessage[]; stance: StanceMap | null; next: string | null; onOpen: (name: string) => void }) {
+  // Taken once, when the map mounts (`ui/fx.ts`): read per render, it moved the running loops on every new
+  // message, so the live edge and the active halo jumped ahead each turn.
+  const ph = { '--ph': usePhase() } as Css
   const cx = 160, cy = 124, R = 90
   const pos: Record<string, [number, number]> = {}
   order.forEach((k, i) => {
@@ -117,7 +145,6 @@ export function RoomMap({
   const spoke = order.filter((k) => turns[k])
   const c = stance ? countStances(stance, spoke) : null
   const last = seq.length > 1 && seq[seq.length - 2] !== seq[seq.length - 1] ? curve(seq[seq.length - 2], seq[seq.length - 1]) : null
-  const ph = { '--ph': phase() } as Css
   const key = (k: string) => (e: KeyboardEvent) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), onOpen(k))
 
   return (
@@ -180,7 +207,7 @@ function arcPath(cx: number, cy: number, r: number, a0: number, a1: number) {
   return `M${p(a0)} A${r},${r} 0 ${a1 - a0 > Math.PI ? 1 : 0},1 ${p(a1)}`
 }
 
-/** Where the room ended (§4.5): a half-dial split by stance, % support, and the three counts in words. */
+/** Where the room ended (§4.5): a half-dial split by stance, % support, and the counts in words. */
 export function StanceDial({ stance, among }: { stance: StanceMap; among?: string[] }) {
   const c = countStances(stance, among)
   const cx = 110, cy = 104, r = 80
@@ -191,10 +218,11 @@ export function StanceDial({ stance, among }: { stance: StanceMap; among?: strin
     a0 += span
     return d ? <path key={k} d={d} className="cc-g-seg" style={{ stroke: STANCE_COLOR[k], color: STANCE_COLOR[k] }} /> : null
   })
+  const said = shown(c).map((k) => `${c[k]} ${WORD[k]}`).join(', ')
   return (
     <>
       <svg viewBox="0 0 220 116" className="cc-gauge" role="img"
-        aria-label={`Where the room ended: ${c.pct}% support; ${c.support} support, ${c.unstated} not stated, ${c.holding} holding out`}>
+        aria-label={`Where the room ended: ${supportLine(c).replace(' · ', ', ')}; ${said}`}>
         <path d={arcPath(cx, cy, r, Math.PI, 2 * Math.PI - 0.0001)} className="cc-g-track" />
         {segs}
         {Array.from({ length: 11 }, (_, i) => {
@@ -205,18 +233,77 @@ export function StanceDial({ stance, among }: { stance: StanceMap; among?: strin
               x2={cx + (r + o) * Math.cos(a)} y2={cy + (r + o) * Math.sin(a)} />
           )
         })}
-        <text x={cx} y={cy - 14} className="cc-g-pct">{c.pct}%</text>
-        <text x={cx} y={cy + 2} className="cc-g-lab">SUPPORT</text>
+        {/* The figure is ▲ alone; ◐ gets a line of its own under it rather than a share of the number. */}
+        <text x={cx} y={cy - (c.conditional ? 24 : 14)} className="cc-g-pct">{c.pct}%</text>
+        <text x={cx} y={cy - (c.conditional ? 8 : -2)} className="cc-g-lab">SUPPORT</text>
+        {c.conditional > 0 && (
+          <text x={cx} y={cy + 4} className="cc-g-lab" style={{ fill: STANCE_COLOR.conditional }}>
+            +{c.pctConditional}% WITH CONDITIONS
+          </text>
+        )}
       </svg>
       <div className="cc-gcounts" aria-hidden="true">
-        {ORDER.map((k) => (
-          <div key={k} className={COUNT_CLASS[k]}>
+        {shown(c).map((k) => (
+          <div key={k} className={STANCE_CLASS[k]}>
             <b>{c[k]}</b>
             <span>{WORD[k]}</span>
           </div>
         ))}
       </div>
     </>
+  )
+}
+
+/** Why the closing statement did not decide, in words, for a stance the summary decided. */
+const FALLBACK_WHY: Record<NonNullable<StanceBasisEntry['fallback']>, string | null> = {
+  no_closing_round: null,
+  no_statement: 'they made no closing statement',
+  classifier_failed: 'their closing statement could not be read (the classifier failed)',
+  no_verdict: 'the classifier gave no usable verdict on their closing statement',
+  unclear: 'their closing statement did not say whether they accept',
+  unverified_quote: 'the sentence the classifier quoted is not in their statement, so its verdict was discarded',
+}
+
+/**
+ * Why a persona has their stance (`matrix_studio/stance.py`): which source decided it, and the words it rests
+ * on. A closing-statement quote is the persona's own words, checked to be in what they said; a summary
+ * "holding out" quotes the summary's account of their objection, and says so.
+ */
+export function StanceWhy({ entry }: { entry: StanceBasisEntry }) {
+  let source: string
+  if (entry.source === 'closing') source = 'From their closing statement'
+  else if (entry.stance === 'holding') source = "From the summary: named among its dissenters. In the summary's words"
+  else if (entry.stance === 'support') source = 'From the summary: not a dissenter, and they said their position moved'
+  else source = 'From the summary and the shift flags: nothing recorded says which way they went'
+  const why = entry.source === 'summary' && entry.fallback ? FALLBACK_WHY[entry.fallback] : null
+  return (
+    <span className="cc-swhy">
+      <span className="cc-sm cc-t2">
+        {source}
+        {entry.quote ? ': ' : '.'}
+      </span>
+      {entry.quote && <span className="cc-swhy-q">“{entry.quote}”</span>}
+      {why && <span className="cc-muted cc-sm"> Not from the closing statement: {why}.</span>}
+    </span>
+  )
+}
+
+/** Each persona's stance with its basis, for "Where the room ended". */
+export function StanceBasisList({
+  basis, order,
+}: { basis: Record<string, StanceBasisEntry>; order: string[] }) {
+  const names = order.filter((n) => basis[n])
+  if (!names.length) return null
+  return (
+    <ul className="cc-plain cc-swhy-list">
+      {names.map((n) => (
+        <li key={n}>
+          <b>{n}</b> <span className={STANCE_CLASS[basis[n].stance]}>{STANCE_LABEL[basis[n].stance]}</span>
+          <br />
+          <StanceWhy entry={basis[n]} />
+        </li>
+      ))}
+    </ul>
   )
 }
 
@@ -250,7 +337,10 @@ export function RoomMapKey({ hasStance }: { hasStance: boolean }) {
       <Row mark={<polygon points={hexPts(20, 8, 7)} fill="none" stroke="var(--hold)" strokeWidth="2.2" />}>
         <b>The ring colour</b> is where they ended:{' '}
         {hasStance ? (
-          <>▲ support, ◆ not stated, ▼ holding out. The centre is the share who support.</>
+          <>
+            ▲ support, ◐ with conditions, ◆ not stated, ▼ holding out. The centre is the share who support
+            outright; those who accept with conditions are not counted in it.
+          </>
         ) : (
           <>shown once the run is finished and summarised.</>
         )}

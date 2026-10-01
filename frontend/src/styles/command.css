@@ -13,13 +13,13 @@
     --hex:polygon(50% 0,100% 25%,100% 75%,50% 100%,0 75%,0 25%); --cut:12px; }
 :root, [data-theme=holo] { --bg0:#02050a; --bg1:#061020; --panel:#0a1422; --panel-hi:#0f1d31; --line:rgba(34,211,238,.2); --line-hi:rgba(34,211,238,.5);
     --accent:#22d3ee; --accent2:#a78bfa; --live:#34f5a0; --support:#34f5a0; --undecided:#7d8fa9; --hold:#ff4d78;
-    --inject:#ffc53d; --shift:#b794ff; --danger:#ff4d78; --t1:#e8f6ff; --t2:#a3b7cc; --t3:#7690ab; --rain:#22d3ee; }
+    --conditional:#ff9a52; --inject:#ffc53d; --shift:#b794ff; --danger:#ff4d78; --t1:#e8f6ff; --t2:#a3b7cc; --t3:#7690ab; --rain:#22d3ee; }
 [data-theme=matrix] { --bg0:#000; --bg1:#010c06; --panel:#03120a; --panel-hi:#072016; --line:rgba(0,255,156,.2); --line-hi:rgba(0,255,156,.5);
     --accent:#00ff9c; --accent2:#7dffcf; --live:#00ff9c; --support:#6ff7ff; --undecided:#739a86; --hold:#ff5f5f;
-    --inject:#e6ff5c; --shift:#c3a6ff; --danger:#ff5f5f; --t1:#dcffec; --t2:#94c9aa; --t3:#62977a; --rain:#00ff9c; }
+    --conditional:#ffa94d; --inject:#e6ff5c; --shift:#c3a6ff; --danger:#ff5f5f; --t1:#dcffec; --t2:#94c9aa; --t3:#62977a; --rain:#00ff9c; }
 [data-theme=neon] { --bg0:#07010d; --bg1:#10051e; --panel:#140a24; --panel-hi:#1d1033; --line:rgba(255,61,242,.22); --line-hi:rgba(255,61,242,.55);
     --accent:#ff3df2; --accent2:#00e5ff; --live:#00ffa3; --support:#00ffa3; --undecided:#8a8fb5; --hold:#ff4d4d;
-    --inject:#ffe600; --shift:#00e5ff; --danger:#ff4d4d; --t1:#fdeeff; --t2:#c7acd9; --t3:#9a80b3; --rain:#ff3df2; }
+    --conditional:#ff9f43; --inject:#ffe600; --shift:#00e5ff; --danger:#ff4d4d; --t1:#fdeeff; --t2:#c7acd9; --t3:#9a80b3; --rain:#ff3df2; }
 html, .cc-app { height:100%; }
 .cc-app { color:var(--t1); font:14.5px/1.5 var(--sans); -webkit-font-smoothing:antialiased;
     background:radial-gradient(50% 40% at 50% 0%, color-mix(in srgb,var(--accent) 10%,transparent), transparent 70%),
@@ -142,10 +142,16 @@ details[open] > summary .cc-caret { transform:rotate(90deg); }
 .cc-meter.cc-warn i { background:var(--inject); box-shadow:0 0 8px var(--inject); }
 .cc-sbar { display:flex; gap:3px; height:8px; margin-top:8px; }
 .cc-sbar i { flex:1; background:var(--sc); transform:skewX(-24deg); box-shadow:0 0 7px color-mix(in srgb,var(--sc) 55%,transparent); }
-.cc-counts { display:inline-flex; gap:8px; font:700 11px var(--mono); }
+/* Wraps rather than overflows: with ◐ present there are four counts, and the HUD's room cell is ~100 px on a phone. */
+.cc-counts { display:inline-flex; flex-wrap:wrap; justify-content:flex-end; gap:2px 8px; font:700 11px var(--mono); }
 .cc-c-support { color:var(--support); }
+.cc-c-conditional { color:var(--conditional); }
 .cc-c-undecided { color:var(--undecided); }
 .cc-c-holding { color:var(--hold); }
+/* Why a persona has their stance: the source in muted text, the words it rests on in body text. */
+.cc-swhy-list > li { margin-top:8px; }
+.cc-swhy-list > li > b { font-weight:600; }
+.cc-swhy-q { font-size:13px; color:var(--t1); }
 .cc-legend { font:500 10px/1.5 var(--mono); letter-spacing:.06em; color:var(--t3); display:flex; flex-wrap:wrap; gap:4px 10px; }
 .cc-hx { --s:38px; position:relative; display:inline-block; flex:none; width:var(--s); height:calc(var(--s) * 1.1547); }
 .cc-hx::before { content:""; position:absolute; inset:0; background:var(--ring); clip-path:var(--hex); }
@@ -290,7 +296,8 @@ option { background:var(--panel); }
 .cc-gauge .cc-g-tick { stroke:var(--accent); stroke-opacity:.4; }
 .cc-gauge .cc-g-pct { font:800 28px var(--mono); fill:var(--t1); text-anchor:middle; }
 .cc-gauge .cc-g-lab { font:700 7.5px var(--mono); letter-spacing:.26em; fill:var(--t3); text-anchor:middle; }
-.cc-gcounts { display:grid; grid-template-columns:repeat(3,1fr); text-align:center; margin-top:2px; }
+/* One column per state shown: three, or four when anyone accepted with conditions. */
+.cc-gcounts { display:grid; grid-auto-flow:column; grid-auto-columns:1fr; text-align:center; margin-top:2px; }
 .cc-gcounts b { display:block; font:800 18px/1.1 var(--mono); }
 .cc-gcounts span { font:700 8.5px var(--mono); letter-spacing:.14em; text-transform:uppercase; color:var(--t3); }
 .cc-wave { position:relative; display:flex; align-items:flex-end; gap:2px; height:70px; margin-top:10px; }

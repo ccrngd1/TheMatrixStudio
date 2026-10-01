@@ -1581,6 +1581,17 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             except (TypeError, json.JSONDecodeError):
                 logger.warning("Run %s has an unreadable research record", run["id"])
 
+        # Why each persona has its stance (`stance.py`): class, quote and source per persona, and what the
+        # closing-statement classifier cost. Only here, not in the run list, which needs the states alone.
+        # Absent for every run summarised before 2026-10-01; unreadable reads as absent, as research does.
+        stance_basis: Optional[Dict[str, Any]] = None
+        if run.get("stance_basis_json"):
+            try:
+                parsed_basis = json.loads(run["stance_basis_json"])
+                stance_basis = parsed_basis if isinstance(parsed_basis, dict) else None
+            except (TypeError, json.JSONDecodeError):
+                logger.warning("Run %s has an unreadable stance basis", run["id"])
+
         # What each model role ACTUALLY resolved to — the thing a run could not show when
         # `config.model` was being dropped. From the stored config, through the same `ModelSet`
         # the engine uses, so the page cannot disagree with what ran.
@@ -1589,16 +1600,21 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         # The run's WHOLE cost, itemised. In-run model calls are summed from the event log
         # (`get_run_stats`); the summary and the research pass are stored outside it, and each was
         # charged to nobody until 2026-09-26 — so they are added here, and the parts are shown
-        # rather than only the total, so an under-count appears as a missing line.
+        # rather than only the total, so an under-count appears as a missing line. The stance classifier
+        # is the latest summary's companion call and is itemised the same way: the cost of the call that
+        # produced the stances on the page.
         in_run = float(stats.get("total_cost_usd") or 0.0)
         summary_cost = float((generated or {}).get("cost_usd") or 0.0)
         research_cost = float((research or {}).get("cost_usd") or 0.0)
+        classifier = (stance_basis or {}).get("classifier")
+        stance_cost = float((classifier if isinstance(classifier, dict) else {}).get("cost_usd") or 0.0)
         cost = {
             "in_run": round(in_run, 6),
             "by_kind": stats.get("cost_by_kind") or {},
             "summary": round(summary_cost, 6),
             "research": round(research_cost, 6),
-            "total": round(in_run + summary_cost + research_cost, 6),
+            "stance": round(stance_cost, 6),
+            "total": round(in_run + summary_cost + research_cost + stance_cost, 6),
         }
 
         return {
@@ -1611,6 +1627,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             "summary": {"generated": generated, "imported": imported},
             "lineage": {"parent": parent, "branches": branches},
             "research": research,
+            "stance_basis": stance_basis,
         }
 
     # ---------------- Knowledge-base file upload (run-agnostic) ---------------- #

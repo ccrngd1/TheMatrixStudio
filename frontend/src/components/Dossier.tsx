@@ -8,10 +8,13 @@
 import './Dossier.css'
 import { useEffect, useId, useState, type KeyboardEvent } from 'react'
 import { api, avatarUrl } from '../api'
-import type { AgentDossier, AgentView, DossierThread, FeedMessage, StructuredViewpoint, TurnTrace } from '../types'
+import type {
+  AgentDossier, AgentView, DossierThread, FeedMessage, StanceBasisEntry, StructuredViewpoint, TurnTrace,
+} from '../types'
 import { FIRMNESS } from '../lib/convictions'
 import { AvatarBadge } from './AvatarBadge'
 import { SourceViewer } from './SourceViewer'
+import { STANCE_CLASS, StanceWhy } from './run/Stance'
 import { HudCell, HudStrip, Label, Panel, STANCE_LABEL, Sheet, Tag, type Stance } from '../ui/primitives'
 import { Hint } from './Hint'
 
@@ -25,11 +28,6 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'threads', label: 'Threads' },
   { id: 'why', label: 'Why?' },
 ]
-const STANCE_CLASS: Record<Stance, string> = {
-  support: 'cc-c-support',
-  unstated: 'cc-c-undecided',
-  holding: 'cc-c-holding',
-}
 
 interface Props {
   agent: AgentView
@@ -37,10 +35,12 @@ interface Props {
   runId: string
   /** Where they ended (`matrix_studio/stance.py`). Post-run only, so absent while a run is live. */
   stance?: Stance
+  /** Why: the source that decided it and the words it rests on. Absent for runs summarised before 2026-10-01. */
+  basis?: StanceBasisEntry
   onClose: () => void
 }
 
-export function Dossier({ agent, feed, runId, stance, onClose }: Props) {
+export function Dossier({ agent, feed, runId, stance, basis, onClose }: Props) {
   const messages = feed.filter((m) => m.speaker === agent.name)
   // A message the operator put in their mouth is not a turn they took, so the HUD counts as the room map does.
   const turns = messages.filter((m) => !m.injected && !m.consultant).length
@@ -154,6 +154,19 @@ export function Dossier({ agent, feed, runId, stance, onClose }: Props) {
 
   const convictions = (
     <>
+      {/* Where they ended, and on what: the first thing a reader asks of a stance is "says who?". */}
+      {stance && basis && (
+        <Panel>
+          <div className="flex items-center justify-between gap-2">
+            <Label>Where they ended</Label>
+            <span className={`cc-sm ${STANCE_CLASS[stance]}`}>{STANCE_LABEL[stance]}</span>
+          </div>
+          <p className="mt-1.5">
+            <StanceWhy entry={basis} />
+          </p>
+        </Panel>
+      )}
+
       {moves.map((m) => (
         <div key={m.seq} className="cc-flag cc-shift">
           <span className="cc-ft">MOVED @{pad(m.turn)}</span>
@@ -608,7 +621,15 @@ export function Dossier({ agent, feed, runId, stance, onClose }: Props) {
                   {stance ? STANCE_LABEL[stance] : 'not yet'}
                 </span>
               }
-              sub={stance ? undefined : 'once summarised'}
+              sub={
+                !stance
+                  ? 'once summarised'
+                  : basis
+                    ? basis.source === 'closing'
+                      ? 'from closing statement'
+                      : 'from summary'
+                    : undefined
+              }
             />
             <HudCell
               label="Firmness"
