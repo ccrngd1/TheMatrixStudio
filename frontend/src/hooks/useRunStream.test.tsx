@@ -60,6 +60,17 @@ describe('useRunStream jump-to-furthest', () => {
     expect(result.current.state.feed.map((m) => m.content)).toEqual(['one', 'two', 'three'])
     expect(result.current.behind).toBe(0)
   })
+
+  it('marks where the backlog ends, so the feed types only what arrives after it', async () => {
+    let prime: (e: SimEvent[]) => void = () => {}
+    ;(api.getEvents as ReturnType<typeof vi.fn>).mockReturnValue(new Promise((r) => (prime = r)))
+    const { result } = renderHook(() => useRunStream({ runId: 'r1', cast }))
+    // Until the backlog is in, nothing can be told apart from history.
+    expect(result.current.liveFrom).toBeNull()
+    act(() => prime(backlog))
+    await waitFor(() => expect(result.current.cursor).toBe(backlog.length))
+    expect(result.current.liveFrom).toBe(6)
+  })
 })
 
 // --------------------------------------------------------------------------- //

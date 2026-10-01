@@ -9,7 +9,7 @@
 import { useEffect, useRef } from 'react'
 import type { Theme } from './theme'
 
-const GLYPHS = 'ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉ0123456789<>/=+*#'
+export const GLYPHS = 'ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉ0123456789<>/=+*#'
 const COL = 16
 const FRAME_MS = 60
 

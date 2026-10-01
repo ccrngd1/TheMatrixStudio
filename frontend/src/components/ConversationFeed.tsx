@@ -6,13 +6,20 @@ import { SourceViewer } from './SourceViewer'
 import { citeSegments, unsourcedCitations } from '../lib/citeText'
 import { Hint } from './Hint'
 import { Hex, identityColor, identityOf } from '../ui/primitives'
-import { phase } from '../ui/theme'
+import { useMotion, usePhase } from '../ui/fx'
+import { TypeIn, isTyping, useArrivals } from '../ui/TypeIn'
+import '../styles/atmosphere.css'
 
 interface Props {
   feed: FeedMessage[]
   agents: Record<string, AgentView>
   activeSpeaker: string | null
   thinking: boolean
+  /**
+   * The last seq of the backlog shown on load (`useRunStream`). A message after it that arrives while the feed
+   * is open types itself in; the rest show at once. Unset (the scrubber) means nothing types.
+   */
+  liveFrom?: number | null
   /** Scroll this message into view and flag it briefly. Sent by the participation panel. */
   jumpTo?: { seq: number; nonce: number } | null
   /** Needed to open a cited source. Without it citations render as plain text. */
@@ -39,7 +46,7 @@ const pad = (n: number) => String(n).padStart(2, '0')
 type Css = CSSProperties & Record<`--${string}`, string>
 
 export function ConversationFeed({
-  feed, agents, activeSpeaker, thinking, jumpTo, runId, sourceIndex = {}, quotes = {}, assumptions = [],
+  feed, agents, activeSpeaker, thinking, liveFrom, jumpTo, runId, sourceIndex = {}, quotes = {}, assumptions = [],
   onForkAssumption, forkCost, onOpenDossier, onOpenMessage, selectedSeq,
 }: Props) {
   // Identity slots in the cast's own order, so a persona keeps one colour on every surface.
@@ -55,6 +62,9 @@ export function ConversationFeed({
   const bottomRef = useRef<HTMLDivElement>(null)
   const [autoScroll, setAutoScroll] = useState(true)
   const [highlight, setHighlight] = useState<number | null>(null)
+  // New messages type themselves in (§4.2), behind FX like every other effect.
+  const motion = useMotion()
+  const arrivals = useArrivals(feed.map((m) => m.seq), liveFrom, motion)
 
   useEffect(() => {
     if (autoScroll) bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -104,6 +114,8 @@ export function ConversationFeed({
           const prevTurn = i === 0 ? -Infinity : feed[i - 1].turn
           const madeHere = assumptions.filter((a) => a.turn < m.turn && a.turn >= prevTurn)
           const slot = identityOf(m.speaker, castOrder)
+          const arrived = motion && !m.injected ? arrivals.get(m.seq) : undefined
+          const fresh = isTyping(arrived, m.content.length)
           return (
             <div key={`${m.seq}`} className="flex flex-col gap-3">
               {madeHere.map(card)}
@@ -115,28 +127,13 @@ export function ConversationFeed({
                 </div>
               )}
               {m.injected ? (
-                // Put in by the operator: a hatched banner, so it can never be read as a persona speaking.
-                <div
-                  id={`turn-${m.seq}`}
-                  className={`cc-signal ${highlight === m.seq ? 'cc-jumped' : ''}`}
-                  style={{ '--ph': phase() } as Css}
-                >
-                  <div className="cc-sig-h">
-                    <span>
-                      ▼ Incoming · <span>injected</span>
-                    </span>
-                    <span>#{pad(m.turn)}</span>
-                  </div>
-                  <div className="cc-sig-b">
-                    <b>{m.speaker}</b>: {m.content}
-                  </div>
-                </div>
+                <Incoming m={m} jumped={highlight === m.seq} />
               ) : (
                 <div
                   id={`turn-${m.seq}`}
                   className={`cc-msg ${m.consultant ? 'cc-consult' : ''} ${highlight === m.seq ? 'cc-jumped' : ''} ${
                     selectedSeq === m.seq ? 'cc-selected' : ''
-                  } ${onOpenMessage ? 'cc-tappable' : ''}`}
+                  } ${onOpenMessage ? 'cc-tappable' : ''} ${fresh ? 'cc-new' : ''}`}
                   style={{ '--c': identityColor(m.consultant ? 'a0' : slot) } as Css}
                   // A tap anywhere on the bubble opens its context, except on the controls inside it (a
                   // citation, a quote), which do their own thing. The turn number is the keyboard way in.
@@ -180,12 +177,15 @@ export function ConversationFeed({
                         {m.consultant.askedBy} asked: “{m.consultant.question}”
                       </p>
                     )}
-                    <MessageBody
-                      m={m}
-                      index={sourceIndex}
-                      quotes={quotes[String(m.seq)]}
-                      onOpen={runId ? setOpenSource : undefined}
-                    />
+                    {/* Only the text types (the body's first element); what follows it is there at once. */}
+                    <TypeIn start={fresh ? arrived : undefined} length={m.content.length}>
+                      <MessageBody
+                        m={m}
+                        index={sourceIndex}
+                        quotes={quotes[String(m.seq)]}
+                        onOpen={runId ? setOpenSource : undefined}
+                      />
+                    </TypeIn>
                     {m.shift && <ShiftFlag s={m.shift} speaker={m.speaker} />}
                   </div>
                 </div>
@@ -201,11 +201,7 @@ export function ConversationFeed({
           <div className="cc-composing" role="status">
             <Hex name={activeSpeaker} slot={identityOf(activeSpeaker, castOrder)} size="sm" active />
             <span>{activeSpeaker} composing</span>
-            <span className="cc-eq" aria-hidden="true" style={{ '--ph': phase() } as Css}>
-              {['0s', '.25s', '.5s', '.125s'].map((d) => (
-                <i key={d} style={{ '--d': d } as Css} />
-              ))}
-            </span>
+            <Equaliser />
           </div>
         )}
         <div ref={bottomRef} />
@@ -219,6 +215,37 @@ export function ConversationFeed({
         auto-scroll
       </label>
     </div>
+  )
+}
+
+// Put in by the operator: a hatched banner, so it can never be read as a persona speaking. Its own component so
+// the sweep's phase is taken once, when it mounts (`usePhase`), and the feed re-rendering every turn cannot move it.
+function Incoming({ m, jumped }: { m: FeedMessage; jumped: boolean }) {
+  const ph = usePhase()
+  return (
+    <div id={`turn-${m.seq}`} className={`cc-signal ${jumped ? 'cc-jumped' : ''}`} style={{ '--ph': ph } as Css}>
+      <div className="cc-sig-h">
+        <span>
+          ▼ Incoming · <span>injected</span>
+        </span>
+        <span>#{pad(m.turn)}</span>
+      </div>
+      <div className="cc-sig-b">
+        <b>{m.speaker}</b>: {m.content}
+      </div>
+    </div>
+  )
+}
+
+// The composing equaliser, phased once on mount for the same reason.
+function Equaliser() {
+  const ph = usePhase()
+  return (
+    <span className="cc-eq" aria-hidden="true" style={{ '--ph': ph } as Css}>
+      {['0s', '.25s', '.5s', '.125s'].map((d) => (
+        <i key={d} style={{ '--d': d } as Css} />
+      ))}
+    </span>
   )
 }
 

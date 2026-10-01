@@ -1,13 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 // The app shell (docs/MOBILE-UI.md §3, §7 stage 1): the command-centre frame, the four-item dock, the top bar,
 // the settings sheet (theme, FX, sign out) and the overlay layer every sheet is portalled into.
-import { useState, type ReactNode } from 'react'
+import { useState, type CSSProperties, type ReactNode } from 'react'
 import { navigate, type Route } from '../lib/route'
 import { Icon, type IconName } from '../ui/icons'
 import { Label, Seg, Sheet, Toggle } from '../ui/primitives'
 import { THEMES, useThemeState, type Theme } from '../ui/theme'
 import { useSession } from './AuthGate'
 import { Rain } from '../ui/Rain'
+import { Boot } from '../ui/Boot'
+import { Decode } from '../ui/Decode'
+import { FxContext, usePhase } from '../ui/fx'
+import '../styles/atmosphere.css'
+
+type Css = CSSProperties & Record<`--${string}`, string>
 
 export type DockItem = 'runs' | 'ensembles' | 'knowledge' | 'library'
 const DOCK: { id: DockItem; label: string; icon: IconName }[] = [
@@ -17,14 +23,24 @@ const DOCK: { id: DockItem; label: string; icon: IconName }[] = [
   { id: 'library', label: 'Library', icon: 'library' },
 ]
 
-/** The frame: fills the viewport, holds the view and the overlay layer sheets render into. */
+/**
+ * The frame: fills the viewport, holds the view and the overlay layer sheets render into. Behind the view, the
+ * rain and the floor grid; over it, once per session, the boot log. FX reaches the one-shot effects inside
+ * (title decode, type-in) through `FxContext`.
+ */
 export function AppFrame({ children, fx, theme = 'holo' }: { children: ReactNode; fx: boolean; theme?: Theme }) {
+  // The floor's loop phase, taken once: it lives as long as the frame (§5.4, `usePhase`).
+  const floorPhase = usePhase()
   return (
-    <div className={`cc-app h-screen w-full ${fx ? '' : 'cc-nofx'}`} style={{ height: '100dvh' }}>
-      <Rain fx={fx} theme={theme} />
-      <div id="cc-view">{children}</div>
-      <div id="cc-overlay" />
-    </div>
+    <FxContext.Provider value={fx}>
+      <div className={`cc-app h-screen w-full ${fx ? '' : 'cc-nofx'}`} style={{ height: '100dvh' }}>
+        <Rain fx={fx} theme={theme} />
+        <div id="cc-floor" aria-hidden="true" style={{ '--ph': floorPhase } as Css} />
+        <div id="cc-view">{children}</div>
+        <div id="cc-overlay" />
+        <Boot fx={fx} theme={theme} />
+      </div>
+    </FxContext.Provider>
   )
 }
 
@@ -68,7 +84,9 @@ export function TopBar({
           </div>
         ) : (
           <>
-            <b className={code ? 'cc-code' : 'cc-disp'}>{title}</b>
+            <b className={code ? 'cc-code' : 'cc-disp'}>
+              <Decode text={title} />
+            </b>
             {sub && <div className="cc-sub">{sub}</div>}
           </>
         )}
@@ -100,7 +118,10 @@ export function SettingsButton({ theme, setTheme, fx, setFx }: ReturnType<typeof
           <div className="cc-setting">
             <span>
               Effects
-              <span className="cc-muted block">The animated grid and scanlines behind the panels.</span>
+              <span className="cc-muted block">
+                The rain, floor grid and scanlines behind the panels, the start-up log, and titles and new
+                messages animating in.
+              </span>
             </span>
             <Toggle on={fx} onChange={setFx} label="Effects" />
           </div>
