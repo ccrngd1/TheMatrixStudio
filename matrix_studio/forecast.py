@@ -37,8 +37,9 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 #: Runs created at or after this recorded every model call's cost (`d4f852c`, 2026-09-26 16:17:30 UTC).
 ATTRIBUTION_SINCE = 1790439450
 
-#: Event kinds that make up the conversation itself: what each persona says, passes on, or reflects.
-CONVERSATION_KINDS = ("agent.response", "agent.passed", "agent.reflected")
+#: Event kinds that make up the conversation itself: what each persona says, passes on, or reflects —
+#: and a closing statement that came back empty, which was a voice call and was paid for.
+CONVERSATION_KINDS = ("agent.response", "agent.passed", "agent.reflected", "closing.missing")
 #: The per-turn machinery around it. Unrecorded before `ATTRIBUTION_SINCE`.
 MODERATION_KINDS = ("speaker.selected", "validation.checked")
 
