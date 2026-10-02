@@ -44,7 +44,8 @@ Defaults live in three places, and they differ on purpose:
    stored config with a missing key gets, so it protects old runs.
 2. **The API request model** ([`../../matrix_studio/api/app.py`](../../matrix_studio/api/app.py)).
    Its values are written into each new run's stored config. A default can change here, for new runs
-   only, without touching old ones. Inline citations are switched on this way.
+   only, without touching old ones. Inline citations were switched on this way, and withheld concerns
+   switched off.
 3. **The launch form** ([`../../frontend/src/views/NewRunForm.tsx`](../../frontend/src/views/NewRunForm.tsx)).
    Convenience defaults for a person setting up a run interactively, sent explicitly so the run
    records what was chosen.
@@ -53,7 +54,7 @@ Defaults live in three places, and they differ on purpose:
 |---|---|---|---|
 | speaker fairness | **on** | on | server default |
 | structured personas | off | off | on when any persona has convictions |
-| withhold concerns (within structured personas) | **on** | on | server default |
+| withhold concerns, "hidden agendas" (within structured personas) | **on** | **off** (since 2026-10-02) | off, sent explicitly |
 | dismissal rule (within structured personas) | **mandatory** | mandatory | server default |
 | evidence lean (within structured personas) | **on** | on | on, sent explicitly |
 | retrieval | off | off | on when there are documents, collections, research or consultants |
@@ -98,11 +99,13 @@ turn 25 and spent fifteen turns on "nothing to add". Unfairness had been rationi
 sentence telling the moderator to prefer an overdue persona *only if they have something specific to
 add* cut those closing-language turns from 13 of 40 to 3 of 40 and is on with fairness (§13, §15).
 
-### 2. Withheld concerns
+### 2. Withheld concerns (on in the engine; off for new runs since 2026-10-02)
 
-Within structured personas, the underlying concern is withheld unless asked. This default came from
-the design, not a comparison: withholding is the point of the field, because "a concern volunteered
-on turn 1 cannot be drawn out". It was then checked. Zero verbatim leaks in a 15-turn run, and none
+Within structured personas, the underlying concern was withheld unless asked, and still is for every
+run created before 2026-10-02 and for any run with hidden agendas on. New runs state it plainly by
+the owner's decision; see [Off by decision](#off-by-decision-not-by-measurement-withheld-concerns)
+below. The original default came from the design, not a comparison: withholding was the point of the
+field, because "a concern volunteered on turn 1 cannot be drawn out". It was then checked. Zero verbatim leaks in a 15-turn run, and none
 through memory in a pre-registered check that read all 100 memories and reflections across three
 cognition runs ([`../project/PHASE6-STRUCTURED-PERSONAS.md`](../project/PHASE6-STRUCTURED-PERSONAS.md);
 [`../project/PHASE6-COGNITION-INTERACTION.md`](../project/PHASE6-COGNITION-INTERACTION.md)). What has not been
@@ -149,6 +152,26 @@ goes to the operator; at the time of writing the default is still on
 The way it was switched on is worth noticing. The engine default stayed off, and only the request
 model changed, "so a run created before the change … keeps its prompt when resumed or branched".
 That is the rule's second reason working as intended.
+
+## Off by decision, not by measurement: withheld concerns
+
+On 2026-10-02 the owner decided that "Personas shouldn't guard their concerns or objections; they
+should be laid out plainly when they are known." New runs now state each underlying concern openly,
+as part of its position, and withholding is an opt-in "hidden agendas" toggle on the Cast step,
+useful for practising a negotiation or an interview.
+
+It was switched the way inline citations were, in the other direction: the request model defaults
+`withhold_concerns` to false and writes it into each new run's config, and the engine default stays
+true. So a run created before the change, whose config has no value, keeps withholding when resumed
+or branched, and "start fresh" from it carries `true` across. The rule's second reason is kept.
+
+Its first reason is not: the plain wording was not measured before it was turned on. Every study in
+[`../studies/`](../studies/) and [`../project/`](../project/) `PHASE6-*` ran with concerns withheld,
+so their results do not automatically carry over to runs that state them. The study definitions in
+`examples/` pin `withhold_concerns: true` so that re-running one reproduces its condition.
+
+The post-run summary reads the concerns in both modes. On a withheld run it is the reveal, labelled
+"hidden during the run" ([Personas and convictions](personas-and-convictions.md)).
 
 ## Convenience defaults in the launch form
 

@@ -40,3 +40,6 @@
 
 /* The shared small button is 34 px tall; anything tapped in the dossier gets the full 44. */
 .cc-btn.cc-sm.cc-dz-tap { min-height:44px; flex:none; }
+
+/* A concern stated plainly, under its position. Rendered only for a run that stated concerns plainly. */
+.cc-flag.cc-dz-concern { --fc:var(--conditional); }

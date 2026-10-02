@@ -214,6 +214,21 @@ describe('NewRunForm prefilled from a run', () => {
     expect(JSON.stringify(body)).not.toMatch(/parent_run_id|branch_turn|from_turn/)
   })
 
+  it.each([true, false])(
+    'keeps the source run’s hidden-agendas setting (withhold_concerns: %s) when starting fresh',
+    async (withheld) => {
+      // The setup route writes the source's value out — a run from before 2026-10-02 comes back as `true` —
+      // so the copy has the conversation the source had, not whatever the new-run default is today.
+      loadWith({ ...SETUP, config: { ...SETUP.config, personas: { enabled: true, withhold_concerns: withheld } } })
+      await waitFor(() => expect(screen.getByDisplayValue('Priya')).toBeInTheDocument())
+      const toggle = screen.getByRole('checkbox', { name: /Hidden agendas/ })
+      expect((toggle as HTMLInputElement).checked).toBe(withheld)
+      fireEvent.click(screen.getByRole('button', { name: /run simulation/i }))
+      await waitFor(() => expect(api.createRun).toHaveBeenCalledTimes(1))
+      expect((api.createRun as any).mock.calls[0][0].config.personas.withhold_concerns).toBe(withheld)
+    },
+  )
+
   it('reports a failed load instead of showing a silently blank form', async () => {
     ;(api.getRunSetup as any).mockRejectedValue(new Error('404: Run not found'))
     render(<NewRunForm onStarted={() => {}} onEnsembleStarted={() => {}} onCancel={() => {}} fromRunId="ghost" />)

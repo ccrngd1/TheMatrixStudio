@@ -33,7 +33,7 @@ Tap a citation inside a message to open the passage it points to.
    The dossier opens with the persona's turns, stance and firmest position at the top.
 
 2. Use the four tabs:
-   - **Convictions**: where they ended (once the run is summarised), their positions with firmness, what formed each and what would move them, what they will not weigh, formative events, the persona and goals. A withheld concern is shown only as hidden.
+   - **Convictions**: where they ended (once the run is summarised), their positions with firmness, what formed each and what would move them, what they will not weigh, formative events, the persona and goals. An underlying concern stated plainly is shown under its position as **CONCERN**; on a run with hidden agendas it is shown only as hidden, and the summary reveals it after the run.
    - **Memory**: what they last said, their memory stream and reflections, the document passages they drew on, their background documents and the knowledge bases they searched.
    - **Threads**: open and resolved threads, and their relationships with the others.
    - **Why?**: every message they said, newest first; tap **why?** on one for its trace.

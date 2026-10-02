@@ -60,6 +60,12 @@ export interface ImportedSetup {
   dynamicAssumptions?: boolean
   /** Whether the setup asks the moderator to end the run when the discussion is done. */
   stopWhenConverged?: boolean
+  /**
+   * Hidden agendas (`config.personas.withhold_concerns`). Absent stays undefined, so a setup file that says
+   * nothing takes the form's new-run default; "start fresh" from a run always says, because the setup route
+   * writes the source run's value out.
+   */
+  withholdConcerns?: boolean
   /** Problems that did not stop the load. Shown to the operator verbatim. */
   warnings: string[]
 }
@@ -258,6 +264,10 @@ export function parseSetupObject(data: unknown): ImportedSetup {
         : Boolean(
             (config.selection as Record<string, unknown>).stop_when_converged,
           ),
+    withholdConcerns:
+      (config.personas as Record<string, unknown> | undefined)?.withhold_concerns === undefined
+        ? undefined
+        : Boolean((config.personas as Record<string, unknown>).withhold_concerns),
     warnings,
   }
 }

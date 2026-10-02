@@ -141,9 +141,9 @@ def test_setup_preserves_convictions_including_the_private_concern(client):
     """
     Convictions survive, `underlying_concern` included.
 
-    The concern is withheld from the conversation and from the event log, but it is
-    the operator's own authored input — losing it here would silently downgrade
-    every persona on a re-run, and the loss would be invisible in the form.
+    Even a run with hidden agendas, which keeps the concern from the conversation and the
+    event log, has it as the operator's own authored input — losing it here would silently
+    downgrade every persona on a re-run, and the loss would be invisible in the form.
     """
     run_id = _start(client)
     setup = client.get(f"/api/runs/{run_id}/setup").json()["setup"]
@@ -162,6 +162,24 @@ def test_setup_preserves_convictions_including_the_private_concern(client):
     # Run naming normalises case, so compare case-insensitively rather than
     # asserting the submitted spelling.
     assert setup["name"].lower() == "migration debate"
+
+
+@pytest.mark.parametrize("sent, carried", [({}, False), ({"withhold_concerns": True}, True)])
+def test_setup_carries_the_source_runs_hidden_agendas_setting(client, sent, carried):
+    """"Start fresh" must not quietly change whether the copy withholds. The value is written out,
+    so the form and a re-POST both see the source's choice rather than the new-run default.
+    A source from before the setting existed is covered in test_api_personas.py."""
+    body = json.loads(json.dumps(REQUEST))
+    body["config"]["personas"] = {"enabled": True, **sent}
+    run_id = _start(client, body)
+    setup = client.get(f"/api/runs/{run_id}/setup").json()["setup"]
+    assert setup["config"]["personas"]["withhold_concerns"] is carried
+
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake_llm()):
+        again = client.post("/api/runs", json=setup)
+    assert again.status_code == 201, again.text
+    copy = client.get(f"/api/runs/{again.json()['run_id']}").json()
+    assert copy["config"]["personas"]["withhold_concerns"] is carried
 
 
 def _store_call(fn):

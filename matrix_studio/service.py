@@ -19,7 +19,7 @@ import logging
 import os
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from matrix_studio import analysis
 from matrix_studio import experts as experts_mod
@@ -123,6 +123,42 @@ def _load_cast(run: Dict[str, Any]) -> List[Dict[str, Any]]:
         return []
 
 
+def authored_concerns(run: Dict[str, Any]) -> Tuple[List[Dict[str, str]], bool]:
+    """``(concerns, withheld)``: each persona's authored underlying concerns, and whether the run hid them.
+
+    For the summary, which reads them in BOTH modes (owner decision, 2026-10-02): on a withheld run it is
+    the post-run reveal, and on a plain one the check that they were said and answered. Only a run that
+    rendered structured personas has any — with the feature off, a concern in the cast never reached a
+    prompt, so "was it surfaced?" would be a question about nothing. ``withheld`` is read the way the
+    engine read it, so a config from before 2026-10-02 with no key counts as withheld.
+    """
+    from matrix_studio.state import PersonaConfig
+
+    try:
+        personas = PersonaConfig.from_config(_run_config(run))
+    except ValueError:
+        return [], True
+    if not personas.enabled:
+        return [], personas.withhold_concerns
+    out: List[Dict[str, str]] = []
+    for member in _load_cast(run):
+        if not isinstance(member, dict):
+            continue
+        structured = member.get("structured")
+        viewpoints = structured.get("viewpoints") if isinstance(structured, dict) else None
+        for vp in viewpoints if isinstance(viewpoints, list) else []:
+            if not isinstance(vp, dict):
+                continue
+            concern = str(vp.get("underlying_concern") or "").strip()
+            if concern:
+                out.append({
+                    "speaker": str(member.get("name") or ""),
+                    "position": str(vp.get("position") or "").strip(),
+                    "concern": concern,
+                })
+    return out, personas.withhold_concerns
+
+
 async def generate_and_store_summary(
     db: Database,
     run: Dict[str, Any],
@@ -148,6 +184,7 @@ async def generate_and_store_summary(
     from matrix_studio import stance as stance_mod
 
     events = await db.get_events(run["id"])
+    concerns, concerns_withheld = authored_concerns(run)
 
     summarising = analysis.generate_summary(
         conversation=conversation,
@@ -157,6 +194,8 @@ async def generate_and_store_summary(
         model=resolve_model(run, model),
         instructions=instructions,
         context=assumptions_mod.summary_note(assumptions_mod.from_events(events)),
+        concerns=concerns,
+        concerns_withheld=concerns_withheld,
     )
     # A run with a closing round has each persona's final position in their own words, and stance reads
     # those first (docs/MOBILE-UI.md §6.1, decided 2026-10-01). One call for the room, alongside the summary

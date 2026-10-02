@@ -227,7 +227,8 @@ async def test_generate_summary_threads_custom_instructions_into_prompt(monkeypa
     )
     assert CUSTOM_INSTRUCTIONS in captured["system"]
     assert analysis.DEFAULT_SUMMARY_INSTRUCTIONS not in captured["system"]
-    _guardrails_present(captured["system"], analysis.DEFAULT_SUMMARY_FIELDS)
+    # Every default field but `concerns`, which is asked for only when the run authored some.
+    _guardrails_present(captured["system"], [f for f in analysis.DEFAULT_SUMMARY_FIELDS if f != "concerns"])
     # The effective instructions are echoed back for persistence/prefill.
     assert result["instructions"] == CUSTOM_INSTRUCTIONS
 
@@ -434,3 +435,172 @@ async def test_a_summary_asks_the_model_for_the_whole_summary_budget(monkeypatch
     assert result["parsed"] is True and "omitted" not in result["payload"]
     assert [k["max_tokens"] for k in sent] == [get_settings().summary_max_tokens]
     assert sent[0]["max_tokens"] == 16000
+
+
+# --------------------------------------------------------------------------- #
+# Underlying concerns (owner decision, 2026-10-02): read in both modes
+#
+# The analysis is given each persona's authored concerns whether or not the run withheld them. On a
+# withheld run the `concerns` field is the post-run reveal; on a plain one, the check that each was
+# said and answered. A run with no concerns authored gets exactly the prompt it got before.
+# --------------------------------------------------------------------------- #
+
+CONCERNS = [
+    {"speaker": "Ada", "position": "Require a provider sign-off", "concern": "I signed off the last outage"},
+    {"speaker": "Ben", "position": "", "concern": "My team's headcount is under review"},
+]
+
+#: The seven fields every summary asked for before `concerns` existed.
+FIELDS_BEFORE_CONCERNS = [f for f in analysis.DEFAULT_SUMMARY_FIELDS if f != "concerns"]
+
+
+def _capture(sent, reply=None):
+    async def _fake(messages, model=None, temperature=0.4, max_tokens=None):
+        sent.append(messages)
+        return {"content": json.dumps(reply or {"overview": "o"}), "tokens_in": 1, "tokens_out": 1,
+                "cost_usd": 0.0}
+
+    return _fake
+
+
+def test_concerns_come_last_and_the_overview_stays_first():
+    shape = _shape_lines(analysis._summary_system_prompt(list(analysis.DEFAULT_SUMMARY_FIELDS), focus=None))
+    keys = [line.strip().split('"')[1] for line in shape]
+    assert keys[0] == "overview" and keys[-1] == "concerns"
+    assert keys[-2] == "conditional_recommendation"
+
+
+def test_the_concerns_rule_says_not_stated_and_to_judge_from_the_transcript():
+    prompt = analysis._summary_system_prompt(list(analysis.DEFAULT_SUMMARY_FIELDS), focus=None)
+    rules = prompt.split("\n}\n", 1)[1]
+    assert '"concerns": one row per concern' in rules
+    assert f'"where" is exactly "{analysis.NOT_STATED}" when it never came up' in rules
+    assert "Judge only from the transcript" in rules
+    assert '"surfaced": "yes, partly or no"' in prompt and '"addressed": "yes, partly or no"' in prompt
+
+
+@pytest.mark.asyncio
+async def test_with_no_concerns_the_prompt_is_exactly_what_it_was(monkeypatch):
+    sent = []
+    complete = {"overview": "o", "consensus": [], "dissenters": [], "key_ideas": [], "open_questions": [],
+                "evidence_plan": [], "conditional_recommendation": ""}
+    monkeypatch.setattr(analysis, "_acompletion", _capture(sent, complete))
+    result = await analysis.generate_summary(CONVERSATION, topic="t")
+    system, user = sent[0][0]["content"], sent[0][1]["content"]
+    assert system == analysis._summary_system_prompt(FIELDS_BEFORE_CONCERNS, focus=None)
+    assert "concern" not in system.lower()
+    assert user == f'The conversation topic was: "t".\n\nTranscript:\n{analysis.format_transcript(CONVERSATION)}' \
+                   "\n\nProduce the JSON analysis now."
+    # And the payload has no trace of the field: not empty, not omitted, not stamped.
+    payload = result["payload"]
+    assert "concerns" not in payload and "concerns_withheld" not in payload and "omitted" not in payload
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("withheld, says", [
+    (True, "keep these to themselves unless someone drew them out"),
+    (False, "state these openly"),
+])
+async def test_the_concerns_reach_the_analyst_as_context_in_both_modes(monkeypatch, withheld, says):
+    sent = []
+    monkeypatch.setattr(analysis, "_acompletion", _capture(sent))
+    await analysis.generate_summary(CONVERSATION, topic="t", concerns=CONCERNS, concerns_withheld=withheld)
+    system, user = sent[0][0]["content"], sent[0][1]["content"]
+    assert '"concerns":' in system
+    # Context in the request, before the transcript, and said not to be part of it.
+    note = user[:user.index("Transcript:")]
+    assert "Analyst-only context, NOT part of the transcript" in note and says in note
+    assert "- Ada (behind “Require a provider sign-off”): I signed off the last outage" in note
+    assert "- Ben: My team's headcount is under review" in note
+
+
+def test_a_concern_row_is_coerced_to_its_fixed_shape():
+    out = analysis._coerce_summary({"concerns": [
+        {"speaker": "Ada", "concern": "I signed off the last outage", "surfaced": "Yes.",
+         "where": "turn 3: “I own the last one”", "addressed": "PARTLY"},
+        {"speaker": "Ben", "concern": "My team's headcount is under review", "surfaced": "not really",
+         "where": "", "addressed": None},
+        {"speaker": "Cy", "surfaced": "yes"},
+        "not a row",
+    ]}, ["concerns"])
+    ada, ben = out["concerns"]
+    assert ada == {"speaker": "Ada", "concern": "I signed off the last outage", "surfaced": "yes",
+                   "where": "turn 3: “I own the last one”", "addressed": "partly"}
+    # A verdict outside yes/partly/no is not guessed at, and a missing quote is the gap it is.
+    assert ben["surfaced"] == ben["addressed"] == ben["where"] == analysis.NOT_STATED
+    assert "omitted" not in out
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("withheld", [True, False])
+async def test_the_payload_says_whether_the_concerns_were_hidden_during_the_run(monkeypatch, withheld):
+    reply = {"overview": "o", "concerns": [{"speaker": "Ada", "concern": "I signed off the last outage",
+                                             "surfaced": "no", "where": "", "addressed": "no"}]}
+    monkeypatch.setattr(analysis, "_acompletion", _capture([], reply))
+    payload = (await analysis.generate_summary(
+        CONVERSATION, topic="t", fields=["overview", "concerns"], concerns=CONCERNS,
+        concerns_withheld=withheld))["payload"]
+    assert payload["concerns_withheld"] is withheld
+    assert payload["concerns"][0]["where"] == analysis.NOT_STATED
+
+
+@pytest.mark.asyncio
+async def test_a_reply_that_leaves_the_concerns_out_names_them_omitted(monkeypatch):
+    monkeypatch.setattr(analysis, "_acompletion", _capture([], {"overview": "o"}))
+    payload = (await analysis.generate_summary(
+        CONVERSATION, topic="t", fields=["overview", "concerns"], concerns=CONCERNS))["payload"]
+    assert payload["omitted"] == ["concerns"] and payload["concerns"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_summary_call_is_still_labelled(monkeypatch):
+    async def _boom(*a, **k):
+        raise RuntimeError("down")
+
+    monkeypatch.setattr(analysis, "_acompletion", _boom)
+    payload = (await analysis.generate_summary(
+        CONVERSATION, topic="t", concerns=CONCERNS, concerns_withheld=True))["payload"]
+    assert payload["concerns"] == [] and payload["concerns_withheld"] is True
+
+
+# --------------------------------------------------------------------------- #
+# Where the concerns come from: the run's cast, read the way the engine read it
+# --------------------------------------------------------------------------- #
+
+
+def _run_row(personas, cast=None):
+    cast = cast if cast is not None else [
+        {"name": "Ada", "persona": "p", "structured": {"viewpoints": [
+            {"position": "Require a provider sign-off", "firmness": "firm",
+             "underlying_concern": "I signed off the last outage", "validity": "sound"},
+            {"position": "Ship by June", "firmness": "negotiable"},
+        ]}},
+        {"name": "Ben", "persona": "p"},
+    ]
+    config = {"max_messages": 2, **({"personas": personas} if personas is not None else {})}
+    return {"id": "r", "config_json": json.dumps(config), "cast_json": json.dumps(cast)}
+
+
+@pytest.mark.parametrize("personas, withheld", [
+    ({"enabled": True, "withhold_concerns": False}, False),
+    ({"enabled": True, "withhold_concerns": True}, True),
+    # A run from before 2026-10-02: no key, which the engine read as withheld.
+    ({"enabled": True}, True),
+])
+def test_authored_concerns_are_read_from_the_cast_in_both_modes(personas, withheld):
+    from matrix_studio.service import authored_concerns
+
+    concerns, hidden = authored_concerns(_run_row(personas))
+    assert concerns == [{"speaker": "Ada", "position": "Require a provider sign-off",
+                         "concern": "I signed off the last outage"}]
+    assert hidden is withheld
+    assert "sound" not in json.dumps(concerns), "validity is never passed on"
+
+
+@pytest.mark.parametrize("personas", [None, {"enabled": False, "withhold_concerns": False}])
+def test_a_run_that_rendered_no_structured_personas_has_no_concerns_to_report(personas):
+    """With the feature off a concern in the cast never reached a prompt, so "was it surfaced?" would be
+    a question about nothing — and the summary prompt stays what it was."""
+    from matrix_studio.service import authored_concerns
+
+    assert authored_concerns(_run_row(personas))[0] == []

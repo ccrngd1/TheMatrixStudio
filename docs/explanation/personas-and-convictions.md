@@ -1,8 +1,8 @@
 # Personas and convictions
 
-This page explains structured personas: why they exist, what each part is for, why the withheld
-concern is never shown, and what the dismissal rule and the evidence-lean rule were measured to
-do. For how to write one, see [`../how-to/`](../how-to/). For the field list, see
+This page explains structured personas: why they exist, what each part is for, why the underlying
+concern is stated plainly by default and hidden only on request, and what the dismissal rule and the
+evidence-lean rule were measured to do. For how to write one, see [`../how-to/`](../how-to/). For the field list, see
 [`../reference/`](../reference/).
 
 ## The problem: goals are easy to satisfy
@@ -52,7 +52,8 @@ The prose description stays. Prose carries voice and manner; structure carries c
   in the experiment above.
 - **Viewpoints.** Each has a position, how the persona came to it, a **firmness**, and
   **what would change its mind**. These last two are always rendered together.
-- **An underlying concern** behind each position, withheld (below).
+- **An underlying concern** behind each position: stated plainly by default, or kept back with
+  hidden agendas on (below).
 - **A validity note**, for the operator only (below).
 
 ### Firmness and the holding rule
@@ -89,31 +90,66 @@ effect ([`../project/PHASE6-COGNITION-INTERACTION.md`](../project/PHASE6-COGNITI
 [`../studies/ESCALATION-STUDY.md`](../studies/ESCALATION-STUDY.md)). In that study the holder never folded in any of
 six runs; the room mostly worked around it rather than overruling it.
 
-## The withheld concern
+## The underlying concern
 
 Each position can carry the real worry behind it. In our invented brief, Wren the finance lead
 holds "No change to the release cadence without a costed rollback plan", and the concern behind it
-is that the last outage landed on her budget. Wren will state the position. She will not volunteer
-the worry. She says it only if someone asks why she holds the position, or presses past her surface
-argument.
+is that the last outage landed on her budget.
 
-The reason is the exercise itself. The source specification says drawing out the real concern
-behind a stated position is the skill the panel exercises, and "a concern volunteered on turn 1
-cannot be drawn out" ([`../project/PHASE6-STRUCTURED-PERSONAS.md`](../project/PHASE6-STRUCTURED-PERSONAS.md),
-"Two decisions that carry most of the weight").
+### Stated plainly, by default
 
-### Why it is never shown in a run's views
+Since 2026-10-02 a new run has Wren **say** it. The owner's decision: "Personas shouldn't guard
+their concerns or objections; they should be laid out plainly when they are known." So the
+concern is rendered under its own position ("What you are really worried about: ..."), and the
+holding rule gains one line: when a position bears on the discussion, the persona **must** say the
+worry behind it as it makes the position, openly and in its own words. It holds the concern the
+way it holds the position: others may argue with it, and it moves on the same terms
+([`../../matrix_studio/personas.py`](../../matrix_studio/personas.py), `CONCERN_STATED_RULE`).
+It is worded as a requirement rather than a permission, for the reason the dismissal rule below
+gives: through this renderer a permission tends to be satisfied by silence.
+
+In this mode the concern is part of what the persona argues, so it is shown: the dossier's
+Convictions tab has a CONCERN line under the position, the `persona.structured` event carries it,
+and an export lists it with the cast. It still never goes into another persona's prompt or the
+moderator's. The room hears it because the persona says it.
+
+**This wording is not measured.** The project normally measures a prompt change before turning it
+on, and this one was the owner's call instead. Every study in [`../studies/`](../studies/) and
+[`../project/`](../project/) `PHASE6-*` ran with concerns withheld, so their results (dismissal
+rates, talking past each other, position changes, the evidence lean) do not automatically carry
+over to runs that state them. The study definitions in `examples/validation/` and
+`examples/escalation/` pin `withhold_concerns: true`, so re-running one reproduces the condition
+its numbers came from.
+
+### Hidden agendas: withheld, as an option
+
+Withholding is now opt-in: tick **Hidden agendas** on the Cast step, or set
+`config.personas.withhold_concerns: true`. It is useful for practising a negotiation or an
+interview, where finding out what someone actually needs is the skill. Wren then states the
+position and does not volunteer the worry. She says it only if someone asks why she holds the
+position, or presses past her surface argument.
+
+That was the original design. The source specification said drawing out the real concern behind a
+stated position is the skill the panel exercises, and "a concern volunteered on turn 1 cannot be
+drawn out" ([`../project/PHASE6-STRUCTURED-PERSONAS.md`](../project/PHASE6-STRUCTURED-PERSONAS.md),
+"Two decisions that carry most of the weight"). Every run created before 2026-10-02 withheld, and it
+keeps withholding when resumed, branched or started fresh: its stored config either says so or, from
+before the setting was written out, says nothing, which the engine reads as withheld.
+
+#### Why a withheld concern is never shown in a run's views
 
 Withholding is enforced by the code path, not by asking politely:
 
 - The concern goes only into its **own persona's** prompt, immediately followed by the instruction
-  not to volunteer it.
+  not to volunteer it. That text is unchanged from Phase 6.
 - The **moderator** gets a public one-line summary: role and what the persona optimises for. The
   moderator's prompt is the one place every persona appears at once, so the private block there
-  would put every concern one prompt away from the whole cast.
+  would put every concern one prompt away from the whole cast. (The moderator's prompt is the same
+  in both modes.)
 - The concern is **stripped** from the `persona.structured` event, from the dossier API and from
-  every export. The dossier's type does not even declare the field, so code that tried to render it
-  would not compile ([`../../frontend/src/components/Dossier.tsx`](../../frontend/src/components/Dossier.tsx);
+  the cast in every export. The dossier renders a concern only when the run says it was stated
+  plainly, so even a server that sent a withheld one would show nothing
+  ([`../../frontend/src/components/Dossier.tsx`](../../frontend/src/components/Dossier.tsx);
   [`../../matrix_studio/export.py`](../../matrix_studio/export.py)).
 
 Why so strict about the UI in particular? Because, in the design's words, "an operator who could
@@ -122,10 +158,23 @@ supposed to produce". The dossier shows a "Withheld concern — Hidden" note ins
 *Hidden* rather than *not drawn out* because nothing detects a reveal
 ([`../MOBILE-UI.md`](../MOBILE-UI.md) §4.4).
 
-The concern is visible in one place: the new-run form, where you write it, and where a copied setup
-brings it back for editing. That is authoring, not a view of the run.
+### The analysis reads the concerns in both modes
+
+The post-run summary is given each persona's authored concerns as analyst-only context, whether or
+not the run withheld them, and reports on each one: whether it came up in the conversation (yes,
+partly or no, with a short quote or turn when it did) and whether anyone addressed it. On a withheld
+run that is the reveal, and every surface labels it "Underlying concerns (hidden during the run)":
+the summary panel, the decision brief and the exports. A run with no concerns authored gets no such
+section, and its summary prompt is exactly what it was before
+([`../../matrix_studio/analysis.py`](../../matrix_studio/analysis.py)).
+
+Before the run ends, the concern of a withheld run is visible in one place only: the new-run form,
+where you write it, and where a copied setup brings it back for editing. That is authoring, not a
+view of the run.
 
 ### What was measured, and what was not
+
+All of this was measured with concerns **withheld**:
 
 - **It holds.** A 15-turn run had zero verbatim leaks. The riskier route was memory: with cognition
   on, a persona writes memories about its own reasoning, and those memories go back into its prompt.
@@ -137,8 +186,9 @@ brings it back for editing. That is authoring, not a view of the run.
   "nothing in a run creates pressure to ask a stakeholder why. Left alone, `underlying_concern` may
   be inert in practice — carried, never surfaced."
 
-So the concern shapes what a persona pushes for, and that is observed. Whether a run ever surfaces
-it depends on someone asking, which in practice means you, through an aside or a branch.
+That last finding is part of why the default changed: a withheld concern shaped what a persona
+pushed for, and that is observed, but whether a run ever surfaced it depended on someone asking. How
+the plain mode behaves is not yet measured.
 
 ## The validity note
 
@@ -245,7 +295,8 @@ behavioural case is not established". In particular:
   ([`../project/PHASE6-STRUCTURED-PERSONAS.md`](../project/PHASE6-STRUCTURED-PERSONAS.md)).
 
 What is tested and sound is the schema and its honesty properties: withholding with zero leaks,
-per-persona scoping, convictions surviving a fork, invalid firmness rejected.
+per-persona scoping, convictions surviving a fork, invalid firmness rejected. All of it was measured
+with concerns withheld, the default until 2026-10-02.
 
 This is why structured personas are off by default on the server, while the launch form turns them
 on whenever a cast member has convictions. See [Why the defaults are what they are](why-the-defaults.md).

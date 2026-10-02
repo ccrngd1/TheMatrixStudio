@@ -250,6 +250,37 @@ export function SummaryPanel({
               )}
             </Block>
           )}
+          {/* Read in both modes (owner decision, 2026-10-02). On a withheld run this is the reveal, so the
+              heading says the room never heard them: a reader must not take these for things that were said. */}
+          {(p.concerns?.length ?? 0) > 0 && (
+            <Block title={p.concerns_withheld ? 'Underlying concerns (hidden during the run)' : 'Underlying concerns'}>
+              {p.concerns_withheld && (
+                <p className="mb-2 text-[11px] text-slate-500">
+                  The personas kept these to themselves during the run, so the room heard one only if someone
+                  drew it out.
+                </p>
+              )}
+              <ul className="space-y-2 text-sm text-slate-300">
+                {(p.concerns ?? []).map((row, i) => (
+                  <li key={i} className="rounded border border-matrix-border p-2">
+                    <div>
+                      <span className="font-semibold text-slate-200">{row.speaker}</span> — {row.concern}
+                    </div>
+                    <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-2 text-xs">
+                      {CONCERN_LABELS.map(([key, label]) => (
+                        <Fragment key={key}>
+                          <dt className="text-slate-500">{label}</dt>
+                          <dd className={row[key] === NOT_STATED ? 'italic text-amber-400/80' : ''}>
+                            {row[key]}
+                          </dd>
+                        </Fragment>
+                      ))}
+                    </dl>
+                  </li>
+                ))}
+              </ul>
+            </Block>
+          )}
           {generated && (
             <p className="text-[11px] text-slate-500">
               Analysis cost ${generated.cost_usd.toFixed(4)} ·{' '}
@@ -291,6 +322,12 @@ const EVIDENCE_LABELS = [
   ['moves_them', 'moves them'],
   ['best_guess', 'best guess'],
   ['cheapest_way', 'cheapest way'],
+] as const
+// The `concerns` columns under each concern (`analysis.CONCERN_KEYS`); "where" is the quote or turn.
+const CONCERN_LABELS = [
+  ['surfaced', 'surfaced'],
+  ['where', 'where'],
+  ['addressed', 'addressed'],
 ] as const
 
 function Block({ title, children }: { title: string; children: React.ReactNode }) {

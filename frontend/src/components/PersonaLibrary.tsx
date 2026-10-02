@@ -64,7 +64,7 @@ export function PersonaLibrary({ taken, onAdd }: Props) {
       </select>
       <Hint label="persona library">
         Ready-made archetypes — a regulator, a finance lead, a devil's advocate — each with positions,
-        how firmly they are held, what would change them, and a concern they will not say out loud.
+        how firmly they are held, what would change them, and the concern behind them.
         <br />
         <br />
         <strong>Not yet qualified:</strong> none has been measured in an ensemble to check that it

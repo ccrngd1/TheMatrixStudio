@@ -131,6 +131,10 @@ export function Dossier({ agent, feed, runId, stance, basis, onClose }: Props) {
   // case since the feature is off by default.
   const structured = dossier?.structured ?? null
   const viewpoints = structured?.viewpoints ?? []
+  // Concerns are shown only when the run stated them plainly, and only an explicit `false` says so: an older
+  // backend that does not send the flag ran every conversation withheld. The guard is here as well as on the
+  // server, so a withheld run's concern is never rendered even if a regression sent it.
+  const concernsPlain = dossier?.withhold_concerns === false
   const prefs = structured?.preferences
   const formative = structured?.background?.formative_events ?? []
   // The firmest position stands for the persona in the HUD: it decides whether they can be argued round at
@@ -179,17 +183,16 @@ export function Dossier({ agent, feed, runId, stance, basis, onClose }: Props) {
         </div>
       ))}
 
-      {/* Phase 6: the convictions this persona was seeded with.
-          Rendered ONLY from what the dossier API returns, which deliberately
-          omits `underlying_concern` and `validity`.
+      {/* Phase 6: the convictions this persona was seeded with, rendered ONLY from what the dossier API
+          returns. `validity` is never sent and the type does not declare it, so rendering it would not
+          compile.
 
-          `underlying_concern` must never appear here even if a future backend
-          regression started sending it: the whole design is that the real worry
-          behind a position gets DRAWN OUT in conversation, and an operator who
-          can read it off a panel has been handed the answer. The type does not
-          declare those fields, so rendering them would not compile — that is the
-          guard, and Dossier.test.tsx asserts it against a payload that includes
-          them anyway. */}
+          `underlying_concern` follows the run. Stated plainly (new runs' default since 2026-10-02), it is
+          part of the position and shown under it. Withheld (hidden agendas), it must never appear, even if
+          a backend regression started sending it: the real worry behind a position is meant to be DRAWN
+          OUT in conversation, and an operator who can read it off a panel has been handed the answer. So
+          it renders only behind `concernsPlain`, and Dossier.test.tsx asserts both: a withheld payload that
+          includes the concern anyway shows it on no tab, and a plain one shows it. */}
       {structured &&
         (viewpoints.length > 0 ? (
           viewpoints.map((vp, i) => {
@@ -206,6 +209,12 @@ export function Dossier({ agent, feed, runId, stance, basis, onClose }: Props) {
                   <div className="cc-flag cc-dz-formed">
                     <span className="cc-ft">FORMED BY</span>
                     <span>{vp.formed_by}</span>
+                  </div>
+                )}
+                {concernsPlain && vp.underlying_concern && (
+                  <div className="cc-flag cc-dz-concern">
+                    <span className="cc-ft">CONCERN</span>
+                    <span>{vp.underlying_concern}</span>
                   </div>
                 )}
                 {shifts.length > 0 ? (
@@ -258,19 +267,21 @@ export function Dossier({ agent, feed, runId, stance, basis, onClose }: Props) {
         </Panel>
       ) : null}
 
-      {/* The note carries no text from the concern, and cannot: the API strips the field, so the dossier is
-          not even told whether one was written. It is phrased for both cases for that reason. The tag says
-          Hidden, not "not drawn out", because nothing detects a reveal (MOBILE-UI.md §4.4). */}
-      {viewpoints.length > 0 && (
+      {/* Withheld runs only (hidden agendas, and every run from before 2026-10-02). The note carries no text
+          from the concern, and cannot: the API strips the field, so the dossier is not even told whether one
+          was written. It is phrased for both cases for that reason. The tag says Hidden, not "not drawn
+          out", because nothing detects a reveal (MOBILE-UI.md §4.4). The summary is where it is revealed. */}
+      {!concernsPlain && viewpoints.length > 0 && (
         <Panel edge="stopped">
           <div className="flex items-center justify-between gap-2">
             <Label>Withheld concern</Label>
             <Tag tone="warn">Hidden</Tag>
           </div>
           <p className="cc-sm cc-t2 mt-1.5">
-            If a concern was authored behind these positions, it is not shown here, and the dossier is not told
-            whether one was. Drawing it out in conversation is the exercise: an operator who can read it off a
-            panel has been handed the answer (docs/project/PHASE6-STRUCTURED-PERSONAS.md §1).
+            This run kept its personas' concerns back. If a concern was authored behind these positions, it is
+            not shown here, and the dossier is not told whether one was. Drawing it out in conversation is the
+            exercise: an operator who can read it off a panel has been handed the answer
+            (docs/project/PHASE6-STRUCTURED-PERSONAS.md §1). The summary lists them once the run is over.
           </p>
         </Panel>
       )}

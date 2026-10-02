@@ -18,16 +18,17 @@
  * - Everything after `->` is the exit condition (`evidence_that_shifts`),
  *   semicolon-separated for more than one.
  * - `underlying_concern` IS authorable, in its own field rather than crammed into the
- *   line. One concern per line, matched to positions **by index** — which is exactly
- *   how the engine already renders them into the prompt ("numbered to match"), so the
- *   two representations agree.
+ *   line. One concern per line, matched to positions **by index** — which is how the
+ *   engine pairs them in the prompt (under each position when stated plainly, "numbered
+ *   to match" when withheld), so the two representations agree.
  *
  *   It gets its own box because it is prose about personal stakes, not a clause, and
- *   because it needs a label explaining that it is withheld. An earlier version
- *   dropped it entirely on the theory that a casual form would invite filling it in
- *   without understanding the consequence; the wizard now generates it *with* that
- *   explanation, which removes the objection. Throwing the field away at submit was
- *   discarding it at exactly the point it became usable.
+ *   because it needs a label explaining what happens to it: stated openly by default,
+ *   kept back with hidden agendas on. An earlier version dropped it entirely on the
+ *   theory that a casual form would invite filling it in without understanding the
+ *   consequence; the wizard now generates it *with* that explanation, which removes the
+ *   objection. Throwing the field away at submit was discarding it at exactly the point
+ *   it became usable.
  */
 
 export const FIRMNESS = ['negotiable', 'firm', 'non-negotiable', 'requires-escalation'] as const
@@ -37,7 +38,7 @@ export interface ParsedViewpoint {
   position: string
   firmness: Firmness
   evidence_that_shifts?: string[]
-  /** Withheld from the conversation; the persona knows it and only says it if asked. */
+  /** The worry behind the position. Stated openly, unless the run has hidden agendas on. */
   underlying_concern?: string
 }
 

@@ -67,7 +67,7 @@ See also: [explanation](../explanation/) (what the measurements and verification
 | `research_definition.py` | Research a definition and print the corpus | paid search calls; paid model calls; writes local with `--write` | yes |
 | `build_validation_arms.py` | Generate the validation arm files | writes local | not run: no argparse |
 | `score_validation.py` | Score validation arm results | read-only (local); paid model calls with `--judge`; writes local | yes |
-| `check_concern_leak.py` | Pre-filter withheld-concern leaks | read-only (local) | yes |
+| `check_concern_leak.py` | Pre-filter withheld-concern leaks (withheld runs only) | read-only (local) | yes |
 | `judge_variance.py` | Measure the judge's spread | paid model calls; writes local | yes |
 
 ## The `matrix-studio` command
@@ -89,7 +89,7 @@ matrix-studio run [-h] [-o OUTPUT] [--max-messages MAX_MESSAGES] [--no-db] [-v] 
 
 | Argument | Type | Default | Notes |
 |---|---|---|---|
-| `request` | path | required | JSON request: `topic`, `cast`, optional `config`, as for `POST /api/runs`. Missing file: exit 1. |
+| `request` | path | required | JSON request: `topic`, `cast`, optional `config`, as for `POST /api/runs`. Missing file: exit 1. A `config.personas` block with no `withhold_concerns` gets the new-run value, `false`, written into the stored config (since 2026-10-02); a file that sets it keeps it. |
 | `-o`, `--output` | path | stdout | Where the result JSON is written. |
 | `--max-messages` | int | from the request | Sets `config.max_messages`. |
 | `--no-db` | flag | off | Do not persist the run. |
@@ -821,7 +821,7 @@ score_validation.py [-h] [--judge] [--model MODEL] [--seed SEED] [--json-out JSO
 
 ### check_concern_leak.py
 
-**Purpose.** Pre-filter run results for a persona's withheld `underlying_concern` reaching its utterances, memories or reflections, by overlap with the concern's private words. The concerns come from `scripts/build_validation_arms.py` (loaded as a module, not run). Exit 1 when anything is flagged.
+**Purpose.** Pre-filter run results for a persona's withheld `underlying_concern` reaching its utterances, memories or reflections, by overlap with the concern's private words. The concerns come from `scripts/build_validation_arms.py` (loaded as a module, not run). Exit 1 when anything is flagged. **Only for runs that withheld their concerns** (`config.personas.withhold_concerns: true`, which the validation arms set). Since 2026-10-02 a new run states its concerns plainly by default, and there a concern in the transcript is the intended behaviour, not a leak.
 
 ```
 check_concern_leak.py [-h] [--threshold THRESHOLD] results [results ...]
@@ -829,7 +829,7 @@ check_concern_leak.py [-h] [--threshold THRESHOLD] results [results ...]
 
 | Argument | Type | Default | Notes |
 |---|---|---|---|
-| `results` | path, one or more | required | Run result JSON files. |
+| `results` | path, one or more | required | Result JSON files of runs that withheld their concerns. |
 | `--threshold` | float | `0.5` | Private-word overlap that flags. |
 
 **Reads.** The result files. **Writes.** Nothing. **Safety.** read-only (local).

@@ -466,7 +466,7 @@ This run's definition, shaped as a create-run body, for starting a fresh run fro
 - **Success:** `200` with `{run_id, setup, warnings}`.
 - **Errors:** `404 Run not found`.
 
-`setup` has `topic`, `cast`, `config`, and `model`, `name`, `description` when set. Each cast member keeps its stored keys except `documents` and `document_texts`, which are rebuilt from the run's stored documents (persona-scoped ones only). `config` keeps only `max_messages`, `generate_avatars`, `cognition`, `retrieval`, `personas`, `knowledge_bases`, `selection`, `research` (without `targets`) and `models`.
+`setup` has `topic`, `cast`, `config`, and `model`, `name`, `description` when set. Each cast member keeps its stored keys except `documents` and `document_texts`, which are rebuilt from the run's stored documents (persona-scoped ones only). `config` keeps only `max_messages`, `generate_avatars`, `cognition`, `retrieval`, `personas`, `knowledge_bases`, `selection`, `research` (without `targets`) and `models`. `personas.withhold_concerns` is written out with the source run's value, `true` when it recorded none, so a copy of a run that withheld its concerns withholds them too.
 
 `warnings[]` (strings) reports: documents with no recoverable text (skipped); cast-wide documents (cannot be carried into a create-run body); knowledge bases this run's research wrote into (removed from the bindings).
 
@@ -577,6 +577,7 @@ Edge cases:
 - Checks that need the fork state (the persona exists for `edit_goal` and `remove_persona`, the new name is free for `add_persona`, the assumption is in force, the aside message exists, the pressure text passes its guard) run after the `201`, when the branch starts generating. A failure there does not reach the caller. Deployed, the Prepare state's first attempt copies the parent's events and then fails on the mutation; its retry finds the copied events, skips the copy and the mutation, and the branch generates as a plain fork while `config.branch_mutation` (and the tree's `mutation_kind`) still names the mutation. Locally, the background task logs the error and the branch row is left at `running`.
 - The upper bound is the response count, not the last turn number. In `rotation`, `simultaneous` and `hybrid` runs several responses share a turn, so a `from_turn` past the parent's last turn is accepted (a 2-turn, 2-persona simultaneous run accepts `from_turn` up to 4).
 - A branch copies the parent's events up to and including `from_turn`, preserving `turn` and `seq`, and removes any copied terminal event.
+- The branch's stored config is the parent's, with `personas.withhold_concerns` written out: the parent's value, or `true` for a parent from before 2026-10-02 that recorded none. A fork keeps the concern mode its parent ran in.
 - With retrieval on, the parent's run documents are copied to the branch.
 
 ### `POST /api/runs/{ref}/hidden`
@@ -686,7 +687,8 @@ One persona's state as of the latest checkpoint, with the documents and knowledg
 | `document_retrievals` | array | One per `document.retrieved` event for this persona: `{turn, query, total_chars, passages, researched_passages?}`. |
 | `cognition_enabled` | boolean | `config.cognition.enabled`. |
 | `cognition_lost_turns` | integer | Responses whose cognition reply was discarded (`cognition_parsed: false`). |
-| `structured` | object or null | The persona's convictions without the private fields (`validity`, `underlying_concern`). |
+| `structured` | object or null | The persona's convictions without `validity`, ever. `viewpoints[].underlying_concern` is included when the run stated concerns plainly and stripped when it withheld them. |
+| `withhold_concerns` | boolean | The run's hidden-agendas setting, read as the engine reads it: `true` for a stored config with no value (every run from before 2026-10-02), and for one that no longer parses. The UI shows a concern only when this is `false`. |
 | `relationships` | object | |
 | `tokens_in`, `tokens_out`, `cost_usd` | number | The persona's accumulated voice usage. |
 | `portrait_key` | string or null | Avatar key, for `GET .../avatar?v=`. |
@@ -824,7 +826,7 @@ Generate a new summary for a completed run. Each generation is a new version; th
 
 | Body field | Type | Required | Default | Notes |
 |---|---|---|---|---|
-| `fields` | array of strings | no | the run's `config.summary.fields`, else all seven | Unknown names are not removed here; they come back as empty lists and are listed in `payload.omitted`. |
+| `fields` | array of strings | no | the run's `config.summary.fields`, else all eight | Unknown names are not removed here; they come back as empty lists and are listed in `payload.omitted`. `concerns` is dropped for a run with no authored underlying concern (or with structured personas off), so its prompt is what it was before the field existed. |
 | `focus` | string | no | the run's `config.summary.focus` | |
 | `model` | string | no | the run's `models.summary`, then `model` | Branches and imported runs use the settings default instead. |
 | `instructions` | string | no | the run's `config.summary.instructions` | Replaces the analyst framing; the guardrails always remain. |
@@ -843,6 +845,7 @@ Local response (`200`): `{run_id, generated, default_instructions, imported}` wi
 Edge cases:
 - Each generation also re-derives the persona stances and stance basis, and is added to the owner's monthly spend.
 - A failed model call still stores a summary whose `overview` says generation was unavailable.
+- The analyst is given the run's authored underlying concerns as context in both concern modes (owner decision, 2026-10-02). For a withheld run, `payload.concerns` is therefore the first place they appear, and `payload.concerns_withheld` is `true`.
 
 ---
 

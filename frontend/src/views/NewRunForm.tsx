@@ -100,6 +100,10 @@ export function NewRunForm({
   // A best guess and a current lean with every evidence request. On by default since 2026-09-29
   // (docs/studies/EVIDENCE-LEAN-2.md); sent explicitly either way, so the run records what was chosen.
   const [evidenceLean, setEvidenceLean] = useState(true)
+  // Hidden agendas: each persona keeps its underlying concern to itself until drawn out. OFF by default since
+  // the owner's decision of 2026-10-02 (concerns "laid out plainly when they are known"); sent explicitly
+  // either way, so the run records what was chosen and a later default cannot change it.
+  const [withholdConcerns, setWithholdConcerns] = useState(false)
   // Experts outside the room (matrix_studio/experts.py).
   const [consultants, setConsultants] = useState<DraftConsultant[]>([])
   const [consultLimit, setConsultLimit] = useState(6)
@@ -270,6 +274,9 @@ export function NewRunForm({
     if (setup.knowledgeBases !== undefined) setRunKbs(setup.knowledgeBases)
     if (setup.assumptions !== undefined) setAssumptions(setup.assumptions)
     if (setup.dynamicAssumptions !== undefined) setDynamicAssumptions(setup.dynamicAssumptions)
+    // "Start fresh" keeps the source run's choice (the setup route writes it out); a file that says nothing
+    // leaves the form's default, because a new setup is a new run.
+    if (setup.withholdConcerns !== undefined) setWithholdConcerns(setup.withholdConcerns)
     if (setup.cognition) {
       setCognitionEnabled(setup.cognition.enabled)
       setCogMemory(setup.cognition.memory ?? true)
@@ -518,7 +525,7 @@ export function NewRunForm({
         // existed. Enabling a feature nobody configured would cost tokens for
         // an empty prompt block.
         personas: anyConvictions
-          ? { enabled: true, evidence_lean: evidenceLean }
+          ? { enabled: true, evidence_lean: evidenceLean, withhold_concerns: withholdConcerns }
           : undefined,
         // Only sent when asked for: it defaults off server-side while it is being
         // validated, and an absent block means "use the deployment default".
@@ -712,6 +719,7 @@ export function NewRunForm({
     { step: 2, label: 'Cast', value: cast.map((p) => p.name || 'unnamed').join(' · ') },
     { step: 2, label: 'Consultants', value: consultants.length || 'none' },
     { step: 2, label: 'Evidence lean', value: evidenceLean ? 'on' : 'off' },
+    { step: 2, label: 'Hidden agendas', value: withholdConcerns ? 'on — concerns kept back' : 'off — concerns stated plainly' },
     { step: 3, label: 'Collections', value: runKbs.length ? `${runKbs.length} for the whole cast` : 'none for the whole cast' },
     { step: 3, label: 'Research', value: research ? 'before starting' : 'off' },
     { step: 4, label: 'Assumptions', value: assumptions.filter((a) => a.statement.trim()).length || 'none' },
@@ -1532,17 +1540,18 @@ export function NewRunForm({
                     )}
 
                     <label className="mt-2 flex items-center gap-2 text-xs text-amber-500/80">
-                      What is really behind them — withheld
-                      <Hint label="withheld concerns">
+                      Underlying concern
+                      <Hint label="underlying concerns">
                         The real worry under each position, usually personal stakes: what it
                         costs <em>them</em> if they are wrong. One per line,{' '}
                         <strong>matched to the positions above by line number</strong>.
                         <br />
                         <br />
-                        The persona knows this and it shapes what it argues for, but it will
-                        not volunteer it — it comes out only if someone asks why it holds the
-                        position. Drawing it out is the exercise, which is why it never
-                        appears in the moderator's view, the event log or the dossier.
+                        The persona states it openly, as part of the position, and holds it the
+                        way it holds the position. With <em>hidden agendas</em> on (below the cast)
+                        it keeps it to itself instead and says it only if someone asks why, and the
+                        event log and the dossier leave it out. Either way the moderator never sees
+                        it and the summary reads it.
                       </Hint>
                     </label>
                     <textarea
@@ -1737,6 +1746,28 @@ export function NewRunForm({
                   times each, every run with this on ended with a stated lean (3 of 3, 9 of 9 passes)
                   against none without it (0 of 3), with objections, length and cost within bounds. On by
                   default; untick it to compare against how personas speak without it.
+                </Hint>
+              </label>
+            )}
+            {anyConvictions && (
+              <label className="mt-3 flex items-center gap-2 text-xs text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={withholdConcerns}
+                  onChange={(e) => setWithholdConcerns(e.target.checked)}
+                />
+                Hidden agendas: personas keep their underlying concerns to themselves until drawn out
+                <Hint label="hidden agendas">
+                  Off, each persona says what it is really worried about, openly and as part of its
+                  position, so the room can argue with the real reason. On, it keeps the concern back and
+                  says it only if someone asks why it holds the position or presses past its surface
+                  argument — useful for practising a negotiation or an interview, where finding out what
+                  someone actually needs is the skill. The concern is then left out of the event log and
+                  the dossier, and the summary reveals it after the run.
+                  <br />
+                  <br />
+                  Off by default since 2026-10-02. The earlier studies were measured with concerns kept
+                  back, so their results may not carry over to runs that state them.
                 </Hint>
               </label>
             )}

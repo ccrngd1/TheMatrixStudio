@@ -18,10 +18,15 @@ analysis of transcripts, visually distinct in the UI and never presented as grou
 loses the styling that carries that distinction, and an exported PDF is the artefact most likely to
 be read by somebody who never saw the app. So the label is words, next to the analysis.
 
-**Operator-private persona fields never leave.** A viewpoint's `underlying_concern` (withheld from
-the conversation) and `validity` (the operator's private calibration note, never rendered into any
-prompt) are omitted, exactly as the dossier API omits them. A file sent outside the tool is the worst
-place for either to appear.
+**Operator-private persona fields never leave.** A viewpoint's `validity` (the operator's private
+calibration note, never rendered into any prompt) is always omitted, and so is its `underlying_concern`
+when the run WITHHELD it (hidden agendas, and every run from before 2026-10-02) — exactly as the dossier
+API omits them. A file sent outside the tool is the worst place for either to appear. A run that stated
+its concerns plainly shows each one with its position, because there it is part of what was argued.
+
+The one exception is the summary's `concerns` section, which reads the concerns in both modes (owner
+decision, 2026-10-02). On a withheld run it is the post-run reveal, and it is labelled as hidden during
+the run, in the text, for the same reason the analysis is.
 
 ## Model text is escaped in HTML
 
@@ -54,7 +59,13 @@ ANALYSIS_LABEL = (
 )
 
 #: Viewpoint fields that are the operator's and never leave the tool. Mirrors the dossier's guard.
-PRIVATE_VIEWPOINT_FIELDS = frozenset({"underlying_concern", "validity"})
+PRIVATE_VIEWPOINT_FIELDS = frozenset({"validity"})
+#: Also left out when the run withheld concerns: a hidden agenda is not shown with the cast.
+WITHHELD_VIEWPOINT_FIELDS = PRIVATE_VIEWPOINT_FIELDS | {"underlying_concern"}
+
+#: The summary's `concerns` section heading, by whether the run withheld them.
+CONCERNS_HEADING = "Underlying concerns"
+CONCERNS_HIDDEN_HEADING = "Underlying concerns (hidden during the run)"
 
 FORMATS = {"md": "text/markdown; charset=utf-8", "html": "text/html; charset=utf-8"}
 
@@ -85,8 +96,13 @@ def _json(raw: Any, default: Any) -> Any:
         return default
 
 
-def public_cast(cast: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """The cast as an export may show it: persona, goals, and viewpoints WITHOUT private fields."""
+def public_cast(cast: Sequence[Dict[str, Any]], *, withhold_concerns: bool = True) -> List[Dict[str, Any]]:
+    """The cast as an export may show it: persona, goals, and viewpoints WITHOUT private fields.
+
+    ``withhold_concerns`` defaults to the run that withheld them, so a caller that does not say cannot
+    print a hidden agenda.
+    """
+    hidden = WITHHELD_VIEWPOINT_FIELDS if withhold_concerns else PRIVATE_VIEWPOINT_FIELDS
     out = []
     for member in cast or []:
         structured = member.get("structured") or {}
@@ -94,7 +110,7 @@ def public_cast(cast: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
         for vp in structured.get("viewpoints") or []:
             if not isinstance(vp, dict):
                 continue
-            viewpoints.append({k: v for k, v in vp.items() if k not in PRIVATE_VIEWPOINT_FIELDS})
+            viewpoints.append({k: v for k, v in vp.items() if k not in hidden})
         out.append({
             "name": member.get("name") or "",
             "persona": member.get("persona") or "",
@@ -172,6 +188,17 @@ def shift_line(speaker: str, s: Dict[str, Any]) -> str:
     elif s.get("matched_conditions"):
         line += " Appears to name a stated condition: " + "; ".join(s["matched_conditions"]) + "."
     return line + " (Flagged by word match; check the message.)"
+
+
+def _withheld(config: Dict[str, Any]) -> bool:
+    """Whether the run kept its concerns back, read as the engine read it (no key: withheld). A config
+    that no longer parses counts as withheld, so a doubt keeps a concern out of a file."""
+    from matrix_studio.state import PersonaConfig
+
+    try:
+        return PersonaConfig.from_config(config).withhold_concerns
+    except ValueError:
+        return True
 
 
 async def run_model(db: Any, run: Dict[str, Any]) -> Dict[str, Any]:
@@ -253,7 +280,7 @@ async def run_model(db: Any, run: Dict[str, Any]) -> Dict[str, Any]:
         "turn_count": stats.get("turn_count"),
         "cost_usd": whole_cost,
         "converged": converged,
-        "cast": public_cast(_json(run.get("cast_json"), [])),
+        "cast": public_cast(_json(run.get("cast_json"), []), withhold_concerns=_withheld(config)),
         "settings": settings_lines(config),
         "research": research,
         # What the room reasoned from (matrix_studio/assumptions.py), from the event log so the record
@@ -417,6 +444,23 @@ EVIDENCE_COLUMNS = (
 )
 
 
+#: The summary's `concerns` columns (`analysis.CONCERN_KEYS`) and their headings.
+CONCERN_COLUMNS = (
+    ("speaker", "persona"), ("concern", "underlying concern"), ("surfaced", "surfaced"),
+    ("where", "where"), ("addressed", "addressed"),
+)
+
+
+def concern_rows(summary: Dict[str, Any]) -> List[Dict[str, Any]]:
+    return [r for r in summary.get("concerns") or [] if isinstance(r, dict) and r.get("concern")]
+
+
+def concerns_heading(summary: Dict[str, Any]) -> str:
+    """Said in the heading, not left to styling: on a withheld run this section is the reveal, and a reader
+    of the file must not think the room heard these."""
+    return CONCERNS_HIDDEN_HEADING if summary.get("concerns_withheld") else CONCERNS_HEADING
+
+
 def _md_summary(summary: Dict[str, Any]) -> List[str]:
     out = ["## Summary", "", f"> *{ANALYSIS_LABEL}*", ""]
     if summary.get("overview"):
@@ -441,6 +485,12 @@ def _md_summary(summary: Dict[str, Any]) -> List[str]:
                     "|" + "---|" * len(EVIDENCE_COLUMNS)]
             out += ["| " + " | ".join(_md_cell(r.get(k)) for k, _h in EVIDENCE_COLUMNS) + " |" for r in plan]
             out.append("")
+    concerns = concern_rows(summary)
+    if concerns:
+        out += [f"### {concerns_heading(summary)}", "",
+                "| " + " | ".join(h for _k, h in CONCERN_COLUMNS) + " |", "|" + "---|" * len(CONCERN_COLUMNS)]
+        out += ["| " + " | ".join(_md_cell(r.get(k)) for k, _h in CONCERN_COLUMNS) + " |" for r in concerns]
+        out.append("")
     return out
 
 
@@ -474,6 +524,8 @@ def render_markdown(model: Dict[str, Any]) -> str:
         for vp in c["viewpoints"]:
             line = f"- **{vp.get('firmness', 'held')}**: {vp.get('position', '')}"
             shifts = vp.get("evidence_that_shifts") or []
+            if vp.get("underlying_concern"):
+                line += f" — really worried about: {vp['underlying_concern']}"
             if shifts:
                 line += f" *(would change their mind: {'; '.join(shifts)})*"
             out.append(line)
@@ -654,6 +706,8 @@ def render_html(model: Dict[str, Any]) -> str:
                 shifts = vp.get("evidence_that_shifts") or []
                 items.append(
                     f"<li><strong>{_e(vp.get('firmness', 'held'))}</strong>: {_e(vp.get('position', ''))}"
+                    + (f" — really worried about: {_e(vp['underlying_concern'])}"
+                       if vp.get("underlying_concern") else "")
                     + (f" <em>(would change their mind: {_e('; '.join(shifts))})</em>" if shifts else "")
                     + "</li>")
             b.append("<ul>" + "".join(items) + "</ul>")
@@ -700,6 +754,12 @@ def render_html(model: Dict[str, Any]) -> str:
                 b.append("<table><tr>" + "".join(f"<th>{_e(h)}</th>" for _k, h in EVIDENCE_COLUMNS) + "</tr>"
                          + "".join("<tr>" + "".join(f"<td>{_e(r.get(k))}</td>" for k, _h in EVIDENCE_COLUMNS)
                                    + "</tr>" for r in plan) + "</table>")
+        concerns = concern_rows(s)
+        if concerns:
+            b.append(f"<h3>{_e(concerns_heading(s))}</h3>")
+            b.append("<table><tr>" + "".join(f"<th>{_e(h)}</th>" for _k, h in CONCERN_COLUMNS) + "</tr>"
+                     + "".join("<tr>" + "".join(f"<td>{_e(r.get(k))}</td>" for k, _h in CONCERN_COLUMNS)
+                               + "</tr>" for r in concerns) + "</table>")
         b.append("</div>")
     return _doc(m["name"], b)
 

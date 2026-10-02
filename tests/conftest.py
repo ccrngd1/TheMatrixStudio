@@ -100,6 +100,8 @@ def mock_analysis_llm(monkeypatch):
                     "open_questions": ["mocked question"],
                     "evidence_plan": [],
                     "conditional_recommendation": "",
+                    # Asked for only on a run with authored concerns; harmless on the rest.
+                    "concerns": [],
                 }
             )
         else:

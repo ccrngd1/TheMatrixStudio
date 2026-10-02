@@ -268,9 +268,11 @@ async def _select_next_speaker(
     # moderator prompt is the one place every persona's description appears at
     # once, so rendering the private block here would put each persona's withheld
     # `underlying_concern` one prompt away from the whole cast — destroying the
-    # thing it exists for (drawing the concern out is the skill being exercised).
+    # thing hidden agendas exist for (drawing the concern out is the exercise).
     # What the moderator gets is role + what they optimise for, which is what the
     # room can see anyway and is genuinely useful for choosing who speaks next.
+    # The same in both concern modes: stated plainly, a concern reaches the room
+    # because the persona SAYS it, and this prompt stays byte-identical.
     personas_desc = "\n".join(
         [
             f"- {name}: "
@@ -1074,11 +1076,15 @@ async def begin_run(
     # Phase 6: record which convictions the run was seeded with, once, at turn 0.
     # Emitted only when the feature is actually on, so an event's presence means
     # the structure reached the prompts rather than merely sitting in the cast.
-    # `structured_payload` strips `validity` and `underlying_concern` — both are
-    # private to the operator by design, and the event log is exported and rendered.
+    # `structured_payload` always strips `validity` (the operator's note), and strips
+    # `underlying_concern` only when the run withholds it: stated plainly, the concern
+    # is part of the position the persona argues, so the record carries it. The event
+    # log is exported and rendered, so a withheld one must not be in it.
     if personas_cfg.enabled:
         for agent in agents.values():
-            payload = structured_payload(agent.structured)
+            payload = structured_payload(
+                agent.structured, include_concern=not personas_cfg.withhold_concerns,
+            )
             if payload is None:
                 continue
             await emit(

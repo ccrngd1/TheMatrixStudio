@@ -29,11 +29,11 @@ Screenshots are of a demonstration run on a neutral topic, captured from the dep
 - **Checkpointing & Branching** — Every turn is checkpointed; branch from any point to create "what-if" timelines with different interventions
 - **Interventions** — Inject messages, edit goals, add/remove personas, continue discussions, promote aside conversations into the main timeline, or apply adaptive pressure (experimental, opt-in)
 - **Agent Cognition** (Phase 2c, optional) — Agents form memories, reflect periodically, track relationships, and explain their reasoning ("why did they say that?")
-- **Structured Personas** (Phase 6, optional) — Personas hold *convictions*, not just goals: formative events, what they refuse to weigh, and positions with a firmness level and a named exit condition. The real concern behind each position is withheld until someone draws it out
+- **Structured Personas** (Phase 6, optional) — Personas hold *convictions*, not just goals: formative events, what they refuse to weigh, and positions with a firmness level and a named exit condition. The real concern behind each position is stated plainly by default, or kept back until someone draws it out with **hidden agendas** on; the summary reports on every concern either way
 - **Consistency Validation** (Phase 4a) — A pre-emit gate checks each turn against the priority hierarchy (coherence / causality / continuity / agency / character consistency) and regenerates violations; model output is never rewritten in place
 - **Pending Threads** (Phase 4b, optional) — A setups-&-payoffs ledger: agents plant threads that causally feed into later turns, with dangling-thread surfacing in the dossier
 - **Structured Turn View** (Phase 4d, optional) — Narrative / Consequences / Updated State / Possibilities projection of any turn, sourced only from real events
-- **Post-Run Analysis** — Auto-generated structured summary (consensus / dissenters / key ideas / open questions / what would settle it) plus aside conversations (ask the analyst, a persona, the room, or a consultant), answered by a background worker
+- **Post-Run Analysis** — Auto-generated structured summary (consensus / dissenters / key ideas / open questions / what would settle it / underlying concerns) plus aside conversations (ask the analyst, a persona, the room, or a consultant), answered by a background worker
 - **Ensembles** — Run one brief several times in labelled groups and count each conclusion per group, never pooled. A group may differ in one declared thing only: the speaker method, a scheduled message, or a working assumption. See `docs/ENSEMBLE-CONVERSATIONS.md`
 - **Pre-Conversation Research** (optional) — Before turn 1, search the open web for the authorities on the subject, tier them (controlling / persuasive / commentary), and ingest them into knowledge bases: a shared corpus, one per persona, and a library per consultant. See `docs/PERSONA-RESEARCH.md`
 - **Consultants** — Experts outside the room who answer only from their own documents, with citations, or say the answer is not in their sources. Personas ask them mid-run; you can ask them from the conversation view. They never take a turn
@@ -42,7 +42,7 @@ Screenshots are of a demonstration run on a neutral topic, captured from the dep
   - *Working assumptions*: set what the room should reason from when nobody in it can know; each is marked in the transcript, can be forked with a different value from its card or the scrubber, and can be an ensemble variable (`docs/studies/ASSUMPTION-ENSEMBLE.md`). Assumptions added by the moderator during a run are opt-in — measured at about two-thirds facts (`docs/studies/MODERATOR-ASSUMPTIONS.md`)
   - *Position-shift flags*: when a persona says its position moved, the message shows what it credited and the conditions it had said would move it, marked when none of them appears to be named (`docs/studies/EVIDENCE-LEAN-FOLDING.md`)
 - **Scheduled Messages** — A message that enters a run after a given turn (a customer, a regulator's letter), marked as injected; compare runs with and without it in an ensemble
-- **Decision Brief & Exports** — A one-page brief (bottom line, what would settle it, what was assumed, standing objections, how much to trust it) and full Markdown / HTML reports
+- **Decision Brief & Exports** — A one-page brief (bottom line, what would settle it, what was assumed, standing objections, underlying concerns, how much to trust it) and full Markdown / HTML reports
 - **Cast Templates & Persona Library** — Save a cast and reuse it; start from ready-made archetypes, labelled "not yet qualified"
 - **8-bit Theatre** (optional view) — Replay a finished run as 8-bit characters around a conference table, the transcript read out through a dialogue box. Consultants walk in to answer, injected messages arrive by messenger, assumptions go up on the whiteboard. Every movement comes from a recorded event; nothing is invented. See `docs/THEATRE.md`
 - **Non-Photorealistic Avatars** — Anime-style character portraits generated via Stability SD3.5 on AWS Bedrock (optional, with graceful fallback to initials)
@@ -452,14 +452,14 @@ Everything else is optional, and this is where a bare setup becomes a useful one
 
 | Field | Where | What it adds |
 |---|---|---|
-| `structured.viewpoints[]` | per persona | Convictions — `position`, `firmness`, `evidence_that_shifts`, and the withheld `underlying_concern` |
+| `structured.viewpoints[]` | per persona | Convictions — `position`, `firmness`, `evidence_that_shifts`, and the `underlying_concern` behind it |
 | `structured.preferences.dismisses` | per persona | What they decline to *weigh* — the field measured as highest-value |
 | `document_texts[]` | per persona | Background documents as inline `{title, text}` |
 | `config` | top level | `max_messages`, `cognition`, `personas`, `retrieval` |
 | `name`, `description` | top level | Run codename and one-liner |
 
 `examples/import-augmented.json` is a complete worked example: eight stakeholders with
-convictions, withheld concerns, differing `dismisses`, and cognition enabled. It is
+convictions, underlying concerns, differing `dismisses`, and cognition enabled. It is
 generated from a bare setup so the two stay in step.
 
 **Two things it will tell you rather than hide.** A persona missing a `name` or
@@ -517,7 +517,7 @@ structure carries commitments.
 | Config | Default | Effect |
 |---|---|---|
 | `personas.enabled` | `false` | Master switch. Off ⇒ `structured` blocks are ignored and prompts are byte-identical to pre-Phase-6 |
-| `personas.withhold_concerns` | `true` | Keep `underlying_concern` unsaid until someone asks |
+| `personas.withhold_concerns` | `false` for new runs | Hidden agendas: keep `underlying_concern` unsaid until someone asks. Off by default since 2026-10-02 (owner decision); a stored config with no value, which is every run from before then, still withholds |
 | `personas.dismissal_rule` | `"mandatory"` | Which rule wording to render: `mandatory` (measured best) \| `retuned` \| `blunt` \| `off`. Booleans accepted |
 
 `firmness` is `negotiable` | `firm` | `non-negotiable` | `requires-escalation`. An
@@ -527,10 +527,19 @@ the field exists to provide. A `firm`-or-above position with an empty
 `evidence_that_shifts` is an unfalsifiable wall, so the prompt tells the persona
 to say so if pressed rather than invent a condition it was never given.
 
-**Two fields are private and stay private.** `underlying_concern` reaches only its
-own persona's prompt — never the moderator's cast list, never the event log, never
-the dossier — because *drawing the real concern out is the exercise*, and a concern
-volunteered on turn 1 cannot be drawn out. `validity` reaches no prompt at all: it
+**The underlying concern is laid out plainly, unless the run hides it.** Since
+2026-10-02 (owner decision) a new run tells each persona to state the worry behind a
+position openly, as part of the position, and holds it to the same terms; the dossier
+and the event log show it. With **hidden agendas** on, it reaches only its own
+persona's prompt — never the moderator's cast list, never the event log, never the
+dossier — because there *drawing the real concern out is the exercise*, and a concern
+volunteered on turn 1 cannot be drawn out. That is how every run before the change
+behaved, and they keep it when resumed or branched. In both modes the summary is given
+the concerns and reports whether each came up and was addressed; on a withheld run it
+is labelled "hidden during the run". The plain wording is unmeasured, and the studies
+below were all run with concerns withheld, so their results may not carry over.
+
+**One field is private in every mode.** `validity` reaches no prompt at all: it
 is an operator calibration note (are the firmest positions also the soundest? they
 should not be), used for scoring after a run.
 
@@ -568,7 +577,7 @@ rendered arm (5, 5, 3 and 2, 2, 5 against Arm B's consistent 5, 5, 5) — the on
 pointing at a possible real cost to rendering convictions from data rather than prose.
 `requires-escalation` and the concern-reveal path had no trigger in any of nine runs.
 
-What *is* tested and sound is the schema and its honesty properties: withholding works
+What *is* tested and sound is the schema and its honesty properties: withholding (with hidden agendas on) works
 with zero leaks, per-persona scoping holds, convictions survive a fork, an invalid
 `firmness` is rejected, and the feature is off by default.
 

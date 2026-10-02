@@ -230,7 +230,7 @@ by line), and `preferences.dismisses`; it sends no other fields.
 | `viewpoints[].position` | string | required | the line's position | none | The position as stated aloud. |
 | `viewpoints[].firmness` | string | `negotiable` | the `[tag]`, or `negotiable` | `negotiable` \| `firm` \| `non-negotiable` \| `requires-escalation`; anything else is `422` | How firmly it is held. `firm` and above require named evidence before moving. |
 | `viewpoints[].evidence_that_shifts` | list of strings | `[]` | the text after `->`, split on `;` | none | What would change the persona's mind. Also the source of research queries and of `retrieval.standing_query`. |
-| `viewpoints[].underlying_concern` | string | `""` | the matching concerns line | none | The real worry. Withheld unless asked when `personas.withhold_concerns` is true. Never shown to the moderator, the event log or the dossier. |
+| `viewpoints[].underlying_concern` | string | `""` | the matching concerns line | none | The real worry. With `personas.withhold_concerns` false (new runs' default) it is rendered under its position and the persona must state it; the event log, the dossier and the export's cast show it. With it true (hidden agendas) it is said only if asked, and the event log, the dossier and the export's cast strip it. Never in the moderator's prompt. The summary reads it in both modes. |
 | `viewpoints[].formed_by` | string | `""` | not sent | none | The experience that produced the position. |
 | `viewpoints[].validity` | string or null | null | not sent | none | Operator calibration note. Never rendered into any prompt. |
 | `type`, `schema_version` | string | `StructuredPersona`, `1.0.0` | not sent | none | Discriminator fields; no behavioural effect. |
@@ -291,7 +291,7 @@ Edge cases:
 
 - `max_messages` of 0 or below is accepted. Under Step Functions the budget then falls back to the `MAX_MESSAGES` setting (`orchestration.budget_of` reads only a positive value); the local path uses the value as given and generates no turns.
 - With `max_messages` omitted, the injection check is skipped, so an injection after the default budget is accepted and never delivered.
-- A stored run config (from `GET /api/runs/{ref}`) is not always a valid request `config`: it can carry `summary`, `branch_mutation` and `research.targets`, which this model refuses or drops. `GET /api/runs/{ref}/setup` returns a re-submittable body whose `config` carries only `max_messages`, `generate_avatars`, `cognition`, `retrieval`, `personas`, `knowledge_bases`, `selection`, `research` (without `targets`) and `models`; it does not carry `experts`, `consult_limit`, `assumptions`, `dynamic_assumptions`, `injections` or `summary`.
+- A stored run config (from `GET /api/runs/{ref}`) is not always a valid request `config`: it can carry `summary`, `branch_mutation` and `research.targets`, which this model refuses or drops. `GET /api/runs/{ref}/setup` returns a re-submittable body whose `config` carries only `max_messages`, `generate_avatars`, `cognition`, `retrieval`, `personas` (with `withhold_concerns` written out), `knowledge_bases`, `selection`, `research` (without `targets`) and `models`; it does not carry `experts`, `consult_limit`, `assumptions`, `dynamic_assumptions`, `injections` or `summary`.
 - `knowledge_bases` bindings are checked for readability at creation and re-checked on every turn; a binding whose grant is revoked mid-run returns nothing from then on.
 - `knowledge_bases` without `retrieval.enabled` is accepted and never searched.
 
@@ -402,17 +402,26 @@ ignored for prompts (it is still parsed).
 | Field | Type | Server default | Form sends | Constraints | Effect |
 |---|---|---|---|---|---|
 | `enabled` | boolean | `false` | `true` (the block is sent only when some persona has convictions) | none | Render `structured` into the persona's own prompt and a public summary into the moderator's cast list. |
-| `withhold_concerns` | boolean | `true` | not sent | none | Keep `underlying_concern` unsaid until asked. |
+| `withhold_concerns` | boolean | `false` (new runs, since 2026-10-02); the engine reads a missing value as `true` | always with the block: the **Hidden agendas** checkbox (default off) | none | Hidden agendas: keep `underlying_concern` unsaid until asked. `false` states it plainly. Written into every new run's stored config. |
 | `dismissal_rule` | string or boolean | `mandatory` | not sent | engine: `mandatory` \| `retuned` \| `blunt` \| `off`; `true` means `mandatory`, `false` means `off` (not checked by the API) | Which wording is rendered with `preferences.dismisses`. `off` renders neither the rule nor the list. |
 | `evidence_lean` | boolean | `true` | the checkbox value (default `true`) | none | A persona asking for evidence must also give its best guess and current lean. |
 
 ```json
-"personas": {"enabled": true, "dismissal_rule": "mandatory", "evidence_lean": true}
+"personas": {"enabled": true, "withhold_concerns": false, "dismissal_rule": "mandatory", "evidence_lean": true}
 ```
 
 Edge cases:
 
 - `withhold_concerns`, `dismissal_rule` and `evidence_lean` take effect only with `enabled: true`.
+- `withhold_concerns` defaults differ on purpose, as `retrieval.cite_inline`'s do. The request model's
+  `false` (owner decision, 2026-10-02) is written into each new run's config; the engine's `true`
+  (`PersonaConfig`) is what a stored config with no value gets, so a run created before the change
+  keeps withholding when resumed or branched. Everything else that writes a stored config writes the
+  value out: an ensemble member and the CLI (`scripts/start_conversation.py` through the request model,
+  and `python -m matrix_studio run`, which gives a file with no value the new-run `false`); a branch,
+  and `GET /api/runs/{ref}/setup`, which carry the source run's value, `true` when it recorded none.
+- The study definitions in `examples/validation/` and `examples/escalation/` set `withhold_concerns: true`:
+  their results were measured with concerns withheld.
 - The stored config keeps `dismissal_rule` as sent (a boolean stays a boolean); the engine coerces it when the run is parsed.
 - An unknown `dismissal_rule` is accepted by the API and fails the run.
 
@@ -607,7 +616,9 @@ completes.
 | `instructions` | string or null | null (the default analyst framing) | not sent | none | Replaces the analyst-role framing; the JSON and no-fabrication guardrails remain. |
 
 Summary field names, in canonical order: `overview`, `consensus`, `dissenters`, `key_ideas`,
-`open_questions`, `evidence_plan`, `conditional_recommendation`.
+`open_questions`, `evidence_plan`, `conditional_recommendation`, `concerns`. `concerns` (since
+2026-10-02) is asked for only when structured personas are on and some persona has an
+`underlying_concern`, in either concern mode; otherwise it is dropped and the prompt is unchanged.
 
 ```json
 "summary": {"enabled": true, "fields": ["overview", "consensus", "dissenters"], "focus": "staffing cost"}

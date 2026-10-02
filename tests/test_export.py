@@ -320,3 +320,82 @@ def test_the_report_carries_the_full_evidence_plan(fmt):
     assert "What would settle it" in out and "If under 5%, launch." in out
     # The report has every column, including the two the one-page brief leaves out.
     assert "launch or hold" in out and "a 2-week pilot" in out and "not stated" in out
+
+
+# --------------------------------------------------------------------------- #
+# Underlying concerns: shown with the cast only when stated plainly; read by the summary in both modes
+# --------------------------------------------------------------------------- #
+
+_CAST = [{"name": "Morgan", "persona": "A provider", "goals": [], "structured": {"viewpoints": [{
+    "position": "Renewal is continuation", "firmness": "firm", "evidence_that_shifts": ["a board action"],
+    "underlying_concern": CONCERN, "validity": VALIDITY}]}}]
+
+CONCERN_ROW = {"speaker": "Morgan", "concern": CONCERN, "surfaced": "partly",
+               "where": "turn 4: “my name is on it”", "addressed": "no"}
+
+
+@pytest.mark.parametrize("fmt", ["md", "html"])
+def test_a_plain_runs_cast_shows_each_concern_with_its_position_but_never_validity(fmt):
+    out = ex.render(_run_model(cast=ex.public_cast(_CAST, withhold_concerns=False)), fmt)
+    assert CONCERN in out.replace("&#x27;", "'")
+    assert "really worried about" in out
+    assert VALIDITY not in out
+
+
+def test_public_cast_withholds_by_default():
+    """A caller that does not say which mode the run was in cannot print a hidden agenda."""
+    assert "underlying_concern" not in ex.public_cast(_CAST)[0]["viewpoints"][0]
+    assert "validity" not in ex.public_cast(_CAST, withhold_concerns=False)[0]["viewpoints"][0]
+
+
+@pytest.mark.parametrize("personas, shown", [
+    ({"enabled": True, "withhold_concerns": False}, True),
+    ({"enabled": True, "withhold_concerns": True}, False),
+    # A run from before 2026-10-02 has no key, and withheld.
+    ({"enabled": True}, False),
+])
+async def test_the_run_model_reads_the_mode_from_the_runs_own_config(db, personas, shown):
+    await db.create_run(run_id="c1", topic="t", cast=_CAST, name="c1", config={"personas": personas},
+                        owner_sub=TEST_OWNER)
+    model = await ex.run_model(db, await db.get_run("c1"))
+    vp = model["cast"][0]["viewpoints"][0]
+    assert ("underlying_concern" in vp) is shown
+    assert "validity" not in vp
+
+
+@pytest.mark.parametrize("fmt", ["md", "html"])
+@pytest.mark.parametrize("withheld, heading", [
+    (True, "Underlying concerns (hidden during the run)"),
+    (False, "Underlying concerns"),
+])
+def test_the_report_carries_the_summarys_concerns_labelled_by_mode(fmt, withheld, heading):
+    m = _run_model(summary={"overview": "o", "concerns": [CONCERN_ROW], "concerns_withheld": withheld})
+    out = ex.render(m, fmt).replace("&#x27;", "'")
+    assert heading in out
+    if not withheld:
+        assert "(hidden during the run)" not in out
+    # The analysis section is where it appears, after the label that says it is analysis.
+    assert out.index("Model-generated analysis") < out.index(heading)
+    # Every column, the quote included.
+    assert CONCERN in out and "partly" in out and "my name is on it" in out
+
+
+def test_a_withheld_runs_concern_appears_only_in_the_labelled_summary_section():
+    """The reveal is the summary's, in its own labelled section — never the cast's."""
+    m = _run_model(summary={"overview": "o", "concerns": [CONCERN_ROW], "concerns_withheld": True})
+    out = ex.render_markdown(m)
+    assert out.count(CONCERN) == 1
+    assert out.index("### Underlying concerns (hidden during the run)") < out.index(CONCERN)
+
+
+def test_concern_text_is_escaped_and_cannot_break_a_table():
+    hostile = "<script>alert(1)</script> | x"
+    m = _run_model(summary={"overview": "o", "concerns": [{**CONCERN_ROW, "concern": hostile}]})
+    assert "<script>alert" not in ex.render_html(m)
+    row = next(line for line in ex.render_markdown(m).splitlines() if line.startswith("| Morgan"))
+    assert "\\| x" in row
+
+
+def test_no_concerns_means_no_concerns_section():
+    out = ex.render_markdown(_run_model())
+    assert "Underlying concerns" not in out

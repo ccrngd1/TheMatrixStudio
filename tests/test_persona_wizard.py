@@ -87,9 +87,10 @@ async def test_the_draft_validates_against_the_real_persona_model():
     assert parse_structured(cast[0]["structured"]) is not None
 
 
-async def test_it_generates_the_withheld_concern():
+async def test_it_generates_the_underlying_concern():
     """The concern is the hardest field to author and the operator is meant to see
-    it — it is withheld from the CONVERSATION, not from the person building the panel."""
+    it — even a run with hidden agendas keeps it from the CONVERSATION, not from the
+    person building the panel."""
     cast = await _run(_payload(_member()))
     assert cast[0]["structured"]["viewpoints"][0]["underlying_concern"]
 

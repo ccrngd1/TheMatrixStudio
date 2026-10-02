@@ -9,11 +9,12 @@ renderer (that is ``tests/test_personas.py``). The properties:
       structured block at all.
   (2) ON: the persona's own convictions, formative lessons and the re-tuned
       dismissal rule reach its OWN system prompt.
-  (3) The withheld ``underlying_concern`` reaches its own prompt and NO OTHER
-      prompt in the run — including the moderator's, which lists the whole cast.
+  (3) The ``underlying_concern`` reaches its own prompt and NO OTHER prompt in
+      the run — including the moderator's, which lists the whole cast — in both
+      modes: withheld (hidden agendas) and stated plainly (new runs' default).
   (4) ``validity`` reaches nothing, ever.
-  (5) The ``persona.structured`` event records the seeding, with the private
-      fields stripped.
+  (5) The ``persona.structured`` event records the seeding, with ``validity``
+      stripped always and the concern stripped when it was withheld.
   (6) A malformed ``structured`` block fails at run start rather than being
       silently ignored.
 """
@@ -253,17 +254,36 @@ async def test_validity_reaches_no_prompt_in_the_run(db):
 
 
 async def test_withhold_concerns_false_still_keeps_it_out_of_other_prompts(db):
-    """Turning withholding off makes the persona free to SAY it. It must not make
-    the engine tell everyone else."""
+    """Stated plainly, the persona is told to SAY it. It must not make the engine
+    tell everyone else: the room hears it from her, not from a prompt."""
     prompts = await _run(
         db, "nowithhold", personas={"enabled": True, "withhold_concerns": False}
     )
     dana = "\n".join(_speaker_prompts(prompts, "Dana"))
     assert DANA_CONCERN in dana
     assert "Do not volunteer" not in dana
+    assert f"What you are really worried about: {DANA_CONCERN}" in dana
     others = [p for kind, who, p in prompts if not (kind == "speaker" and who == "Dana")]
     for p in others:
         assert DANA_CONCERN not in p
+
+
+async def test_the_moderator_prompt_is_the_same_in_both_concern_modes(db):
+    """It chooses speakers. Changing it would change every run's selection, so neither mode
+    touches it."""
+    withheld = await _run(db, "modw", personas={"enabled": True, "withhold_concerns": True})
+    plain = await _run(db, "modp", personas={"enabled": True, "withhold_concerns": False})
+    first = lambda ps: next(p for kind, _, p in ps if kind == "moderator")  # noqa: E731
+    assert first(withheld) == first(plain)
+
+
+async def test_a_stored_config_without_the_key_still_withholds(db):
+    """Every run before 2026-10-02 has no key, and a resume or branch reads its config through
+    the engine: it must keep withholding."""
+    prompts = await _run(db, "legacy", personas={"enabled": True})
+    dana = "\n".join(_speaker_prompts(prompts, "Dana"))
+    assert "Do not volunteer" in dana
+    assert "What you are really worried about" not in dana
 
 
 # --------------------------------------------------------------------------- #
@@ -282,6 +302,16 @@ async def test_persona_structured_event_records_the_seeding_without_private_fiel
     assert "stateful external service" in flat
     assert DANA_CONCERN not in flat
     assert DANA_VALIDITY not in flat
+
+
+async def test_a_plain_runs_event_records_the_concern_and_never_validity(db):
+    """Stated plainly, the concern is part of the position Dana argues, so the record of what she was
+    seeded with carries it. `validity` is the operator's note in every mode."""
+    await _run(db, "plainevent", personas={"enabled": True, "withhold_concerns": False})
+    payload = (await _events(db, "plainevent", "persona.structured"))[0]["payload"]
+    assert payload["withhold_concerns"] is False
+    assert payload["structured"]["viewpoints"][0]["underlying_concern"] == DANA_CONCERN
+    assert DANA_VALIDITY not in json.dumps(payload)
 
 
 # --------------------------------------------------------------------------- #

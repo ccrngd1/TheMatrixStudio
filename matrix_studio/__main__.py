@@ -74,6 +74,17 @@ async def run_from_file(
             request["config"] = {}
         request["config"]["max_messages"] = max_messages
 
+    # A file run is a NEW run, so it gets the new-run hidden-agendas default (off since 2026-10-02),
+    # written into the stored config as `POST /api/runs` writes it. This path hands the file straight
+    # to the engine, whose own default stays on for runs created before then — without this a file
+    # with no key would quietly run the old behaviour. A file that says either value keeps it.
+    if isinstance(request.get("config"), dict):
+        from matrix_studio.state import NEW_RUN_WITHHOLD_CONCERNS, record_withhold_concerns
+
+        request["config"] = record_withhold_concerns(
+            request["config"], default=NEW_RUN_WITHHOLD_CONCERNS,
+        )
+
     # Setup storage. Bound to the single local user: the file-in/file-out CLI has no
     # authenticated caller, and an unbound store refuses every call rather than
     # guessing an owner.

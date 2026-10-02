@@ -238,7 +238,7 @@ describe('NewRunForm option hints', () => {
     fireEvent.click(screen.getByRole('button', { name: /Run simulation/ }))
 
     const body = (api.createRun as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]
-    expect(body.config.personas).toEqual({ enabled: true, evidence_lean: false })
+    expect(body.config.personas).toEqual({ enabled: true, evidence_lean: false, withhold_concerns: false })
   })
 
   it('sends convictions and turns the personas feature on when authored', () => {
@@ -255,7 +255,7 @@ describe('NewRunForm option hints', () => {
     fireEvent.click(screen.getByRole('button', { name: /Run simulation/ }))
 
     const body = (api.createRun as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]
-    expect(body.config.personas).toEqual({ enabled: true, evidence_lean: true })
+    expect(body.config.personas).toEqual({ enabled: true, evidence_lean: true, withhold_concerns: false })
     expect(body.cast[0].structured.viewpoints[0]).toEqual({
       position: 'consent comes first',
       firmness: 'firm',
@@ -361,7 +361,7 @@ describe('NewRunForm option hints', () => {
       // Carried through, not dropped — see the dedicated test below.
       underlying_concern: 'I own it when a customer never gets a working run',
     })
-    expect(body.config.personas).toEqual({ enabled: true, evidence_lean: true })
+    expect(body.config.personas).toEqual({ enabled: true, evidence_lean: true, withhold_concerns: false })
   })
 
   it('uses the brief as the topic when the topic is still empty', async () => {
@@ -426,7 +426,7 @@ describe('NewRunForm option hints', () => {
     )
   })
 
-  it('shows the drafted concern in its own field, marked as withheld', async () => {
+  it('shows the drafted concern in its own field, labelled as stated openly unless hidden agendas is on', async () => {
     ;(api.suggestPersonas as ReturnType<typeof vi.fn>).mockResolvedValue(drafted)
     renderForm()
     fireEvent.change(screen.getByPlaceholderText(/deciding whether to move/), {
@@ -438,11 +438,35 @@ describe('NewRunForm option hints', () => {
         screen.getByDisplayValue('I own it when a customer never gets a working run'),
       ).toBeInTheDocument(),
     )
-    expect(screen.getByText(/really behind them — withheld/)).toBeInTheDocument()
-    // The hint has to explain that the persona will not volunteer it, or an operator
-    // reasonably assumes it gets said.
-    const tips = screen.getAllByRole('tooltip').map((t) => t.textContent ?? '')
-    expect(tips.some((t) => /not volunteer it/.test(t))).toBe(true)
+    expect(screen.getByText('Underlying concern')).toBeInTheDocument()
+    expect(screen.queryByText(/withheld/)).not.toBeInTheDocument()
+    // The hint has to say what happens to it in both modes, or an operator guesses wrong either way.
+    const tip = screen.getByRole('button', { name: 'About underlying concerns' }).closest('label')!
+    const text = within(tip as HTMLElement).getByRole('tooltip').textContent ?? ''
+    expect(text).toMatch(/states it openly/)
+    expect(text).toMatch(/hidden agendas/)
+  })
+
+  it('has hidden agendas off by default, sends the choice either way, and shows it on Launch', async () => {
+    ;(api.suggestPersonas as ReturnType<typeof vi.fn>).mockResolvedValue(drafted)
+    renderForm()
+    fireEvent.change(screen.getByPlaceholderText(/What should the cast discuss/i), { target: { value: 'a topic' } })
+    fireEvent.change(screen.getByPlaceholderText(/deciding whether to move/), { target: { value: 'x' } })
+    fireEvent.click(screen.getByRole('button', { name: /Draft cast/ }))
+    await waitFor(() => expect(screen.getByDisplayValue('Dana')).toBeInTheDocument())
+
+    const toggle = screen.getByRole('checkbox', { name: /Hidden agendas/ })
+    expect(toggle).not.toBeChecked()
+    // Explained, like every option: what it does and when it is worth turning on.
+    const tip = screen.getByRole('button', { name: 'About hidden agendas' }).closest('label')!
+    expect(within(tip as HTMLElement).getByRole('tooltip').textContent).toMatch(/negotiation or an interview/)
+    expect(screen.getByText('off — concerns stated plainly')).toBeInTheDocument()
+
+    fireEvent.click(toggle)
+    expect(screen.getByText('on — concerns kept back')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Run simulation/ }))
+    const body = (api.createRun as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]
+    expect(body.config.personas.withhold_concerns).toBe(true)
   })
 
   it('never sends validity, which is the operator-private field', async () => {

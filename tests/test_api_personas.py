@@ -142,9 +142,11 @@ def test_api_request_contract_carries_structured_personas(client):
     assert [e["agent_name"] for e in seeded] == ["Dana"]
 
 
-def test_dossier_exposes_convictions_without_the_private_fields(client):
+def test_dossier_of_a_withheld_run_exposes_convictions_without_the_private_fields(client):
     with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake):
-        ref = client.post("/api/runs", json=_request()).json()["run_id"]
+        ref = client.post(
+            "/api/runs", json=_request(personas={"enabled": True, "withhold_concerns": True}),
+        ).json()["run_id"]
         _wait(client, ref)
 
     body = client.get(f"/api/runs/{ref}/agents/Dana/dossier").json()
@@ -152,11 +154,83 @@ def test_dossier_exposes_convictions_without_the_private_fields(client):
     assert structured is not None
     assert structured["role"] == "Head of Distribution & Packaging"
     assert structured["viewpoints"][0]["firmness"] == "firm"
+    assert body["withhold_concerns"] is True
     # The dossier is a UI surface. Showing the withheld concern there would let an
     # operator read off the answer the panel is meant to draw out in conversation.
-    flat = json.dumps(structured)
+    flat = json.dumps(body)
     assert CONCERN not in flat
     assert VALIDITY not in flat
+
+
+def test_a_new_run_states_concerns_plainly_and_records_that_it_does(client):
+    """The owner's decision of 2026-10-02: the request model defaults to stating them, and the stored
+    config says so explicitly rather than leaving it to a default a later reader might not share."""
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake):
+        ref = client.post("/api/runs", json=_request()).json()["run_id"]
+        _wait(client, ref)
+
+    assert client.get(f"/api/runs/{ref}").json()["config"]["personas"]["withhold_concerns"] is False
+    body = client.get(f"/api/runs/{ref}/agents/Dana/dossier").json()
+    assert body["withhold_concerns"] is False
+    # Stated plainly, the concern is part of the position, so the dossier shows it.
+    assert body["structured"]["viewpoints"][0]["underlying_concern"] == CONCERN
+    # `validity` is the operator's calibration note in every mode.
+    assert VALIDITY not in json.dumps(body)
+    seeded = next(e for e in client.get(f"/api/runs/{ref}/events").json()["events"]
+                  if e["event_type"] == "persona.structured")
+    assert seeded["payload"]["structured"]["viewpoints"][0]["underlying_concern"] == CONCERN
+    assert VALIDITY not in json.dumps(seeded)
+
+
+def _legacy_run(run_id):
+    """A run as one created before 2026-10-02 may be stored: a `personas` block with NO
+    `withhold_concerns` key. Written through the engine, as the local CLI used to, because the API
+    now always records the key."""
+    import asyncio
+    import os
+
+    from matrix_studio.api import identity
+    from matrix_studio.engine import run_simulation
+    from matrix_studio.storage import Database
+
+    async def go():
+        db = Database(table_prefix=os.environ["TABLE_PREFIX"], bucket=os.environ["DATA_BUCKET"],
+                      region="us-east-1")
+        await db.connect()
+        try:
+            with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake):
+                await run_simulation(_request(), db=db.for_owner(identity.LOCAL_USER_SUB), run_id=run_id)
+        finally:
+            await db.close()
+
+    asyncio.run(go())
+
+
+def test_a_run_from_before_the_change_still_withholds_everywhere(client):
+    """Resume, branch and "start fresh" all keep its stored behaviour: withheld."""
+    _legacy_run("legacy-run")
+    assert "withhold_concerns" not in client.get("/api/runs/legacy-run").json()["config"]["personas"]
+
+    dossier = client.get("/api/runs/legacy-run/agents/Dana/dossier").json()
+    assert dossier["withhold_concerns"] is True
+    assert CONCERN not in json.dumps(dossier)
+
+    # Branch: the fork records the value it inherited, and stays withheld.
+    with patch("matrix_studio.engine.simulator.litellm.acompletion", side_effect=_fake):
+        res = client.post("/api/runs/legacy-run/branch", json={"from_turn": 1})
+        assert res.status_code in (200, 201, 202), res.text
+        branch = res.json()["run_id"]
+        _wait(client, branch)
+    assert client.get(f"/api/runs/{branch}").json()["config"]["personas"]["withhold_concerns"] is True
+    branch_dossier = client.get(f"/api/runs/{branch}/agents/Dana/dossier").json()
+    assert branch_dossier["withhold_concerns"] is True
+    assert CONCERN not in json.dumps(branch_dossier)
+
+    # Start fresh: the setup carries the source's value, so the copy withholds too.
+    setup = client.get("/api/runs/legacy-run/setup").json()["setup"]
+    assert setup["config"]["personas"]["withhold_concerns"] is True
+    # The concern itself is the operator's authored input and comes back for editing.
+    assert setup["cast"][0]["structured"]["viewpoints"][0]["underlying_concern"] == CONCERN
 
 
 def test_dossier_structured_is_null_for_a_plain_persona(client):

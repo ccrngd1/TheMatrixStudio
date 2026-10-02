@@ -27,10 +27,12 @@ Think of it as a rehearsal room. Some things a rehearsal does well:
   states what would change its mind tells you which conditions you would have to meet. The
   summary's evidence plan collects those requests in one table
   ([`../studies/EVIDENCE-LEAN.md`](../studies/EVIDENCE-LEAN.md) describes the measurement behind it).
-- **Practising the questions you would ask.** A structured persona can carry a concern behind
-  its position that it will not volunteer. Drawing that concern out is the exercise the feature
-  was built for. The design says so directly: "a concern volunteered on turn 1 cannot be drawn
-  out" ([`../project/PHASE6-STRUCTURED-PERSONAS.md`](../project/PHASE6-STRUCTURED-PERSONAS.md)). See
+- **Practising the questions you would ask.** A structured persona carries the concern behind
+  its position. By default it says it plainly, so the room argues with the real reason. With
+  **hidden agendas** on, it keeps the concern back until someone draws it out, which is the
+  exercise the feature was first built for: "a concern volunteered on turn 1 cannot be drawn
+  out" ([`../project/PHASE6-STRUCTURED-PERSONAS.md`](../project/PHASE6-STRUCTURED-PERSONAS.md)).
+  The summary says afterwards which concerns came up and which were answered. See
   [Personas and convictions](personas-and-convictions.md).
 - **Asking "what if" in a controlled way.** You can fork a run at any turn with one change, or
   run an ensemble where groups differ in one declared thing, such as a working assumption or a

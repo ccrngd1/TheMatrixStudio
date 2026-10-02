@@ -308,7 +308,8 @@
     },
     "personas": {
       "enabled": true,
-      "dismissal_rule": "blunt"
+      "dismissal_rule": "blunt",
+      "withhold_concerns": true
     }
   }
 }

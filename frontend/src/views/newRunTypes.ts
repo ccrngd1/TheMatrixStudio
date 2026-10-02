@@ -23,7 +23,7 @@ export interface DraftPersona {
    * experience than a line of text, and this parses losslessly into the API shape.
    */
   positions: string
-  /** Withheld concerns, one per line, matched to `positions` BY INDEX. */
+  /** Underlying concerns, one per line, matched to `positions` BY INDEX. */
   concerns: string
   dismisses: string // one concern per line
   /**

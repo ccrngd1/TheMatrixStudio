@@ -158,7 +158,8 @@ starves participants") would have been visible at a glance as one tiny, unconnec
 - Four tabs:
   - **Convictions:** position, *moved @n* or firmness, **FORMED BY**, **WOULD MOVE** (the exit
     condition), *will not weigh*, and a note that a withheld concern exists, **without its
-    text**.
+    text**. (Withheld runs only since 2026-10-02: a run that states its concerns shows each one as
+    **CONCERN** under its position. See the decision below.)
   - **Memory:** the last three things they said, then memory stream entries and retrieved
     passages with scores.
   - **Threads:** pending threads.
@@ -171,6 +172,19 @@ the exercise, and "an operator who can read it off a panel has been handed the a
 not compile. An early draft of this prototype did display the concern; that has been fixed. The
 panel's tag says *Hidden*, not *not drawn out*, because nothing detects a reveal (Phase 6: "the
 reveal path is untested").
+
+**DECIDED 2026-10-02 by the owner: concerns are laid out plainly when they are known.** "Personas
+shouldn't guard their concerns or objections; they should be laid out plainly when they are known."
+Withholding becomes an opt-in **Hidden agendas** toggle on the Cast step, off by default for new runs.
+For a run that states its concerns, the Convictions tab shows each position's concern under it as a
+**CONCERN** line. The paragraph above now describes withheld runs only — hidden agendas, and every run
+created before this date, which keep withholding when resumed, branched or started fresh — and they
+keep the *Hidden* panel exactly as it was. The type guard is reworked rather than dropped: the dossier
+type declares an optional `underlying_concern`, which the server sends only for a plain run, and the tab
+renders it only when the dossier says the run stated concerns plainly (`withhold_concerns: false`), so a
+withheld concern sent by mistake still shows on no tab. `Dossier.test.tsx` asserts both directions and
+each was mutation-checked. `validity` stays undeclared. After a run, the summary (§4.5) lists every
+authored concern in both modes, under "Underlying concerns (hidden during the run)" on a withheld run.
 
 <br clear="right">
 
@@ -185,7 +199,9 @@ Reading order is decision first, supporting detail after:
    conditions* as a fourth, and as its own share beside the %, when anyone accepted with conditions),
    then each persona's stance with its basis: the quote, and whether the closing statement or the summary
    decided it (§6.1).
-3. **What would settle it.**
+3. **What would settle it.** Then, since 2026-10-02, **Underlying concerns**: each authored concern,
+   whether it came up and whether it was addressed, labelled *hidden during the run* when the run
+   withheld them (§4.4).
 4. **Assumed:** each assumption with its citation count and who disputes it, and
    **Fork with a different value**.
 5. **Standing objections.**
@@ -258,8 +274,8 @@ Five steps on a diamond stepper. Each step is tappable, so you can jump around.
    turn ceiling, convergence stop, method, closing round, cognition, avatars, model, and
    **Import a setup**.
 2. **Cast:** collapsible persona cards with the structured-persona fields (position, soft / firm /
-   fixed, exit condition, withheld concern, will not weigh, documents), **Draft a cast for me**,
-   the library, consultants and evidence lean.
+   fixed, exit condition, underlying concern, will not weigh, documents), **Draft a cast for me**,
+   the library, consultants, evidence lean and **Hidden agendas** (off by default since 2026-10-02).
 3. **Knowledge:** knowledge-base toggles, inline citations, pre-conversation research and
    per-persona research.
 4. **Assume:** working assumptions, scheduled messages (drawn as INCOMING banners) and the spend

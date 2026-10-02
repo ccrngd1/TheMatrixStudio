@@ -125,6 +125,31 @@ supposed to catch them.
     runs. Documented in `docs/project/AWS-IMPLEMENTATION-PLAN.md` and `infra/README.md`.
 
 ### Changed
+- **Underlying concerns are stated plainly; withholding is an opt-in "hidden agendas" option**
+  (owner decision, 2026-10-02: "Personas shouldn't guard their concerns or objections; they
+  should be laid out plainly when they are known").
+  - New runs default `config.personas.withhold_concerns` to `false`, set in the API request model
+  and written into every new run's stored config. The engine default stays `true`, so a run created
+  before the change keeps withholding when resumed or branched, and "start fresh" from it, a branch
+  of it and the setup route all record `true`. Ensembles and both CLIs record the value too; a file
+  run with no value gets the new-run `false`. The `inline citations` precedent, in reverse.
+  - Stated plainly, a concern is rendered under its position with a holding-rule line that requires
+  the persona to say it as part of the position and hold it on the same terms. The withheld wording
+  is unchanged. **The plain wording is not measured**; every study in `docs/studies/` and
+  `docs/project/PHASE6-*` ran with concerns withheld, so the study definitions in `examples/` now pin
+  `withhold_concerns: true`.
+  - A plain run's concern is in the `persona.structured` event, the dossier (a CONCERN line on the
+  Convictions tab) and the export's cast. A withheld run is stripped exactly as before and keeps the
+  dossier's *Hidden* panel; the dossier renders a concern only when the run says it was stated
+  plainly, mutation-checked both ways. `validity` is never shown.
+  - The new-run form has a **Hidden agendas** toggle on the Cast step (off) and a Launch row for it;
+  the concerns box is labelled "Underlying concern".
+  - The summary now has a `concerns` field: per authored concern, whether it came up
+  (`yes`/`partly`/`no`, with a quote or turn), and whether it was addressed. It is given the concerns
+  in both modes, so on a withheld run it is the post-run reveal, labelled "Underlying concerns
+  (hidden during the run)" in the summary panel, the decision brief and the exports. A run with no
+  concerns authored gets no such field and the same summary prompt as before.
+  - `scripts/check_concern_leak.py` applies to withheld runs only, and says so.
 - `docs/project/AWS-IMPLEMENTATION-PLAN.md` item 0.3 (make vector retrieval the default) moved
   to Phase 3, where SQLite and FTS disappear anyway. Flipping the default today would
   change the behaviour of a working product for a benefit that only materialises after
