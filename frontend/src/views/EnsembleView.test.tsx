@@ -130,6 +130,17 @@ describe('EnsembleView', () => {
     expect(groups).toHaveTextContent('selection.method=hybrid')
   })
 
+  it('names the cast once, each persona with the simulated-persona marker', async () => {
+    const withCast = member('r1', 'base', 1)
+    mocked.getEnsemble.mockResolvedValue(
+      detail({ members: [{ ...withCast, run: { ...withCast.run, cast_names: ['Ruth', 'Sam'] } }, member('r2', 'base', 2)] }),
+    )
+    render(<EnsembleView ensembleId="e1" onBack={() => {}} onOpenRun={() => {}} />)
+    const line = await screen.findByText(/^Cast:/)
+    expect(line).toHaveTextContent('Cast: Ruth · Sam')
+    expect(within(line).getAllByRole('img', { name: 'simulated persona' })).toHaveLength(2)
+  })
+
   it('opens a member as an ordinary run', async () => {
     const onOpenRun = vi.fn()
     mocked.getEnsemble.mockResolvedValue(detail())

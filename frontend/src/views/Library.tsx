@@ -7,6 +7,7 @@ import { api, type CastTemplateSummary, type PersonaPack } from '../api'
 import type { Route } from '../lib/route'
 import { Icon } from '../ui/icons'
 import { Btn, Hex, Label, Panel, Tag, identityOf } from '../ui/primitives'
+import { PersonaName, PersonaNames } from '../ui/PersonaName'
 
 // Both open the wizard on the Cast step (2), where what was loaded is shown and can be edited.
 export function Library({ onNavigate }: { onNavigate: (r: Route) => void }) {
@@ -47,7 +48,9 @@ export function Library({ onNavigate }: { onNavigate: (r: Route) => void }) {
                   </span>
                 </div>
                 {c.description && <p className="cc-topic">{c.description}</p>}
-                <p className="cc-meta">{c.personas.join(' · ')}</p>
+                <p className="cc-meta">
+                  <PersonaNames names={c.personas} />
+                </p>
                 <div className="mt-2">
                   <Btn onClick={() => onNavigate({ name: 'new', step: 2, castTemplate: c.name })}>
                     <Icon name="play" /> Start a run with this cast
@@ -75,6 +78,12 @@ export function Library({ onNavigate }: { onNavigate: (r: Route) => void }) {
                   <Hex name={p.label} slot={identityOf(p.label, packs.map((x) => x.label)) || `a${(i % 6) + 1}`} />
                   <div className="min-w-0 flex-1">
                     <b className="block">{p.label}</b>
+                    {/* The persona the archetype adds, by name: that name is what the room will call them. */}
+                    {p.persona?.name && (
+                      <span className="cc-meta mr-2">
+                        as <PersonaName name={p.persona.name} />
+                      </span>
+                    )}
                     {/* Shipped unqualified by design: an archetype nobody has checked in an ensemble says so. */}
                     <Tag tone="warn">{p.qualification}</Tag>
                   </div>

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { Hint } from './Hint'
 import type { ResearchRecord } from '../types'
+import { PersonaName } from '../ui/PersonaName'
 
 interface Props {
   research: ResearchRecord | null
@@ -146,9 +147,12 @@ export function ResearchPanel({ research }: Props) {
                     {s.scope === 'shared' ? (
                       <span className="text-slate-200">shared (the researcher)</span>
                     ) : s.consultant ? (
-                      `${s.scope} (consultant)`
+                      // A non-shared scope is named for the persona or consultant it was searched for.
+                      <>
+                        <PersonaName name={s.scope} /> (consultant)
+                      </>
                     ) : (
-                      s.scope
+                      <PersonaName name={s.scope} />
                     )}
                     {(s.negative || (s.query_negatives ?? 0) > 0) && (
                       <span className="ml-1 text-amber-400">

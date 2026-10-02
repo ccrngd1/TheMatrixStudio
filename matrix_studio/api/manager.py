@@ -140,6 +140,14 @@ class RunManager:
         every member's config is identical by design, so the label is unrecoverable from
         the config alone.
         """
+        # A persona never carries a real public figure's name (matrix_studio/real_names.py). Checked HERE, where
+        # every run is created — the API route and scripts/start_conversation.py both call this — so no caller
+        # can forget it. An ensemble member is not checked again: `create_ensemble` checked the parent, once,
+        # and every member is built from the parent's cast.
+        renamed: List[Dict[str, Any]] = []
+        if not ensemble_id:
+            request, renamed = await self._screen_names(request, owner_sub)
+
         topic = request["topic"]
         cast = request.get("cast", [])
         cast_names = [c.get("name", "") for c in cast]
@@ -310,6 +318,7 @@ class RunManager:
                 "name_source": name_source,
                 "topic": topic,
                 "status": "pending",
+                "renamed": renamed,
             }
 
         # Local path, unchanged: one long-lived uvicorn process, where a background
@@ -411,7 +420,16 @@ class RunManager:
             "name_source": name_source,
             "topic": topic,
             "status": "running",
+            "renamed": renamed,
         }
+
+    async def _screen_names(self, request: Dict[str, Any], owner_sub: str) -> tuple:
+        """``(request, renamed)`` with real public figures' names replaced, the check charged to the owner."""
+        from matrix_studio import real_names
+
+        screened, screening = await real_names.screen_request(request)
+        await real_names.record_spend(self.db.for_owner(owner_sub), owner_sub, screening.cost_usd)
+        return screened, screening.as_list()
 
     async def create_ensemble(
         self,
@@ -445,6 +463,10 @@ class RunManager:
         rather than silently reporting 4 of 4.
         """
         from matrix_studio import ensemble_spec
+
+        # Once, for the parent: every member is built from the parent's cast, so they all carry the same
+        # fictional names and `create_run` does not check a member again.
+        request, renamed = await self._screen_names(request, owner_sub)
 
         members = ensemble_spec.plan(request.get("config") or {}, cells)
 
@@ -538,6 +560,7 @@ class RunManager:
                     "spec": ensemble_spec.describe(cells),
                     "members": [],
                     "failed": [],
+                    "renamed": renamed,
                 }
             # No research function configured — the local path. Research inline, then fall
             # through to the ordinary fan-out below. A long-lived process can await it.
@@ -598,6 +621,7 @@ class RunManager:
             "spec": ensemble_spec.describe(cells),
             "members": started,
             "failed": failed,
+            "renamed": renamed,
         }
 
     async def fan_out_ensemble(

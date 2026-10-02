@@ -79,7 +79,9 @@ matrix-studio = "matrix_studio.__main__:main"
 include = ["matrix_studio*"]
 
 [tool.setuptools.package-data]
-matrix_studio = ["static/**/*"]
+# `public_figures.json` is read at run time by `real_names.py`; without it here an installed package (the
+# Lambda image runs `pip install .`) would have no curated list, and every create would fail.
+matrix_studio = ["static/**/*", "public_figures.json"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

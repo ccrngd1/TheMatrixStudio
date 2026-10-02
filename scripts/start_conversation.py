@@ -322,6 +322,13 @@ async def watch(db: Database, run_id: str, *, timeout_s: int) -> int:
     return 1
 
 
+def _print_renamed(result: dict) -> None:
+    """Say which real public figures' names the definition carried (matrix_studio/real_names.py): the run
+    was created with the parodies, and a definition that will be reused should be changed to match."""
+    for r in result.get("renamed") or []:
+        print(f"  renamed  '{r['from']}' is a real public figure, so this {r['role']} is '{r['to']}'")
+
+
 async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("definition", nargs="?", help="a conversation definition JSON")
@@ -437,6 +444,7 @@ async def main() -> int:
                 request, cells, owner_sub=args.owner, groups=args.groups or None,
             )
             print(f"\nstarted  {result['name']}  ensemble {result['ensemble_id']}")
+            _print_renamed(result)
             for m in result["members"]:
                 print(f"  {m['cell']}{m['index']}  {m.get('name')}  {m['run_id']}")
             for f in result.get("failed") or []:
@@ -453,6 +461,7 @@ async def main() -> int:
         )
         run_id = result["run_id"]
         print(f"\nstarted  {result['name']}  ({run_id})")
+        _print_renamed(result)
         run = await owned.get_run(run_id)
         if not run or run.get("status") == "pending":
             # `create_run` logs a warning and still returns when StartExecution is

@@ -15,7 +15,7 @@
 // when playback pauses and runs faster at 2×.
 
 import { useEffect, useRef, useState } from 'react'
-import { poseAt, type Blocking } from './blocking'
+import { SME_PREFIX, poseAt, type Blocking } from './blocking'
 import { EMOTES_URL, ROOM_H, ROOM_W, spriteUrl, type BoardNote } from './script'
 import { drawScene, type Actor, type Mark, type Performer, type SpriteImages } from './stage'
 
@@ -110,14 +110,17 @@ export function Stage(props: Props) {
     const draw = (t: number) => {
       const cur = latest.current
       const elapsed = cur.clock()
+      // Every cast member and consultant is a simulated persona and its tag says so; the messenger carries the
+      // operator's words and does not.
       const actors: Actor[] = cur.performers.map((p) => ({
         key: p.name, label: p.name.split(/\s+/)[0], sprite: p.sprite,
-        pose: poseAt(cur.blocking, p.name, p.seat, elapsed), marks: cur.marks[p.name] ?? [],
+        pose: poseAt(cur.blocking, p.name, p.seat, elapsed), marks: cur.marks[p.name] ?? [], bot: true,
       }))
       for (const v of cur.visitors) {
         actors.push({
           key: v.key, label: v.label, sprite: v.sprite,
           pose: poseAt(cur.blocking, v.key, null, elapsed), marks: cur.marks[v.key] ?? [],
+          bot: v.key.startsWith(SME_PREFIX),
         })
       }
       ctx.setTransform(scale * dpr, 0, 0, scale * dpr, 0, 0)

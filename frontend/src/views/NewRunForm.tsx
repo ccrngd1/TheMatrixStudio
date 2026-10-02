@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api, type Forecast } from '../api'
 import { CostForecast } from '../components/CostForecast'
 import { CastTemplates, loadCastTemplate } from '../components/CastTemplates'
@@ -18,6 +18,9 @@ import { KbPicker } from '../components/KbPicker'
 import { LaunchReview, Step, Stepper, WIZARD_STEPS, type ReviewRow, type WizardStep } from '../components/wizard/Wizard'
 import { TopBar } from './Shell'
 import { Btn } from '../ui/primitives'
+import { BotMark, PersonaName } from '../ui/PersonaName'
+import { RenamedNotice } from '../components/RenamedNotice'
+import { applyRenames, attachRenamed, nameKey, showsRenamed, useRealNameCheck } from '../lib/realNames'
 
 interface Props {
   onStarted: (runId: string) => void
@@ -201,6 +204,32 @@ export function NewRunForm({
   const updatePersona = (i: number, patch: Partial<DraftPersona>) =>
     setCast((prev) => prev.map((p, idx) => (idx === i ? { ...p, ...patch } : p)))
 
+  // Real people's names (lib/realNames.ts). Every name in the cast and the consultants is checked once, except the
+  // one being typed: that one is checked when its field loses focus, because switching a name under the cursor
+  // mid-word would be hostile. So this covers typing (on blur) and a cast filled wholesale — an import, "start
+  // fresh", a library template or archetype, the example — in one place. The server checks again at creation, so
+  // a failed check here only means the switch is seen later.
+  const checkNames = useRealNameCheck()
+  const [nameFocus, setNameFocus] = useState<string | null>(null)
+  const focusRef = useRef<string | null>(null)
+  focusRef.current = nameFocus
+  const namesKey = JSON.stringify([cast.map((c) => nameKey(c.name)), consultants.map((c) => nameKey(c.name))])
+  useEffect(() => {
+    const names = [
+      ...cast.filter((_, i) => nameFocus !== `p${i}`).map((c) => c.name),
+      ...consultants.filter((_, i) => nameFocus !== `c${i}`).map((c) => c.name),
+    ].filter((n) => n.trim())
+    if (!names.length) return
+    void checkNames(names).then((hits) => {
+      if (!hits.size) return
+      // Applied to whatever the rows hold NOW, by name, so a row edited while the request was out is left alone
+      // unless it still says the real name — and never the row that has focus again.
+      setCast((prev) => applyRenames(prev, hits, (i) => focusRef.current === `p${i}`))
+      setConsultants((prev) => applyRenames(prev, hits, (i) => focusRef.current === `c${i}`))
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [namesKey, nameFocus])
+
   // Add one persona (a library archetype). Replaces the form's untouched starting row rather than leaving an
   // empty one above it.
   const addToCast = (persona: DraftPersona) =>
@@ -224,7 +253,9 @@ export function NewRunForm({
       // REPLACES the cast rather than appending. A wizard that appends to whatever
       // is already there leaves a half-authored persona mixed into a drafted panel,
       // which is worse than either.
-      setCast(
+      // A drafted name the server switched (a real public figure's) arrives already fictional; `renamed` says
+      // which, so the draft shows the same notice a typed name would.
+      setCast(attachRenamed(
         res.cast.map((c) => ({
           ...blankPersona(),
           name: c.name,
@@ -244,7 +275,8 @@ export function NewRunForm({
           dismisses: (c.structured?.preferences?.dismisses || []).join('\n'),
           documents: [],
         })),
-      )
+        res.renamed,
+      ))
       // The topic is usually the brief, and retyping it is pure friction.
       if (!topic.trim()) setTopic(wizardBrief.trim())
     } catch (e) {
@@ -716,7 +748,16 @@ export function NewRunForm({
     { step: 1, label: 'Method', value: method },
     { step: 1, label: 'Turns', value: stopWhenConverged ? `up to ${maxMessages}, ending when finished` : maxMessages },
     { step: 1, label: 'Cognition', value: cognitionEnabled ? 'on' : 'off' },
-    { step: 2, label: 'Cast', value: cast.map((p) => p.name || 'unnamed').join(' · ') },
+    {
+      step: 2,
+      label: 'Cast',
+      value: cast.map((p, i) => (
+        <span key={i}>
+          {i > 0 && ' · '}
+          {p.name ? <PersonaName name={p.name} /> : 'unnamed'}
+        </span>
+      )),
+    },
     { step: 2, label: 'Consultants', value: consultants.length || 'none' },
     { step: 2, label: 'Evidence lean', value: evidenceLean ? 'on' : 'off' },
     { step: 2, label: 'Hidden agendas', value: withholdConcerns ? 'on — concerns kept back' : 'off — concerns stated plainly' },
@@ -1472,9 +1513,15 @@ export function NewRunForm({
               {cast.map((p, i) => (
                 <div key={i} className="rounded-lg border border-matrix-border p-3">
                   <div className="flex items-center gap-2">
+                    {/* The simulated-persona marker every persona's name carries. Beside the field, since an
+                        input cannot hold it, and never typed into the name: the stored name stays plain. */}
+                    <BotMark className="cc-botmark-field" />
                     <input
                       value={p.name}
-                      onChange={(e) => updatePersona(i, { name: e.target.value })}
+                      // Editing the name drops the notice: it was about the name that is no longer there.
+                      onChange={(e) => updatePersona(i, { name: e.target.value, renamed: undefined })}
+                      onFocus={() => setNameFocus(`p${i}`)}
+                      onBlur={() => setNameFocus(null)}
                       placeholder="Name"
                       className="w-40 rounded border border-matrix-border bg-matrix-bg p-2 text-sm"
                     />
@@ -1487,6 +1534,7 @@ export function NewRunForm({
                       </button>
                     )}
                   </div>
+                  {showsRenamed(p) && <RenamedNotice renamed={p.renamed!} />}
                   <textarea
                     value={p.persona}
                     onChange={(e) => updatePersona(i, { persona: e.target.value })}
@@ -1779,6 +1827,7 @@ export function NewRunForm({
             onChange={setConsultants}
             limit={consultLimit}
             onLimit={setConsultLimit}
+            onNameFocus={(i) => setNameFocus(i === null ? null : `c${i}`)}
           />
 
         </Step>

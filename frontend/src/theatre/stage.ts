@@ -36,6 +36,8 @@ export interface Actor {
   sprite: string
   pose: Pose
   marks: Mark[]
+  /** A simulated persona or consultant, whose tag carries the robot marker. Not the messenger: that is the operator. */
+  bot?: boolean
 }
 
 export interface SceneFrame {
@@ -244,18 +246,39 @@ function drawActor(ctx: CanvasRenderingContext2D, img: HTMLImageElement | undefi
     Math.round(pose.x) - FOOT_X, Math.round(pose.y) - FOOT_Y - lift, FRAME, FRAME)
 }
 
-function drawNameTag(ctx: CanvasRenderingContext2D, a: Actor, active: boolean) {
+/**
+ * The simulated-persona marker as pixels: a robot head five wide and five tall (antenna, head, eyes, chin), drawn
+ * in the tag's ink. The app's marker is a vector icon; on the stage everything is pixel art at 1×, where a
+ * scaled-down vector would blur into a smudge, so the same robot is drawn on the room's own grid.
+ */
+const BOT_PIXELS = ['..#..', '#####', '#.#.#', '#####', '.###.']
+const BOT_W = 5
+const BOT_GAP = 2
+
+function drawBotMark(ctx: CanvasRenderingContext2D, x: number, y: number) {
+  BOT_PIXELS.forEach((row, j) => {
+    for (let i = 0; i < row.length; i++) if (row[i] === '#') ctx.fillRect(x + i, y + j, 1, 1)
+  })
+}
+
+/** Exported for its test: jsdom has no canvas, so the tag is checked against a recording context. */
+export function drawNameTag(ctx: CanvasRenderingContext2D, a: Actor, active: boolean) {
   const first = a.label.toUpperCase()
   ctx.save()
   ctx.font = `bold ${active ? 7 : 6}px ui-monospace, monospace`
-  const w = Math.ceil(ctx.measureText(first).width) + 6
+  const text = Math.ceil(ctx.measureText(first).width)
+  const mark = a.bot ? BOT_W + BOT_GAP : 0
+  const w = text + mark + 6
   // Behind the table the tag goes above the head; in front, below the feet.
   const y = behindTable(a.pose) ? a.pose.y - 44 : a.pose.y + 4
-  rect(ctx, Math.round(a.pose.x - w / 2), y, w, 9, active ? C.tagOn : C.tag)
+  const left = Math.round(a.pose.x - w / 2)
+  rect(ctx, left, y, w, 9, active ? C.tagOn : C.tag)
   ctx.fillStyle = active ? '#141414' : C.ink
+  if (a.bot) drawBotMark(ctx, left + 3, y + 2)
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
-  ctx.fillText(first, Math.round(a.pose.x), y + 5)
+  // Centred in what is left of the tag once the marker has its place.
+  ctx.fillText(first, Math.round(left + 3 + mark + text / 2), y + 5)
   ctx.restore()
 }
 

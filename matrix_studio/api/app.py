@@ -71,6 +71,7 @@ from matrix_studio.persona_wizard import (
     suggest_cast,
 )
 from matrix_studio.personas import StructuredPersona, structured_payload
+from matrix_studio.real_names import MAX_NAMES
 from matrix_studio.retrieval import (
     apply_budget,
     build_fts_query,
@@ -391,6 +392,21 @@ class SuggestPersonasModel(BaseModel):
     brief: str
     count: int = Field(default=DEFAULT_PERSONAS, ge=MIN_PERSONAS, le=MAX_PERSONAS)
     model: Optional[str] = None
+
+
+class CheckNamesModel(BaseModel):
+    """Body for POST /api/personas/check-names (`matrix_studio/real_names.py`). Bounded, because each
+    unknown full name can cost a model call and this route is called as a form is filled in."""
+
+    names: List[str] = Field(default_factory=list, max_length=MAX_NAMES)
+    consultants: List[str] = Field(default_factory=list, max_length=10)
+
+    @field_validator("names", "consultants")
+    @classmethod
+    def _bounded(cls, v: List[str]) -> List[str]:
+        # Clipped rather than refused: no full name is this long, so the clip cannot change a verdict,
+        # and a form mid-paste should get an answer rather than a 422.
+        return [str(n)[:200] for n in v]
 
 
 def _check_expert_names(cast: List["PersonaModel"], config: "RunConfigModel") -> None:
@@ -1132,8 +1148,52 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             "source": result["source"],
         }
 
+    # ------------------------------------------------------------------ #
+    # Real names (matrix_studio/real_names.py): a persona never carries one
+    # ------------------------------------------------------------------ #
+
+    # Runs and ensembles are checked inside `RunManager.create_run` / `create_ensemble`, where every run is
+    # created, after `_preflight` has refused anyone over their cap. These routes take a bare cast instead.
+    async def _screen_cast(cast: List[Dict[str, Any]], user: str, taken: Any = ()) -> tuple:
+        """``(cast, renamed)`` with real public figures' names replaced, the check charged to ``user`` —
+        for templates, the wizard and a branch's added persona."""
+        from matrix_studio import real_names
+
+        screened, _experts, screening = await real_names.screen_cast(cast, taken=taken)
+        await real_names.record_spend(db.for_owner(user), user, screening.cost_usd)
+        return screened, screening.as_list()
+
+    @app.post("/api/personas/check-names")
+    async def check_persona_names(
+        body: CheckNamesModel,
+        user: str = Depends(current_user),
+        groups: List[str] = Depends(current_groups),
+    ) -> Dict[str, Any]:
+        """Which of these names are real public figures, and what each would be renamed to.
+
+        Read-only: the new-run form asks as names are filled in, so it can say so on the persona before
+        anything is created. The create routes apply the same check whatever the form did, so this is
+        feedback, not the boundary.
+
+        A caller over their monthly cap still gets the curated list, which is free, and not the model
+        check, which is not: the cap would refuse their run anyway, and the check must not become a way
+        to keep spending after it.
+        """
+        from matrix_studio import real_names
+
+        owned = db.for_owner(user)
+        over = await orchestration.over_monthly_cap(owned, user, groups)
+        screening = await real_names.screen_names(
+            [(n, "persona") for n in body.names] + [(n, "consultant") for n in body.consultants],
+            use_model=over is None,
+        )
+        await real_names.record_spend(owned, user, screening.cost_usd)
+        return {"renamed": screening.as_list()}
+
     @app.post("/api/personas/suggest")
-    async def suggest_personas(body: SuggestPersonasModel) -> Dict[str, Any]:
+    async def suggest_personas(
+        body: SuggestPersonasModel, user: str = Depends(current_user)
+    ) -> Dict[str, Any]:
         """Draft a cast of structured personas from a short brief.
 
         AUTHORING ASSISTANCE, not simulation: the result is a draft returned to the
@@ -1150,7 +1210,10 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             )
         except WizardError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
-        return {"cast": cast, "count": len(cast)}
+        # The draft is asked for first names only, so this is usually free; a model that drafts a real
+        # person anyway is caught here, before the operator edits around the name.
+        cast, renamed = await _screen_cast(cast, user)
+        return {"cast": cast, "count": len(cast), "renamed": renamed}
 
     async def _preflight(request: Dict[str, Any], user: str, groups: List[str]) -> None:
         """The checks every run-starting route owes, in one place.
@@ -1229,13 +1292,17 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
 
     @app.get("/api/cast-templates")
     async def list_cast_templates(user: str = Depends(current_user)) -> Dict[str, Any]:
+        from matrix_studio.real_names import listed_name
+
         rows = await db.for_owner(user).list_cast_templates()
         return {
             "templates": [
                 {
                     "name": t["name"],
                     "description": t.get("description"),
-                    "personas": [c.get("name") for c in t["cast"]],
+                    # The curated list only: a listing must stay free and fast, and a template saved
+                    # since the check existed is already clean. Loading one runs the full check.
+                    "personas": [listed_name(c.get("name")) for c in t["cast"]],
                     "updated_at": t.get("updated_at"),
                 }
                 for t in rows
@@ -1247,7 +1314,10 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         row = await db.for_owner(user).get_cast_template(name)
         if not row:
             raise HTTPException(status_code=404, detail=f"No template named {name!r}")
-        return row
+        # Checked on the way out as well as in: a template saved before the check existed may carry a
+        # real name, and what is loaded goes straight into a new run's form. The stored row is left alone.
+        cast, renamed = await _screen_cast(list(row.get("cast") or []), user)
+        return {**row, "cast": cast, "renamed": renamed}
 
     @app.post("/api/cast-templates", status_code=201)
     async def save_cast_template(
@@ -1260,6 +1330,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             row = persona.model_dump(exclude_none=True)
             dropped += len(row.pop("document_texts", []) or []) + len(row.pop("documents", []) or [])
             cast.append(row)
+        cast, renamed = await _screen_cast(cast, user)
         try:
             saved = await db.for_owner(user).save_cast_template(
                 body.name, cast, body.description, overwrite=body.overwrite,
@@ -1271,8 +1342,9 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
                     detail=f"A template named {body.name!r} already exists. Save with overwrite to replace it.",
                 ) from exc
             raise
-        # Said, not silent: the person saving should know the pasted text did not come along.
-        return {**saved, "dropped_documents": dropped}
+        # Said, not silent: the person saving should know the pasted text did not come along — and
+        # that a real name was saved as its parody.
+        return {**saved, "dropped_documents": dropped, "renamed": renamed}
 
     @app.delete("/api/cast-templates/{name}")
     async def delete_cast_template(name: str, user: str = Depends(current_user)) -> Dict[str, str]:
@@ -1367,6 +1439,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         # creator's verified group membership is available to record — and without it a
         # KB granted to a group would list in the API and retrieve nothing during the run.
         # docs/project/PHASE6-KB-DESIGN.md §8.3 states the window that buys.
+        # Real public figures' names are replaced inside `create_run`, and listed in its `renamed`.
         result = await manager.create_run(request, owner_sub=user, groups=groups)
         return result
 
@@ -1407,6 +1480,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             # "invalid".
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+        # Real names are replaced inside `create_ensemble`, once for the parent, and listed in `renamed`.
         return await manager.create_ensemble(
             request, cells, owner_sub=user, groups=groups,
         )
@@ -3026,6 +3100,15 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         # Phase 2b: validate the mutation (if any) up front for a clean 422,
         # then pass it through as a plain dict.
         mutation = _validate_branch_mutation(body.mutation)
+        renamed: List[Dict[str, Any]] = []
+        if mutation and mutation["kind"] == "add_persona":
+            # A persona joining at the fork is a new name entering the cast like any other. Checked
+            # against the parent's cast so the parody cannot land on somebody already in the room.
+            [added], renamed = await _screen_cast(
+                [{"name": mutation["name"], "persona": mutation["persona"], "goals": mutation["goals"]}],
+                user, taken=[c.get("name") for c in _parse_cast(parent)],
+            )
+            mutation = {**mutation, **added}
         meta = await manager.create_branch(
             parent,
             from_turn=body.from_turn,
@@ -3034,7 +3117,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             model=body.model,
             mutation=mutation,
         )
-        return meta
+        return {**meta, "renamed": renamed}
 
     @app.get("/api/runs/{ref}/tree")
     async def run_tree(ref: str, user: str = Depends(current_user)) -> Dict[str, Any]:

@@ -111,8 +111,11 @@ describe('working assumptions', () => {
     ])
     expect(s.feed[0].shift?.no_listed_condition).toBe(true)
     render(<ConversationFeed feed={s.feed} agents={{ Theo: agent('Theo') }} activeSpeaker={null} thinking={false} />)
-    expect(screen.getByText(/Theo says their position moved/)).toBeInTheDocument()
-    expect(screen.getByText(/credits Mina \(persona\)/)).toBeInTheDocument()
+    // Both names are personas, so both carry the simulated-persona marker; the words are around them.
+    const flag = screen.getByText(/says their position moved/).closest('.cc-shift') as HTMLElement
+    expect(flag).toHaveTextContent(/Theo says their position moved/)
+    expect(flag).toHaveTextContent(/credits Mina \(persona\)/)
+    expect(within(flag).getAllByRole('img', { name: 'simulated persona' })).toHaveLength(2)
     expect(screen.getByText('a regulation')).toBeInTheDocument()
   })
 })

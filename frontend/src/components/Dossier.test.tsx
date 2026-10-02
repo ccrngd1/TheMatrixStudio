@@ -40,6 +40,17 @@ describe('Dossier', () => {
     vi.clearAllMocks()
   })
 
+  it('heads the dossier with the persona’s name and the simulated-persona marker', async () => {
+    ;(api.getDossier as ReturnType<typeof vi.fn>).mockResolvedValue({
+      run_id: 'r1', agent: 'Ada', persona: 'A cautious ethicist', goals: [], memory_stream: [], beliefs: [],
+      relationships: {}, tokens_in: 0, tokens_out: 0, cost_usd: 0, portrait_b64: null,
+    })
+    render(<Dossier agent={agent} feed={feed} runId="r1" onClose={() => {}} />)
+    const heading = screen.getByText('Ada', { selector: '.cc-disp .cc-pname' })
+    expect(within(heading).getByRole('img', { name: 'simulated persona' })).toBeInTheDocument()
+    await waitFor(() => expect(api.getDossier).toHaveBeenCalled())
+  })
+
   it('renders real persona/goals/messages and an honest not-captured state for cognition-off runs', async () => {
     ;(api.getDossier as ReturnType<typeof vi.fn>).mockResolvedValue({
       run_id: 'r1', agent: 'Ada', persona: 'A cautious ethicist', goals: ['Raise risks'],

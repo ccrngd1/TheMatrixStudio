@@ -26,7 +26,8 @@ describe('PersonaLibrary', () => {
 
   it('labels every choice with its qualification', async () => {
     render(<PersonaLibrary taken={[]} onAdd={vi.fn()} />)
-    expect(await screen.findByText('Finance lead (not yet qualified)')).toBeInTheDocument()
+    // The persona's name is in the choice too, with the plain-text simulated-persona marker an option can hold.
+    expect(await screen.findByText('Finance lead, as (bot) Hana (not yet qualified)')).toBeInTheDocument()
   })
 
   it('adds the pack as a draft with its position, firmness and exit condition', async () => {

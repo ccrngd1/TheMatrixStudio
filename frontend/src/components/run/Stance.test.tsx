@@ -77,7 +77,7 @@ describe('stance surfaces', () => {
     // Ada→Bo, Bo→Ada are one pair; Ada→Cy another. The injected message is not a speaker's turn.
     expect(container.querySelectorAll('.cc-edge')).toHaveLength(2)
     expect(screen.getByText('NO STANCE YET')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /^Bo: 1 turns/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^Bo, simulated persona: 1 turns/ }))
     expect(onOpen).toHaveBeenCalledWith('Bo')
   })
 
@@ -85,13 +85,13 @@ describe('stance surfaces', () => {
     render(<RoomMap order={['Ada', 'Bo']} feed={[msg(1, 'Ada'), msg(2, 'Bo')]} stance={{ Ada: 'support', Bo: 'holding' }}
       next={null} onOpen={() => {}} />)
     expect(screen.getByText('50%')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Bo: 1 turns, holding out/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Bo, simulated persona: 1 turns, holding out/ })).toBeInTheDocument()
   })
 
   it('names a node that accepted with conditions in words', () => {
     render(<RoomMap order={['Ada', 'Bo']} feed={[msg(1, 'Ada'), msg(2, 'Bo')]}
       stance={{ Ada: 'support', Bo: 'conditional' }} next={null} onOpen={() => {}} />)
-    expect(screen.getByRole('button', { name: /Bo: 1 turns, with conditions/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Bo, simulated persona: 1 turns, with conditions/ })).toBeInTheDocument()
     // ▲ alone: Bo's conditional acceptance is not in the centre's figure.
     expect(screen.getByText('50%')).toBeInTheDocument()
   })

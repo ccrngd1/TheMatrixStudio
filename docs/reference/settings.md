@@ -52,12 +52,13 @@ A run makes several kinds of model call. Each is a **role**; `ROLES` in `matrix_
 | `wizard` | `POST /api/personas/suggest` cast drafts | `LITELLM_MODEL` | 1.0 | 16000 |
 | `pressure` | Adaptive-pressure branch mutation (experimental) | `LITELLM_MODEL` | `LITELLM_TEMPERATURE` | 300 |
 | `stance` | Closing-statement stance classifier, run with each summary | `LOW_VARIANCE_MODEL` (pinned) | 0.0 | 3000 |
+| `name_check` | Whether a persona's or consultant's name is a real public figure's, with a parody (`matrix_studio/real_names.py`) | `LOW_VARIANCE_MODEL` (pinned; a run's `model` does not move it) | 0.0 | 200 |
 
 **Resolution order** (`ModelSet.resolve`), first match wins:
 
 1. `config.models[role]`: an explicit per-role choice. An unknown role name is dropped with a logged warning.
-2. `config.model`: the conversation's model, applied to **every** role, including the pinned ones.
-3. `ROLE_DEFAULTS[role]`: `LOW_VARIANCE_MODEL` for `validation`, `speaker_selection`, `naming` and `stance`.
+2. `config.model`: the conversation's model, applied to **every** role, including the pinned ones, except `name_check` (`RUN_INDEPENDENT_ROLES`).
+3. `ROLE_DEFAULTS[role]`: `LOW_VARIANCE_MODEL` for `validation`, `speaker_selection`, `naming`, `stance` and `name_check`.
 4. `LITELLM_MODEL`.
 
 Edge cases:

@@ -2,7 +2,7 @@
 
 Download a run or an ensemble as a full report (Markdown, HTML or PDF), or as a one-page decision brief.
 
-Exports are built from what is stored; they make no model calls. Calibration notes are always left out. A persona's underlying concern is listed with its position when the run stated concerns plainly, and left out of the cast when the run withheld them (hidden agendas, and every run from before 2026-10-02). The summary section lists every authored concern in both modes, labelled "hidden during the run" for a withheld one.
+Exports are built from what is stored; they make no model calls. Calibration notes are always left out. A persona's underlying concern is listed with its position when the run stated concerns plainly, and left out of the cast when the run withheld them (hidden agendas, and every run from before 2026-10-02). The summary section lists every authored concern in both modes, labelled "hidden during the run" for a withheld one. Every persona and consultant name is written "(bot) Ruth", so a reader who never opened the app knows the words are simulated; an operator's injected message is not marked.
 
 ## Prerequisites
 

@@ -3,7 +3,7 @@
 // The Library tab: every saved cast and every archetype starts a run from itself, on the wizard's Cast step,
 // and the route it asks for is one the app can parse back to the same thing.
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { Library } from './Library'
 import { api } from '../api'
 import { hrefOf, parseHash } from '../lib/route'
@@ -45,6 +45,18 @@ describe('Library', () => {
     render(<Library onNavigate={onNavigate} />)
     fireEvent.click(await screen.findByRole('button', { name: /^Add to a new run\s*: Sceptic$/ }))
     expect(onNavigate).toHaveBeenCalledWith({ name: 'new', step: 2, packId: 'test-sceptic' })
+  })
+
+  it('names every saved cast’s personas, and each archetype’s persona, with the simulated-persona marker', async () => {
+    mocked.listPersonaPacks.mockResolvedValue([
+      { id: 'test-sceptic', label: 'Sceptic', summary: 'Doubts every claim.', qualification: 'not yet qualified',
+        persona: { name: 'Mina', persona: 'A sceptic.', goals: [] } },
+    ])
+    render(<Library onNavigate={vi.fn()} />)
+    for (const name of ['Robin', 'Quinn', 'Sam', 'Mina']) {
+      const el = await screen.findByText(name, { selector: '.cc-pname' })
+      expect(within(el).getByRole('img', { name: 'simulated persona' })).toBeInTheDocument()
+    }
   })
 
   it('still offers a blank run', async () => {

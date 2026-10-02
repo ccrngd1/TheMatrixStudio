@@ -26,6 +26,7 @@ import { ConclusionsPanel } from '../components/ConclusionsPanel'
 import { BriefButton } from '../components/BriefButton'
 import { ExportMenu } from '../components/ExportMenu'
 import { ResearchPanel } from '../components/ResearchPanel'
+import { PersonaNames } from '../ui/PersonaName'
 
 // Mirrors LiveView's ENDED_WITH_TRANSCRIPT: a stopped or capped run has a brief too.
 const MEMBER_BRIEF_STATUSES = ['complete', 'stopped', 'capped']
@@ -162,6 +163,7 @@ export function EnsembleView({ ensembleId, onBack, onOpenRun }: Props) {
         : `${Math.round(claimedMsAgo / 60_000)} minute${
             Math.round(claimedMsAgo / 60_000) === 1 ? '' : 's'
           } ago`
+  const ensembleCast = detail.members.find((m) => m.run?.cast_names?.length)?.run?.cast_names ?? []
   const cellOrder = detail.spec.map((c) => c.label)
   // Any group present in the report but missing from the spec still has to render — a
   // hand-made ensemble or an older row could have one, and dropping it would silently hide
@@ -176,6 +178,13 @@ export function EnsembleView({ ensembleId, onBack, onOpenRun }: Props) {
   return (
     <Frame onBack={onBack} title={detail.name || 'Ensemble'}>
       <p className="mb-4 text-sm text-slate-400">{detail.topic}</p>
+      {/* Who is in the room. Every member runs the same cast (a cell may vary the method, never a persona), so
+          the first member that has started says it for all of them. */}
+      {ensembleCast.length > 0 && (
+        <p className="-mt-2 mb-4 text-xs text-slate-400">
+          Cast: <PersonaNames names={ensembleCast} />
+        </p>
+      )}
       {/* Always available: an ensemble's export says which conversations are still running and
           whether a report exists, so an early export is incomplete and SAYS so. */}
       <div className="mb-4 flex flex-wrap items-center gap-3">

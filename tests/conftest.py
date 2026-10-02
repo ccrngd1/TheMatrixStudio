@@ -118,6 +118,31 @@ def mock_analysis_llm(monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def mock_name_check_llm(monkeypatch):
+    """The real-name check (`matrix_studio/real_names.py`) asks a model about every two-word persona
+    name that is not on the curated list, at run creation among other places. No test may make that
+    call for real, so by default every such name is "not a public figure" — which leaves every
+    existing test's cast exactly as it was. Tests of the model path patch `real_names._complete`
+    themselves. The verdict cache is cleared too, so one test's verdicts cannot leak into another's.
+    """
+    import json as _json
+
+    from matrix_studio import real_names
+
+    real_names.clear_cache()
+
+    async def _not_famous(messages, model):
+        return {
+            "content": _json.dumps({"famous": False, "confidence": "high", "who": "", "parody": ""}),
+            "cost_usd": 0.0, "tokens_in": 0, "tokens_out": 0,
+        }
+
+    monkeypatch.setattr("matrix_studio.real_names._complete", _not_famous)
+    yield
+    real_names.clear_cache()
+
+
 # --------------------------------------------------------------------------- #
 # Storage backend for the whole suite (Phase 2/3 swap)
 #

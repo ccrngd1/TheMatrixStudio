@@ -310,6 +310,37 @@ submit, and "nothing it returns is evidence about anything"
 are labelled "not yet qualified" because none has been put through an ensemble
 ([`../../matrix_studio/persona_packs.py`](../../matrix_studio/persona_packs.py)).
 
+## Personas never carry a real person's name
+
+A persona is simulated, and nothing it says is a statement by anybody. Two rules keep that visible
+(the owner's decision of 2026-10-02).
+
+**A real, well-known person's name is replaced.** You can ground a persona in somebody's public
+statements; you cannot give it their name. A line attributed to "Jeff Bezos" in a transcript, an
+export or a brief reads as a quote from Jeff Bezos, and nothing printed beside it undoes that. So a
+persona or consultant named after a real public figure is renamed, before the run exists, to a
+playful and clearly fictional sound-alike ("Jeff Bezos" becomes "Geoff Beesoh", "Werner Vogels"
+becomes "Verner Fogles"), and the same replacement is made wherever that person's full name appears
+in the cast's descriptions, the topic, the assumptions and the scheduled messages, so the prompt never
+says "You are Jeff Bezos" under a fictional name. Documents are left alone: they are evidence, and a
+quoted passage has to match its source. Stored runs are never renamed.
+
+Detection is deterministic first: a curated list of 243 well-known people, matched on full names and
+common variants regardless of case and accents
+([`../../matrix_studio/public_figures.json`](../../matrix_studio/public_figures.json)). A full name
+not on the list gets one cheap model check, cached, which also suggests a parody; the suggestion is
+checked, not trusted. Both halves are conservative on purpose. A single first name ("Ruth", "Jeff")
+never triggers, an ordinary name many people share ("Mike Johnson") is not treated as famous, and only
+a confident verdict counts. A false positive renames somebody's invented character and tells them they
+typed a famous name; a false negative is a name the list can gain
+([`../../matrix_studio/real_names.py`](../../matrix_studio/real_names.py)).
+
+**Every persona name says it is simulated.** Wherever a persona's or consultant's name is shown, a
+small robot glyph sits before it, which a screen reader reads as "simulated persona"; exports and
+briefs write "(bot) Ruth". The marker is display only: the stored name is unchanged and it never
+reaches a prompt, so the personas do not address each other as "(bot) Ruth". An operator's injected
+message carries no marker, because it is a real person speaking.
+
 ## Related
 
 - [How a run works](how-a-run-works.md)

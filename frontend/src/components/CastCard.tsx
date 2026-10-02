@@ -5,6 +5,7 @@
 import type { AgentView } from '../types'
 import { Hex, PanelButton, STANCE_COLOR, type Stance } from '../ui/primitives'
 import { StanceTag } from './run/Stance'
+import { PersonaName, SIMULATED_LABEL } from '../ui/PersonaName'
 
 interface Props {
   agent: AgentView
@@ -20,10 +21,12 @@ interface Props {
 export function CastCard({ agent, active, thinking, onClick, slot = 'a0', stance }: Props) {
   const n = agent.messageCount
   return (
-    <PanelButton className="cc-prow" onClick={onClick} aria-label={`${agent.name}: open dossier`}>
+    <PanelButton className="cc-prow" onClick={onClick} aria-label={`${agent.name}, ${SIMULATED_LABEL}: open dossier`}>
       <Hex name={agent.name} slot={slot} active={active} ring={stance ? STANCE_COLOR[stance] : undefined} />
       <div className="cc-grow min-w-0">
-        <b>{agent.name}</b>
+        <b>
+          <PersonaName name={agent.name} />
+        </b>
         <div className="cc-muted line-clamp-2">{agent.persona || '—'}</div>
         {agent.goals.length > 0 && <div className="cc-muted line-clamp-1">Goals: {agent.goals.join('; ')}</div>}
         <div className="cc-num mt-[3px] text-[10.5px] text-cc-t3">

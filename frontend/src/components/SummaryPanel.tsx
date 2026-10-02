@@ -2,6 +2,7 @@
 import { Fragment, useState } from 'react'
 import { api } from '../api'
 import type { StoredSummary } from '../types'
+import { PersonaName } from '../ui/PersonaName'
 
 interface Props {
   runId: string
@@ -204,7 +205,11 @@ export function SummaryPanel({
               <ul className="space-y-1 text-sm text-slate-300">
                 {p.dissenters.map((d, i) => (
                   <li key={i}>
-                    <span className="font-semibold text-slate-200">{d.speaker || 'Someone'}</span>
+                    {/* `speaker` is a field the analyst fills with a persona's name, so it is rendered as one;
+                        the analyst's prose is never rewritten to add the marker. */}
+                    <span className="font-semibold text-slate-200">
+                      {d.speaker ? <PersonaName name={d.speaker} /> : 'Someone'}
+                    </span>
                     {d.position ? ` — ${d.position}` : ''}
                   </li>
                 ))}

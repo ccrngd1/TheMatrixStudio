@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { AsidesDrawer } from './AsidesDrawer'
 import type { Persona } from '../types'
 
@@ -73,6 +73,45 @@ describe('AsidesDrawer', () => {
       expect(btn).not.toBeDisabled()
       expect(btn).toHaveTextContent(/bring into conversation/i)
     })
+  })
+})
+
+describe('AsidesDrawer persona marker', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('marks a persona as simulated in the thread list, the thread header and on its replies; not the analyst', async () => {
+    const { api } = await import('../api')
+    const thread = {
+      id: 't2', run_id: 'r1', target: 'persona', persona_name: 'Dr. Emily Chen', mode: 'aside', created_at: 0,
+      message_count: 1, total_cost_usd: 0,
+    }
+    ;(api.listThreads as any).mockResolvedValue([
+      thread,
+      { ...thread, id: 't3', target: 'analyst', persona_name: null },
+    ])
+    ;(api.getThread as any).mockResolvedValue({
+      ...thread,
+      messages: [
+        { id: 1, thread_id: 't2', role: 'user', speaker: null, content: 'Why?', tokens_in: 0, tokens_out: 0,
+          cost_usd: 0, created_at: 0 },
+        { id: 2, thread_id: 't2', role: 'target', speaker: 'Dr. Emily Chen', content: 'Because of the risk.',
+          tokens_in: 0, tokens_out: 0, cost_usd: 0, created_at: 0 },
+      ],
+    })
+    render(<AsidesDrawer runId="r1" cast={cast} turnCount={4} onClose={() => {}} />)
+
+    const list = await screen.findByRole('button', { name: /simulated persona\s*Dr\. Emily Chen/ })
+    expect(screen.getByRole('button', { name: /^Analyst/ })).toBeInTheDocument()
+    // The persona options are text, so they carry the plain-text form; the value sent is the plain name.
+    fireEvent.change(screen.getByDisplayValue('Analyst (about the whole run)'), { target: { value: 'persona' } })
+    const option = screen.getByRole('option', { name: '(bot) Dr. Emily Chen' }) as HTMLOptionElement
+    expect(option.value).toBe('Dr. Emily Chen')
+
+    fireEvent.click(list)
+    await waitFor(() => expect(screen.getByText('Because of the risk.')).toBeInTheDocument())
+    const header = screen.getByText(/\(in character\)/)
+    expect(within(header).getByRole('img', { name: 'simulated persona' })).toBeInTheDocument()
+    expect(within(screen.getByText(/· aside/)).getByRole('img', { name: 'simulated persona' })).toBeInTheDocument()
   })
 })
 

@@ -17,6 +17,7 @@ import { SourceViewer } from './SourceViewer'
 import { STANCE_CLASS, StanceWhy } from './run/Stance'
 import { HudCell, HudStrip, Label, Panel, STANCE_LABEL, Sheet, Tag, type Stance } from '../ui/primitives'
 import { Hint } from './Hint'
+import { PersonaName } from '../ui/PersonaName'
 
 const pad = (n: number) => String(n).padStart(2, '0')
 const clip = (s: string, n = 140) => (s.length > n ? `${s.slice(0, n).trimEnd()}…` : s)
@@ -551,7 +552,10 @@ export function Dossier({ agent, feed, runId, stance, basis, onClose }: Props) {
           <ul className="cc-plain">
             {Object.entries(dossier.relationships).map(([other, view]) => (
               <li key={other}>
-                <b className="cc-dz-t1">{other}:</b> <span>{view}</span>
+                <b className="cc-dz-t1">
+                  <PersonaName name={other} />:
+                </b>{' '}
+                <span>{view}</span>
               </li>
             ))}
           </ul>
@@ -601,7 +605,9 @@ export function Dossier({ agent, feed, runId, stance, basis, onClose }: Props) {
           <div className="flex items-center gap-3">
             <AvatarBadge name={agent.name} portrait={agent.portrait} portraitUrl={currentUrl} size={56} />
             <div className="min-w-0">
-              <b className="cc-disp">{agent.name}</b>
+              <b className="cc-disp">
+                <PersonaName name={agent.name} />
+              </b>
               {structured?.role && <p className="cc-sm cc-t2">{structured.role}</p>}
               <p className="cc-muted">
                 {agent.avatarResolved

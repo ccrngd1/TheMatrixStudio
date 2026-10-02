@@ -20,6 +20,7 @@ import {
 import type { Mark, Performer } from './stage'
 import type { VisitorSprite } from './Stage'
 import { Sfx } from './sfx'
+import { PersonaName } from '../ui/PersonaName'
 
 interface Props {
   runRef: string
@@ -456,6 +457,17 @@ function Dialogue({ beat, typed, complete, sprite, avatar, onAdvance }: {
       : beat.kind === 'consultant' ? `${beat.speaker} · consultant${beat.askedBy ? `, answering ${beat.askedBy}` : ''}`
         : beat.kind === 'injected' ? `${beat.speaker} · injected into the conversation`
           : beat.speaker
+  // The same words with the simulated-persona marker on each persona and consultant named. Not on an injected
+  // message, which is the operator's words even under a cast member's name, nor on the research prologue.
+  const shownLabel =
+    beat.kind === 'speech' ? <PersonaName name={beat.speaker} />
+      : beat.kind === 'consultant' ? (
+        <>
+          <PersonaName name={beat.speaker} /> · consultant
+          {beat.askedBy && <>, answering <PersonaName name={beat.askedBy} /></>}
+        </>
+      )
+        : label
   return (
     // Space and Enter do the same from anywhere on the page (see the key handler above).
     <section className={`th-dialogue th-${beat.kind}`} onClick={onAdvance} aria-label="Dialogue: tap to continue">
@@ -469,7 +481,7 @@ function Dialogue({ beat, typed, complete, sprite, avatar, onAdvance }: {
         label={beat.kind === 'prologue' ? 'READ' : beat.kind === 'consultant' ? 'SME' : '\u2709'} />
       <div className="th-text">
         <div className="th-name">
-          <span>{label}</span>
+          <span>{shownLabel}</span>
           <span className="th-turn">
             {beat.kind === 'prologue' && <span className="th-tag">PROLOGUE</span>}
             {beat.shifted && <span className="th-tag th-tag-shift" title="The engine recorded a change of position in this message">SHIFT</span>}

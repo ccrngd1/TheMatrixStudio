@@ -8,6 +8,7 @@ import { describeFork, forkEstimate } from '../lib/forkCost'
 import { ConversationFeed } from './ConversationFeed'
 import { Icon } from '../ui/icons'
 import { HudCell, HudStrip, Label, Panel, Tag, identityColor, identityOf } from '../ui/primitives'
+import { botLabel } from '../ui/PersonaName'
 
 type Css = CSSProperties & Record<`--${string}`, string>
 
@@ -324,7 +325,7 @@ export function Scrubber({ runId, maxTurn, cast, defaultBudget, models = [], def
               <select value={editPersona} onChange={(e) => setEditPersona(e.target.value)}
                 className="cc-field">
                 <option value="">Select persona…</option>
-                {castNames.map((n) => <option key={n} value={n}>{n}</option>)}
+                {castNames.map((n) => <option key={n} value={n}>{botLabel(n)}</option>)}
               </select>
               <textarea placeholder="New goals, one per line" value={editGoals} rows={3}
                 onChange={(e) => setEditGoals(e.target.value)}
@@ -346,7 +347,7 @@ export function Scrubber({ runId, maxTurn, cast, defaultBudget, models = [], def
               <select value={removePersona} onChange={(e) => setRemovePersona(e.target.value)}
                 className="cc-field">
                 <option value="">Select persona to remove…</option>
-                {castNames.map((n) => <option key={n} value={n}>{n}</option>)}
+                {castNames.map((n) => <option key={n} value={n}>{botLabel(n)}</option>)}
               </select>
             )}
 

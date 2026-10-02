@@ -42,6 +42,7 @@ cost a test failure to get right — and the residual risk is handled by logging
 | `wizard` | ≤16000 tokens, drafts a cast | 1.0 | once, pre-run | strong — authoring quality |
 | `pressure` | ≤300 tokens | 0.7 | experimental | follows the conversation model |
 | `stance` | a class and a quoted sentence per persona, ≤3000 tokens | **0.0** | once per summary | the same verdict twice |
+| `name_check` | is this a famous person's full name, and a parody, ≤200 tokens | **0.0** | once per new name, before a run | the same verdict in the form and at creation |
 
 Note what the frequency column does to the cost argument. `summary`, `naming` and `wizard`
 run **once**, so the model chosen for them barely moves the bill — which is why `summary`
@@ -66,6 +67,16 @@ sets `models.validation` explicitly.
 The temperature risk is therefore made visible rather than prevented: `log_plan` writes
 the resolved role→model map once per run, so "why is my gate non-deterministic" is one log
 line away instead of buried in this file.
+
+## The one role a run's `model` does not reach
+
+`name_check` (`matrix_studio/real_names.py`) asks whether a persona's name is a real, famous
+person's. It runs BEFORE a run exists — as the new-run form is filled in, through an endpoint
+that has no run config to read — and again when the run is created, and the two must agree: a
+form that says "this name is fine" followed by a create that renames it is the failure. So it is
+resolved from an explicit `models.name_check` or the default, never from `model`
+(`RUN_INDEPENDENT_ROLES`). The temperature argument applies too: the check is set to 0.0, and a
+conversation model like Sonnet 5 would drop it.
 """
 
 from __future__ import annotations
@@ -94,6 +105,7 @@ ROLES = (
     "wizard",
     "pressure",
     "stance",
+    "name_check",
 )
 
 #: Roles that do NOT inherit the conversation's model, and why each one does not.
@@ -118,7 +130,14 @@ ROLE_DEFAULTS: Dict[str, str] = {
     # matched the hand labels 4/4, identically on three repeats, at ~$0.003 a call; Sonnet 5 also 4/4, at
     # ~$0.013. A smoke check, not a measurement (docs/MOBILE-UI.md §6.1).
     "stance": LOW_VARIANCE_MODEL,
+    # temperature=0.0: "is this a famous person's full name?" must get the same answer every time it
+    # is asked, in the form and at creation. A short JSON reply per name, before any run.
+    "name_check": LOW_VARIANCE_MODEL,
 }
+
+#: Roles a run's conversation `model` does not apply to, because they run before the run exists
+#: (see the module docstring). Only an explicit per-role choice or the default reaches them.
+RUN_INDEPENDENT_ROLES = frozenset({"name_check"})
 
 
 @dataclass(frozen=True)
@@ -174,10 +193,13 @@ class ModelSet:
         So the ROLE_DEFAULTS are the DEPLOYMENT's posture — what you get with nothing
         configured — rather than a veto over what a caller asked for. The temperature risk
         is made visible instead, by `log_plan` writing the resolved map once per run.
+
+        The exception is `RUN_INDEPENDENT_ROLES`: a call made before the run exists cannot
+        be a call the run's `model` was about, so only an explicit per-role choice moves it.
         """
         if role in self.roles:
             return self.roles[role]
-        if self.default:
+        if self.default and role not in RUN_INDEPENDENT_ROLES:
             return self.default
         return ROLE_DEFAULTS.get(role)
 

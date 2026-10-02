@@ -21,6 +21,7 @@ These apply to every route unless the entry says otherwise.
 | Money | US dollars, float. |
 | Error body | Errors raised by a route are `{"detail": "<message>"}`. Request-validation errors (Pydantic) are `422` with `{"detail": [{"type", "loc", "msg", "input", ...}]}`. |
 | Unknown body keys | Refused (`422 extra_forbidden`) only where the model forbids extras: `config` itself, `config.injections[]`, `config.assumptions[]`, `config.dynamic_assumptions` and `config.experts[]`. Elsewhere unknown keys are dropped silently. See [run-config.md](run-config.md). |
+| Real names | A persona or consultant never carries the name of a real, widely known person (`matrix_studio/real_names.py`). Every route that takes a cast — `POST /api/runs`, `POST /api/ensembles`, `POST /api/personas/suggest`, `POST` and `GET /api/cast-templates`, `add_persona` at `POST /api/runs/{ref}/branch` — replaces such a name with a fictional sound-alike before anything is stored, replaces the real name with the same parody in the request's persona and consultant text, topic, assumptions and scheduled messages (not in documents), and lists each replacement in `renamed`: `{from, to, reason: "real public figure", source: "list" | "model", role: "persona" | "consultant"}`. A single first name or surname never matches. [`POST /api/personas/check-names`](#post-apipersonascheck-names) asks the same question without creating anything. |
 | Local vs deployed | Where behaviour differs, the entry says which. Each deployed behaviour is selected by its own variable, all set by the CDK stack: `TURN_LOOP_ARN` (runs, branches, resumes), `ASIDE_FUNCTION` (aside replies and requested summaries), `RESEARCH_FUNCTION` (ensemble research), `ENSEMBLE_REPORT_FUNCTION` (ensemble reports). See [settings.md](settings.md). |
 
 ### Status codes used
@@ -52,6 +53,7 @@ These apply to every route unless the entry says otherwise.
 | `POST` | `/api/runs/forecast` | [Models, names and forecasts](#models-names-and-forecasts) |
 | `POST` | `/api/ensembles/forecast` | [Models, names and forecasts](#models-names-and-forecasts) |
 | `POST` | `/api/personas/suggest` | [Cast templates and persona packs](#cast-templates-and-persona-packs) |
+| `POST` | `/api/personas/check-names` | [Cast templates and persona packs](#cast-templates-and-persona-packs) |
 | `GET` | `/api/persona-packs` | [Cast templates and persona packs](#cast-templates-and-persona-packs) |
 | `GET` | `/api/cast-templates` | [Cast templates and persona packs](#cast-templates-and-persona-packs) |
 | `POST` | `/api/cast-templates` | [Cast templates and persona packs](#cast-templates-and-persona-packs) |
@@ -176,20 +178,21 @@ The model strings the deployment allows, and what each model role resolves to wi
 | `models` | array of `{id, label}` | `AVAILABLE_MODELS`, in order. `label` is a friendly name for known ids, else the id's last path segment. |
 | `roles` | object, role to model | What each role uses for a run that sets neither `model` nor `models` ([settings.md](settings.md) has the role table). |
 | `overridable_roles` | array of strings | Keys accepted in `config.models`. |
-| `roles_pinned_by_default` | array of strings | Roles whose default is not the conversation model: `naming`, `speaker_selection`, `stance`, `validation`. |
+| `roles_pinned_by_default` | array of strings | Roles whose default is not the conversation model: `name_check`, `naming`, `speaker_selection`, `stance`, `validation`. |
 
 ```json
 {
   "default": "bedrock/global.anthropic.claude-sonnet-5",
   "models": [{"id": "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0", "label": "Haiku 4.5"}],
   "roles": {"voice": "bedrock/global.anthropic.claude-sonnet-5", "validation": "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0"},
-  "overridable_roles": ["voice", "speaker_selection", "validation", "reflection", "summary", "aside", "naming", "wizard", "pressure", "stance"],
-  "roles_pinned_by_default": ["naming", "speaker_selection", "stance", "validation"]
+  "overridable_roles": ["voice", "speaker_selection", "validation", "reflection", "summary", "aside", "naming", "wizard", "pressure", "stance", "name_check"],
+  "roles_pinned_by_default": ["name_check", "naming", "speaker_selection", "stance", "validation"]
 }
 ```
 
 Edge cases:
 - `roles.naming` and `roles.wizard` are reported, but name suggestion and persona drafting call `model or LITELLM_MODEL` directly and do not consult the role table.
+- `name_check` is the one role a run's `model` does not move: only `config.models.name_check` does ([run-config.md](run-config.md#configmodels-and-configmodel)).
 
 ### `GET /api/name/suggest`
 
@@ -271,7 +274,7 @@ What `POST /api/ensembles` with the same body would cost: every planned member p
 
 Draft a cast of structured personas from a short brief. Returns a draft; starts nothing.
 
-- **Auth:** none at the app level (no identity is read; the call is not charged to anyone's monthly spend).
+- **Auth:** caller. The drafting call is not charged to the caller's monthly spend; the real-name check on the draft is.
 - **Success:** `200`.
 
 | Body field | Type | Required | Default | Constraints |
@@ -284,10 +287,47 @@ Draft a cast of structured personas from a short brief. Returns a draft; starts 
 |---|---|---|
 | `cast` | array | Each `{name, persona, goals, structured}`, where `structured` is `{role, background.formative_events[], preferences{optimises_for, dismisses, persuaded_by}, viewpoints[]}`. Entries that would fail `StructuredPersona` validation are dropped. Names are de-duplicated case-insensitively. |
 | `count` | integer | Length of `cast`; can be below the requested count. |
+| `renamed` | array | Real public figures' names this request carried, and what each became: `{from, to, reason, source, role}` (see [Conventions](#conventions)). Empty when none. The draft asks for first names only, so this is usually empty. |
 
 | Status | When |
 |---|---|
 | `502` | The model call failed, returned nothing usable, or the brief was blank. `detail` names which. |
+
+### `POST /api/personas/check-names`
+
+Which of these names are real, widely known people, and what each would become. Creates nothing. The new-run form calls it when a name field loses focus and when a cast is filled in one go, so it can show the switch on the persona; the create routes apply the same check regardless.
+
+- **Auth:** caller and groups. Model calls are charged to the caller's monthly spend.
+- **Success:** `200`.
+
+| Body field | Type | Required | Default | Constraints |
+|---|---|---|---|---|
+| `names` | array of strings | no | `[]` | At most 40. Persona names. |
+| `consultants` | array of strings | no | `[]` | At most 10. Consultant names (only `role` differs). |
+
+| Response field | Type | Notes |
+|---|---|---|
+| `renamed` | array | One `{from, to, reason, source, role}` per name that must change, in request order. A name that may stay is not listed. |
+
+How a name is checked, first match wins:
+
+1. **The curated list** (`matrix_studio/public_figures.json`, 243 people): full names and common variants, case- and accent-insensitive, ignoring a leading title (`Dr.`, `Sir`, `President`), a trailing `Jr.` or `III`, middle initials and anything after a comma or in brackets. Free. `source: "list"`; `to` is the hand-written parody.
+2. **The model check**, for two to six real words not on the list: one `name_check` call (Haiku 4.5, temperature 0, a JSON schema), cached in the process. Only `famous: true` at `high` confidence counts; the model is told ordinary names shared by many people are not famous. Its suggested parody is used only if it is spelled differently in every word, not too close to the real spelling, not unkind, not on the list and — asked again — not famous itself; otherwise a deterministic respelling is used. `source: "model"`.
+
+```json
+{"names": ["Jeff Bezos", "Ruth", "Priya Okonjo"]}
+```
+
+```json
+{"renamed": [{"from": "Jeff Bezos", "to": "Geoff Beesoh", "reason": "real public figure",
+              "source": "list", "role": "persona"}]}
+```
+
+Edge cases:
+- A single word (`Ruth`, `Jeff`, `Bezos`) never matches and never costs a model call.
+- A failed or unreadable model reply counts as not famous and is logged. A failed call is not cached, so the next request asks again.
+- Over the monthly cap (or with spend unreadable), only the curated list is applied: the model check is skipped rather than charged.
+- More than 40 names is a `422`. A name longer than 200 characters is clipped, which cannot change its verdict.
 
 ### `GET /api/persona-packs`
 
@@ -310,7 +350,7 @@ The caller's saved casts, most recently saved first.
 
 | Response field | Type | Notes |
 |---|---|---|
-| `templates[]` | array | `{name, description, personas, updated_at}`; `personas` is the list of persona names. |
+| `templates[]` | array | `{name, description, personas, updated_at}`; `personas` is the list of persona names, with a curated real name shown as its parody (the list only; loading the template runs the full check). |
 
 ### `POST /api/cast-templates`
 
@@ -330,6 +370,7 @@ Save a cast under a name.
 |---|---|---|
 | `name`, `description`, `cast`, `created_at`, `updated_at` | | The stored template. `created_at` is kept from the template it replaced. |
 | `dropped_documents` | integer | How many `document_texts` and `documents` entries were removed. Templates never store document text. |
+| `renamed` | array | Real names replaced before saving (see [Conventions](#conventions)); the template is stored with the parodies. |
 
 | Status | When |
 |---|---|
@@ -343,7 +384,7 @@ Save a cast under a name.
 ### `GET /api/cast-templates/{name}`
 
 - **Auth:** caller.
-- **Success:** `200` with `{name, description, cast, created_at, updated_at}`.
+- **Success:** `200` with `{name, description, cast, created_at, updated_at, renamed}`. The cast is checked on the way out, so a template saved before the check existed loads with its real names replaced and listed in `renamed`; the stored template is not changed.
 - **Errors:** `404 No template named '<name>'`.
 
 ### `DELETE /api/cast-templates/{name}`
@@ -364,7 +405,7 @@ Start a conversation. Returns at once; turns are generated in the background.
 - **Body:** `CreateRunModel`: `topic` (string, required), `cast` (array, required, at least one), `config` (object, default `{}`), `model` (string), `name` (string), `description` (string), `summary` (object). Every field is in [run-config.md](run-config.md).
 - **Success:** `201`.
 
-Checks, in order: request validation (`422`); at least one persona (`422 At least one persona is required`); every knowledge base bound at run, persona or consultant level is readable by the caller (`422 These knowledge bases do not exist or are not shared with you: <ids>`); the monthly cost cap (`402`).
+Checks, in order: request validation (`422`); at least one persona (`422 At least one persona is required`); every knowledge base bound at run, persona or consultant level is readable by the caller (`422 These knowledge bases do not exist or are not shared with you: <ids>`); the monthly cost cap (`402`). Then real names are replaced (see [Conventions](#conventions)), and the run is stored with the replacements; the model calls that takes are charged to the caller's monthly spend.
 
 | Response field | Type | Notes |
 |---|---|---|
@@ -375,6 +416,7 @@ Checks, in order: request validation (`422`); at least one persona (`422 At leas
 | `name_source` | string | `"user"`, `"llm"` or `"fallback"`. |
 | `topic` | string | |
 | `status` | string | `"pending"` deployed (the state machine flips it to `running`), `"running"` locally. |
+| `renamed` | array | Real public figures' names this request carried, and what each became: `{from, to, reason, source, role}` (see [Conventions](#conventions)). Empty when none. |
 
 | Status | When |
 |---|---|
@@ -394,7 +436,7 @@ Content-Type: application/json
 ```json
 {"run_id": "<run-id>", "name": "quiet-lantern", "description": "Weighing weekend opening hours",
  "slug": "quiet-lantern", "name_source": "llm", "topic": "Should the town library open on Sundays?",
- "status": "pending"}
+ "status": "pending", "renamed": []}
 ```
 
 Edge cases:
@@ -547,7 +589,7 @@ Mutation kinds (`mutation.kind`) and their fields. Fields not listed for a kind 
 | `continue` | `add_budget` (int, `>= 1`) | | Generate exactly `add_budget` more turns from the fork. |
 | `inject_message` | `speaker`, `content` (non-blank strings) | `source` (string, default `"user"`), `add_budget` (int, `>= 1`) | Adds a message as turn `from_turn + 1` (an `agent.response` with `injected: true`, no cost), then continues. Without `add_budget` the budget is the inherited one plus 1. |
 | `edit_goal` | `persona_name`, `goals` (array of strings) | | Replaces that persona's goals. |
-| `add_persona` | `name`, `persona` | `goals` | Adds a persona at the fork. |
+| `add_persona` | `name`, `persona` | `goals` | Adds a persona at the fork. A real public figure's name is replaced first, as at run creation, and reported in `renamed`. |
 | `remove_persona` | `persona_name` (or `name`) | | Removes a persona; the last persona cannot be removed. |
 | `promote_aside` | `thread_id`, `message_id` (int) | | Injects an aside thread message as an `inject_message` with `source: "aside"`, spoken by the message's speaker. |
 | `replace_assumption` | `assumption_id` (e.g. `"A3"`), `statement` (max 300 chars) | `basis` (max 300 chars) | Emits `assumption.made` for that id at the fork. |
@@ -562,6 +604,7 @@ Mutation kinds (`mutation.kind`) and their fields. Fields not listed for a kind 
 | `max_messages` | integer | The branch's stored budget: the parent's, or `from_turn + parent budget` when the fork is at or past it. |
 | `model` | string or null | The branch's generation model; `null` means the settings default. |
 | `mutation` | object or null | The validated mutation as stored in `config.branch_mutation`. |
+| `renamed` | array | For `add_persona`, the added persona's real name and its replacement; otherwise empty. |
 
 | Status | When |
 |---|---|
@@ -1175,6 +1218,7 @@ All cells together may have at most 12 members. The same preflight as `POST /api
 | `spec` | array | The cells as stored: `{label, n, overrides}`. |
 | `members` | array | Members started: `{run_id, cell, index, name}`. Empty while researching. Member names are `<ensemble-name>-<cell><index>`. |
 | `failed` | array | Members that could not be created: `{run_id, cell, index, error}`. |
+| `renamed` | array | Real public figures' names this request carried, and what each became: `{from, to, reason, source, role}` (see [Conventions](#conventions)). Empty when none. Checked once, for the parent; every member carries the same names. |
 
 | Status | When |
 |---|---|
@@ -1295,6 +1339,8 @@ Edge cases:
 ## Exports and briefs
 
 All four are downloads (`Content-Disposition: attachment`), read through the caller's partition, and make no model call.
+
+Every persona and consultant name in a run's export and brief is written `(bot) <name>`: the cast headings, each transcript speaker, and the summary fields that are a name (a dissenter's `speaker`, an evidence row's `asked_by`, a key idea's `proposed_by`) when they name somebody in the cast. An operator's injected message is not marked, and the analyst's prose is never rewritten (`matrix_studio/persona_label.py`). The stored names are unchanged.
 
 ### `GET /api/runs/{ref}/export`
 

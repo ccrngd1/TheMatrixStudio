@@ -12,6 +12,7 @@ import type {
   KnowledgeBase,
   KnowledgeBaseDetail,
   Quote,
+  Renamed,
   ResearchRecord,
   RunDetail,
   RunSummary,
@@ -215,6 +216,8 @@ export interface CreateRunResponse {
   name_source: string | null
   topic: string
   status: string
+  /** Persona or consultant names the server switched because they were a real public figure's. */
+  renamed?: Renamed[]
 }
 
 /**
@@ -291,6 +294,11 @@ export interface CastTemplate {
   cast: CreateRunBody['cast']
   created_at: number | null
   updated_at: number | null
+  /**
+   * Names switched on the way in or out because they were a real public figure's. The `cast` above already
+   * carries the fictional names; this says which, so the form can tell the user.
+   */
+  renamed?: Renamed[]
 }
 
 export type CreateEnsembleBody = Omit<CreateRunBody, 'config'> & {
@@ -427,6 +435,8 @@ export interface CreateEnsembleResponse {
   spec: EnsembleCell[]
   members: { run_id: string; cell: string; index: number; name?: string }[]
   failed: { run_id: string; cell: string; index: number; error: string }[]
+  /** Persona or consultant names the server switched because they were a real public figure's. */
+  renamed?: Renamed[]
 }
 
 /**
@@ -627,9 +637,22 @@ export const api = {
    * the operator edits in the form; it never starts a run by itself.
    */
   suggestPersonas: (brief: string, count: number, model?: string) =>
-    jsonFetch<{ cast: SuggestedPersona[]; count: number }>('/api/personas/suggest', {
+    jsonFetch<{ cast: SuggestedPersona[]; count: number; renamed?: Renamed[] }>('/api/personas/suggest', {
       method: 'POST',
       body: JSON.stringify({ brief, count, model }),
+    }),
+
+  /**
+   * Which of these names belong to a real, well-known public figure, and the fictional name each persona gets
+   * instead. Read-only: nothing is stored. The form asks as names are entered so the user sees the switch where
+   * they typed; the server applies the same check when a run is created, so a failed call here never matters
+   * for safety.
+   */
+  checkNames: (names: string[], signal?: AbortSignal) =>
+    jsonFetch<{ renamed: Renamed[] }>('/api/personas/check-names', {
+      method: 'POST',
+      body: JSON.stringify({ names }),
+      signal,
     }),
 
   suggestName: (topic: string) =>

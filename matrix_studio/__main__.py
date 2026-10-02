@@ -68,6 +68,15 @@ async def run_from_file(
         logger.error(f"Failed to load request file: {e}")
         return 1
 
+    # A persona never carries a real public figure's name (matrix_studio/real_names.py), on the CLI as
+    # through the API. Said on stderr, so the JSON on stdout is still only the result.
+    from matrix_studio import real_names
+
+    request, screening = await real_names.screen_request(request)
+    for r in screening.renamed:
+        logger.warning("'%s' is a real public figure, so this %s is '%s'. Personas never use real "
+                       "people's names.", r.original, r.role, r.replacement)
+
     # Override max_messages if specified
     if max_messages is not None:
         if "config" not in request:
@@ -92,10 +101,13 @@ async def run_from_file(
     if not no_db:
         db = Database().for_owner(LOCAL_USER_SUB)
         await db.connect()
+        await real_names.record_spend(db, LOCAL_USER_SUB, screening.cost_usd)
 
     try:
         # Run simulation
         result = await run_simulation(request, db=db)
+        if screening.renamed:
+            result["renamed"] = screening.as_list()
 
         # Write output
         if output_path:

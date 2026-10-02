@@ -6,6 +6,7 @@
  * share them without importing the component — a lib importing a view would drag React
  * into unit tests that have no need of it.
  */
+import type { Renamed } from '../types'
 
 export interface DraftDoc {
   title: string
@@ -43,6 +44,11 @@ export interface DraftPersona {
    * working mid-run.
    */
   knowledgeBases: string[]
+  /**
+   * Set when this persona's name was switched because it was a real public figure's: the form shows why, on
+   * this persona, while the name is still the fictional one it was given. Form state only — never sent.
+   */
+  renamed?: Renamed
 }
 
 export function blankPersona(): DraftPersona {

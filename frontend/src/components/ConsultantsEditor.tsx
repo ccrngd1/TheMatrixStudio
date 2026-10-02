@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 import { Hint } from './Hint'
 import { KbPicker } from './KbPicker'
+import { RenamedNotice } from './RenamedNotice'
+import { showsRenamed } from '../lib/realNames'
+import type { Renamed } from '../types'
+import { BotMark } from '../ui/PersonaName'
 
 export interface DraftConsultant {
   name: string
@@ -8,6 +12,8 @@ export interface DraftConsultant {
   knowledgeBases: string[]
   docTitle: string
   docText: string
+  /** Set when the name was switched because it was a real public figure's (`RenamedNotice`). Never sent. */
+  renamed?: Renamed
 }
 
 export const blankConsultant = (): DraftConsultant => ({
@@ -33,12 +39,17 @@ interface Props {
   onChange: (list: DraftConsultant[]) => void
   limit: number
   onLimit: (n: number) => void
+  /**
+   * Which consultant's name field has focus (`null` on blur). The form checks names for a real public figure's
+   * on blur, not while one is being typed: switching a name under the cursor mid-word would be hostile.
+   */
+  onNameFocus?: (i: number | null) => void
 }
 
 // Experts outside the room (matrix_studio/experts.py). A persona asks one a specific question; the
 // consultant answers only from the sources given here, citing them, or says the answer is not in
 // them. A consultant never takes a turn or holds a position.
-export function ConsultantsEditor({ consultants, onChange, limit, onLimit }: Props) {
+export function ConsultantsEditor({ consultants, onChange, limit, onLimit, onNameFocus }: Props) {
   const update = (i: number, patch: Partial<DraftConsultant>) =>
     onChange(consultants.map((c, n) => (n === i ? { ...c, ...patch } : c)))
   const input = 'rounded border border-matrix-border bg-matrix-bg p-2 text-sm'
@@ -78,9 +89,14 @@ export function ConsultantsEditor({ consultants, onChange, limit, onLimit }: Pro
           {consultants.map((c, i) => (
             <div key={i} className="space-y-2 rounded border border-matrix-border p-3">
               <div className="flex gap-2">
+                {/* A consultant is simulated too. The input cannot hold the marker, so it sits beside it. */}
+                <BotMark className="cc-botmark-field" />
                 <input
                   value={c.name}
-                  onChange={(e) => update(i, { name: e.target.value })}
+                  // Editing the name drops the notice: it was about the name that is no longer there.
+                  onChange={(e) => update(i, { name: e.target.value, renamed: undefined })}
+                  onFocus={() => onNameFocus?.(i)}
+                  onBlur={() => onNameFocus?.(null)}
                   placeholder="Consultant name"
                   maxLength={60}
                   className={`w-44 ${input}`}
@@ -100,6 +116,7 @@ export function ConsultantsEditor({ consultants, onChange, limit, onLimit }: Pro
                   ✕
                 </button>
               </div>
+              {showsRenamed(c) && <RenamedNotice renamed={c.renamed!} kind="consultant" />}
               <KbPicker
                 level="persona"
                 personaName={c.name || 'this consultant'}

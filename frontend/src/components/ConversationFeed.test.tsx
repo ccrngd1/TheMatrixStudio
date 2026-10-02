@@ -146,7 +146,8 @@ describe('ConversationFeed consultants', () => {
     ]
     render(<ConversationFeed feed={msg} agents={agents} activeSpeaker={null} thinking={false} />)
     expect(screen.getByText('consultant')).toBeInTheDocument()
-    expect(screen.getByText(/Dana asked: “What does it cost\?”/)).toBeInTheDocument()
+    const asked = screen.getByText(/asked: “What does it cost\?”/)
+    expect(asked).toHaveTextContent('Dana asked: “What does it cost?”')
     // Two messages on one turn, but the consultant is not a round.
     expect(screen.queryByText(/spoke at once/)).not.toBeInTheDocument()
   })
