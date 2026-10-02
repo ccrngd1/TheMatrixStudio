@@ -435,6 +435,8 @@ def _cases(doc_id: str, thread_id: str) -> Dict[Tuple[str, str], Dict[str, Any]]
         ("POST", "/api/runs/{ref}/resume"):
             case("/api/runs/alpha-run/resume", json={}),
         ("POST", "/api/runs/{ref}/stop"): case("/api/runs/alpha-run/stop"),
+        ("POST", "/api/runs/{ref}/hidden"):
+            case("/api/runs/alpha-run/hidden", json={"hidden": True}),
         ("GET", "/api/runs/{ref}/summary"): case("/api/runs/alpha-run/summary"),
         ("POST", "/api/runs/{ref}/summary"):
             case("/api/runs/alpha-run/summary", json={}),

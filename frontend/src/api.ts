@@ -765,6 +765,16 @@ export const api = {
       { method: 'POST' },
     ),
 
+  /**
+   * Leave a run out of the Runs list, or put it back. Only the flag changes: nothing is deleted. Callers go
+   * through `lib/hiddenRuns.ts`, which also keeps the cached list in step.
+   */
+  setRunHidden: (ref: string, hidden: boolean) =>
+    jsonFetch<{ run_id: string; hidden: boolean }>(
+      `/api/runs/${encodeURIComponent(ref)}/hidden`,
+      { method: 'POST', body: JSON.stringify({ hidden }) },
+    ),
+
   // ------------------------------ Knowledge bases ----------------------------- //
   //
   // Two authorisation questions server-side, and the client does NOT re-implement
