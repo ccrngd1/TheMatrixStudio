@@ -31,6 +31,9 @@ export const ICONS = {
   save: '<path d="M5 4h11l3 3v13H5z"/><path d="M8 4v5h7M8 20v-6h8v6"/>',
   model: '<rect x="5" y="5" width="14" height="14"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/>',
   import: '<path d="M12 4v10M8 10l4 4 4-4"/><path d="M5 14v6h14v-6"/>',
+  // Not in the prototype: drawn for hiding a run from the Runs list, on the same grid and stroke.
+  eye: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/>',
+  eyeOff: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/><path d="M4 4l16 16"/>',
 } as const
 
 export type IconName = keyof typeof ICONS

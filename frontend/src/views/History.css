@@ -1,0 +1,22 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* The Runs screen's hide controls (History.tsx). Two classes where a rule overrides command.css: this file
+   loads before it (main.tsx imports App first), where a tie would lose. */
+
+/* A run card and its hide control: a sibling of the card button, laid over the card's top-right corner, so the
+   card keeps its full width (see RunCard). Only the first line, name and status, makes room for it: 44 px from
+   the card's edge, less the card's own 14 px of padding. */
+.cc-runitem { position:relative; min-width:0; }
+.cc-runitem .cc-runhead { padding-right:30px; }
+/* 44 px, the tap floor (docs/MOBILE-UI.md §2 rule 6), where the shared `.cc-icon` is 36. Always drawn: a control
+   that appeared on hover would not exist on a phone. */
+.cc-icon.cc-runhide { position:absolute; top:0; right:0; width:44px; height:44px; }
+
+/* The filter chips are tap targets on a phone too, and `.cc-chip` alone is about 24 px tall. */
+.cc-runs-filters .cc-chip { min-height:44px; padding:0 12px; }
+
+/* Says in words that the list is the hidden runs, so the view is never mistaken for a list that lost the rest. */
+.cc-runs-hidden-note { display:flex; align-items:flex-start; gap:8px; margin:0; padding:10px 12px;
+    font-size:13px; line-height:1.4; color:var(--t2); border:1px solid var(--line-hi);
+    background:color-mix(in srgb,var(--panel-hi) 70%,transparent); }
+.cc-runs-hidden-note svg { margin-top:2px; color:var(--accent); }
+.cc-runs-hidden-note b { color:var(--t1); font-weight:600; }

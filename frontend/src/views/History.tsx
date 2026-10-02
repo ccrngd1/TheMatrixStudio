@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-import { useEffect, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { api, type EnsembleSummary } from '../api'
 import type { RunSummary } from '../types'
 import { isStalled } from '../lib/runStatus'
@@ -9,6 +9,8 @@ import {
 } from '../ui/primitives'
 import { StanceCounts } from '../components/run/Stance'
 import { cached, remember } from '../lib/listCache'
+import { RUNS_KEY, listStamp, markHidden, setRunHidden, withSentHides } from '../lib/hiddenRuns'
+import './History.css'
 
 // How long a load may take before the view says why it is still waiting.
 //
@@ -18,10 +20,13 @@ import { cached, remember } from '../lib/listCache'
 // list was simply not on screen for 25 seconds, which reads as a broken app. Naming the
 // cause is the difference between waiting and reloading.
 const SLOW_AFTER_MS = 3000
-const RUNS_KEY = 'runs'
 /** The run list route's cap (`list_runs(limit=200)`): past it, older runs are not in the list to search. */
 const LIST_LIMIT = 200
 const ENSEMBLES_KEY = 'ensembles'
+// Whether the Hidden view is on. Kept for the life of the page, like the lists, and NOT in storage like the
+// folded sections: opening a hidden run to check it and backing out should land back in the Hidden view, but a
+// later visit that opened on hidden runs only would look like a list that had lost everything else.
+const HIDDEN_VIEW_KEY = 'runs.hiddenOnly'
 
 interface Props {
   onOpen: (runId: string) => void
@@ -46,6 +51,11 @@ export function History({ onOpen, onNew, onKnowledgeBases, onOpenEnsemble }: Pro
   const [ensembles, setEnsembles] = useState<EnsembleSummary[]>(() => cached<EnsembleSummary[]>(ENSEMBLES_KEY) ?? [])
   const [q, setQ] = useState('')
   const [branchesOnly, setBranchesOnly] = useState(false)
+  // Hidden runs are in `runs` like any other (the server returns them all), and left out of everything below
+  // unless this is on, when they are ALL that is shown.
+  const [hiddenOnly, setHiddenOnlyState] = useState(() => cached<boolean>(HIDDEN_VIEW_KEY) ?? false)
+  const setHiddenOnly = (on: boolean) => setHiddenOnlyState(remember(HIDDEN_VIEW_KEY, on))
+  const [hideError, setHideError] = useState<string | null>(null)
   const [loading, setLoading] = useState(() => cached(RUNS_KEY) === undefined)
   // A background refresh of a list already on screen: no spinner, the rows stay put.
   const [refreshing, setRefreshing] = useState(false)
@@ -59,9 +69,12 @@ export function History({ onOpen, onNew, onKnowledgeBases, onOpenEnsemble }: Pro
     else setLoading(true)
     setSlow(false)
     const slowTimer = setTimeout(() => setSlow(true), SLOW_AFTER_MS)
+    const stamp = listStamp()
     api
       .listRuns(query)
-      .then((rows) => {
+      .then((answer) => {
+        // A hide sent while this was in flight is not in the answer; see lib/hiddenRuns.ts.
+        const rows = withSentHides(answer, stamp)
         setRuns(query ? rows : remember(RUNS_KEY, rows))
         setError(null)
       })
@@ -96,9 +109,10 @@ export function History({ onOpen, onNew, onKnowledgeBases, onOpenEnsemble }: Pro
     if (!q || !listFull) return
     let live = true
     const id = setTimeout(() => {
+      const stamp = listStamp()
       api
         .listRuns(q)
-        .then((rows) => live && setServerHits(rows))
+        .then((rows) => live && setServerHits(withSentHides(rows, stamp)))
         .catch(() => live && setServerHits(null)) // the client-side matches stand
     }, 250)
     return () => {
@@ -163,9 +177,16 @@ export function History({ onOpen, onNew, onKnowledgeBases, onOpenEnsemble }: Pro
   const listed = new Set(ensembles.map((e) => e.ensemble_id))
   const membersOf = new Map<string, RunSummary[]>()
   const individual: RunSummary[] = []
-  const pool = q ? (serverHits ?? runs.filter((r) => runMatches(r, q))) : runs
+  // The runs this view is about: the visible ones, or with the Hidden view on, only the hidden ones. Everything
+  // below — the HUD, the sections, the nested members, search and the branches filter — counts from here.
+  const inView = (r: RunSummary) => Boolean(r.hidden) === hiddenOnly
+  const viewed = runs.filter(inView)
+  const hiddenCount = runs.filter((r) => r.hidden).length
+  const pool = (q ? (serverHits ?? runs.filter((r) => runMatches(r, q))) : runs).filter(inView)
   for (const r of pool) {
-    if (onOpenEnsemble && r.ensemble_id && listed.has(r.ensemble_id)) {
+    // The Hidden view is one flat list: it is there to find runs and show them again, and a run folded under
+    // its ensemble would be one more tap from being found. So nothing nests, and ensembles are not listed.
+    if (!hiddenOnly && onOpenEnsemble && r.ensemble_id && listed.has(r.ensemble_id)) {
       const list = membersOf.get(r.ensemble_id) ?? []
       list.push(r)
       membersOf.set(r.ensemble_id, list)
@@ -182,30 +203,71 @@ export function History({ onOpen, onNew, onKnowledgeBases, onOpenEnsemble }: Pro
     )
   }
 
-  // While searching, an ensemble is shown if it matches itself or holds a run that does.
-  const shownEnsembles = q
-    ? ensembles.filter(
-        (e) =>
-          membersOf.has(e.ensemble_id) ||
-          [e.name, e.description, e.topic].some((f) => (f ?? '').toLowerCase().includes(q.trim().toLowerCase())),
-      )
-    : ensembles
+  // While searching, an ensemble is shown if it matches itself or holds a run that does. An ensemble whose
+  // runs are all hidden stays listed (ensembles are not hidden), with nothing to unfold.
+  const shownEnsembles = hiddenOnly
+    ? []
+    : q
+      ? ensembles.filter(
+          (e) =>
+            membersOf.has(e.ensemble_id) ||
+            [e.name, e.description, e.topic].some((f) => (f ?? '').toLowerCase().includes(q.trim().toLowerCase())),
+        )
+      : ensembles
 
   // §4.1: live runs first, then everything that has stopped; branches are a filter, not a section.
   const shown = branchesOnly ? individual.filter((r) => r.parent_run_id) : individual
   const liveRuns = shown.filter((r) => isLiveStatus(r))
   const doneRuns = shown.filter((r) => !isLiveStatus(r))
   const weekAgo = Date.now() / 1000 - 7 * 86400
-  const spend7d = runs.filter((r) => (r.created_at ?? 0) >= weekAgo).reduce((n, r) => n + (r.total_cost_usd ?? 0), 0)
-  const liveCount = runs.filter((r) => isLiveStatus(r)).length
+  const spend7d = viewed.filter((r) => (r.created_at ?? 0) >= weekAgo).reduce((n, r) => n + (r.total_cost_usd ?? 0), 0)
+  const liveCount = viewed.filter((r) => isLiveStatus(r)).length
   const branchCount = individual.filter((r) => r.parent_run_id).length
 
+  // Focus has to go somewhere when the control that had it leaves with its card: to the next card's, else the
+  // previous one's, else the Hidden chip. Left alone it falls to the document, and a keyboard user hiding runs
+  // one after another would start again from the top of the page each time.
+  const rootRef = useRef<HTMLDivElement>(null)
+  const focusAfter = useRef<string | null | undefined>(undefined)
+  const hideControls = () => [...(rootRef.current?.querySelectorAll<HTMLElement>('[data-hide-run]') ?? [])]
+  useLayoutEffect(() => {
+    const target = focusAfter.current
+    if (target === undefined) return
+    focusAfter.current = undefined
+    const next = hideControls().find((el) => el.dataset.hideRun === target)
+    ;(next ?? rootRef.current?.querySelector<HTMLElement>('[data-hidden-chip]'))?.focus()
+  })
+
+  const toggleHidden = (r: RunSummary, control: HTMLElement) => {
+    const hidden = !r.hidden
+    const all = hideControls()
+    const at = all.indexOf(control)
+    focusAfter.current = (all[at + 1] ?? all[at - 1])?.dataset.hideRun ?? null
+    // At once, and put back if the server refuses: the run leaves the list before the request returns.
+    const mark = (value: boolean) => {
+      setRuns((rows) => markHidden(rows, r.run_id, value))
+      setServerHits((hits) => (hits ? markHidden(hits, r.run_id, value) : hits))
+    }
+    setHideError(null)
+    mark(hidden)
+    setRunHidden(r.run_id, hidden).catch((e) => {
+      mark(!hidden)
+      const what = hidden ? `hide ${nameOf(r)}` : `put ${nameOf(r)} back in the list`
+      setHideError(`Could not ${what}: ${e instanceof Error ? e.message : String(e)}`)
+    })
+  }
+
   return (
-    <div className="flex flex-col gap-2.5">
+    <div ref={rootRef} className="flex flex-col gap-2.5">
+      {/* The runs on view: the hidden ones are not counted, nor their spend, until the Hidden view shows them. */}
       <HudStrip className="cc-stats">
         <HudCell label="Live now" value={pad(liveCount)} sub={liveCount ? 'streaming' : 'none running'} />
-        <HudCell label="Finished" value={pad(runs.filter((r) => r.status === 'complete').length)} sub="complete" />
-        <HudCell label="Spend · 7 days" value={`$${spend7d.toFixed(2)}`} sub={`${runs.length} runs listed`} />
+        <HudCell label="Finished" value={pad(viewed.filter((r) => r.status === 'complete').length)} sub="complete" />
+        <HudCell
+          label="Spend · 7 days"
+          value={`$${spend7d.toFixed(2)}`}
+          sub={`${viewed.length} ${hiddenOnly ? 'hidden' : 'runs listed'}`}
+        />
       </HudStrip>
 
       <div className="cc-searchbox">
@@ -219,7 +281,7 @@ export function History({ onOpen, onNew, onKnowledgeBases, onOpenEnsemble }: Pro
         />
       </div>
 
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="cc-runs-filters flex flex-wrap items-center gap-2">
         {onNew && (
           <Btn variant="primary" size="sm" onClick={onNew}>
             <Icon name="plus" /> New run
@@ -230,12 +292,33 @@ export function History({ onOpen, onNew, onKnowledgeBases, onOpenEnsemble }: Pro
             <Icon name="knowledge" /> Knowledge bases
           </Btn>
         )}
-        {branchCount > 0 && (
+        {/* Kept while it is on even if nothing matches any more, so a filter can always be turned off. */}
+        {(branchCount > 0 || branchesOnly) && (
           <Chip on={branchesOnly} onClick={() => setBranchesOnly((b) => !b)} aria-pressed={branchesOnly}>
             <Icon name="branch" size={13} /> Branches only ({branchCount})
           </Chip>
         )}
+        {(hiddenCount > 0 || hiddenOnly) && (
+          <Chip on={hiddenOnly} onClick={() => setHiddenOnly(!hiddenOnly)} aria-pressed={hiddenOnly} data-hidden-chip="">
+            <Icon name="eyeOff" size={13} /> Hidden ({hiddenCount})
+          </Chip>
+        )}
       </div>
+
+      {hiddenOnly && (
+        <p className="cc-runs-hidden-note" role="status">
+          <Icon name="eyeOff" size={14} />
+          <span>
+            <b>Showing hidden conversations only.</b> They are left out of the Runs list, not deleted. Show one to put
+            it back.
+          </span>
+        </p>
+      )}
+      {hideError && (
+        <p role="alert" className="text-sm" style={{ color: 'var(--danger)' }}>
+          {hideError}
+        </p>
+      )}
 
       {onOpenEnsemble && shownEnsembles.length > 0 && (
         <Section
@@ -297,7 +380,7 @@ export function History({ onOpen, onNew, onKnowledgeBases, onOpenEnsemble }: Pro
                   {expanded && members.length > 0 && (
                     <div className="mt-2 flex flex-col gap-2">
                       {members.map((r) => (
-                        <RunCard key={r.run_id} run={r} onOpen={onOpen} cell={r.ensemble_cell} />
+                        <RunCard key={r.run_id} run={r} onOpen={onOpen} onToggleHidden={toggleHidden} cell={r.ensemble_cell} />
                       ))}
                     </div>
                   )}
@@ -338,7 +421,7 @@ export function History({ onOpen, onNew, onKnowledgeBases, onOpenEnsemble }: Pro
             <Section id="live" title="Live now" count={liveRuns.length} open={openSections.live} onToggle={() => toggleSection('live')}>
               <div className="cc-list">
                 {liveRuns.map((r) => (
-                  <RunCard key={r.run_id} run={r} onOpen={onOpen} />
+                  <RunCard key={r.run_id} run={r} onOpen={onOpen} onToggleHidden={toggleHidden} />
                 ))}
               </div>
             </Section>
@@ -353,17 +436,23 @@ export function History({ onOpen, onNew, onKnowledgeBases, onOpenEnsemble }: Pro
             {doneRuns.length === 0 ? (
               <p className="cc-empty">
                 {q
-                  ? 'No individual conversation matches.'
+                  ? hiddenOnly
+                    ? 'No hidden conversation matches.'
+                    : 'No individual conversation matches.'
                   : branchesOnly
                     ? 'No finished branches.'
                     : liveRuns.length
                       ? 'Nothing has finished yet.'
-                      : 'Every conversation here belongs to an ensemble above.'}
+                      : hiddenOnly
+                        ? 'Nothing is hidden.'
+                        : membersOf.size === 0 && hiddenCount > 0
+                          ? 'Every conversation is hidden.'
+                          : 'Every conversation here belongs to an ensemble above.'}
               </p>
             ) : (
               <div className="cc-list">
                 {doneRuns.map((r) => (
-                  <RunCard key={r.run_id} run={r} onOpen={onOpen} />
+                  <RunCard key={r.run_id} run={r} onOpen={onOpen} onToggleHidden={toggleHidden} />
                 ))}
               </div>
             )}
@@ -429,10 +518,13 @@ function Section({
 function RunCard({
   run: r,
   onOpen,
+  onToggleHidden,
   cell,
 }: {
   run: RunSummary
   onOpen: (runId: string) => void
+  /** Hide the run, or show a hidden one again. Given the control, so focus can move on when the card goes. */
+  onToggleHidden: (run: RunSummary, control: HTMLElement) => void
   /** The ensemble group the run was created under; shown only when nested. */
   cell?: string | null
 }) {
@@ -440,42 +532,64 @@ function RunCard({
   const live = r.status === 'running' && !stalled
   const cast = r.cast_names ?? []
   return (
-    <PanelButton edge={edgeOf(r.status, stalled)} live={live} onClick={() => onOpen(r.run_id)}>
-      <div className="flex flex-wrap items-center gap-2">
-        {cell && <span className="cc-label">{cell}</span>}
-        <span className="cc-code">{r.name ?? r.run_id.slice(0, 8)}</span>
-        {/* `lastEventAt` and `createdAt` were never passed, so the staleness branch could not fire:
-            a run orphaned by a restart rendered as a healthy "running" for ever. */}
-        <StatusTag run={r} stalled={stalled} />
-        {r.parent_run_id && (
-          <Tag tone="ens">
-            <Icon name="branch" size={12} /> branch @ {r.branch_turn}
-          </Tag>
-        )}
-      </div>
-      <p className="cc-topic">{r.description ?? r.topic}</p>
-      {!cell && r.description && <p className="cc-muted truncate">{r.topic}</p>}
-      {live && r.max_messages ? <Ticks n={r.turn_count} max={r.max_messages} live /> : null}
-      <div className="cc-meta flex items-center justify-between gap-2">
-        <span className="flex items-center gap-[3px]">
-          {/* Ringed by end stance once the run is summarised (§6.1); the counts beside say it in glyphs. */}
-          {cast.slice(0, 8).map((name) => (
-            <Hex key={name} name={name} slot={identityOf(name, cast)} size="xs"
-              ring={r.stance?.[name] ? STANCE_COLOR[r.stance[name]] : undefined} />
-          ))}
-          {r.stance && (
-            <span className="ml-1.5">
-              <StanceCounts stance={r.stance} among={cast} />
-            </span>
+    // The hide control is the card's neighbour, not its child: the card is a button, and buttons cannot nest.
+    // It sits over the card's top-right corner, where the ensemble card keeps its unfold control, rather than in
+    // a column beside it: a column takes 48 px from every card, and at 360 px an eight-persona card's cast row
+    // then no longer fits (measured: 26 px of it clipped). The first line stops short of it instead.
+    <div className="cc-runitem">
+      <PanelButton edge={edgeOf(r.status, stalled)} live={live} onClick={() => onOpen(r.run_id)}>
+        <div className="cc-runhead flex flex-wrap items-center gap-2">
+          {cell && <span className="cc-label">{cell}</span>}
+          <span className="cc-code">{nameOf(r)}</span>
+          {/* `lastEventAt` and `createdAt` were never passed, so the staleness branch could not fire:
+              a run orphaned by a restart rendered as a healthy "running" for ever. */}
+          <StatusTag run={r} stalled={stalled} />
+          {r.parent_run_id && (
+            <Tag tone="ens">
+              <Icon name="branch" size={12} /> branch @ {r.branch_turn}
+            </Tag>
           )}
-        </span>
-        <span className="cc-num">
-          {r.turn_count} turns · ${(r.total_cost_usd ?? 0).toFixed(4)}
-        </span>
-      </div>
-    </PanelButton>
+        </div>
+        <p className="cc-topic">{r.description ?? r.topic}</p>
+        {!cell && r.description && <p className="cc-muted truncate">{r.topic}</p>}
+        {live && r.max_messages ? <Ticks n={r.turn_count} max={r.max_messages} live /> : null}
+        <div className="cc-meta flex items-center justify-between gap-2">
+          <span className="flex items-center gap-[3px]">
+            {/* Ringed by end stance once the run is summarised (§6.1); the counts beside say it in glyphs. */}
+            {cast.slice(0, 8).map((name) => (
+              <Hex key={name} name={name} slot={identityOf(name, cast)} size="xs"
+                ring={r.stance?.[name] ? STANCE_COLOR[r.stance[name]] : undefined} />
+            ))}
+            {r.stance && (
+              <span className="ml-1.5">
+                <StanceCounts stance={r.stance} among={cast} />
+              </span>
+            )}
+          </span>
+          <span className="cc-num">
+            {r.turn_count} turns · ${(r.total_cost_usd ?? 0).toFixed(4)}
+          </span>
+        </div>
+      </PanelButton>
+      <button
+        type="button"
+        className="cc-icon cc-runhide"
+        data-hide-run={r.run_id}
+        aria-label={`${r.hidden ? 'Show' : 'Hide'} ${nameOf(r)}`}
+        aria-description={
+          r.hidden
+            ? 'Put it back in the Runs list.'
+            : 'Leave it out of the Runs list. Nothing is deleted; it stays under Hidden, and opens as before.'
+        }
+        onClick={(e) => onToggleHidden(r, e.currentTarget)}
+      >
+        <Icon name={r.hidden ? 'eye' : 'eyeOff'} size={20} />
+      </button>
+    </div>
   )
 }
+
+const nameOf = (r: RunSummary) => r.name ?? r.run_id.slice(0, 8)
 
 // A run marked "running" whose most recent event is older than this is treated
 // as stalled/orphaned (server up, but no live stream and no recent activity).

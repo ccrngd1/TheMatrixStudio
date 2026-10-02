@@ -63,6 +63,9 @@ export interface RunSummary {
   cast_names?: string[]
   /** Where each persona ended (`matrix_studio/stance.py`): set once the run is summarised, never while live. */
   stance?: Record<string, StanceState> | null
+  /** The owner left this run out of the Runs list (`POST /api/runs/{ref}/hidden`). Not deletion: it still
+   *  opens, and sits in its ensemble. Optional because a deployment older than the field does not send it. */
+  hidden?: boolean
 }
 
 export type StanceState = 'support' | 'conditional' | 'unstated' | 'holding'

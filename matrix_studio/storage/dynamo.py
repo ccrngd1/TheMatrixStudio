@@ -169,6 +169,12 @@ _RUN_FIELDS = (
     # the same update as `stance_json`, so the two cannot disagree. Absent for every run summarised before
     # 2026-10-01: not backfilled, by the owner's decision.
     "stance_basis_json",
+    # The owner chose to leave this run out of the Runs list (`set_run_hidden`). On the row rather than in
+    # the browser so it holds on every device. Absent means not hidden, which is every run before the field
+    # existed, and un-hiding REMOVES it rather than writing False, so a run hidden and shown again is the row
+    # it was. Nothing else reads it: a hidden run still opens, resumes, branches, sits in its ensemble and
+    # counts towards spend.
+    "hidden",
 )
 _ENSEMBLE_FIELDS = (
     "id", "owner_sub", "topic", "name", "description", "slug", "status", "created_at",
@@ -1194,6 +1200,47 @@ class DynamoStorage:
             if "ConditionalCheckFailed" not in str(exc):
                 raise
             logger.warning("Ignored a stance for run %s, which does not exist under owner %s.", run_id, owner_sub)
+            return False
+
+    async def set_run_hidden(
+        self,
+        run_id: str,
+        hidden: bool,
+        *,
+        owner_sub: Optional[str] = None,
+    ) -> bool:
+        """Hide a run from its owner's Runs list, or show it again. Returns whether it stuck.
+
+        Only the `hidden` attribute moves. Hiding is not deletion: the transcript, summary, stance, ensemble
+        membership and cost are other attributes and other tables, and none of them is touched here.
+
+        Showing REMOVES the attribute instead of setting False, so "absent means not hidden" stays the only
+        way a visible run is stored, and a run hidden and shown again is byte-for-byte the row it was.
+
+        Conditional on the run existing, for the reason `set_run_research` gives: `UpdateItem` upserts, and
+        a write to a missing run would manufacture a phantom row in the owner's history. That would be a
+        sharper irony here than anywhere: hiding a run that is not there would create one.
+        """
+        owner_sub = self._owner(owner_sub)
+        update: Dict[str, Any] = (
+            {"UpdateExpression": "SET #h = :v", "ExpressionAttributeValues": {":v": True}}
+            if hidden
+            else {"UpdateExpression": "REMOVE #h"}
+        )
+        try:
+            await self._call(
+                self._table("runs").update_item,
+                Key={"pk": _user_pk(owner_sub), "sk": _run_sk(run_id)},
+                ConditionExpression="attribute_exists(sk)",
+                # `HIDDEN` is a DynamoDB reserved word, so it cannot be named in an expression directly.
+                ExpressionAttributeNames={"#h": "hidden"},
+                **update,
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001
+            if "ConditionalCheckFailed" not in str(exc):
+                raise
+            logger.warning("Ignored hiding run %s, which does not exist under owner %s.", run_id, owner_sub)
             return False
 
     # ------------------------------------------------------------------ #

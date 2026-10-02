@@ -25,7 +25,8 @@ import { RoomCell, RoomMap, RoomMapKey, StanceBasisList, StanceCounts, StanceDia
 import { Hint } from '../components/Hint'
 import { TopBar } from './Shell'
 import { navigate, type RunTab } from '../lib/route'
-import { Btn, Label, Panel, Ticks } from '../ui/primitives'
+import { setRunHidden } from '../lib/hiddenRuns'
+import { Btn, Label, Panel, Tag, Ticks } from '../ui/primitives'
 import { Icon } from '../ui/icons'
 import { useWide } from '../ui/useWide'
 
@@ -95,6 +96,7 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh, tab = 'conver
   const [stopping, setStopping] = useState(false)
   const [stopRequested, setStopRequested] = useState(false)
   const [stopError, setStopError] = useState<string | null>(null)
+  const [hideError, setHideError] = useState<string | null>(null)
   // In-thread model picker: the models allowlist + the currently selected model
   // for analysis (summary/asides) and forward branching from this thread.
   const [models, setModels] = useState<{ id: string; label: string }[]>([])
@@ -192,6 +194,21 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh, tab = 'conver
     }
   }
 
+  // Leave this run out of the Runs list, or put it back. At once, and undone if the server refuses; the
+  // cached Runs list changes too (lib/hiddenRuns.ts), so backing out shows it as it now is.
+  const toggleHidden = () => {
+    if (!detail) return
+    const hidden = !detail.hidden
+    setMenuOpen(false)
+    setHideError(null)
+    setDetail((d) => (d ? { ...d, hidden } : d))
+    // The id from the run, not `runId`, which can be the codename the URL was opened with.
+    setRunHidden(detail.run_id, hidden).catch((e) => {
+      setDetail((d) => (d ? { ...d, hidden: !hidden } : d))
+      setHideError(`${hidden ? 'Hiding from' : 'Putting back in'} the Runs list failed: ${(e as Error).message}`)
+    })
+  }
+
   // Fork this run at the given turn into a NEW run, then navigate to its live
   // view. The parent (this run) is never modified.
   const branchFrom = async (fromTurn: number, mutation?: Record<string, unknown>, modelOverride?: string) => {
@@ -256,6 +273,12 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh, tab = 'conver
       sub={
         <span className="flex min-w-0 items-center gap-2">
           <RunStatusTag status={status} stalled={stream.stalled} turn={turn} max={maxMessages} />
+          {/* Opened by URL, a hidden run looks like any other; this says it is not in the Runs list. */}
+          {detail?.hidden && (
+            <Tag>
+              Hidden<span className="sr-only"> from the Runs list</span>
+            </Tag>
+          )}
           <span className="cc-tt truncate">{detail?.description ?? detail?.topic}</span>
         </span>
       }
@@ -300,6 +323,7 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh, tab = 'conver
 
   const alerts = [
     stopError && `Stop failed: ${stopError}`,
+    hideError,
     resumeError && `Resume failed: ${resumeError}`,
     branchError && `Branch failed: ${branchError}`,
     state.status === 'failed' && `Simulation failed: ${state.error}`,
@@ -491,6 +515,14 @@ export function LiveView({ runId, onBack, onOpenRun, onStartFresh, tab = 'conver
         {onStartFresh && (
           <button type="button" onClick={() => { setMenuOpen(false); onStartFresh(runId) }}>
             <Icon name="plus" size={18} /> Start fresh from this setup
+          </button>
+        )}
+        {/* Only once the run is loaded: the label says which way it goes, and before then that is not known. */}
+        {detail && (
+          <button type="button" onClick={toggleHidden}
+            aria-description={detail.hidden ? undefined : 'Nothing is deleted. It stays under Hidden on the Runs screen, and opens as before.'}>
+            <Icon name={detail.hidden ? 'eye' : 'eyeOff'} size={18} />{' '}
+            {detail.hidden ? 'Show in the Runs list' : 'Hide from the Runs list'}
           </button>
         )}
       </div>

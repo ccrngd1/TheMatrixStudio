@@ -575,6 +575,13 @@ class BranchModel(BaseModel):
     mutation: Optional[BranchMutationModel] = None
 
 
+class HiddenModel(BaseModel):
+    """Body for POST /api/runs/{ref}/hidden. Required, not defaulted: an empty body is a client bug, and
+    guessing "hide" or "show" for it would do one of them to a run nobody asked about."""
+
+    hidden: bool
+
+
 class AttachDocumentModel(BaseModel):
     """Body for POST /api/runs/{ref}/documents (Phase 5).
 
@@ -696,6 +703,10 @@ def _run_summary(run: Dict[str, Any]) -> Dict[str, Any]:
         # ensemble instead of listing replicates among the individual conversations.
         "ensemble_id": run.get("ensemble_id"),
         "ensemble_cell": run.get("ensemble_cell"),
+        # The owner left this run out of the Runs list. Always a boolean, absent on the row reading as False.
+        # The list still returns hidden runs: the client filters them, and needs them to count them and to
+        # offer them back from its Hidden view.
+        "hidden": bool(run.get("hidden")),
         # For the run cards (docs/MOBILE-UI.md §4.1): a live run's `LIVE 06/12` needs its ceiling, and one hex
         # token per persona needs the cast's names. Both are already on the row, so no extra read.
         **_card_fields(run),
@@ -3083,6 +3094,28 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             return await manager.request_stop_durable(run)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
+
+    @app.post("/api/runs/{ref}/hidden")
+    async def set_run_hidden(
+        ref: str, body: HiddenModel, user: str = Depends(current_user)
+    ) -> Dict[str, Any]:
+        """Hide a run from its owner's Runs list (``{"hidden": true}``), or show it again (``false``).
+
+        A POST on a sub-resource, like ``/stop`` and ``/resume``, rather than a PATCH on the run: the API has no
+        PATCH anywhere, and the HTTP API's CORS rule (what a local dev server against the deployed API goes
+        through) allows GET, POST and DELETE only. The state is in the body rather than in a pair of
+        ``/hide`` and ``/show`` routes, so a retried or doubled request lands where it was asked to: setting
+        the same state twice is a no-op.
+
+        Hiding is not deletion, and nothing but the flag moves: the run still opens by URL, still sits in its
+        ensemble, and its cost still counts. Owner-only through `_require_run`, so another owner's run is a
+        404 like every other run route.
+        """
+        run = await _require_run(ref, user)
+        if not await db.for_owner(user).set_run_hidden(run["id"], body.hidden):
+            # Gone between the read and the write. The same answer as a run that was never there.
+            raise HTTPException(status_code=404, detail="Run not found")
+        return {"run_id": run["id"], "hidden": body.hidden}
 
     # ------------------- Phase 1.5: summary + aside threads ---------------- #
     # All routes below are ADDITIVE and READ-ONLY over the canonical run: they
