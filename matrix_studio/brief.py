@@ -24,9 +24,10 @@ A brief that silently drops the eleventh open question reads as having only ten.
 ## Built on the export's data model
 
 `export.run_model` / `export.ensemble_model` already gather everything from stored data, omit the
-operator-private persona fields, and carry the whole cost. The brief is a different VIEW of that
-model, so it inherits those guarantees instead of re-implementing them — and the HTML goes through
-the same escaping, because a brief is also a file somebody opens in a browser.
+operator-private persona fields (and a withheld concern, outside the summary's labelled reveal), and
+carry the whole cost. The brief is a different VIEW of that model, so it inherits those guarantees
+instead of re-implementing them — and the HTML goes through the same escaping, because a brief is
+also a file somebody opens in a browser.
 """
 
 from __future__ import annotations
@@ -56,6 +57,14 @@ MAX_EVIDENCE_CHARS = 150
 MAX_OPEN_WITH_PLAN = 1
 MAX_DISSENT_WITH_PLAN = 2
 MAX_CONDITIONAL_CHARS = 260
+#: Underlying concerns shown (the summary's `concerns`), one clipped line each with the two verdicts first,
+#: so a clip cuts the concern's wording and never whether it was raised or answered. The quote is in the
+#: full report. The ones left unanswered come first: a reader who sees only the top of this list must see
+#: those. Measured at every cap with an evidence plan: three concerns took the brief from 648 to 701 words.
+#: Two, with "Where they agreed" and the objections (where a concern usually shows) each giving up a
+#: line to them, bring it to 646 — 643 with assumptions too — inside the one-page bound of 650.
+MAX_CONCERNS = 2
+MAX_CONCERN_CHARS = 130
 MAX_QUESTION_CHARS = 320
 #: Per-item and bottom-line ceilings. Measured: an Opus brainstorm's brief was 812 words with
 #: whole-paragraph dissents — past one page. A clipped item ends in "…", so it never reads as
@@ -112,14 +121,22 @@ def _question(topic: str) -> str:
 def run_brief(model: Dict[str, Any]) -> Dict[str, Any]:
     """The brief for ONE conversation, from `export.run_model`'s output."""
     s = model.get("summary") or {}
+    concern_rows = sorted(ex.concern_rows(s), key=lambda r: r.get("addressed") == "yes")
     agreed, agreed_more = _cap([_clip(_text(x)) for x in s.get("consensus") or []],
-                               MAX_AGREED_WITH_ASSUMPTIONS if model.get("assumptions") else MAX_AGREED)
+                               (MAX_AGREED_WITH_ASSUMPTIONS if model.get("assumptions") else MAX_AGREED)
+                               - (1 if concern_rows else 0))
     plan = [row for row in s.get("evidence_plan") or [] if isinstance(row, dict) and row.get("data")]
     open_, open_more = _cap([_clip(_text(x)) for x in s.get("open_questions") or []],
                             MAX_OPEN_WITH_PLAN if plan else MAX_OPEN)
     dissent, dissent_more = _cap(
         [_clip(f"{d.get('speaker')}: {d.get('position')}") for d in s.get("dissenters") or []
-         if isinstance(d, dict)], MAX_DISSENT_WITH_PLAN if plan else MAX_DISSENT)
+         if isinstance(d, dict)],
+        (MAX_DISSENT_WITH_PLAN if plan else MAX_DISSENT) - (1 if concern_rows else 0))
+    concerns, concerns_more = _cap([
+        _clip(f"{r.get('speaker')} (surfaced: {r.get('surfaced') or NOT_STATED}; addressed: "
+              f"{r.get('addressed') or NOT_STATED}): {r.get('concern')}", MAX_CONCERN_CHARS)
+        for r in concern_rows
+    ], MAX_CONCERNS)
     evidence, evidence_more = _cap([
         _clip(f"{row.get('data')} ({row.get('asked_by') or NOT_STATED}) — moves them: "
               f"{row.get('moves_them') or NOT_STATED}; best guess: {row.get('best_guess') or NOT_STATED}",
@@ -144,6 +161,10 @@ def run_brief(model: Dict[str, Any]) -> Dict[str, Any]:
         # they never supplied reads "not stated", which is the gap worth seeing.
         "evidence": evidence, "evidence_more": evidence_more,
         "conditional": _clip(s.get("conditional_recommendation"), MAX_CONDITIONAL_CHARS),
+        # The concerns behind the positions, read in both modes. On a withheld run this is the reveal,
+        # and the heading says the room never heard them.
+        "concerns": concerns, "concerns_more": concerns_more,
+        "concerns_heading": ex.concerns_heading(s),
         # What the conclusion rests on. Capped like everything else, and the cut is said.
         **dict(zip(("assumptions", "assumptions_more"), _cap(
             # Statement only; the basis and who set it are in the full report.
@@ -273,6 +294,9 @@ def render_markdown(b: Dict[str, Any]) -> str:
         out += _more(b.get("open_more", 0)) + [""]
     if b.get("dissent"):
         out += ["## Standing objections", ""] + [f"- {x}" for x in b["dissent"]] + _more(b["dissent_more"]) + [""]
+    if b.get("concerns"):
+        out += ([f"## {b.get('concerns_heading') or ex.CONCERNS_HEADING}", ""] + [f"- {x}" for x in b["concerns"]]
+                + _more(b.get("concerns_more", 0)) + [""])
     if b.get("assumptions"):
         out += (["## Assumed, not established", ""] + [f"- {x}" for x in b["assumptions"]]
                 + _more(b.get("assumptions_more", 0)) + [""])
@@ -363,6 +387,9 @@ def render_html(b: Dict[str, Any]) -> str:
         body += ["<h2>Still open</h2>", _ul(items, b.get("open_more", 0))]
     if b.get("dissent"):
         body += ["<h2>Standing objections</h2>", _ul(b["dissent"], b.get("dissent_more", 0))]
+    if b.get("concerns"):
+        body += [f"<h2>{e(b.get('concerns_heading') or ex.CONCERNS_HEADING)}</h2>",
+                 _ul(b["concerns"], b.get("concerns_more", 0))]
     if b.get("assumptions"):
         body += ["<h2>Assumed, not established</h2>", _ul(b["assumptions"], b.get("assumptions_more", 0))]
     if b.get("conditional") or b.get("evidence"):

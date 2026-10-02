@@ -406,8 +406,8 @@ true. Ordered after `sim.started`.
 | Field | Type | Notes |
 |---|---|---|
 | `agent_name` | string | The persona. |
-| `structured` | object | The persona's structured block (see [`run-config.md`](run-config.md)), with `validity` and `underlying_concern` removed from every viewpoint. |
-| `withhold_concerns` | boolean | From `config.personas`. |
+| `structured` | object | The persona's structured block (see [`run-config.md`](run-config.md)), with `validity` removed from every viewpoint. `underlying_concern` is kept when the run states concerns plainly (`withhold_concerns` false, new runs' default since 2026-10-02) and removed when it withholds them. |
+| `withhold_concerns` | boolean | From `config.personas`, as the engine reads it: a stored config with no value gives `true`. |
 | `dismissal_rule` | string | From `config.personas`, normalised to a variant name. |
 | `evidence_lean` | boolean | From `config.personas`. |
 
@@ -415,9 +415,12 @@ true. Ordered after `sim.started`.
 {"run_id": "<run-id>", "turn": 0, "seq": 1, "event_type": "persona.structured", "agent_name": "Ada Byrne",
  "payload": {"agent_name": "Ada Byrne", "structured": {"role": "Branch librarian", "viewpoints": [
    {"position": "Sunday hours need two staff on shift", "firmness": "firm",
-    "evidence_that_shifts": ["a volunteer rota that covers the desk"]}]},
-   "withhold_concerns": true, "dismissal_rule": "mandatory", "evidence_lean": true}}
+    "evidence_that_shifts": ["a volunteer rota that covers the desk"],
+    "underlying_concern": "the last short-staffed Sunday was mine to cover"}]},
+   "withhold_concerns": false, "dismissal_rule": "mandatory", "evidence_lean": true}}
 ```
+
+With `withhold_concerns: true` the same event has no `underlying_concern` on any viewpoint.
 
 ### `avatar.ready`
 

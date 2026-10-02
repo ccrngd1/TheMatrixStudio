@@ -7,7 +7,7 @@
  * them. It is what surfaced that empty goals arrays and absent config are the NORMAL
  * case rather than the edge case.
  *
- * `examples/import-augmented.json` is the same cast with convictions, withheld
+ * `examples/import-augmented.json` is the same cast with convictions, underlying
  * concerns, differing dismisses and cognition on — the reference for the full format.
  *
  * Both live in `examples/` deliberately. An earlier version read from
@@ -165,6 +165,15 @@ describe('tolerance and honest reporting', () => {
       ...base, cast: [{ name: 'A', persona: 'p', goals: 'one; two' }],
     }))
     expect(s.cast[0].goals).toBe('one\ntwo')
+  })
+
+  it('reads hidden agendas only when the setup says, so silence keeps the new-run default', () => {
+    const say = (personas: unknown) =>
+      parseSetup(JSON.stringify({ ...base, config: { personas } })).withholdConcerns
+    expect(say({ enabled: true, withhold_concerns: true })).toBe(true)
+    expect(say({ enabled: true, withhold_concerns: false })).toBe(false)
+    expect(say({ enabled: true })).toBeUndefined()
+    expect(parseSetup(JSON.stringify(base)).withholdConcerns).toBeUndefined()
   })
 
   it('ignores a viewpoint with no position', () => {

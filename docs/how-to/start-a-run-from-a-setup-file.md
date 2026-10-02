@@ -35,9 +35,9 @@ The file format is the body the run API accepts: `topic` and a `cast` whose memb
    | Read from the file | Not read: set it in the form after loading |
    |---|---|
    | topic, name, description | speaker method, closing round |
-   | each persona's name, description, goals, positions with firmness and what would change them, withheld concerns, what they will not weigh, documents as `document_texts`, knowledge-base bindings | research, inline citations, evidence lean |
+   | each persona's name, description, goals, positions with firmness and what would change them, underlying concerns, what they will not weigh, documents as `document_texts`, knowledge-base bindings | research, inline citations, evidence lean |
    | `max_messages`, the top-level `model`, avatars, cognition | consultants, scheduled messages, `config.model` |
-   | cast-wide knowledge bases, working assumptions, moderator assumptions, "end when finished" | per-role models (`config.models`) |
+   | cast-wide knowledge bases, working assumptions, moderator assumptions, "end when finished", hidden agendas (`config.personas.withhold_concerns`; a file that does not say leaves it off) | per-role models (`config.models`) |
 
    Other structured-persona fields (role, background and formative events, `optimises_for`, `persuaded_by`, `formed_by`) are dropped without a warning. To keep them, start the file from the terminal.
 

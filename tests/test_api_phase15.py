@@ -218,6 +218,48 @@ def test_default_instructions_persist_as_null_via_api(client):
     assert summ["generated"]["instructions"] is None
 
 
+@pytest.mark.parametrize("withhold", [False, True])
+def test_the_summary_reads_the_authored_concerns_in_both_modes(client, withhold):
+    """Owner decision, 2026-10-02: the post-run analysis uses the concerns whether or not the run
+    withheld them. On a withheld run this is the reveal, and the stored payload says it was hidden."""
+    import json as _json
+
+    concern = "I signed off the last outage and it is still on my record"
+    row = {"speaker": "Ada", "concern": concern, "surfaced": "partly", "where": "turn 2", "addressed": "no"}
+    captured = {}
+
+    async def _capture(messages, model=None, temperature=0.4, max_tokens=None):
+        captured["system"], captured["user"] = messages[0]["content"], messages[1]["content"]
+        return {"content": _json.dumps({"overview": "o", "concerns": [row]}),
+                "tokens_in": 1, "tokens_out": 1, "cost_usd": 0.0}
+
+    cast = [
+        {**REQUEST["cast"][0], "structured": {"viewpoints": [
+            {"position": "Ask who signs it off", "firmness": "firm", "underlying_concern": concern}]}},
+        REQUEST["cast"][1],
+    ]
+    config = {**REQUEST["config"], "personas": {"enabled": True, "withhold_concerns": withhold}}
+    with patch("matrix_studio.api.manager.run_simulation", make_fake_run(turns=1)):
+        run_id = _start(client, {"cast": cast, "config": config, "summary": {"enabled": False}})["run_id"]
+        _wait_complete(client, run_id)
+
+    with patch("matrix_studio.analysis._acompletion", _capture):
+        res = client.post(f"/api/runs/{run_id}/summary").json()
+    assert concern in captured["user"] and '"concerns":' in captured["system"]
+    for payload in (res["generated"]["payload"],
+                    client.get(f"/api/runs/{run_id}/summary").json()["generated"]["payload"]):
+        assert payload["concerns"] == [row]
+        assert payload["concerns_withheld"] is withhold
+
+
+def test_a_run_without_concerns_gets_no_concerns_field(client):
+    with patch("matrix_studio.api.manager.run_simulation", make_fake_run(turns=1)):
+        run_id = _start(client, {"summary": {"enabled": False}})["run_id"]
+        _wait_complete(client, run_id)
+    payload = client.post(f"/api/runs/{run_id}/summary").json()["generated"]["payload"]
+    assert "concerns" not in payload and "concerns_withheld" not in payload
+
+
 def test_summary_on_incomplete_run_rejected(client):
     with patch("matrix_studio.api.manager.run_simulation", make_fake_run(turns=3, delay=0.5)):
         run_id = _start(client)["run_id"]

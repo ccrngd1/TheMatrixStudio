@@ -28,19 +28,32 @@ experiment, with the field names adapted to this codebase's conventions:
   ``dismisses`` is the field the experiment showed doing the most real work:
   "that's yours to own" is a behaviour the control arm essentially never produced.
 - ``viewpoints`` — each with ``position``, ``formed_by``, ``firmness``,
-  ``evidence_that_shifts``, and a withheld ``underlying_concern``.
+  ``evidence_that_shifts``, and an ``underlying_concern``: the real worry behind it.
+
+## The underlying concern: stated plainly, or kept back
+
+The source spec **withheld** the concern by definition: drawing out the real concern behind a
+stated position was the skill being exercised. Since 2026-10-02, by the owner's decision —
+"Personas shouldn't guard their concerns or objections; they should be laid out plainly when they
+are known" — a new run states it **plainly** (``withhold_concerns`` false), and withholding is an
+opt-in "hidden agendas" mode for negotiation or interview practice. A run created before then
+keeps withholding when resumed or branched; see ``PersonaConfig.withhold_concerns``.
+
+The two modes render differently (``render_private``), and the event log and dossier carry the
+concern only when it was stated plainly (``structured_payload``). ``validity`` is never shown in
+either mode.
 
 ## Two renderings, deliberately
 
 ``render_private()`` goes into the speaker's own system prompt.
 ``render_public()`` is what the *moderator* sees when choosing who speaks next.
 
-They differ because ``underlying_concern`` is **withheld by definition**: per the
-source spec, drawing out the real concern behind a stated position is the skill
-being exercised. Leaking it into the moderator's persona list would put it one
-prompt away from every other participant and destroy that. So the split is a
-correctness requirement, not a token optimisation, and
-``tests/test_personas.py`` locks it.
+They differ because a withheld ``underlying_concern`` must stay out of every prompt but its
+owner's: leaking it into the moderator's persona list would put it one prompt away from every
+other participant and destroy the exercise. So the split is a correctness requirement, not a
+token optimisation, and ``tests/test_personas.py`` locks it. In plain mode the persona says the
+concern in the conversation itself, so the moderator's prompt is left exactly as it was in both
+modes: it chooses speakers, and changing it would change every run's speaker selection.
 
 ## The dismissal rule has two measured failure modes
 
@@ -154,7 +167,10 @@ class Viewpoint(BaseModel):
     position: str = Field(description="The position, as they would state it out loud")
     underlying_concern: str = Field(
         default="",
-        description="The real worry behind it. WITHHELD unless asked — never rendered publicly.",
+        description=(
+            "The real worry behind it. Stated openly by default; kept back until drawn out when the "
+            "run withholds concerns. Never in the moderator's prompt."
+        ),
     )
     formed_by: str = Field(default="", description="The experience that produced this position")
     firmness: str = Field(
@@ -271,12 +287,18 @@ class StructuredPersona(BaseModel):
         if pref.persuaded_by:
             parts.append("What actually moves you: " + "; ".join(pref.persuaded_by) + ".")
 
+        # Stated plainly, the concern sits WITH its position rather than in a block of its own, and
+        # the holding rule gains a line requiring it to be said. See `CONCERN_STATED_RULE`.
+        concerns_inline = not withhold_concerns and any(vp.underlying_concern for vp in self.viewpoints)
+
         if self.viewpoints:
             lines = []
             for i, vp in enumerate(self.viewpoints, start=1):
                 lines.append(f"{i}. [{vp.firmness}] {vp.position}")
                 if vp.formed_by:
                     lines.append(f"   How you came to it: {vp.formed_by}")
+                if concerns_inline and vp.underlying_concern:
+                    lines.append(f"   What you are really worried about: {vp.underlying_concern}")
                 if vp.evidence_that_shifts:
                     lines.append(
                         "   What would change your mind: "
@@ -296,29 +318,28 @@ class StructuredPersona(BaseModel):
                         "you do not have."
                     )
             parts.append("Positions you hold:\n" + "\n".join(lines))
-            parts.append(_HOLDING_RULE + ("\n" + EVIDENCE_LEAN_RULE if evidence_lean else ""))
+            parts.append(
+                _HOLDING_RULE
+                + ("\n" + EVIDENCE_LEAN_RULE if evidence_lean else "")
+                + ("\n" + CONCERN_STATED_RULE if concerns_inline else "")
+            )
 
-        # The withheld concern. Rendered LAST and with its own instruction, so
-        # the "do not volunteer this" framing is the nearest context to the
-        # content itself rather than paragraphs away from it.
+        # The withheld concern (hidden agendas). Rendered LAST and with its own instruction, so
+        # the "do not volunteer this" framing is the nearest context to the content itself rather
+        # than paragraphs away from it. UNCHANGED since Phase 6: every withheld run, and every
+        # study in docs/studies/ and docs/project/PHASE6-*, was measured with exactly this text.
         concerns = [(i, vp.underlying_concern) for i, vp in enumerate(self.viewpoints, start=1)
                     if vp.underlying_concern]
-        if concerns:
+        if concerns and withhold_concerns:
             lines = "\n".join(f"{i}. {c}" for i, c in concerns)
-            if withhold_concerns:
-                parts.append(
-                    "What is REALLY behind those positions (numbered to match):\n"
-                    f"{lines}\n"
-                    "Do not volunteer any of this. State the position, not the worry "
-                    "underneath it. Say the real reason only if someone asks you why you "
-                    "hold the position, or presses you past your surface argument — and "
-                    "then say it plainly, in your own words."
-                )
-            else:
-                parts.append(
-                    "Why you hold those positions (numbered to match); you may say "
-                    f"any of this freely:\n{lines}"
-                )
+            parts.append(
+                "What is REALLY behind those positions (numbered to match):\n"
+                f"{lines}\n"
+                "Do not volunteer any of this. State the position, not the worry "
+                "underneath it. Say the real reason only if someone asks you why you "
+                "hold the position, or presses you past your surface argument — and "
+                "then say it plainly, in your own words."
+            )
 
         if pref.dismisses:
             rule = _dismissal_rule(pref.dismisses, normalise_dismissal_rule(dismissal_rule))
@@ -331,10 +352,11 @@ class StructuredPersona(BaseModel):
         """A one-line summary for the moderator's persona list.
 
         Carries only what the persona says out loud anyway — role and what it
-        optimises for. Never ``underlying_concern`` (withheld by design; see the
-        module docstring) and never ``validity`` (an operator's private note).
-        Kept to one line because the moderator prompt grows with cast size and
-        it runs on every turn.
+        optimises for. Never ``underlying_concern`` (in plain mode the persona says
+        it in the conversation; withheld, it must reach no prompt but its owner's —
+        see the module docstring) and never ``validity`` (an operator's private
+        note). Kept to one line because the moderator prompt grows with cast size
+        and it runs on every turn.
         """
         bits = []
         if self.role:
@@ -388,6 +410,27 @@ EVIDENCE_LEAN_RULE = (
     "outcome — and which way that guess makes you lean TODAY: \"If <result>, I'm in; I expect "
     "<guess>, so for now I'm <for/against>.\" This is not optional. A guess is not evidence: your "
     "position still moves only when something on your list actually turns up."
+)
+
+
+# The underlying concern, STATED PLAINLY — the new-run default since 2026-10-02, by the owner's decision
+# ("Personas shouldn't guard their concerns or objections; they should be laid out plainly when they are
+# known"). The project normally measures a prompt change before defaulting it on; this one is the owner's
+# call instead, and it is UNMEASURED. Every study in docs/studies/ and docs/project/PHASE6-* ran with
+# concerns withheld, so their results (dismissal rates, talking-past, position changes, the evidence lean)
+# do not automatically carry over to runs that state them.
+#
+# Rendered as a line under each position ("What you are really worried about: ...") plus this clause in the
+# holding rule, so the concern is part of the position rather than a separate block that reads like
+# something to guard. Worded as a REQUIRED utterance, per the dismissal finding below: the wording it
+# replaces, "you may say any of this freely", was a permission, and through this renderer a permission
+# tends to be satisfied by silence. "Hold it as you hold the position" is what makes it arguable, and ties
+# it to the same exit condition as the position it sits under.
+CONCERN_STATED_RULE = (
+    "- What you are really worried about is part of your case. When a position bears on the "
+    "discussion, you MUST say the worry behind it as you make the position — openly, in your own "
+    "words: \"what I'm really worried about is …\". Hold it as you hold the position: others may "
+    "argue with it, and it moves on the same terms."
 )
 
 
@@ -581,8 +624,8 @@ def public_persona(
 ) -> str:
     """The persona description shown to the MODERATOR when picking a speaker.
 
-    Adds only the public summary. This is the boundary that keeps a withheld
-    concern out of a prompt that every other participant's turn is selected from.
+    Adds only the public summary, in either concern mode. This is the boundary that keeps a
+    withheld concern out of a prompt that every other participant's turn is selected from.
     """
     if not enabled or structured is None:
         return prose
@@ -592,18 +635,26 @@ def public_persona(
     return f"{prose} ({summary})" if prose else summary
 
 
-def structured_payload(structured: Optional[StructuredPersona]) -> Optional[Dict[str, Any]]:
-    """Serialise for an event payload, minus the operator's private notes.
+def structured_payload(
+    structured: Optional[StructuredPersona], *, include_concern: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """Serialise for an event payload or the dossier, minus what must not be shown.
 
-    ``validity`` and ``underlying_concern`` are stripped: the event log is
-    exported and rendered in the UI, and both fields are private to the operator
-    by design. What remains is enough to see which convictions a run was seeded
-    with.
+    The event log is exported and rendered in the UI, and so is the dossier, so:
+
+    - ``validity`` is ALWAYS stripped. It is the operator's calibration note and is never shown.
+    - ``underlying_concern`` is kept only with ``include_concern`` — a run that states concerns
+      plainly, where the concern is part of the position. A withheld concern is stripped, as it
+      always was: showing it would hand an operator the answer the conversation is meant to draw
+      out. The default is the withheld behaviour, so a caller that does not say cannot leak one.
+
+    What remains is enough to see which convictions a run was seeded with.
     """
     if structured is None:
         return None
     data = structured.model_dump(exclude_none=True)
     for vp in data.get("viewpoints", []):
         vp.pop("validity", None)
-        vp.pop("underlying_concern", None)
+        if not include_concern or not vp.get("underlying_concern"):
+            vp.pop("underlying_concern", None)
     return data

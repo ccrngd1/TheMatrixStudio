@@ -237,3 +237,71 @@ def test_with_assumptions_too_the_worst_case_brief_stays_one_page():
     assert len(b["assumptions"]) == br.MAX_ASSUMPTIONS and b["assumptions_more"] == 8 - br.MAX_ASSUMPTIONS
     assert len(b["agreed"]) == br.MAX_AGREED_WITH_ASSUMPTIONS
     assert len(br.render_markdown(b).split()) < 650
+
+
+# --------------------------------------------------------------------------- #
+# Underlying concerns (owner decision, 2026-10-02): read in both modes, labelled when they were hidden
+# --------------------------------------------------------------------------- #
+
+_CONCERN = {"speaker": "Dana", "concern": "my team takes the pager if this slips", "surfaced": "yes",
+            "where": "turn 3", "addressed": "partly"}
+
+
+@pytest.mark.parametrize("fmt", ["md", "html"])
+@pytest.mark.parametrize("withheld, heading", [
+    (True, "Underlying concerns (hidden during the run)"),
+    (False, "Underlying concerns"),
+])
+def test_the_brief_lists_the_concerns_and_says_when_they_were_hidden(fmt, withheld, heading):
+    m = _run_model(summary={"overview": "o", "consensus": [], "open_questions": [], "key_ideas": [],
+                            "dissenters": [], "concerns": [_CONCERN], "concerns_withheld": withheld})
+    out = br.render(br.run_brief(m), fmt)
+    assert heading in out
+    if not withheld:
+        assert "hidden during the run" not in out
+    # The verdicts come first, so a clipped line still says whether it was raised and answered.
+    assert "Dana (surfaced: yes; addressed: partly): my team takes the pager if this slips" in out
+
+
+def test_unanswered_concerns_come_first_and_the_cut_is_said():
+    rows = [{**_CONCERN, "concern": f"answered {i}", "addressed": "yes"} for i in range(2)]
+    rows.append({**_CONCERN, "concern": "never answered", "addressed": "no"})
+    b = br.run_brief(_run_model(summary={"overview": "o", "concerns": rows}))
+    assert len(b["concerns"]) == br.MAX_CONCERNS and b["concerns_more"] == 1
+    assert "never answered" in b["concerns"][0]
+
+
+def test_no_concerns_means_no_section_and_the_other_caps_are_unchanged():
+    b = br.run_brief(_run_model())
+    assert "Underlying concerns" not in br.render_markdown(b)
+    long = "a considered, specific sentence that a persona might well say in a long debate " * 4
+    full = {"overview": long, "consensus": [long] * 10, "open_questions": [], "key_ideas": [],
+            "dissenters": [{"speaker": "P", "position": long}] * 10}
+    b = br.run_brief(_run_model(summary=full))
+    assert len(b["agreed"]) == br.MAX_AGREED and len(b["dissent"]) == br.MAX_DISSENT
+
+
+def test_with_concerns_too_the_worst_case_brief_stays_one_page():
+    """Measured: three concerns at every cap took a brief with an evidence plan from 648 to 701 words.
+    Two, with the agreements and the objections each giving up a line, keep it inside the page."""
+    long = "a considered, specific sentence that a persona might well say in a long debate " * 4
+    m = _run_model(topic=long * 3, summary={
+        "overview": long * 4, "consensus": [long] * 10, "open_questions": [long] * 10, "key_ideas": [],
+        "dissenters": [{"speaker": "P", "position": long}] * 10,
+        "evidence_plan": [{k: long for k in _PLAN_ROW}] * 10, "conditional_recommendation": long * 4,
+        "concerns": [{**_CONCERN, "concern": long, "where": long}] * 10, "concerns_withheld": True},
+        assumptions=[{"id": f"A{i}", "statement": long, "basis": long, "source": "operator", "turn": 0}
+                     for i in range(8)])
+    b = br.run_brief(m)
+    assert len(b["concerns"]) == br.MAX_CONCERNS and b["concerns_more"] == 10 - br.MAX_CONCERNS
+    assert len(b["agreed"]) == br.MAX_AGREED_WITH_ASSUMPTIONS - 1
+    assert len(b["dissent"]) == br.MAX_DISSENT_WITH_PLAN - 1
+    assert len(br.render_markdown(b).split()) < 650
+    del m["assumptions"]
+    assert len(br.render_markdown(br.run_brief(m)).split()) < 650
+
+
+def test_concern_text_is_escaped_in_the_brief():
+    hostile = "<script>alert(1)</script>"
+    m = _run_model(summary={"overview": "o", "concerns": [{**_CONCERN, "concern": hostile}]})
+    assert "<script>alert" not in br.render_html(br.run_brief(m))

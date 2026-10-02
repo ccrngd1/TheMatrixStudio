@@ -425,12 +425,17 @@ class PersonaConfig(BaseModel):
     type: str = Field(default="PersonaConfig", description="Type discriminator")
     schema_version: str = Field(default="1.0.0", description="Schema version")
     enabled: bool = Field(default=False, description="Master switch for structured personas")
-    # When False the underlying concern is rendered as freely sayable. Default
-    # True because withholding it is the point: per the source spec, drawing the
-    # real concern out of a stakeholder is the skill being exercised, and a
-    # concern volunteered in turn 1 cannot be drawn out.
+    # True: the persona keeps its underlying concern to itself until drawn out (the source spec's
+    # exercise, now an opt-in "hidden agendas" for negotiation or interview practice). False: it
+    # states the concern openly as part of its position.
+    #
+    # TRUE here on purpose, although new runs default to FALSE: the owner decided on 2026-10-02 that
+    # concerns should be laid out plainly when they are known, so the API request model defaults it
+    # to false and writes it into each new run's stored config (`NEW_RUN_WITHHOLD_CONCERNS`). A
+    # config with no value is a run created before then — every one of which withheld — and resuming
+    # or branching it must not change its prompt. Same pattern as `RetrievalConfig.cite_inline`.
     withhold_concerns: bool = Field(
-        default=True, description="Keep `underlying_concern` unsaid until asked"
+        default=True, description="Keep `underlying_concern` unsaid until asked (hidden agendas)"
     )
     # Which dismissal-rule wording to render alongside `dismisses`. A NAMED variant
     # rather than on/off, because both failure modes are measured and sit on either
@@ -474,6 +479,29 @@ class PersonaConfig(BaseModel):
         if not isinstance(raw, dict):
             return cls()
         return cls(**{k: v for k, v in raw.items() if k in cls.model_fields})
+
+
+#: What a NEW run's `personas.withhold_concerns` is when its request does not say: concerns are stated
+#: plainly (owner decision, 2026-10-02). The API request model's default; the local CLI applies it too.
+#: Not `PersonaConfig`'s default, which stays True so a stored config without the key keeps withholding.
+NEW_RUN_WITHHOLD_CONCERNS = False
+
+
+def record_withhold_concerns(config: Dict[str, Any], *, default: bool) -> Dict[str, Any]:
+    """``config`` with ``personas.withhold_concerns`` written out, when it has a ``personas`` block.
+
+    Every writer of a stored config that does not go through the API request model (which writes the
+    value itself) calls this, so a run's choice is in its own config rather than in whichever default
+    the reader of the day has. ``default`` is what an absent key means to the
+    writer: ``NEW_RUN_WITHHOLD_CONCERNS`` for a new run built from a file, and
+    ``PersonaConfig().withhold_concerns`` (True) for a config copied from an existing run — a branch, or
+    "start fresh" — because that is how the engine reads the run being copied. A config with no
+    ``personas`` block is returned as it is: it has no structured personas for the value to govern.
+    """
+    personas = config.get("personas")
+    if not isinstance(personas, dict) or "withhold_concerns" in personas:
+        return config
+    return {**config, "personas": {**personas, "withhold_concerns": bool(default)}}
 
 
 class SimSnapshot(BaseModel):

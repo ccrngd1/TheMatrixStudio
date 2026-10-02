@@ -20,7 +20,7 @@ Nothing from the earlier transcript carries over, and the earlier run is not cha
 4. On the **Topic** step, read any amber notes under **Import a setup**. They name what could not be copied: documents attached to the whole cast rather than to one persona, documents with no recoverable text, and collections that the earlier run's research wrote into.
 5. Change the **Run name (codename)**. It is filled in with the earlier run's name; if you keep it, the new run gets that name with `-2` added.
 6. Make the change you came to make: the topic, a persona's convictions, who is in the cast, the documents.
-7. Set again anything the copy does not carry. Copied: the topic, description, every persona (description, goals, positions, withheld concerns, what they will not weigh, their documents and their collection bindings), the turn count, model, avatars, cognition, the cast-wide collections and "End when the conversation is finished". **Not copied**, so check each:
+7. Set again anything the copy does not carry. Copied: the topic, description, every persona (description, goals, positions, underlying concerns, what they will not weigh, their documents and their collection bindings), the turn count, model, avatars, cognition, the cast-wide collections, "End when the conversation is finished" and **Hidden agendas** (a run from before 2026-10-02 always withheld its concerns, so its copy has hidden agendas on; untick it on the Cast step to have the new run state them plainly). **Not copied**, so check each:
    - the conversation method and **Closing round when the ceiling is reached** (Topic step)
    - consultants (Cast step)
    - **Research the subject before starting** and **Ask personas to cite their sources inline** (Knowledge step)

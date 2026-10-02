@@ -77,10 +77,9 @@ describe('buildStructured', () => {
     expect(out).toEqual({ viewpoints: [], preferences: { dismisses: ['cost'] } })
   })
 
-  it('never emits underlying_concern or validity', () => {
-    // Neither is authorable here by design: the withheld concern changes what a
-    // persona says when pressed, and offering it on a casual form would invite
-    // filling it in without realising that.
+  it('never emits validity, nor a concern nobody wrote', () => {
+    // `validity` is the operator's private calibration note and is not authorable here at all. A concern
+    // comes only from its own box (below), never out of the positions line.
     const flat = JSON.stringify(
       buildStructured({ positions: '[firm] x -> y', dismisses: 'z' }),
     )
@@ -94,7 +93,7 @@ describe('parseList', () => {
   })
 })
 
-describe('withheld concerns', () => {
+describe('underlying concerns', () => {
   it('attaches concerns to positions by line index', () => {
     const out = buildStructured({
       positions: '[firm] a\n[negotiable] b',

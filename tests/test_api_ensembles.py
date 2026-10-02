@@ -163,6 +163,14 @@ class TestTheDefaultIsReplicates:
         }
         assert len(configs) == 1
 
+    @pytest.mark.parametrize("sent, stored", [({}, False), ({"withhold_concerns": True}, True)])
+    def test_every_member_records_the_hidden_agendas_setting(self, client, sent, stored):
+        # Written into each member's own config, so the members agree with each other and with
+        # what a resume of any one of them will read — never left to the engine's default.
+        out = _create(client, config={"max_messages": 4, "personas": {"enabled": True, **sent}}).json()
+        for m in out["members"]:
+            assert _member_config(client, m["run_id"])["personas"]["withhold_concerns"] is stored
+
     def test_members_are_not_branches(self, client):
         # `parent_run_id` means 'forked from', and the lineage walk follows it. Members are
         # siblings; using that field would render them as a branch tree.

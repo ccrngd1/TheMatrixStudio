@@ -135,8 +135,8 @@ export interface CreateRunBody {
         position: string
         firmness: string
         evidence_that_shifts?: string[]
-        // Withheld from the conversation, NOT from the operator: the persona knows it
-        // and says it only when asked why it holds the position.
+        // The real worry behind the position. Stated openly in the conversation unless
+        // `config.personas.withhold_concerns` is on (hidden agendas); never hidden from the operator.
         underlying_concern?: string
       }[]
       preferences?: { dismisses: string[] }
@@ -158,7 +158,8 @@ export interface CreateRunBody {
     // Phase 6 / Phase 5. Sent only when the cast actually authored the relevant
     // content; enabling a feature nobody configured would cost tokens for an empty
     // prompt block.
-    personas?: { enabled: boolean; withhold_concerns?: boolean; dismissal_rule?: string }
+    // `withhold_concerns` is always sent with this block, so the run records the operator's choice.
+    personas?: { enabled: boolean; withhold_concerns?: boolean; dismissal_rule?: string; evidence_lean?: boolean }
     retrieval?: { enabled: boolean; mode?: string; k?: number; max_chars?: number }
     // Lets the moderator end the run when nobody has anything substantive left, which
     // turns `max_messages` into a ceiling. Off server-side by default while it is being

@@ -24,7 +24,7 @@ import asyncio
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 # Deferred: importing litellm costs 1.7 s and this module's callers include the API
 # Lambda, whose read routes never generate. See matrix_studio/lazy_litellm.py.
@@ -48,6 +48,7 @@ DEFAULT_SUMMARY_FIELDS = [
     "open_questions",
     "evidence_plan",
     "conditional_recommendation",
+    "concerns",
 ]
 
 #: What the analyst writes in an evidence-plan column the conversation never supplied. Fixed wording,
@@ -57,6 +58,13 @@ NOT_STATED = "not stated"
 
 #: The evidence-plan columns, in the order the brief shows them.
 EVIDENCE_PLAN_KEYS = ("data", "asked_by", "decision", "moves_them", "best_guess", "cheapest_way")
+
+#: The `concerns` columns: one row per authored underlying concern. The post-run analysis reads the
+#: concerns whether or not the run withheld them (owner decision, 2026-10-02); on a withheld run this is
+#: the reveal. `surfaced` and `addressed` are one of `CONCERN_VERDICTS`; `where` is a short quote or turn
+#: reference, and `NOT_STATED` when the concern never came up.
+CONCERN_KEYS = ("speaker", "concern", "surfaced", "where", "addressed")
+CONCERN_VERDICTS = ("yes", "partly", "no")
 
 # Max personas contacted for a room aside, to keep a single aside turn bounded
 # and its cost predictable (asides cost money — see the honesty gate).
@@ -205,6 +213,11 @@ def _summary_system_prompt(
             '"conditional_recommendation": "If <the result>, do <A>; if not, do <B>. The cast\'s best '
             'guess is <guess>, so lean <A or B>."'
         ),
+        "concerns": (
+            '"concerns": [ {"speaker": "name", "concern": "the underlying concern, as listed", '
+            '"surfaced": "yes, partly or no", "where": "a short quote or turn reference showing it", '
+            '"addressed": "yes, partly or no"}, ... ]'
+        ),
     }
     # What a field must and must not contain; see the docstring for why it is not in the shape.
     field_rules = {
@@ -215,6 +228,13 @@ def _summary_system_prompt(
         "conditional_recommendation": (
             '"conditional_recommendation": built only from the evidence plan; where no best guess was '
             f'stated say the lean is {NOT_STATED}; an empty string if nobody asked for evidence.'
+        ),
+        "concerns": (
+            '"concerns": one row per concern in the analyst-only list, in its order. "surfaced" is '
+            "whether that worry came up in the conversation, in anyone's words; \"addressed\" is whether "
+            f'anyone answered it or dealt with it; "where" is exactly "{NOT_STATED}" when it never came '
+            "up. Judge only from the transcript: the list says what each persona was given, not what "
+            "was said."
         ),
     }
     # `fields` may come from a client in any order, so the overview is moved to the front here, not
@@ -250,6 +270,46 @@ def _summary_system_prompt(
     )
 
 
+def _coerce_concern(row: Dict[str, Any]) -> Dict[str, str]:
+    """One `concerns` row in the fixed shape. A verdict outside yes/partly/no is `NOT_STATED` rather than
+    guessed at, so "the analyst did not say" never reads as "no"."""
+    out = {k: str(row.get(k) or "").strip() for k in CONCERN_KEYS}
+    for k in ("surfaced", "addressed"):
+        verdict = out[k].lower().rstrip(".")
+        out[k] = verdict if verdict in CONCERN_VERDICTS else NOT_STATED
+    out["where"] = out["where"] or NOT_STATED
+    out["speaker"] = out["speaker"] or NOT_STATED
+    return out
+
+
+def concerns_note(concerns: Sequence[Dict[str, str]], *, withheld: bool) -> str:
+    """The analyst-only list of authored concerns, appended to the summary request.
+
+    Given in BOTH modes (owner decision, 2026-10-02): the analysis is where a hidden agenda is revealed,
+    and where a plainly stated one is checked for having actually been said and answered. Labelled as
+    not part of the transcript, because the no-fabrication guardrail is about the transcript and a
+    concern that never came up must be reported as never coming up, not as said.
+    """
+    if not concerns:
+        return ""
+    lines = "\n".join(
+        f"- {c.get('speaker')}" + (f" (behind “{c['position']}”)" if c.get("position") else "")
+        + f": {c.get('concern')}"
+        for c in concerns
+    )
+    how = (
+        "They were told to keep these to themselves unless someone drew them out, so the others never "
+        "saw them."
+        if withheld else
+        "They were told to state these openly when the position they sit behind came up."
+    )
+    return (
+        "\n\nAnalyst-only context, NOT part of the transcript — the underlying concern each persona was "
+        f"given behind its positions. {how}\n{lines}\n"
+        "For each one, report from the transcript alone whether it came up and whether it was addressed."
+    )
+
+
 def _empty_summary(fields: List[str]) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
     for f in fields:
@@ -282,6 +342,11 @@ def _coerce_summary(obj: Dict[str, Any], fields: List[str]) -> Dict[str, Any]:
                 {k: (str(it.get(k) or "").strip() or NOT_STATED) for k in EVIDENCE_PLAN_KEYS}
                 for it in (val if isinstance(val, list) else [])
                 if isinstance(it, dict) and str(it.get("data") or "").strip()
+            ]
+        elif f == "concerns":
+            out[f] = [
+                _coerce_concern(it) for it in (val if isinstance(val, list) else [])
+                if isinstance(it, dict) and str(it.get("concern") or "").strip()
             ]
         elif f == "dissenters":
             items = []
@@ -321,6 +386,8 @@ async def generate_summary(
     model: Optional[str] = None,
     instructions: Optional[str] = None,
     context: str = "",
+    concerns: Optional[Sequence[Dict[str, str]]] = None,
+    concerns_withheld: bool = False,
 ) -> Dict[str, Any]:
     """
     Generate a structured analyst summary of a completed conversation.
@@ -328,6 +395,12 @@ async def generate_summary(
     ``instructions`` (optional) REPLACES the default analyst-role framing while
     the guardrails always remain (see ``_summary_system_prompt``). It is
     backward-compatible: omitting it uses the default framing.
+
+    ``concerns`` is the run's authored underlying concerns (``{speaker, position, concern}``), given
+    to the analyst as context the transcript does not contain, whether or not the run withheld them
+    (owner decision, 2026-10-02). ``concerns_withheld`` says which, and is stored on the payload so
+    every surface can label a withheld run's concerns as hidden during it. With no concerns the
+    ``concerns`` field is not asked for, and the prompt is exactly what it was before it existed.
 
     Returns ``{payload, tokens_in, tokens_out, cost_usd, parsed, instructions}``
     where ``payload`` is the structured (or fallback) summary, ``parsed`` is True
@@ -337,6 +410,12 @@ async def generate_summary(
     back to a plain-text overview so it never crashes the run/UI.
     """
     fields = fields or list(DEFAULT_SUMMARY_FIELDS)
+    if not concerns:
+        fields = [f for f in fields if f != "concerns"] or [
+            f for f in DEFAULT_SUMMARY_FIELDS if f != "concerns"
+        ]
+    if "concerns" in fields:
+        context = context + concerns_note(concerns or [], withheld=concerns_withheld)
     transcript = format_transcript(conversation)
     system = _summary_system_prompt(fields, focus, instructions)
     # The effective instructions we persist: NULL (None) when the default was
@@ -356,6 +435,12 @@ async def generate_summary(
         {"role": "user", "content": user},
     ]
 
+    def _stamp(payload: Dict[str, Any]) -> Dict[str, Any]:
+        # Not model output: whether the concerns were hidden during the run, which decides the label.
+        if "concerns" in fields:
+            payload["concerns_withheld"] = bool(concerns_withheld)
+        return payload
+
     tokens_in = tokens_out = 0
     cost_usd = 0.0
     last_content = ""
@@ -373,7 +458,7 @@ async def generate_summary(
                     "failed). This is a model/analysis error, not part of the run."
                 )
             return {
-                "payload": payload,
+                "payload": _stamp(payload),
                 "tokens_in": tokens_in,
                 "tokens_out": tokens_out,
                 "cost_usd": cost_usd,
@@ -397,7 +482,7 @@ async def generate_summary(
                     ", ".join(payload["omitted"]), result.get("finish_reason"), result["tokens_out"],
                 )
             return {
-                "payload": payload,
+                "payload": _stamp(payload),
                 "tokens_in": tokens_in,
                 "tokens_out": tokens_out,
                 "cost_usd": cost_usd,
@@ -424,7 +509,7 @@ async def generate_summary(
         # Caller didn't request overview; stash prose so nothing is lost.
         payload["overview"] = last_content
     return {
-        "payload": payload,
+        "payload": _stamp(payload),
         "tokens_in": tokens_in,
         "tokens_out": tokens_out,
         "cost_usd": cost_usd,

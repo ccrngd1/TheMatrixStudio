@@ -293,11 +293,11 @@ What a branch carries across, and what it does not, is worth knowing before you 
 | carried across | not carried across |
 |---|---|
 | the transcript up to turn N | memories and reflections |
-| the cast, including convictions and withheld concerns | relationship notes |
+| the cast, including convictions and underlying concerns | relationship notes |
 | the pending-thread ledger | goal updates made during the run (the cast's original goals are used) |
 | the first-hand citation ledger | |
 | the working assumptions in force at turn N | |
-| the run's config (method, cognition, retrieval, and so on) | |
+| the run's config (method, cognition, retrieval, and so on), with hidden agendas written out — `true` for a parent from before 2026-10-02 that recorded no value | |
 
 The branch state is rebuilt by replaying the parent's log, and that replay reads responses, thread
 events and consultant answers but not memory, reflection, relationship or goal events

@@ -47,6 +47,7 @@ from matrix_studio.state import (
     RetrievalConfig,
     SelectionConfig,
     SimSnapshot,
+    record_withhold_concerns,
 )
 from matrix_studio.storage import Database
 from matrix_studio.tenancy import LOCAL_USER_SUB
@@ -357,6 +358,10 @@ async def create_branch_run(
     cfg.pop("branch_mutation", None)
     if mutation:
         cfg["branch_mutation"] = mutation
+    # The parent's hidden-agendas setting, written out rather than left to a default. A parent from
+    # before 2026-10-02 may have no key, which the engine reads as withheld, so that is what the
+    # branch records: a fork continues the conversation its parent was having.
+    cfg = record_withhold_concerns(cfg, default=PersonaConfig().withhold_concerns)
 
     await db.create_run(
         run_id=branch_run_id,

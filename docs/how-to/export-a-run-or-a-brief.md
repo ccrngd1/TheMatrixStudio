@@ -2,7 +2,7 @@
 
 Download a run or an ensemble as a full report (Markdown, HTML or PDF), or as a one-page decision brief.
 
-Exports are built from what is stored; they make no model calls. Private persona fields (withheld concerns and calibration notes) are left out.
+Exports are built from what is stored; they make no model calls. Calibration notes are always left out. A persona's underlying concern is listed with its position when the run stated concerns plainly, and left out of the cast when the run withheld them (hidden agendas, and every run from before 2026-10-02). The summary section lists every authored concern in both modes, labelled "hidden during the run" for a withheld one.
 
 ## Prerequisites
 
@@ -21,7 +21,7 @@ Exports are built from what is stored; they make no model calls. Private persona
 
 1. Open the run, tap **⋯**, and choose **Decision brief**.
 
-   The brief opens in a window: the bottom line, what would settle it, what was assumed, the standing objections, and how far to trust it.
+   The brief opens in a window: the bottom line, what would settle it, what was assumed, the standing objections, the underlying concerns (when the personas carried any; "hidden during the run" when they were withheld), and how far to trust it.
 
 2. Tap **Download HTML** or **Download Markdown**.
 3. Close it with **✕** or by clicking outside it.

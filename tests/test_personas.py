@@ -1,15 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
 """Phase 6 tests — structured personas (convictions, not just goals).
 
-The most important tests here are the LEAKAGE ones. Two fields are private by
-design and the whole exercise depends on them staying private:
+The most important tests here are the LEAKAGE ones:
 
-- ``underlying_concern`` — the real worry behind a stated position. Drawing it
-  out is the skill the panel exercises, so it must never appear in the
-  moderator's persona list (one prompt away from the entire cast) or in the
-  event log.
-- ``validity`` — the operator's calibration note. Telling a persona its own
-  position is "outdated" would collapse the exercise entirely.
+- ``underlying_concern`` — the real worry behind a stated position. Stated plainly
+  by default since 2026-10-02 (owner decision); WITHHELD when the run turns on
+  hidden agendas, and in every run from before then. Withheld, drawing it out is
+  the skill the panel exercises, so it must never appear in the event log. In
+  either mode it never appears in the moderator's persona list (one prompt away
+  from the entire cast).
+- ``validity`` — the operator's calibration note, private in every mode. Telling
+  a persona its own position is "outdated" would collapse the exercise entirely.
 
 Second most important: with the feature off, prompts must be byte-identical to
 pre-Phase-6. That is what makes this safe to ship on by nobody.
@@ -97,6 +98,7 @@ def test_validity_is_never_rendered_anywhere():
 
 
 def test_event_payload_strips_both_private_fields():
+    """The default is the WITHHELD behaviour, so a caller that does not say cannot leak a concern."""
     payload = structured_payload(build())
     flat = str(payload)
     assert CONCERN not in flat
@@ -104,6 +106,18 @@ def test_event_payload_strips_both_private_fields():
     # but keeps what makes the run auditable
     assert "firm" in flat
     assert "stateful external service" in flat
+
+
+def test_a_plain_runs_payload_carries_the_concern_but_never_validity():
+    payload = structured_payload(build(), include_concern=True)
+    assert payload["viewpoints"][0]["underlying_concern"] == CONCERN
+    assert VALIDITY_NOTE not in str(payload)
+    assert "validity" not in payload["viewpoints"][0]
+
+
+def test_a_plain_payload_omits_an_empty_concern_rather_than_sending_blank():
+    bare = build(viewpoints=[build().viewpoints[0].model_copy(update={"underlying_concern": ""})])
+    assert "underlying_concern" not in structured_payload(bare, include_concern=True)["viewpoints"][0]
 
 
 def test_payload_is_json_serialisable():
@@ -128,11 +142,91 @@ def test_private_render_carries_the_concern_with_its_withholding_instruction():
     assert "Do not volunteer" in out
 
 
-def test_withhold_concerns_false_renders_it_as_freely_sayable():
+# The withheld block, verbatim. Every withheld run and every study in docs/studies/ and
+# docs/project/PHASE6-* was measured with this text, so it is locked rather than paraphrased:
+# hidden agendas must render exactly what they rendered before concerns were stated plainly.
+WITHHELD_BLOCK = (
+    "What is REALLY behind those positions (numbered to match):\n"
+    f"1. {CONCERN}\n"
+    "Do not volunteer any of this. State the position, not the worry "
+    "underneath it. Say the real reason only if someone asks you why you "
+    "hold the position, or presses you past your surface argument — and "
+    "then say it plainly, in your own words."
+)
+
+
+def test_the_withheld_rendering_is_unchanged():
+    out = build().render_private(withhold_concerns=True)
+    assert f"\n\n{WITHHELD_BLOCK}\n\n" in out
+    # Rendered last before the dismissal rule, as before, and nothing of the plain mode leaks in.
+    assert out.index(WITHHELD_BLOCK) > out.index("How to hold those positions")
+    assert "What you are really worried about" not in out
+    from matrix_studio.personas import CONCERN_STATED_RULE
+
+    assert CONCERN_STATED_RULE not in out
+
+
+def test_withheld_render_is_the_plain_render_of_no_concern_plus_the_block():
+    """The whole withheld prompt, not just its block: it is the prompt a persona with NO concern
+    gets, plus the block and nothing else. So the plain-mode changes cannot have reached it."""
+    bare = build(viewpoints=[build().viewpoints[0].model_copy(update={"underlying_concern": ""})])
+    withheld = build().render_private(withhold_concerns=True)
+    assert withheld.replace(f"\n\n{WITHHELD_BLOCK}", "", 1) == bare.render_private(withhold_concerns=True)
+
+
+def test_stated_plainly_the_concern_sits_with_its_position():
     out = build().render_private(withhold_concerns=False)
-    assert CONCERN in out
-    assert "Do not volunteer" not in out
-    assert "freely" in out
+    lines = out.splitlines()
+    position = next(i for i, line in enumerate(lines) if "No feature may add a stateful" in line)
+    concern = lines.index(f"   What you are really worried about: {CONCERN}")
+    exit_condition = next(i for i, line in enumerate(lines) if "What would change your mind" in line)
+    # Under its own position, before the condition that moves both of them.
+    assert position < concern < exit_condition
+    # Said once, with its position — not repeated in a block of its own.
+    assert out.count(CONCERN) == 1
+
+
+def test_stated_plainly_it_must_be_said_and_is_held_like_the_position():
+    from matrix_studio.personas import CONCERN_STATED_RULE
+
+    out = build().render_private(withhold_concerns=False)
+    # A REQUIRED utterance, per the dismissal finding: a permission is satisfied by silence.
+    assert "you MUST say the worry behind it" in CONCERN_STATED_RULE
+    # Arguable, and on the same exit condition as the position it sits under.
+    assert "others may argue with it" in CONCERN_STATED_RULE
+    assert "moves on the same terms" in CONCERN_STATED_RULE
+    # Part of the holding rule, after the evidence-lean clause when that is on.
+    holding = out[out.index("How to hold those positions"):]
+    assert CONCERN_STATED_RULE in holding
+    on = build().render_private(withhold_concerns=False, evidence_lean=True)
+    from matrix_studio.personas import EVIDENCE_LEAN_RULE
+
+    assert on.index(EVIDENCE_LEAN_RULE) < on.index(CONCERN_STATED_RULE)
+
+
+def test_stated_plainly_it_does_not_read_as_a_secret():
+    out = build().render_private(withhold_concerns=False)
+    for guarded in ("Do not volunteer", "REALLY behind", "only if someone asks", "freely", "secret",
+                    "numbered to match"):
+        assert guarded not in out, guarded
+
+
+def test_with_no_concern_authored_both_modes_render_the_same():
+    """The plain-mode clause is added only when there is a concern to state, so a cast with none
+    renders exactly as it did before, whichever mode the run is in."""
+    bare = build(viewpoints=[build().viewpoints[0].model_copy(update={"underlying_concern": ""})])
+    assert bare.render_private(withhold_concerns=False) == bare.render_private(withhold_concerns=True)
+
+
+def test_stated_plainly_only_the_positions_with_a_concern_get_the_line():
+    vps = [
+        Viewpoint(position="Ship this quarter", firmness="negotiable", underlying_concern="My bonus is tied to it"),
+        Viewpoint(position="No new vendor", firmness="firm", evidence_that_shifts=["a signed security review"]),
+    ]
+    out = build(viewpoints=vps).render_private(withhold_concerns=False)
+    assert out.count("What you are really worried about:") == 1
+    first = out.index("1. [negotiable] Ship this quarter")
+    assert first < out.index("What you are really worried about: My bonus is tied to it") < out.index("2. [firm]")
 
 
 def test_firmness_and_evidence_that_shifts_are_rendered_together():
@@ -401,8 +495,60 @@ def test_parse_structured_ignores_unknown_keys():
 def test_persona_config_defaults_to_off():
     cfg = PersonaConfig()
     assert cfg.enabled is False
+    # Still True: a stored config without the key is a run from before 2026-10-02, which withheld.
     assert cfg.withhold_concerns is True
     assert cfg.dismissal_rule == "mandatory"
+
+
+def test_new_runs_state_concerns_plainly_but_a_stored_config_without_the_key_withholds():
+    """Off for new runs (the request model writes it into the stored config); on for a config that
+    predates the decision, so resuming or branching an old run keeps its prompt. The
+    `retrieval.cite_inline` pattern."""
+    from matrix_studio.api.app import RunConfigModel
+
+    new = RunConfigModel(personas={"enabled": True}).model_dump(exclude_none=True)
+    assert new["personas"]["withhold_concerns"] is False
+    assert PersonaConfig.from_config(new).withhold_concerns is False
+    assert PersonaConfig.from_config({"personas": {"enabled": True}}).withhold_concerns is True
+    hidden = RunConfigModel(personas={"enabled": True, "withhold_concerns": True}).model_dump(exclude_none=True)
+    assert PersonaConfig.from_config(hidden).withhold_concerns is True
+
+
+@pytest.mark.parametrize("sent, stored", [({"enabled": True}, False),
+                                          ({"enabled": True, "withhold_concerns": True}, True)])
+def test_a_file_run_from_the_local_cli_is_a_new_run(tmp_path, monkeypatch, sent, stored):
+    """`python -m matrix_studio run FILE` hands the file to the engine, whose default still withholds.
+    A file run is a NEW run, so it gets the new-run default, written into the config it stores; a file
+    that says either value keeps it."""
+    import asyncio
+    import json
+
+    from matrix_studio import __main__ as cli
+
+    seen = {}
+
+    async def fake_run(request, db=None, **_kw):
+        seen.update(request)
+        return {"status": "complete", "total_turns": 0}
+
+    monkeypatch.setattr(cli, "run_simulation", fake_run)
+    path = tmp_path / "run.json"
+    path.write_text(json.dumps({"topic": "t", "cast": [], "config": {"personas": sent}}))
+    assert asyncio.run(cli.run_from_file(path, None, None, no_db=True)) == 0
+    assert seen["config"]["personas"]["withhold_concerns"] is stored
+
+
+def test_record_withhold_concerns_writes_the_value_out_and_never_overrides_one():
+    from matrix_studio.state import NEW_RUN_WITHHOLD_CONCERNS, record_withhold_concerns
+
+    old = {"max_messages": 4, "personas": {"enabled": True}}
+    assert record_withhold_concerns(old, default=True)["personas"] == {"enabled": True, "withhold_concerns": True}
+    assert old == {"max_messages": 4, "personas": {"enabled": True}}, "the source config is not mutated"
+    assert record_withhold_concerns(old, default=NEW_RUN_WITHHOLD_CONCERNS)["personas"]["withhold_concerns"] is False
+    said = {"personas": {"enabled": True, "withhold_concerns": False}}
+    assert record_withhold_concerns(said, default=True) == said
+    # No personas block: nothing for the value to govern, so nothing is added.
+    assert record_withhold_concerns({"max_messages": 4}, default=True) == {"max_messages": 4}
 
 
 def test_persona_config_coerces_and_validates_the_rule_variant():

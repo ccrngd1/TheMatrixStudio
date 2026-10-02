@@ -73,6 +73,49 @@ describe('SummaryPanel', () => {
     expect(screen.getByText('not stated')).toHaveClass('italic')
   })
 
+  // The analysis reads each persona's underlying concerns in both modes (owner decision, 2026-10-02).
+  const withConcerns = (concerns_withheld: boolean): StoredSummary => ({
+    ...generated,
+    payload: {
+      ...generated.payload,
+      concerns_withheld,
+      concerns: [
+        { speaker: 'Dana', concern: 'My team takes the pager if this slips', surfaced: 'partly',
+          where: 'turn 4: “someone has to carry it”', addressed: 'no' },
+        { speaker: 'Ravi', concern: 'The budget line has my name on it', surfaced: 'no',
+          where: 'not stated', addressed: 'no' },
+      ],
+    },
+  })
+  const renderSummary = (g: StoredSummary) =>
+    render(
+      <SummaryPanel runId="r1" generated={g} imported={null} defaultInstructions={DEFAULT_INSTRUCTIONS}
+        canGenerate onUpdated={() => {}} />,
+    )
+
+  it('reveals a withheld run’s concerns, labelled as hidden during the run', () => {
+    renderSummary(withConcerns(true))
+    expect(screen.getByText('Underlying concerns (hidden during the run)')).toBeInTheDocument()
+    expect(screen.getByText(/kept these to themselves during the run/)).toBeInTheDocument()
+    expect(screen.getByText(/My team takes the pager if this slips/)).toBeInTheDocument()
+    expect(screen.getByText('turn 4: “someone has to carry it”')).toBeInTheDocument()
+    // A concern that never came up is the gap it is.
+    expect(screen.getByText('not stated')).toHaveClass('italic')
+  })
+
+  it('lists a plain run’s concerns without saying they were hidden', () => {
+    renderSummary(withConcerns(false))
+    expect(screen.getByText('Underlying concerns')).toBeInTheDocument()
+    expect(screen.queryByText(/hidden during the run/)).not.toBeInTheDocument()
+    expect(screen.getByText(/The budget line has my name on it/)).toBeInTheDocument()
+    expect(screen.getAllByText('addressed')).toHaveLength(2)
+  })
+
+  it('shows no concerns block for a summary without any', () => {
+    renderSummary(generated)
+    expect(screen.queryByText(/Underlying concerns/)).not.toBeInTheDocument()
+  })
+
   // A reply that left the overview out is stored with overview "" (and, since 2026-10-01, `omitted`).
   // It used to make the Overview block vanish, so the panel looked like a summary without one.
   it.each([

@@ -2,6 +2,15 @@
 # SPDX-License-Identifier: Apache-2.0
 """Did a persona's withheld ``underlying_concern`` reach the transcript?
 
+## Only for runs that WITHHELD their concerns
+
+Since 2026-10-02 a new run states its concerns plainly by default (owner decision), and withholding
+is the opt-in "hidden agendas" mode (``config.personas.withhold_concerns: true``). In a plain run the
+persona is told to say its concern, so a concern in the transcript is the intended behaviour, not a
+leak, and this script has nothing to measure. Point it only at withheld runs: the validation arms it
+reads its concerns from (``scripts/build_validation_arms.py``) pin withholding on for that reason, as
+does every run created before the change.
+
 ## Why this exists as a separate instrument
 
 ``underlying_concern`` is withheld by the *code path*: it reaches only its owner's
@@ -201,8 +210,12 @@ def scan(
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("results", nargs="+", type=Path, help="run result JSON file(s)")
+    ap = argparse.ArgumentParser(
+        description="Pre-filter WITHHELD-concern runs for a concern reaching the transcript. "
+                    "Not for runs that state concerns plainly, where saying it is the intended behaviour."
+    )
+    ap.add_argument("results", nargs="+", type=Path,
+                    help="result JSON file(s) of runs that withheld their concerns")
     ap.add_argument("--threshold", type=float, default=OVERLAP_THRESHOLD)
     args = ap.parse_args()
 
@@ -212,6 +225,7 @@ def main() -> int:
     total_concerns = sum(len(v) for v in concerns.values())
     print(f"Checking {len(args.results)} run(s) against {scorable} of {total_concerns} "
           f"authored concerns (private-word overlap >= {args.threshold})")
+    print("  (meaningful only for runs that withheld their concerns; a plain run is meant to say them)")
     if scorable < total_concerns:
         print(f"  note: {total_concerns - scorable} concern(s) have < {MIN_CONCERN_WORDS} "
               "words not already said publicly, so they cannot be scored — an authoring\n"

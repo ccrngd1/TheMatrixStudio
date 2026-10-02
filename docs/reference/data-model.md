@@ -189,7 +189,7 @@ A checkpoint written after each turn: a pointer item (`run_id`, `turn`, `status`
 | `total_turns` | integer | |
 | `error_message` | string or null | |
 
-Agent state: `name`, `persona`, `structured` (convictions, or `null`), `memory_stream` (`{id, timestamp, content, importance, tags, metadata}`), `goals`, `relationships` (name to stance text), `conversation_history` (the agent's view of recent messages, at most 50), `total_tokens_in`, `total_tokens_out`, `total_cost_usd`, `portrait_key` (avatar key), `portrait` (legacy inline image, old runs only), and the discriminators `type`, `schema_version`. The snapshot keeps the private conviction fields; the dossier and exports remove `validity` and `underlying_concern`.
+Agent state: `name`, `persona`, `structured` (convictions, or `null`), `memory_stream` (`{id, timestamp, content, importance, tags, metadata}`), `goals`, `relationships` (name to stance text), `conversation_history` (the agent's view of recent messages, at most 50), `total_tokens_in`, `total_tokens_out`, `total_cost_usd`, `portrait_key` (avatar key), `portrait` (legacy inline image, old runs only), and the discriminators `type`, `schema_version`. The snapshot keeps the private conviction fields. The dossier and exports always remove `validity`, and remove `underlying_concern` when the run withheld concerns (`config.personas.withhold_concerns`, which a stored config without the key reads as `true`); a run that stated them plainly keeps it.
 
 ---
 
@@ -219,6 +219,8 @@ One item per version; a regeneration adds a version and the API returns the late
 | `open_questions` | array of strings | |
 | `evidence_plan` | array of objects | Each `{data, asked_by, decision, moves_them, best_guess, cheapest_way}`; a value the conversation did not supply is `"not stated"`. Rows without `data` are dropped. |
 | `conditional_recommendation` | string | `""` when nobody asked for evidence. |
+| `concerns` | array of objects | Since 2026-10-02. Requested only for a run with structured personas on and at least one `underlying_concern` authored, in either concern mode; absent otherwise, and from older summaries. Each `{speaker, concern, surfaced, where, addressed}`: `surfaced` and `addressed` are `yes`, `partly` or `no`, and any other value is stored as `"not stated"`; `where` is a short quote or turn, `"not stated"` when it never came up. Rows without `concern` are dropped. |
+| `concerns_withheld` | boolean | Present with `concerns`. Not model output: whether the run withheld its concerns, so a surface can label the section "hidden during the run". |
 | `omitted` | array of strings | Present only when the reply left requested fields out (or gave a blank overview). |
 
 When generation fails, the summary is still stored, with an `overview` stating that generation was unavailable and the other fields empty.

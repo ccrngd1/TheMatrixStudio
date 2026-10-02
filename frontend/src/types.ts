@@ -274,6 +274,17 @@ export interface SummaryPayload {
     cheapest_way: string
   }[]
   conditional_recommendation?: string
+  // One row per authored underlying concern, read in both modes (owner decision, 2026-10-02). Absent for
+  // a run with none, and for summaries stored before then. `where` is "not stated" when it never came up.
+  concerns?: {
+    speaker: string
+    concern: string
+    surfaced: 'yes' | 'partly' | 'no' | 'not stated'
+    where: string
+    addressed: 'yes' | 'partly' | 'no' | 'not stated'
+  }[]
+  // Not model output: whether the run kept these back, so the panel can say the room never heard them.
+  concerns_withheld?: boolean
   overview?: string
   // Requested fields the analyst's reply did not supply (they hold their empty value). Present only
   // when there were any; summaries stored before 2026-10-01 never carry it.
@@ -484,13 +495,18 @@ export interface DossierRetrieval {
   researched_passages?: number
 }
 
-// Phase 6 structured persona, as the dossier returns it. Mirrors
-// `matrix_studio/personas.py` MINUS the two operator-private fields.
+// Phase 6 structured persona, as the dossier returns it. Mirrors `matrix_studio/personas.py` MINUS
+// `validity`, the operator's calibration note, which is never sent and so is not declared.
 export interface StructuredViewpoint {
   position: string
   formed_by?: string
   firmness: 'negotiable' | 'firm' | 'non-negotiable' | 'requires-escalation'
   evidence_that_shifts?: string[]
+  // The real worry behind the position. Present ONLY when the server sends it, which it does for a run
+  // that stated concerns plainly (`AgentDossier.withhold_concerns === false`). A withheld run's dossier
+  // has it stripped, and the Convictions tab renders it only when the run said it could be said, so a
+  // server regression that sent it anyway still shows nothing.
+  underlying_concern?: string
 }
 
 export interface StructuredPersona {
@@ -537,11 +553,13 @@ export interface AgentDossier {
    *  every read, so a revoked grant shows as unreadable (and unnamed). */
   knowledge_bases?: { id: string; name: string | null; scope: 'run' | 'persona'; readable: boolean }[]
   document_retrievals?: DossierRetrieval[]
-  // Phase 6. Null for a run that used no structured personas. The backend has
-  // already stripped `underlying_concern` and `validity` — both are private to
-  // the operator by design, so they are absent from this type on purpose rather
-  // than by omission. The dossier's Convictions tab renders the rest.
+  // Phase 6. Null for a run that used no structured personas. The backend has already stripped
+  // `validity`, always, and `underlying_concern` when the run withheld it. The Convictions tab renders
+  // the rest.
   structured?: StructuredPersona | null
+  // Whether the run kept concerns back (hidden agendas, and every run from before 2026-10-02). Only an
+  // explicit `false` lets a concern be shown: absent, from an older backend, is treated as withheld.
+  withhold_concerns?: boolean
   // Whether cognition was CONFIGURED on the run, which is not the same question as
   // whether it produced anything. Optional so a dossier from an older backend parses;
   // `undefined` means "the backend cannot tell us", and the UI must not read that as

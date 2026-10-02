@@ -1,5 +1,7 @@
 # Phase 6 — Structured Personas
 
+> **2026-10-02:** new runs now state `underlying_concern` plainly; withholding is an opt-in "hidden agendas" option, and everything measured here was measured with it on — see [`../explanation/personas-and-convictions.md`](../explanation/personas-and-convictions.md#the-underlying-concern).
+
 **Status:** BUILT and MEASURED against a live model (Arm D, run 2026-09-06). The
 measurement is in §*Measured: Arm D* below and it is **mixed** — one clear win,
 one clear regression against Arm B, and two properties that turned out to be

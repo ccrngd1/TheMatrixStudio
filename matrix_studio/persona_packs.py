@@ -14,7 +14,8 @@ are the ones worth qualifying (backlog: "Persona packs, shipped unqualified").
 Each position is a stance a role takes on *whatever* is proposed — "anything we cannot show a regulator in
 writing, we have not done" — not a view on one topic, so a pack drops into any cast. Every position carries
 its firmness and what would move it (the pairing the Phase 6 experiment rewarded: a defended conviction that
-can still be changed), and a withheld concern that drives it without being said.
+can still be changed), and the underlying concern that drives it — stated openly by default, or kept back
+when the run turns on hidden agendas.
 
 The shape is exactly a cast member of `POST /api/runs`, so the form loads a pack through the same path as
 an imported setup or a saved template, and a pack can be edited like any persona once it is in the cast.

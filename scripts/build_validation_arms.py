@@ -777,6 +777,10 @@ def build_arm(kind: str) -> Dict[str, Any]:
         config["personas"] = {
             "enabled": True,
             "dismissal_rule": RULE_BY_KIND[kind],
+            # Every arm was MEASURED with concerns withheld, the default until 2026-10-02. New runs now
+            # state them plainly unless told otherwise, so the arm says so: re-running it must reproduce
+            # the condition its numbers came from. The same in every arm, so it is not a variable.
+            "withhold_concerns": True,
         }
     if kind == "cognition":
         # The ONE difference from Arm E. Cognition's own DEFAULTS, not tuned: the

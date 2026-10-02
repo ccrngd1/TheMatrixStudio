@@ -190,7 +190,8 @@
     "generate_avatars": false,
     "personas": {
       "enabled": true,
-      "dismissal_rule": "mandatory"
+      "dismissal_rule": "mandatory",
+      "withhold_concerns": true
     },
     "selection": {
       "stop_when_converged": true

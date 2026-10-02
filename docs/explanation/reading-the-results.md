@@ -13,7 +13,11 @@ made so you can check it.
 
 When a run completes, an analyst model reads the transcript and writes a structured summary: an
 overview, points of consensus, dissenters and what they objected to, key ideas, open questions, an
-evidence plan, and a conditional recommendation. Asides (questions you put to the analyst, a
+evidence plan, a conditional recommendation, and, for a run whose personas carried underlying
+concerns, whether each concern came up and was addressed. That last part is the one place the
+analyst is told something the transcript does not contain: the authored concerns, in both concern
+modes, so on a run with hidden agendas it is the reveal, labelled "hidden during the run"
+([Personas and convictions](personas-and-convictions.md)). Asides (questions you put to the analyst, a
 persona, the room or a consultant afterwards) use the same machinery and never change the run
 ([`../../matrix_studio/analysis.py`](../../matrix_studio/analysis.py)).
 

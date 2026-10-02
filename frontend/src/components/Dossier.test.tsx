@@ -238,14 +238,19 @@ describe('Dossier', () => {
     expect(screen.getByText(/Extra services cost you users/)).toBeInTheDocument()
   })
 
-  it('NEVER renders a withheld concern or a validity note, even if the API sends them', async () => {
-    // The backend strips both fields. This asserts the UI is a second line of
-    // defence rather than trusting that: drawing the real concern out in
-    // conversation is the whole exercise, and an operator who can read it off a
-    // panel has been handed the answer. `validity` is the operator's private
-    // calibration note and must never be displayed either.
+  // A withheld run: hidden agendas, or any run from before 2026-10-02. `{}` is a backend that does not send
+  // the flag at all, which ran every conversation withheld, so absent must read as withheld.
+  it.each([
+    ['says it withheld them', { withhold_concerns: true }],
+    ['does not say (an older backend)', {}],
+  ])('NEVER renders a withheld concern or a validity note, even if the API sends them, when the run %s', async (_, mode) => {
+    // The backend strips both fields from a withheld run. This asserts the UI is a second line of
+    // defence rather than trusting that: drawing the real concern out in conversation is the whole
+    // exercise, and an operator who can read it off a panel has been handed the answer. `validity` is
+    // the operator's private calibration note and must never be displayed in any mode.
     ;(api.getDossier as ReturnType<typeof vi.fn>).mockResolvedValue({
       ...baseDossier,
+      ...mode,
       structured: {
         ...structuredPayload,
         viewpoints: [
@@ -264,6 +269,39 @@ describe('Dossier', () => {
     )
     expect(screen.queryByText(/I OWN THE FAILURE/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/overgeneralised/i)).not.toBeInTheDocument()
+    expect(screen.queryByText('CONCERN')).not.toBeInTheDocument()
+    // And it says the concern is hidden, rather than leaving a gap.
+    expect(within(tabPanel()).getByText('Hidden')).toBeInTheDocument()
+  })
+
+  it('shows a plainly stated concern under its position, and never a validity note', async () => {
+    // New runs since 2026-10-02 state concerns plainly, so the concern is part of the position.
+    ;(api.getDossier as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...baseDossier,
+      withhold_concerns: false,
+      structured: {
+        ...structuredPayload,
+        viewpoints: [
+          {
+            ...structuredPayload.viewpoints[0],
+            underlying_concern: 'I own the failure when a customer never gets a working run',
+            validity: 'overgeneralised',
+          },
+        ],
+      },
+    })
+    render(<Dossier agent={agent} feed={feed} runId="r1" onClose={() => {}} />)
+
+    const concern = await screen.findByText('I own the failure when a customer never gets a working run')
+    const flag = concern.closest('.cc-flag')!
+    expect(within(flag as HTMLElement).getByText('CONCERN')).toBeInTheDocument()
+    // Inside its position's panel, after the position.
+    const position = screen.getByText('No feature may add a stateful external service')
+    expect(position.compareDocumentPosition(concern) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.queryByText(/overgeneralised/i)).not.toBeInTheDocument()
+    // Nothing is hidden, so nothing says it is.
+    expect(within(tabPanel()).queryByText('Hidden')).not.toBeInTheDocument()
+    expect(within(tabPanel()).queryByText(/withheld/i)).not.toBeInTheDocument()
   })
 
   it('flags a defended position with no exit condition as unfalsifiable', async () => {
@@ -612,10 +650,14 @@ describe('Dossier — HUD and tabs', () => {
     expect(screen.queryByText(/No threads opened/)).not.toBeInTheDocument()
   })
 
-  it('NEVER renders a withheld concern or a validity note on any tab', async () => {
+  it.each([
+    ['says it withheld them', { withhold_concerns: true }],
+    ['does not say (an older backend)', {}],
+  ])('NEVER renders a withheld concern or a validity note on any tab, when the run %s', async (_, mode) => {
     // The same guard as above, across the whole dossier rather than only the tab it opens on.
     renderFull(undefined, {
       ...full,
+      ...mode,
       structured: {
         ...full.structured,
         viewpoints: full.structured.viewpoints.map((vp) => ({
@@ -628,6 +670,32 @@ describe('Dossier — HUD and tabs', () => {
       openTab(name)
       expect(screen.queryByText(/THE REAL WORRY/i)).not.toBeInTheDocument()
       expect(screen.queryByText(/overgeneralised/i)).not.toBeInTheDocument()
+    }
+  })
+
+  it('renders a plainly stated concern on Convictions, and a validity note on no tab', async () => {
+    // The mirror of the guard above: a run that stated its concerns does show them, each under its own
+    // position, and only there.
+    renderFull(undefined, {
+      ...full,
+      withhold_concerns: false,
+      structured: {
+        ...full.structured,
+        viewpoints: [
+          { ...full.structured.viewpoints[0], underlying_concern: 'I cover every gap myself', validity: 'overgeneralised' },
+          { ...full.structured.viewpoints[1], validity: 'sound' },
+        ],
+      },
+    })
+    expect(await screen.findByText('I cover every gap myself')).toBeInTheDocument()
+    const c = within(tabPanel())
+    // One concern authored, so one flag: the second position has none and shows none.
+    expect(c.getAllByText('CONCERN')).toHaveLength(1)
+    expect(c.queryByText('Withheld concern')).not.toBeInTheDocument()
+    for (const name of ['Convictions', 'Memory', 'Threads', 'Why?'] as const) {
+      openTab(name)
+      expect(screen.queryByText(/overgeneralised|\bsound\b/i)).not.toBeInTheDocument()
+      if (name !== 'Convictions') expect(screen.queryByText('I cover every gap myself')).not.toBeInTheDocument()
     }
   })
 })

@@ -79,6 +79,7 @@ from matrix_studio.retrieval import (
     extract_terms,
 )
 from matrix_studio.settings import get_settings
+from matrix_studio.state import NEW_RUN_WITHHOLD_CONCERNS, PersonaConfig, record_withhold_concerns
 from matrix_studio.storage import Database
 
 logger = logging.getLogger(__name__)
@@ -243,7 +244,11 @@ class PersonaConfigModel(BaseModel):
     cast member's ``structured`` block never reaches a prompt."""
 
     enabled: bool = False
-    withhold_concerns: bool = True
+    # Hidden agendas: keep each underlying concern unsaid until drawn out. OFF for new runs, by the
+    # owner's decision of 2026-10-02 ("laid out plainly when they are known"). The default lives HERE,
+    # in the request model, so it is written into each new run's stored config: the engine's own
+    # default stays on, which keeps a resumed or branched run created before this exactly as it was.
+    withhold_concerns: bool = NEW_RUN_WITHHOLD_CONCERNS
     # Named variant: mandatory | retuned | blunt | off. Booleans still accepted
     # (True -> "mandatory", False -> "off") so existing API clients keep working.
     # Typed loosely here and validated by PersonaConfig, so an unknown name is a
@@ -2460,6 +2465,12 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
              "knowledge_bases", "selection", "research", "models")
             if k in config and config[k] is not None
         }
+        # The source run's hidden-agendas setting, written out. A run from before 2026-10-02 may
+        # have no key, which the engine reads as withheld; left absent here, the copy would take
+        # the NEW-run default and stop withholding — a different conversation under the same setup.
+        setup_config = record_withhold_concerns(
+            setup_config, default=PersonaConfig().withhold_concerns,
+        )
 
         # PERSONA-RESEARCH.md §5.1, 2026-10-01: what this run's research ADDED to its bindings is
         # not part of its setup. The collections it researched into were appended by allocation,
@@ -2603,6 +2614,13 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             _cfg = {}
         _cog = _cfg.get("cognition") if isinstance(_cfg.get("cognition"), dict) else {}
         _stale_after = int(_cog.get("thread_stale_after", 5) or 5)
+        # Read the way the engine reads it, so a config with no key (a run from before
+        # 2026-10-02) is withheld here exactly as it was in its prompts. A config that no
+        # longer parses is treated as withheld: failing closed keeps a concern hidden.
+        try:
+            _withheld = PersonaConfig.from_config(_cfg).withhold_concerns
+        except ValueError:
+            _withheld = True
         agent_threads = []
         for t in snapshot.pending_threads:
             if t.origin_agent != name:
@@ -2704,13 +2722,19 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             # run with the feature switched off.
             "cognition_enabled": bool(_cog.get("enabled")),
             "cognition_lost_turns": cognition_lost_turns,
-            # Phase 6: the convictions this persona was seeded with, minus the
-            # operator's private fields (`validity`, `underlying_concern`). None
-            # for a run that used no structured personas. Deliberately NOT the
-            # withheld concern: the dossier is a UI surface, and showing the real
-            # worry there would let an operator read off the answer to the thing
-            # the panel is supposed to draw out in conversation.
-            "structured": structured_payload(agent.structured),
+            # Phase 6: the convictions this persona was seeded with, minus `validity` (the
+            # operator's calibration note, never shown). None for a run that used no
+            # structured personas.
+            #
+            # `underlying_concern` follows the run's own setting. Stated plainly (the
+            # default for new runs since 2026-10-02), it is part of the position and shown.
+            # Withheld (hidden agendas, and every run created before then), it is stripped
+            # exactly as it always was: the dossier is a UI surface, and showing the real
+            # worry there would let an operator read off the answer to the thing the panel
+            # is supposed to draw out in conversation. `withhold_concerns` says which, so
+            # the UI renders the concern only when the run said it could be said.
+            "structured": structured_payload(agent.structured, include_concern=not _withheld),
+            "withhold_concerns": _withheld,
             "relationships": agent.relationships,
             "tokens_in": agent.total_tokens_in,
             "tokens_out": agent.total_tokens_out,
