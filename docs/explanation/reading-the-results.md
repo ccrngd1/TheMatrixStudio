@@ -32,8 +32,8 @@ Three measured facts limit how far a summary can be trusted:
 
 - **The analyst is not stable on identical transcripts.** The same three runs, scored a day apart,
   gave a best-guess share of 0.36 and then 0.50, and a stated lean in one run of three and then two
-  ([`../MODERATOR-ASSUMPTIONS.md`](../MODERATOR-ASSUMPTIONS.md)). One run scored 0.00 on one pass and
-  1.00 on another ([`../EVIDENCE-LEAN.md`](../EVIDENCE-LEAN.md), re-analysis).
+  ([`../studies/MODERATOR-ASSUMPTIONS.md`](../studies/MODERATOR-ASSUMPTIONS.md)). One run scored 0.00 on one pass and
+  1.00 on another ([`../studies/EVIDENCE-LEAN.md`](../studies/EVIDENCE-LEAN.md), re-analysis).
 - **It can leave things out.** After the evidence plan was added, 10 of 50 summaries were stored
   without an overview, though the reply was complete. Moving the overview to the front of the request
   fixed it, and a summary now names any field the model omitted rather than showing an empty one
@@ -141,7 +141,7 @@ How it works matters for how you read it:
 
 The flag exists because of one finding. The only fold found in the evidence-lean folding check was a
 persona giving ground for a reason on neither of its conditions while saying it was on its list
-([`../EVIDENCE-LEAN-FOLDING.md`](../EVIDENCE-LEAN-FOLDING.md)). Nothing had checked. Now the
+([`../studies/EVIDENCE-LEAN-FOLDING.md`](../studies/EVIDENCE-LEAN-FOLDING.md)). Nothing had checked. Now the
 evidence for a check is in front of you, and the check is yours.
 
 ## The room map shows sequence, not replies
@@ -173,7 +173,7 @@ accommodating language recalled only 0.41 of hand-labelled accommodation on that
 pre-registered bar, so no flag was added and convergence "stays unqualified, and says so". In the
 hand-labelled sample, the closing turns of converged runs were mostly accommodating language,
 including a run judged to have genuinely settled, so accommodating language may simply be how a
-converged ending sounds ([`../CAPITULATION-STUDY.md`](../CAPITULATION-STUDY.md)). Read the last
+converged ending sounds ([`../studies/CAPITULATION-STUDY.md`](../studies/CAPITULATION-STUDY.md)). Read the last
 turns before you read "converged" as "agreed".
 
 ## Ensembles count per group and never pool
@@ -215,7 +215,7 @@ A worked example of reading one honestly: an ensemble varied one working assumpt
 groups of three. One conclusion appeared in two of three runs of one group and none of the other,
 which met the pre-registered bar. The write-up then put it in context: 32 distinct conclusions, 28 of
 them in a single run, so "one 2–0 split among 32 candidates is the weakest form the criterion allows"
-and could arise by chance ([`../ASSUMPTION-ENSEMBLE.md`](../ASSUMPTION-ENSEMBLE.md)).
+and could arise by chance ([`../studies/ASSUMPTION-ENSEMBLE.md`](../studies/ASSUMPTION-ENSEMBLE.md)).
 
 ## The decision brief
 
@@ -231,4 +231,4 @@ counted per group. Every list is capped, and a cap that cut something says how m
 - [What Matrix Studio is for](what-matrix-studio-is-for.md)
 - [Common misconceptions](common-misconceptions.md)
 - The record: [`../MOBILE-UI.md`](../MOBILE-UI.md) §6, [`../ENSEMBLE-CONVERSATIONS.md`](../ENSEMBLE-CONVERSATIONS.md),
-  [`../EVIDENCE-LEAN-FOLDING.md`](../EVIDENCE-LEAN-FOLDING.md), [`../CAPITULATION-STUDY.md`](../CAPITULATION-STUDY.md)
+  [`../studies/EVIDENCE-LEAN-FOLDING.md`](../studies/EVIDENCE-LEAN-FOLDING.md), [`../studies/CAPITULATION-STUDY.md`](../studies/CAPITULATION-STUDY.md)

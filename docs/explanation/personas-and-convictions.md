@@ -12,7 +12,7 @@ discussion together. A persona with a goal can be talked into any plan that sati
 default ending of a multi-agent discussion was everyone settling politely on the first synthesis
 anyone proposed. In the control arm of the experiment that started this work, two turns in three
 ended in some form of "that's fair, I could live with that" (accommodation rate 0.667)
-([`../PHASE6-STRUCTURED-PERSONAS.md`](../PHASE6-STRUCTURED-PERSONAS.md)).
+([`../project/PHASE6-STRUCTURED-PERSONAS.md`](../project/PHASE6-STRUCTURED-PERSONAS.md)).
 
 The missing axis was *what I believe and will not give up*. The project's short version:
 "Convictions are defended; goals are traded."
@@ -22,7 +22,7 @@ The missing axis was *what I believe and will not give up*. The project's short 
 An external specification for a stakeholder review panel proposed modelling personas as
 structured data. Its own first requirement was to try to falsify the idea on a real brief before
 building it, and the project did: three arms, 15 turns each, cognition off, one run per arm
-([`../PHASE5-PREMISE-VALIDATION.md`](../PHASE5-PREMISE-VALIDATION.md)).
+([`../project/PHASE5-PREMISE-VALIDATION.md`](../project/PHASE5-PREMISE-VALIDATION.md)).
 
 | | prose control | structured | structured + source excerpts always in context |
 |---|---|---|---|
@@ -85,8 +85,8 @@ firmness level giving a persona something honest to do other than agree or repea
 also hard to provoke. It fired for the first time in two of three cognition-on runs and none of three
 without. A later study built to provoke it failed its own first step (one of three runs in each arm),
 and pooled with the earlier runs gave three of six against one of six, no evidence of a cognition
-effect ([`../PHASE6-COGNITION-INTERACTION.md`](../PHASE6-COGNITION-INTERACTION.md);
-[`../ESCALATION-STUDY.md`](../ESCALATION-STUDY.md)). In that study the holder never folded in any of
+effect ([`../project/PHASE6-COGNITION-INTERACTION.md`](../project/PHASE6-COGNITION-INTERACTION.md);
+[`../studies/ESCALATION-STUDY.md`](../studies/ESCALATION-STUDY.md)). In that study the holder never folded in any of
 six runs; the room mostly worked around it rather than overruling it.
 
 ## The withheld concern
@@ -99,7 +99,7 @@ argument.
 
 The reason is the exercise itself. The source specification says drawing out the real concern
 behind a stated position is the skill the panel exercises, and "a concern volunteered on turn 1
-cannot be drawn out" ([`../PHASE6-STRUCTURED-PERSONAS.md`](../PHASE6-STRUCTURED-PERSONAS.md),
+cannot be drawn out" ([`../project/PHASE6-STRUCTURED-PERSONAS.md`](../project/PHASE6-STRUCTURED-PERSONAS.md),
 "Two decisions that carry most of the weight").
 
 ### Why it is never shown in a run's views
@@ -131,7 +131,7 @@ brings it back for editing. That is authoring, not a view of the run.
   on, a persona writes memories about its own reasoning, and those memories go back into its prompt.
   That was pre-registered as a likely leak. All 100 memories and reflections across three runs were
   read; none carried a concern. Memories referred to the persona's *condition*, never the worry
-  behind it ([`../PHASE6-COGNITION-INTERACTION.md`](../PHASE6-COGNITION-INTERACTION.md)).
+  behind it ([`../project/PHASE6-COGNITION-INTERACTION.md`](../project/PHASE6-COGNITION-INTERACTION.md)).
 - **The reveal was never tested.** In the 15-turn run nobody asked any persona why it held its
   position, so there was nothing to reveal. The design document draws the uncomfortable conclusion:
   "nothing in a run creates pressure to ask a stakeholder why. Left alone, `underlying_concern` may
@@ -149,14 +149,14 @@ is outdated would collapse the exercise.
 It exists for calibration. If the firmest positions were also the soundest, you could "win" any
 panel by conceding to whoever pushed hardest. A test asserts that the shipped example stays
 calibrated, with firmness and soundness deliberately not lined up
-([`../PHASE6-STRUCTURED-PERSONAS.md`](../PHASE6-STRUCTURED-PERSONAS.md)). The cast-drafting tool asks
+([`../project/PHASE6-STRUCTURED-PERSONAS.md`](../project/PHASE6-STRUCTURED-PERSONAS.md)). The cast-drafting tool asks
 for the same property: at least one firmly held position should be questionable
 ([`../../matrix_studio/persona_wizard.py`](../../matrix_studio/persona_wizard.py)).
 
 ## The dismissal rule
 
 `dismisses` was the most useful field and the hardest to word. Both ways of getting it wrong are
-measured ([`../PHASE6-DISMISSAL-RETUNE.md`](../PHASE6-DISMISSAL-RETUNE.md)):
+measured ([`../project/PHASE6-DISMISSAL-RETUNE.md`](../project/PHASE6-DISMISSAL-RETUNE.md)):
 
 | wording | delivered as | dismissal rate (3 runs, 15 turns) | talking past |
 |---|---|---|---|
@@ -196,7 +196,7 @@ Long runs kept ending with "I'd want to see evidence before deciding". A first m
 stored runs found that personas already named the data they needed and the result that would move
 them (all 43 requests), because the holding rule makes them. What was missing was a best guess
 (stated for 0.58 of requests) and a current lean (statable in 2 of 8 runs). A request for evidence
-left the room with nothing to act on meanwhile ([`../EVIDENCE-LEAN.md`](../EVIDENCE-LEAN.md)).
+left the room with nothing to act on meanwhile ([`../studies/EVIDENCE-LEAN.md`](../studies/EVIDENCE-LEAN.md)).
 
 The rule asks for exactly that and nothing more. When a persona says it needs evidence, it must say
 in the same message what it expects the evidence to show and which way that makes it lean today.
@@ -208,9 +208,9 @@ What it was measured to do, three runs per arm each time:
 
 | study | brief | runs ending with a stated lean, on vs off | notes |
 |---|---|---|---|
-| [`EVIDENCE-LEAN.md`](../EVIDENCE-LEAN.md) | first brief, 40 turns | 2 of 3 vs 1 of 3 | the best-guess criterion missed; the default was not changed |
-| [`EVIDENCE-LEAN-2.md`](../EVIDENCE-LEAN-2.md) | same brief, fresh runs, measure fixed in advance | 3 of 3 vs 0 of 3 (9 of 9 passes vs 1 of 9) | all guardrails met; default turned on |
-| [`EVIDENCE-LEAN-3.md`](../EVIDENCE-LEAN-3.md) | a different kind of brief, 36 turns | 3 of 3 vs 1 of 3 | guardrails met; standing dissent rose |
+| [`EVIDENCE-LEAN.md`](../studies/EVIDENCE-LEAN.md) | first brief, 40 turns | 2 of 3 vs 1 of 3 | the best-guess criterion missed; the default was not changed |
+| [`EVIDENCE-LEAN-2.md`](../studies/EVIDENCE-LEAN-2.md) | same brief, fresh runs, measure fixed in advance | 3 of 3 vs 0 of 3 (9 of 9 passes vs 1 of 9) | all guardrails met; default turned on |
+| [`EVIDENCE-LEAN-3.md`](../studies/EVIDENCE-LEAN-3.md) | a different kind of brief, 36 turns | 3 of 3 vs 1 of 3 | guardrails met; standing dissent rose |
 
 The first study also showed that the best-guess share is too noisy to use at this size: one run
 scored 0.00 on one analyst pass and 1.00 on another.
@@ -223,11 +223,11 @@ practice. It found one fold with the rule on and none with it off, within the pr
 allowance. The document still records the direction rather than
 waving it through. Both doubtful cases were the same persona, the one whose conditions nobody in the
 room could produce, and in the fold it gave ground for a reason on neither condition while claiming
-it was on its list ([`../EVIDENCE-LEAN-FOLDING.md`](../EVIDENCE-LEAN-FOLDING.md)). That observation
+it was on its list ([`../studies/EVIDENCE-LEAN-FOLDING.md`](../studies/EVIDENCE-LEAN-FOLDING.md)). That observation
 is why position-shift flags exist (see [Reading the results](reading-the-results.md)).
 
 The settled-or-folded study found a related pattern: personas mostly moved on *another* persona's
-condition, not their own ([`../CAPITULATION-STUDY.md`](../CAPITULATION-STUDY.md)). One rater, small
+condition, not their own ([`../studies/CAPITULATION-STUDY.md`](../studies/CAPITULATION-STUDY.md)). One rater, small
 numbers, a direction rather than an estimate.
 
 ## What is still not established
@@ -238,11 +238,11 @@ behavioural case is not established". In particular:
 - **Distinct positions are unstable when convictions are rendered from data.** Hand-written prose
   scored 5, 5, 5; the rendered arms scored 5, 3, 3 and 5, 5, 3 and 2, 2, 5. The judge was later
   shown to be stable on this count (spread 0 over five judgements on each of four transcripts), so
-  the runs themselves differ ([`../JUDGE-VARIANCE.md`](../JUDGE-VARIANCE.md)). It remains the one
+  the runs themselves differ ([`../studies/JUDGE-VARIANCE.md`](../studies/JUDGE-VARIANCE.md)). It remains the one
   signal pointing at a real cost of rendering convictions from data.
 - **Divergence, accommodation, citation rate and turn length differences** between prose and
   rendered personas are below the noise floor at n = 3
-  ([`../PHASE6-STRUCTURED-PERSONAS.md`](../PHASE6-STRUCTURED-PERSONAS.md)).
+  ([`../project/PHASE6-STRUCTURED-PERSONAS.md`](../project/PHASE6-STRUCTURED-PERSONAS.md)).
 
 What is tested and sound is the schema and its honesty properties: withholding with zero leaks,
 per-persona scoping, convictions surviving a fork, invalid firmness rejected.
@@ -263,7 +263,7 @@ are labelled "not yet qualified" because none has been put through an ensemble
 
 - [How a run works](how-a-run-works.md)
 - [Reading the results](reading-the-results.md)
-- The record: [`../PHASE5-PREMISE-VALIDATION.md`](../PHASE5-PREMISE-VALIDATION.md),
-  [`../PHASE6-STRUCTURED-PERSONAS.md`](../PHASE6-STRUCTURED-PERSONAS.md),
-  [`../PHASE6-DISMISSAL-RETUNE.md`](../PHASE6-DISMISSAL-RETUNE.md),
-  [`../PHASE6-COGNITION-INTERACTION.md`](../PHASE6-COGNITION-INTERACTION.md)
+- The record: [`../project/PHASE5-PREMISE-VALIDATION.md`](../project/PHASE5-PREMISE-VALIDATION.md),
+  [`../project/PHASE6-STRUCTURED-PERSONAS.md`](../project/PHASE6-STRUCTURED-PERSONAS.md),
+  [`../project/PHASE6-DISMISSAL-RETUNE.md`](../project/PHASE6-DISMISSAL-RETUNE.md),
+  [`../project/PHASE6-COGNITION-INTERACTION.md`](../project/PHASE6-COGNITION-INTERACTION.md)

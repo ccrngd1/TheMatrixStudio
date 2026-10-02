@@ -14,10 +14,10 @@ states it again and again:
 - "every change of that kind in this project is supposed to arrive with a measurement behind it"
   (`RetrievalConfig.authority_floor` in [`../../matrix_studio/state.py`](../../matrix_studio/state.py));
 - every config block "defaults to the pre-feature behaviour, because those features change what a
-  run *is*" ([`../SPEAKER-SELECTION-EVALUATION.md`](../SPEAKER-SELECTION-EVALUATION.md) §12);
+  run *is*" ([`../studies/SPEAKER-SELECTION-EVALUATION.md`](../studies/SPEAKER-SELECTION-EVALUATION.md) §12);
 - with a feature off, prompts are "byte-identical" to before (`CognitionConfig`, `PersonaConfig`,
   and the assumptions and consultants blocks); for structured personas a test checks this by diffing
-  the real prompts ([`../PHASE6-STRUCTURED-PERSONAS.md`](../PHASE6-STRUCTURED-PERSONAS.md)).
+  the real prompts ([`../project/PHASE6-STRUCTURED-PERSONAS.md`](../project/PHASE6-STRUCTURED-PERSONAS.md)).
 
 There are two reasons, and they support each other.
 
@@ -26,13 +26,13 @@ or branch it, the engine reads that stored config and fills any missing key from
 If a new feature defaulted on in the engine, every old run would silently gain it the next time it
 was resumed or forked, and a fork would differ from its parent in more than the change you made. The
 inline-citation change states the aim directly: a run created before it "keeps its prompt when
-resumed or branched" ([`../CITE-INLINE.md`](../CITE-INLINE.md), operator decision).
+resumed or branched" ([`../studies/CITE-INLINE.md`](../studies/CITE-INLINE.md), operator decision).
 
 **A default needs evidence, and the evidence has to be decided in advance.** The project learned
 this from the dismissal rule. One good run was read as "the retune working as designed"; three runs
 later the mean was the control's rate. The fix was procedural: write the criterion down, commit it,
 then run. "A criterion chosen once the transcripts are on screen is not a criterion, it is a
-description" ([`../PHASE6-DISMISSAL-RETUNE.md`](../PHASE6-DISMISSAL-RETUNE.md)). Most studies on
+description" ([`../project/PHASE6-DISMISSAL-RETUNE.md`](../project/PHASE6-DISMISSAL-RETUNE.md)). Most studies on
 this page follow that pattern, including several whose result was "keep it off". The earliest
 retrieval measurements predate it.
 
@@ -72,14 +72,14 @@ fair share. Measured offline over 146 replays on four transcripts and two models
 share fell from 0.332 to 0.223 on the small model and from 0.335 to 0.185 on the large one, and the
 number of replays in which somebody got **zero turns** fell from 6 of 24 to 0 of 24. A live 40-turn
 run then went from turn shares of 16, 11, 8, 3, 1, 1 to 8, 7, 7, 7, 6, 5 at the same cost
-([`../SPEAKER-SELECTION-EVALUATION.md`](../SPEAKER-SELECTION-EVALUATION.md) §10–§13).
+([`../studies/SPEAKER-SELECTION-EVALUATION.md`](../studies/SPEAKER-SELECTION-EVALUATION.md) §10–§13).
 
 Three alternatives were measured and not chosen:
 
 - **A bigger selection model.** With the old prompt, a model 2.6 times the price was exactly as
   unfair (0.332 against 0.335). "The skew is a property of the prompt, not of the selector's
   capability." The small model with the counts beat the large model without them on all four
-  transcripts at 39% of the cost ([`../SELECTION-MODEL-DEFAULT.md`](../SELECTION-MODEL-DEFAULT.md) §6).
+  transcripts at 39% of the cost ([`../studies/SELECTION-MODEL-DEFAULT.md`](../studies/SELECTION-MODEL-DEFAULT.md) §6).
 - **A deterministic floor that forces an overdue persona to speak.** Best on the small model, middle
   of the table on the large one. The ranking of interventions inverted between models, so choosing
   the per-model winner would choose an arm "that silently becomes the wrong one the next time somebody
@@ -104,8 +104,8 @@ Within structured personas, the underlying concern is withheld unless asked. Thi
 the design, not a comparison: withholding is the point of the field, because "a concern volunteered
 on turn 1 cannot be drawn out". It was then checked. Zero verbatim leaks in a 15-turn run, and none
 through memory in a pre-registered check that read all 100 memories and reflections across three
-cognition runs ([`../PHASE6-STRUCTURED-PERSONAS.md`](../PHASE6-STRUCTURED-PERSONAS.md);
-[`../PHASE6-COGNITION-INTERACTION.md`](../PHASE6-COGNITION-INTERACTION.md)). What has not been
+cognition runs ([`../project/PHASE6-STRUCTURED-PERSONAS.md`](../project/PHASE6-STRUCTURED-PERSONAS.md);
+[`../project/PHASE6-COGNITION-INTERACTION.md`](../project/PHASE6-COGNITION-INTERACTION.md)). What has not been
 measured is the reveal: in the runs studied, nobody asked. See
 [Personas and convictions](personas-and-convictions.md).
 
@@ -114,7 +114,7 @@ measured is the reveal: in the runs studied, nobody asked. See
 The `mandatory` wording passed a two-part criterion committed before the wording existed: dismissal
 rate 0.400, 0.400 and 0.200 across three runs (mean 0.333, no run at zero, against a target of 0.30)
 and the best engagement score of any arm, talking past 1.00
-([`../PHASE6-DISMISSAL-RETUNE.md`](../PHASE6-DISMISSAL-RETUNE.md)). The wording it replaced had
+([`../project/PHASE6-DISMISSAL-RETUNE.md`](../project/PHASE6-DISMISSAL-RETUNE.md)). The wording it replaced had
 suppressed dismissals to the control's rate. The failing wordings are kept, verbatim, as named
 variants so their negative results stay reproducible.
 
@@ -126,13 +126,13 @@ second, with the measure fixed in advance on fresh runs, met it: runs ending wit
 against 0 of 3, all guardrails met. The operator then turned it on. Two checks followed. A third
 comparison, on a different kind of brief, held: 3 of 3 against 1 of 3. A check for folding found no
 signal against the default, while recording the one doubtful case honestly
-([`../EVIDENCE-LEAN.md`](../EVIDENCE-LEAN.md), [`-2`](../EVIDENCE-LEAN-2.md),
-[`-3`](../EVIDENCE-LEAN-3.md), [`-FOLDING`](../EVIDENCE-LEAN-FOLDING.md)).
+([`../studies/EVIDENCE-LEAN.md`](../studies/EVIDENCE-LEAN.md), [`-2`](../studies/EVIDENCE-LEAN-2.md),
+[`-3`](../studies/EVIDENCE-LEAN-3.md), [`-FOLDING`](../studies/EVIDENCE-LEAN-FOLDING.md)).
 
 Note that 2, 3 and 4 live inside structured personas, which are themselves **off** on the server.
 The structured-persona schema and its honesty properties are tested and sound, but "the behavioural
 case for turning it on is not established", and distinct positions remain unstable when convictions
-are rendered from data ([`../PHASE6-STRUCTURED-PERSONAS.md`](../PHASE6-STRUCTURED-PERSONAS.md);
+are rendered from data ([`../project/PHASE6-STRUCTURED-PERSONAS.md`](../project/PHASE6-STRUCTURED-PERSONAS.md);
 README, Phase 6). The launch form turns structured personas on whenever you author convictions,
 which is the case where the fields have something to do.
 
@@ -144,7 +144,7 @@ been set for it; the second because the on arm reached 0.26 of messages against 
 0.40. The operator turned the rule on after the first comparison, "recorded as a decision, not as a
 result". The second comparison's pre-registered outcome was to *recommend reverting* to off, which
 goes to the operator; at the time of writing the default is still on
-([`../CITE-INLINE.md`](../CITE-INLINE.md)).
+([`../studies/CITE-INLINE.md`](../studies/CITE-INLINE.md)).
 
 The way it was switched on is worth noticing. The engine default stayed off, and only the request
 model changed, "so a run created before the change … keeps its prompt when resumed or branched".
@@ -174,14 +174,14 @@ Each of these comes with its reason in a comment beside it in
 
 | feature | why it is off | record |
 |---|---|---|
-| Stop when converged | The pre-registered rule said one premature stop rejects it, and an offline replay produced one (turn 17 of a 40-turn run whose argument ran to the end). The explanation that replay protocol was at fault was chosen after seeing which protocol favoured the feature, "so it does not get to decide". Live runs since then, all on one definition, stopped cleanly (one at turn 32 of 40, 23% cheaper); the record asks for a run on a different, harder definition before the default changes | [`../SPEAKER-SELECTION-EVALUATION.md`](../SPEAKER-SELECTION-EVALUATION.md) §14–§16 |
-| Query-tuning knobs (`term_limit`, `score_ratio`) | Measured harmful: recall@5 on engine-shaped queries fell from 0.509 to 0.339 | [`../PHASE5-RETRIEVAL-MEASUREMENT.md`](../PHASE5-RETRIEVAL-MEASUREMENT.md) |
-| Moderator-made assumptions | Two-thirds of what it assumed were facts (6 of 9), and one asserted part of the answer under discussion. Three attempts at a classifier to filter proposals each missed their held-out bar | [`../MODERATOR-ASSUMPTIONS.md`](../MODERATOR-ASSUMPTIONS.md) |
+| Stop when converged | The pre-registered rule said one premature stop rejects it, and an offline replay produced one (turn 17 of a 40-turn run whose argument ran to the end). The explanation that replay protocol was at fault was chosen after seeing which protocol favoured the feature, "so it does not get to decide". Live runs since then, all on one definition, stopped cleanly (one at turn 32 of 40, 23% cheaper); the record asks for a run on a different, harder definition before the default changes | [`../studies/SPEAKER-SELECTION-EVALUATION.md`](../studies/SPEAKER-SELECTION-EVALUATION.md) §14–§16 |
+| Query-tuning knobs (`term_limit`, `score_ratio`) | Measured harmful: recall@5 on engine-shaped queries fell from 0.509 to 0.339 | [`../project/PHASE5-RETRIEVAL-MEASUREMENT.md`](../project/PHASE5-RETRIEVAL-MEASUREMENT.md) |
+| Moderator-made assumptions | Two-thirds of what it assumed were facts (6 of 9), and one asserted part of the answer under discussion. Three attempts at a classifier to filter proposals each missed their held-out bar | [`../studies/MODERATOR-ASSUMPTIONS.md`](../studies/MODERATOR-ASSUMPTIONS.md) |
 | Pre-conversation research | Three comparisons: it reached the room and did not settle the question it was built for; recorded as not useful for that brief and harmless. It also searches the open web and costs minutes and money on every run, so the form leaves it as a per-run choice | [`../PERSONA-RESEARCH.md`](../PERSONA-RESEARCH.md) §9 |
 | Standing query, authority floor | Both change what reaches a prompt and were only measured inside the research comparisons; the form sets the authority floor to 1 when research is on | `RetrievalConfig` in [`state.py`](../../matrix_studio/state.py) |
-| Capitulation flag on ensembles | Not built: the instrument it would rest on failed its validation step (recall 0.41) | [`../CAPITULATION-STUDY.md`](../CAPITULATION-STUDY.md) |
-| A larger speaker-selection model | Measured: no fairness gain at 2.6 times the price | [`../SELECTION-MODEL-DEFAULT.md`](../SELECTION-MODEL-DEFAULT.md) |
-| "No source in front of me" disclosure | Built and wording chosen by reading output, at n = 2–3 turns per arm; the record calls it directional and lists it as off without a further reason | [`../PHASE5-RETRIEVAL-MEASUREMENT.md`](../PHASE5-RETRIEVAL-MEASUREMENT.md) 5g |
+| Capitulation flag on ensembles | Not built: the instrument it would rest on failed its validation step (recall 0.41) | [`../studies/CAPITULATION-STUDY.md`](../studies/CAPITULATION-STUDY.md) |
+| A larger speaker-selection model | Measured: no fairness gain at 2.6 times the price | [`../studies/SELECTION-MODEL-DEFAULT.md`](../studies/SELECTION-MODEL-DEFAULT.md) |
+| "No source in front of me" disclosure | Built and wording chosen by reading output, at n = 2–3 turns per arm; the record calls it directional and lists it as off without a further reason | [`../project/PHASE5-RETRIEVAL-MEASUREMENT.md`](../project/PHASE5-RETRIEVAL-MEASUREMENT.md) 5g |
 | Adaptive pressure | Experimental; its real-model behaviour was never benchmarked | [`../../PHASE4-REPORT.md`](../../PHASE4-REPORT.md) §4 |
 | Closing round, pending threads | Off under the general rule (threads are off so cognition runs keep their earlier output schema); no measurement deciding either default is recorded | `SelectionConfig`, `CognitionConfig` |
 
@@ -202,7 +202,7 @@ Three defaults reach old runs, and it helps to know which:
 - **The dismissal rule** was once a true/false setting. `true` now means the `mandatory` wording,
   and so does a missing value, so an old run that used the first-shipped wording renders the new one
   if resumed. The retune document records the `true` mapping as the backward-compatible choice
-  ([`../PHASE6-DISMISSAL-RETUNE.md`](../PHASE6-DISMISSAL-RETUNE.md), "Method").
+  ([`../project/PHASE6-DISMISSAL-RETUNE.md`](../project/PHASE6-DISMISSAL-RETUNE.md), "Method").
 - **Evidence lean** was turned on in the engine as well as in the request model. A run with
   structured personas created before the setting was added, on 28 September 2026, has no value
   stored for it, so it will get the evidence-lean clause if resumed or branched. The commit that

@@ -27,7 +27,7 @@ convinced me". It also lists what the persona credited and the conditions it had
 when none of those conditions appears to be named. Whether that was a legitimate change of mind or a
 fold is a judgement the flag leaves to you, by design. The phrase matching also misfires in both
 directions. See [Reading the results](reading-the-results.md#position-shifts-are-a-word-match-that-asks-to-be-checked);
-[`../EVIDENCE-LEAN-FOLDING.md`](../EVIDENCE-LEAN-FOLDING.md).
+[`../studies/EVIDENCE-LEAN-FOLDING.md`](../studies/EVIDENCE-LEAN-FOLDING.md).
 
 ### "More turns give a better answer."
 
@@ -35,7 +35,7 @@ Not reliably. One fair 40-turn run had stated every position by turn 25 and spen
 turns on "nothing to add". Turn count can also shift outcomes systematically: in one set of runs a
 blocking objection was held at 24 turns and logged as an accepted risk at 40. That is a bias, not an
 improvement, and it is why ensembles refuse to vary turn count. See
-[`../SPEAKER-SELECTION-EVALUATION.md`](../SPEAKER-SELECTION-EVALUATION.md) §13;
+[`../studies/SPEAKER-SELECTION-EVALUATION.md`](../studies/SPEAKER-SELECTION-EVALUATION.md) §13;
 [`../ENSEMBLE-CONVERSATIONS.md`](../ENSEMBLE-CONVERSATIONS.md) §3.4.
 
 ### "The summary is what happened."
@@ -43,14 +43,14 @@ improvement, and it is why ensembles refuse to vary turn count. See
 The summary is an analyst model's **reading** of the transcript. The same transcripts scored by the
 same analyst a day apart gave different results. When the summary and the transcript disagree, the
 transcript is right. See [Reading the results](reading-the-results.md#the-summary-is-analysis-not-ground-truth);
-[`../MODERATOR-ASSUMPTIONS.md`](../MODERATOR-ASSUMPTIONS.md).
+[`../studies/MODERATOR-ASSUMPTIONS.md`](../studies/MODERATOR-ASSUMPTIONS.md).
 
 ### "Converged means they agreed."
 
 Converged means **nobody had anything left to add**: the moderator declined to pick anyone twice in a
 row, or everyone passed in a round. It does not say whether the room resolved the question or gave
 ground without a reason. An attempt to flag the difference failed its own validation step. See
-[`../CAPITULATION-STUDY.md`](../CAPITULATION-STUDY.md).
+[`../studies/CAPITULATION-STUDY.md`](../studies/CAPITULATION-STUDY.md).
 
 ### "Hiding a run deletes it."
 
@@ -72,7 +72,7 @@ A fork is one draw on each side of the change, and everything after the fork poi
 afresh. It shows a difference; it cannot attribute it. To attribute it, make the change an ensemble
 variable and compare groups. Note too that a branch does not carry the parent's memories,
 reflections or relationship notes. See [How a run works](how-a-run-works.md#branching-and-forking);
-[`../ASSUMPTION-ENSEMBLE.md`](../ASSUMPTION-ENSEMBLE.md).
+[`../studies/ASSUMPTION-ENSEMBLE.md`](../studies/ASSUMPTION-ENSEMBLE.md).
 
 ### "Research makes a run more accurate."
 
@@ -93,7 +93,7 @@ checked at all. See [Evidence](evidence-and-retrieval.md#what-it-cannot-check).
 The rationale is written in the same model call as the turn, which makes it better than an
 after-the-fact explanation, but it is still the model describing itself. It can be mistaken or
 rationalised. See [How a run works](how-a-run-works.md#cognition-memory-reflection-and-the-why-trace);
-[`../PHASE2C-REQUIREMENTS.md`](../PHASE2C-REQUIREMENTS.md).
+[`../project/PHASE2C-REQUIREMENTS.md`](../project/PHASE2C-REQUIREMENTS.md).
 
 ### "A working assumption is evidence."
 

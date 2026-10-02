@@ -18,6 +18,11 @@ TheMatrix Simulation Studio is a standalone tool for running multi-agent convers
 
 Screenshots are of a demonstration run on a neutral topic, captured from the deployed application.
 
+## Documentation
+
+- New here? Start with the tutorial, [Your first conversation](docs/tutorials/first-conversation.md).
+- [docs/README.md](docs/README.md) indexes all the documentation: tutorials, how-to guides, reference and explanation, plus the design docs, project records and studies.
+
 ## Features
 
 - **Live Control Room** — Cast board with character cards (avatar + persona + goals), live-scrolling conversation feed, active-speaker highlight, and running token/$ cost meter

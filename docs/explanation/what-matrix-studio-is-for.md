@@ -26,11 +26,11 @@ Think of it as a rehearsal room. Some things a rehearsal does well:
 - **Surfacing objections before the real meeting.** A persona that holds a firm position and
   states what would change its mind tells you which conditions you would have to meet. The
   summary's evidence plan collects those requests in one table
-  ([`../EVIDENCE-LEAN.md`](../EVIDENCE-LEAN.md) describes the measurement behind it).
+  ([`../studies/EVIDENCE-LEAN.md`](../studies/EVIDENCE-LEAN.md) describes the measurement behind it).
 - **Practising the questions you would ask.** A structured persona can carry a concern behind
   its position that it will not volunteer. Drawing that concern out is the exercise the feature
   was built for. The design says so directly: "a concern volunteered on turn 1 cannot be drawn
-  out" ([`../PHASE6-STRUCTURED-PERSONAS.md`](../PHASE6-STRUCTURED-PERSONAS.md)). See
+  out" ([`../project/PHASE6-STRUCTURED-PERSONAS.md`](../project/PHASE6-STRUCTURED-PERSONAS.md)). See
   [Personas and convictions](personas-and-convictions.md).
 - **Asking "what if" in a controlled way.** You can fork a run at any turn with one change, or
   run an ensemble where groups differ in one declared thing, such as a working assumption or a
@@ -39,11 +39,11 @@ Think of it as a rehearsal room. Some things a rehearsal does well:
 - **Finding out what evidence would settle a question.** Personas asking for evidence must now
   also say what they expect it to show and which way they lean today. On the two briefs where this
   was measured, runs ending with a stated lean went from 0 of 3 and 1 of 3 to 3 of 3
-  ([`../EVIDENCE-LEAN-2.md`](../EVIDENCE-LEAN-2.md), [`../EVIDENCE-LEAN-3.md`](../EVIDENCE-LEAN-3.md)).
+  ([`../studies/EVIDENCE-LEAN-2.md`](../studies/EVIDENCE-LEAN-2.md), [`../studies/EVIDENCE-LEAN-3.md`](../studies/EVIDENCE-LEAN-3.md)).
 
 The project's original specification described something narrower: a showcase that lets people
 demonstrate multi-agent simulation to their own stakeholders
-([`../PROJECT-SPEC.md`](../PROJECT-SPEC.md) §2). The decision-support features came later, in
+([`../project/PROJECT-SPEC.md`](../project/PROJECT-SPEC.md) §2). The decision-support features came later, in
 September 2026, and the README lists them under that heading.
 
 ## What it is not
@@ -70,7 +70,7 @@ turn, in the same model call that writes the turn. That is better than inventing
 afterwards, which the project rejected outright. It is still the model's self-report, and the
 README warns that it "can be mistaken, confabulate, or rationalize"
 ([`../../README.md`](../../README.md), "Cognition & Honesty Note";
-[`../PHASE2C-REQUIREMENTS.md`](../PHASE2C-REQUIREMENTS.md)).
+[`../project/PHASE2C-REQUIREMENTS.md`](../project/PHASE2C-REQUIREMENTS.md)).
 
 ## Why one run is an anecdote
 
@@ -86,9 +86,9 @@ answer with the same confidence (§2 of the same document).
 
 Later measurements kept showing the same thing. In one ensemble of six runs, the report grouped
 32 distinct conclusions; 28 of them were reached in only one run
-([`../ASSUMPTION-ENSEMBLE.md`](../ASSUMPTION-ENSEMBLE.md)). The Phase 6 work found that differences
+([`../studies/ASSUMPTION-ENSEMBLE.md`](../studies/ASSUMPTION-ENSEMBLE.md)). The Phase 6 work found that differences
 smaller than about 0.02 in similarity, or 0.2 in rates, could not be resolved at 15 turns and three
-runs per arm ([`../PHASE6-STRUCTURED-PERSONAS.md`](../PHASE6-STRUCTURED-PERSONAS.md), the
+runs per arm ([`../project/PHASE6-STRUCTURED-PERSONAS.md`](../project/PHASE6-STRUCTURED-PERSONAS.md), the
 methodological note at the end).
 
 You cannot reduce this variation by lowering the temperature. The engine asks for the configured
@@ -98,7 +98,7 @@ the request is silently dropped
 temperature only changes the spread around the same centre; it does not reach new conclusions
 ([`../ENSEMBLE-CONVERSATIONS.md`](../ENSEMBLE-CONVERSATIONS.md) §6). There is no seed either.
 Repeat runs are repeats, not reproductions
-([`../PHASE6-STRUCTURED-PERSONAS.md`](../PHASE6-STRUCTURED-PERSONAS.md), "Repeats").
+([`../project/PHASE6-STRUCTURED-PERSONAS.md`](../project/PHASE6-STRUCTURED-PERSONAS.md), "Repeats").
 
 The decision brief builds this in. For a single conversation its confidence line always reads
 "not yet measured", and it tells you to run an ensemble if you want one
@@ -119,12 +119,12 @@ coarse tiers: unanimous, split, rare, absent. A group needs at least two runs; t
 - The blind judge used in the Phase 6 studies was asked to score the same four transcripts five
   times each. Its count of distinct positions did not move at all (spread 0). Other fields moved
   by up to 2. So a gap of 1 in those other fields is inside the judge's own noise
-  ([`../JUDGE-VARIANCE.md`](../JUDGE-VARIANCE.md)). The caveat in that document matters: four
+  ([`../studies/JUDGE-VARIANCE.md`](../studies/JUDGE-VARIANCE.md)). The caveat in that document matters: four
   transcripts of one brief, where the count happened to be easy.
 - The analyst that extracts the evidence plan is not stable. The same three transcripts, scored a
   day apart, gave a best-guess share of 0.36 and then 0.50, and a stated lean in one of three and
-  then two of three ([`../MODERATOR-ASSUMPTIONS.md`](../MODERATOR-ASSUMPTIONS.md); the caveat added
-  to [`../EVIDENCE-LEAN.md`](../EVIDENCE-LEAN.md)).
+  then two of three ([`../studies/MODERATOR-ASSUMPTIONS.md`](../studies/MODERATOR-ASSUMPTIONS.md); the caveat added
+  to [`../studies/EVIDENCE-LEAN.md`](../studies/EVIDENCE-LEAN.md)).
 
 The practical reading: when you compare two runs, or two summaries, a small difference may be
 noise in the run, noise in the analyst, or both.
@@ -145,5 +145,5 @@ noise in the run, noise in the analyst, or both.
 - [Reading the results](reading-the-results.md)
 - [Common misconceptions](common-misconceptions.md)
 - The record: [`../ENSEMBLE-CONVERSATIONS.md`](../ENSEMBLE-CONVERSATIONS.md),
-  [`../JUDGE-VARIANCE.md`](../JUDGE-VARIANCE.md),
-  [`../ASSUMPTION-ENSEMBLE.md`](../ASSUMPTION-ENSEMBLE.md)
+  [`../studies/JUDGE-VARIANCE.md`](../studies/JUDGE-VARIANCE.md),
+  [`../studies/ASSUMPTION-ENSEMBLE.md`](../studies/ASSUMPTION-ENSEMBLE.md)

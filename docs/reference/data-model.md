@@ -2,7 +2,7 @@
 
 What Matrix Studio stores for a run, an ensemble, a knowledge base, a document, a summary and an aside thread, and how the stored fields map to the fields the API returns, including the derived ones (`stance`, `stance_basis`, `hidden`, the cost itemisation, `research_for`). Derived from `matrix_studio/storage/dynamo.py` (the `_*_FIELDS` tuples and the write methods), `matrix_studio/api/app.py` (`_run_summary`, `_ensemble_summary`, the route bodies), `matrix_studio/stance.py`, `matrix_studio/research_state.py`, `matrix_studio/analysis.py`, `matrix_studio/ensemble_reporting.py` and `matrix_studio/state.py`.
 
-See also: [explanation](../explanation/), [how-to guides](../how-to/), [http-api.md](http-api.md) (which route returns what), [events.md](events.md) (the event log), [run-config.md](run-config.md) (the stored `config`), and [PHASE2-STORAGE-KEY-DESIGN.md](../PHASE2-STORAGE-KEY-DESIGN.md) for the DynamoDB key design. This page names storage attributes only where the API exposes them or a reader needs them to interpret a response.
+See also: [explanation](../explanation/), [how-to guides](../how-to/), [http-api.md](http-api.md) (which route returns what), [events.md](events.md) (the event log), [run-config.md](run-config.md) (the stored `config`), and [PHASE2-STORAGE-KEY-DESIGN.md](../project/PHASE2-STORAGE-KEY-DESIGN.md) for the DynamoDB key design. This page names storage attributes only where the API exposes them or a reader needs them to interpret a response.
 
 ## Where things live
 

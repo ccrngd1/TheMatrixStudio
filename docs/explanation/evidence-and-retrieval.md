@@ -38,7 +38,7 @@ the topic, which buries the relevant words in conversational prose. The project 
 
 Re-measured on the deployed stack against this repository's own documentation (22 files, 666
 chunks, 40 sampled queries), on diluted queries
-([`../PHASE3-RECALL-MEASUREMENT.md`](../PHASE3-RECALL-MEASUREMENT.md)):
+([`../project/PHASE3-RECALL-MEASUREMENT.md`](../project/PHASE3-RECALL-MEASUREMENT.md)):
 
 | | lexical (BM25) | vector | hybrid |
 |---|---|---|---|
@@ -56,12 +56,12 @@ Three supporting decisions:
 - **1,024-dimension embeddings, measured.** On 128 queries, narrower vectors were as good on
   well-formed queries but lost on paraphrased ones: 256 dimensions scored 0.211 recall@1 against
   0.328 at 1,024. Paraphrase robustness is the reason for using vectors at all
-  ([`../EMBEDDING-DIMENSION-MEASUREMENT.md`](../EMBEDDING-DIMENSION-MEASUREMENT.md)).
+  ([`../studies/EMBEDDING-DIMENSION-MEASUREMENT.md`](../studies/EMBEDDING-DIMENSION-MEASUREMENT.md)).
 - **An off-topic guard, not a relevance filter.** Matches below a cosine of 0.15 are rejected. Over
   180 calibration retrievals, right and wrong passages overlapped almost completely (right
   0.228–0.870, wrong 0.166–0.699), so no threshold can tell them apart. What a threshold can catch
   is a query with nothing to do with the corpus, which scores about 0.0–0.07. At 0.15 the guard cost
-  0 of 137 genuine hits ([`../PHASE5-RETRIEVAL-MEASUREMENT.md`](../PHASE5-RETRIEVAL-MEASUREMENT.md), 5h).
+  0 of 137 genuine hits ([`../project/PHASE5-RETRIEVAL-MEASUREMENT.md`](../project/PHASE5-RETRIEVAL-MEASUREMENT.md), 5h).
 - **Degrade, do not fail.** If the embedding call fails, or a run's chunks were never embedded, the
   turn falls back to lexical search and carries on.
 
@@ -69,13 +69,13 @@ Two plausible query-tuning knobs, picking "discriminative" terms and dropping we
 tried first and made recall worse on every arm. On diluted queries recall@5 fell from 0.509 to 0.339.
 Rarity is not relevance: conversational filler often supplies the rarest words. Both knobs remain,
 off, so the measurement can be repeated
-([`../PHASE5-RETRIEVAL-MEASUREMENT.md`](../PHASE5-RETRIEVAL-MEASUREMENT.md), "The cheap fixes were
+([`../project/PHASE5-RETRIEVAL-MEASUREMENT.md`](../project/PHASE5-RETRIEVAL-MEASUREMENT.md), "The cheap fixes were
 tried first").
 
 ## Knowledge collections: documents, grants and bindings
 
 A knowledge collection (a "knowledge base" in the code) is a named set of documents. Three separate
-things govern who sees it ([`../PHASE6-KB-DESIGN.md`](../PHASE6-KB-DESIGN.md)):
+things govern who sees it ([`../project/PHASE6-KB-DESIGN.md`](../project/PHASE6-KB-DESIGN.md)):
 
 - A **document** belongs to exactly one collection and is chunked and embedded once.
 - A **grant** says who *may* read a collection: a user or a group. The owner needs none.
@@ -202,7 +202,7 @@ per arm on one brief, about $29 in all ([`../PERSONA-RESEARCH.md`](../PERSONA-RE
 
 The settled-or-folded study then read the converged endings. Research runs folded less often, not
 more (3 of 15 against 3 of 9), with one rater and small numbers
-([`../CAPITULATION-STUDY.md`](../CAPITULATION-STUDY.md)).
+([`../studies/CAPITULATION-STUDY.md`](../studies/CAPITULATION-STUDY.md)).
 
 One more finding shapes how to read any researched corpus. On the first full pipeline run, 8 of 12
 fetches failed, and they were the authoritative sites: they refuse automated readers, while vendor
@@ -238,7 +238,7 @@ without it, all four questions asked for things the sources did not contain.
 Personas were always shown passages labelled `title #n` and told to cite them. Across 25 stored
 runs, 816 of 824 messages had passages in their prompt, and none cited one by its label. Quoting a
 passage word for word recovered the source for about 6% of messages; nothing recovered it for
-paraphrase ([`../CITE-INLINE.md`](../CITE-INLINE.md)).
+paraphrase ([`../studies/CITE-INLINE.md`](../studies/CITE-INLINE.md)).
 
 `retrieval.cite_inline` asks a persona to end a sentence that relies on a passage with its label in
 square brackets, and to cite only passages it actually used. On a short two-persona probe it took
@@ -263,7 +263,7 @@ judged: "I haven't seen that document you're referencing" is honest and passes.
 
 It costs no model call: it is a lookup against passages the engine already recorded. The "earlier
 turn" part was added after the check rejected a persona for citing a passage it had retrieved on an
-earlier turn but not on the current one ([`../CITE-INLINE.md`](../CITE-INLINE.md), comparison 2).
+earlier turn but not on the current one ([`../studies/CITE-INLINE.md`](../studies/CITE-INLINE.md), comparison 2).
 
 ### What it cannot check
 
@@ -280,14 +280,14 @@ There is a separate, optional disclosure for the opposite case
 say in its own voice that it has nothing in front of it. The wording is about provenance, not
 support, because at the measured recall the passage often exists and was simply missed; "no
 documentation supports this" would be false about one time in five
-([`../PHASE5-RETRIEVAL-MEASUREMENT.md`](../PHASE5-RETRIEVAL-MEASUREMENT.md), 5g).
+([`../project/PHASE5-RETRIEVAL-MEASUREMENT.md`](../project/PHASE5-RETRIEVAL-MEASUREMENT.md), 5g).
 
 ## Related
 
 - [How a run works](how-a-run-works.md)
 - [Reading the results](reading-the-results.md)
 - The record: [`../PERSONA-RESEARCH.md`](../PERSONA-RESEARCH.md),
-  [`../PHASE6-KB-DESIGN.md`](../PHASE6-KB-DESIGN.md),
-  [`../PHASE5-RETRIEVAL-MEASUREMENT.md`](../PHASE5-RETRIEVAL-MEASUREMENT.md),
-  [`../PHASE3-RECALL-MEASUREMENT.md`](../PHASE3-RECALL-MEASUREMENT.md),
-  [`../CITE-INLINE.md`](../CITE-INLINE.md)
+  [`../project/PHASE6-KB-DESIGN.md`](../project/PHASE6-KB-DESIGN.md),
+  [`../project/PHASE5-RETRIEVAL-MEASUREMENT.md`](../project/PHASE5-RETRIEVAL-MEASUREMENT.md),
+  [`../project/PHASE3-RECALL-MEASUREMENT.md`](../project/PHASE3-RECALL-MEASUREMENT.md),
+  [`../studies/CITE-INLINE.md`](../studies/CITE-INLINE.md)

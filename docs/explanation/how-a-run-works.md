@@ -14,7 +14,7 @@ weekly releases, argued by Noor (engineering lead), Tobias (support), Wren (fina
 Every change in a run is an event appended to a log: a speaker chosen, a turn spoken, a memory
 formed, a document retrieved, a validation check passed. After each turn the engine also saves a
 full snapshot of the state. The log is the source of truth; everything you see is derived from it
-([`../PROJECT-SPEC.md`](../PROJECT-SPEC.md) §4).
+([`../project/PROJECT-SPEC.md`](../project/PROJECT-SPEC.md) §4).
 
 This one decision is what makes the rest possible. Branching is "copy the log to turn N and carry
 on". Replay is reading the log. The dossier and the why-trace show only what the log recorded, so
@@ -25,7 +25,7 @@ full snapshots because runs are short and reloading one row is simpler than repl
 ([`../../matrix_studio/engine/simulator.py`](../../matrix_studio/engine/simulator.py), the
 `_run_turns` docstring). That choice later made the move to one-turn-per-Lambda tractable, because
 each turn could load its state in one read
-([`../PHASE5-ORCHESTRATION-DESIGN.md`](../PHASE5-ORCHESTRATION-DESIGN.md) §1).
+([`../project/PHASE5-ORCHESTRATION-DESIGN.md`](../project/PHASE5-ORCHESTRATION-DESIGN.md) §1).
 
 ## The lifecycle
 
@@ -43,7 +43,7 @@ each turn could load its state in one read
 - **The run row is written at once**, with status `pending`, and only then is the state machine
   started. A client that receives a 201 must have something to poll. The first deployment
   returned 201 for runs that never existed
-  ([`../PHASE5-ORCHESTRATION-DESIGN.md`](../PHASE5-ORCHESTRATION-DESIGN.md) §7).
+  ([`../project/PHASE5-ORCHESTRATION-DESIGN.md`](../project/PHASE5-ORCHESTRATION-DESIGN.md) §7).
 
 If research is on, its target collections are created here too, before anything is searched
 (see [Evidence](evidence-and-retrieval.md)).
@@ -167,7 +167,7 @@ prompt is the one place every persona appears at once. It sees the last ten mess
 Left alone, this moderator was measured to be unfair. Over three 24-turn runs one persona spoke
 once in 24 turns, two personas alternated for up to seven turns in a row, and the whole cast had not
 spoken until turn 10 or 11. The cause was mostly information: the moderator could not see who was
-overdue ([`../SPEAKER-SELECTION-EVALUATION.md`](../SPEAKER-SELECTION-EVALUATION.md) §2–§3). Showing
+overdue ([`../studies/SPEAKER-SELECTION-EVALUATION.md`](../studies/SPEAKER-SELECTION-EVALUATION.md) §2–§3). Showing
 it the turn counts and the fair share fixed most of it, and that is now on by default. Why that
 intervention and not a stronger model or a hard floor is the story of
 [Why the defaults are what they are](why-the-defaults.md).
@@ -177,7 +177,7 @@ Two more things are worth knowing:
 - **When selection fails, a speaker is drawn at random and the event says so** (`selection_fallback`).
   The old fallback always picked the same person, so a failing call looked like the moderator
   favouring someone. The why-trace now says "drawn at random. Nothing chose them."
-  ([`../SPEAKER-SELECTION-EVALUATION.md`](../SPEAKER-SELECTION-EVALUATION.md) §9).
+  ([`../studies/SPEAKER-SELECTION-EVALUATION.md`](../studies/SPEAKER-SELECTION-EVALUATION.md) §9).
 - **The moderator may decline to pick anyone** if `stop_when_converged` is on (and cognition is
   on, because the plain selection prompt asks for a bare name and cannot express "nobody"). Two
   guards stand in front of that: everyone must have spoken at least once, and it takes two declines in a row.
@@ -227,13 +227,13 @@ formed. Optional sub-features add relationship notes, goal updates and a ledger 
 
 The reason for producing the rationale in the same call as the turn, rather than asking afterwards,
 is the project's honesty rule: "a separate pass that 'explains' a finished turn is a
-rationalization, not a cause" ([`../PHASE2C-REQUIREMENTS.md`](../PHASE2C-REQUIREMENTS.md)). The
+rationalization, not a cause" ([`../project/PHASE2C-REQUIREMENTS.md`](../project/PHASE2C-REQUIREMENTS.md)). The
 memory the dossier shows is the memory the next turn actually read.
 
 That does not make the rationale true. It is still the model describing itself.
 
 Two measured facts about cognition, from
-[`../PHASE6-COGNITION-INTERACTION.md`](../PHASE6-COGNITION-INTERACTION.md):
+[`../project/PHASE6-COGNITION-INTERACTION.md`](../project/PHASE6-COGNITION-INTERACTION.md):
 
 - It was **completely inert** against one model for a long time. The model wrapped its JSON in a
   code fence, a strict parser rejected it, and the run quietly kept the raw text: 30 of 30 turns,
@@ -249,7 +249,7 @@ The engine default is off; the launch form turns it on. See [Why the defaults ar
 
 After a turn is generated and before it is committed, a gate checks it against the project's
 priority order: world coherence, causality, continuity, agency, character consistency, then lower
-goals ([`../PROJECT-SPEC.md`](../PROJECT-SPEC.md) §4a). Document citations are checked too
+goals ([`../project/PROJECT-SPEC.md`](../project/PROJECT-SPEC.md) §4a). Document citations are checked too
 (`citation_integrity`).
 
 The checks are mostly cheap and narrow:
@@ -273,7 +273,7 @@ coherence and causality problems pass, and its real-model behaviour was not benc
 shipped ([`../../PHASE4-REPORT.md`](../../PHASE4-REPORT.md) §4). One later measurement exists: in a
 40-turn comparison the citation check rejected one turn (2.5 per 100 turns), and that rejection was
 judged a false positive. The cause, recalling a passage read on an earlier turn, has since been
-fixed ([`../CITE-INLINE.md`](../CITE-INLINE.md), comparison 2).
+fixed ([`../studies/CITE-INLINE.md`](../studies/CITE-INLINE.md), comparison 2).
 
 ## Branching and forking
 
@@ -285,7 +285,7 @@ replacing or withdrawing a working assumption
 
 Forward of the fork the run is non-deterministic, and that is expected. The specification puts it
 plainly: "we never re-run the original. The original branch is already recorded; we only ever
-generate forward" ([`../PROJECT-SPEC.md`](../PROJECT-SPEC.md) §4a, determinism note). That is also
+generate forward" ([`../project/PROJECT-SPEC.md`](../project/PROJECT-SPEC.md) §4a, determinism note). That is also
 why intervention is branching rather than live editing.
 
 What a branch carries across, and what it does not, is worth knowing before you read one:
@@ -322,7 +322,7 @@ you the change caused it. For that, the same change has to be an ensemble variab
 ## The deployed architecture, in brief
 
 Matrix Studio runs only on AWS. There is no laptop mode, by decision
-([`../PROJECT-SPEC.md`](../PROJECT-SPEC.md) §8.2 and §8.5).
+([`../project/PROJECT-SPEC.md`](../project/PROJECT-SPEC.md) §8.2 and §8.5).
 
 ```
 browser ──▶ CloudFront (the app) ──▶ API Gateway (JWT check) ──▶ API Lambda
@@ -341,10 +341,10 @@ work. Lambda freezes the execution environment when the handler returns, so the 
 simply stopped; the measured invocation billed 8 ms. Waiting for the run inside the request is no
 better, because API Gateway's limit is 30 seconds and a 20-turn run takes minutes. So the phase was
 cancelled and Step Functions became the only way a run executes at all
-([`../AWS-IMPLEMENTATION-PLAN.md`](../AWS-IMPLEMENTATION-PLAN.md), Phase 4 "CANCELLED").
+([`../project/AWS-IMPLEMENTATION-PLAN.md`](../project/AWS-IMPLEMENTATION-PLAN.md), Phase 4 "CANCELLED").
 
 Each Turn invocation generates one turn (or one round) and returns. That shape buys several things
-([`../PHASE5-ORCHESTRATION-DESIGN.md`](../PHASE5-ORCHESTRATION-DESIGN.md)):
+([`../project/PHASE5-ORCHESTRATION-DESIGN.md`](../project/PHASE5-ORCHESTRATION-DESIGN.md)):
 
 - **Retries per turn.** Bedrock throttling is retried with backoff on that turn alone.
 - **Safe retries.** Each turn first trims anything written past the last checkpoint, so a turn that
@@ -366,8 +366,8 @@ moderator's decline counter and the closing round both worked in tests and did n
 at first, for exactly this reason. The citation ledger had the same flaw and was caught before the
 move to Step Functions ([`../../matrix_studio/state.py`](../../matrix_studio/state.py),
 `SimSnapshot.decline_streak` and `firsthand_citations`;
-[`../SPEAKER-SELECTION-EVALUATION.md`](../SPEAKER-SELECTION-EVALUATION.md) §15;
-[`../PHASE5-ORCHESTRATION-DESIGN.md`](../PHASE5-ORCHESTRATION-DESIGN.md) §2).
+[`../studies/SPEAKER-SELECTION-EVALUATION.md`](../studies/SPEAKER-SELECTION-EVALUATION.md) §15;
+[`../project/PHASE5-ORCHESTRATION-DESIGN.md`](../project/PHASE5-ORCHESTRATION-DESIGN.md) §2).
 
 ### Why polling, not WebSockets
 
@@ -377,10 +377,10 @@ to WebSocket clients lives in the API process, which never sees them. Polling an
 already existed needed almost no new code. Three seconds against a measured 6–13 second turn means
 a turn appears within about half its own duration
 ([`../../frontend/src/hooks/useRunStream.ts`](../../frontend/src/hooks/useRunStream.ts);
-[`../PHASE5-ORCHESTRATION-DESIGN.md`](../PHASE5-ORCHESTRATION-DESIGN.md) §8).
+[`../project/PHASE5-ORCHESTRATION-DESIGN.md`](../project/PHASE5-ORCHESTRATION-DESIGN.md) §8).
 
 The specification also records a cost argument: about 1.4 KB per poll on a 30-turn run, cheaper than
-holding a connection open per viewer through API Gateway ([`../PROJECT-SPEC.md`](../PROJECT-SPEC.md)
+holding a connection open per viewer through API Gateway ([`../project/PROJECT-SPEC.md`](../project/PROJECT-SPEC.md)
 §8.3). The WebSocket path is kept for the single-process server, where it is sub-second, and the
 design for adding it on AWS (DynamoDB Streams into a fan-out Lambda) is deferred
 ([`../AWS-SERVERLESS-ARCHITECTURE.md`](../AWS-SERVERLESS-ARCHITECTURE.md) §9).
@@ -417,7 +417,7 @@ per-run cap.
 
 - [What Matrix Studio is for](what-matrix-studio-is-for.md)
 - [Why the defaults are what they are](why-the-defaults.md)
-- The record: [`../SPEAKER-SELECTION-EVALUATION.md`](../SPEAKER-SELECTION-EVALUATION.md),
-  [`../PHASE5-ORCHESTRATION-DESIGN.md`](../PHASE5-ORCHESTRATION-DESIGN.md),
+- The record: [`../studies/SPEAKER-SELECTION-EVALUATION.md`](../studies/SPEAKER-SELECTION-EVALUATION.md),
+  [`../project/PHASE5-ORCHESTRATION-DESIGN.md`](../project/PHASE5-ORCHESTRATION-DESIGN.md),
   [`../AWS-SERVERLESS-ARCHITECTURE.md`](../AWS-SERVERLESS-ARCHITECTURE.md),
-  [`../PHASE2C-REQUIREMENTS.md`](../PHASE2C-REQUIREMENTS.md)
+  [`../project/PHASE2C-REQUIREMENTS.md`](../project/PHASE2C-REQUIREMENTS.md)
