@@ -1,0 +1,269 @@
+# Personas and convictions
+
+This page explains structured personas: why they exist, what each part is for, why the withheld
+concern is never shown, and what the dismissal rule and the evidence-lean rule were measured to
+do. For how to write one, see [`../how-to/`](../how-to/). For the field list, see
+[`../reference/`](../reference/).
+
+## The problem: goals are easy to satisfy
+
+A plain persona has a description and some goals. Goals turned out to be the wrong thing to hold a
+discussion together. A persona with a goal can be talked into any plan that satisfies it, so the
+default ending of a multi-agent discussion was everyone settling politely on the first synthesis
+anyone proposed. In the control arm of the experiment that started this work, two turns in three
+ended in some form of "that's fair, I could live with that" (accommodation rate 0.667)
+([`../PHASE6-STRUCTURED-PERSONAS.md`](../PHASE6-STRUCTURED-PERSONAS.md)).
+
+The missing axis was *what I believe and will not give up*. The project's short version:
+"Convictions are defended; goals are traded."
+
+## Where the design came from
+
+An external specification for a stakeholder review panel proposed modelling personas as
+structured data. Its own first requirement was to try to falsify the idea on a real brief before
+building it, and the project did: three arms, 15 turns each, cognition off, one run per arm
+([`../PHASE5-PREMISE-VALIDATION.md`](../PHASE5-PREMISE-VALIDATION.md)).
+
+| | prose control | structured | structured + source excerpts always in context |
+|---|---|---|---|
+| accommodation rate (lower is less harmonising) | 0.667 | 0.400 | 0.267 |
+| dismissal rate (`dismisses` firing) | 0.067 | 0.333 | 0.467 |
+| talking past each other, blind judge (0–5, lower is better) | 2 | 1 | 4 |
+| distinct positions, blind judge | 5 | 5 | 5 |
+
+The verdict was to build the structured version and not the third arm, whose personas became
+"broken records reciting their own corpus". The document is equally clear about what was not
+shown: all three arms had the same number of distinct positions and the same specificity. Structure
+changed *how* the personas argued, but did not produce more distinct positions or more specific
+content. With n = 1 per arm, the smaller
+differences were "well within what one re-run could reverse", and later repeats showed that most of
+them were.
+
+## What a structured persona holds
+
+The prose description stays. Prose carries voice and manner; structure carries commitments
+([`../../matrix_studio/personas.py`](../../matrix_studio/personas.py)).
+
+- **Background, with formative events and the lesson each one taught.** "The lesson is the
+  load-bearing half; the event alone is colour." A position with a history is harder to drop than a
+  bare assertion.
+- **Preferences.** What the persona optimises for, what it is persuaded by, and what it
+  **dismisses**: the things it declines to weigh. `dismisses` was the field that did the most work
+  in the experiment above.
+- **Viewpoints.** Each has a position, how the persona came to it, a **firmness**, and
+  **what would change its mind**. These last two are always rendered together.
+- **An underlying concern** behind each position, withheld (below).
+- **A validity note**, for the operator only (below).
+
+### Firmness and the holding rule
+
+Firmness has four levels. Each one tells the persona what a legitimate move looks like:
+
+| firmness | may move when |
+|---|---|
+| `negotiable` | a good argument is made; the persona says what persuaded it |
+| `firm` | something on its "what would change your mind" list actually turns up in the conversation |
+| `non-negotiable` | the same rule as `firm`; the rendered rule does not distinguish the two |
+| `requires-escalation` | never by agreement: the persona lacks the authority to concede, so it says it will take the question further, and to whom |
+
+The holding rule rendered into the prompt also says: "Never claim to have changed your mind while
+restating the same position." That clause targets the cheap way a model can satisfy both "be
+agreeable" and "hold your position" at once.
+
+Two smaller decisions are worth knowing because they show the project's habits:
+
+- **A defended position with no exit condition is named as such.** The persona is told: "You have
+  not named anything that would change your mind on this. If you are pressed, say that — do not
+  invent a condition you do not have." Silence would let the model either stonewall or make one up,
+  and saying it puts the authoring gap where the operator will see it.
+- **An unknown firmness is rejected, not downgraded.** A typo that quietly became `negotiable`
+  would remove the defence the field exists to provide. The block is parsed even when the feature is
+  off, so a typo fails at once rather than on the day someone turns it on.
+
+`requires-escalation` was kept, rather than folded into `non-negotiable`, because it is "the one
+firmness level giving a persona something honest to do other than agree or repeat itself". It is
+also hard to provoke. It fired for the first time in two of three cognition-on runs and none of three
+without. A later study built to provoke it failed its own first step (one of three runs in each arm),
+and pooled with the earlier runs gave three of six against one of six, no evidence of a cognition
+effect ([`../PHASE6-COGNITION-INTERACTION.md`](../PHASE6-COGNITION-INTERACTION.md);
+[`../ESCALATION-STUDY.md`](../ESCALATION-STUDY.md)). In that study the holder never folded in any of
+six runs; the room mostly worked around it rather than overruling it.
+
+## The withheld concern
+
+Each position can carry the real worry behind it. In our invented brief, Wren the finance lead
+holds "No change to the release cadence without a costed rollback plan", and the concern behind it
+is that the last outage landed on her budget. Wren will state the position. She will not volunteer
+the worry. She says it only if someone asks why she holds the position, or presses past her surface
+argument.
+
+The reason is the exercise itself. The source specification says drawing out the real concern
+behind a stated position is the skill the panel exercises, and "a concern volunteered on turn 1
+cannot be drawn out" ([`../PHASE6-STRUCTURED-PERSONAS.md`](../PHASE6-STRUCTURED-PERSONAS.md),
+"Two decisions that carry most of the weight").
+
+### Why it is never shown in a run's views
+
+Withholding is enforced by the code path, not by asking politely:
+
+- The concern goes only into its **own persona's** prompt, immediately followed by the instruction
+  not to volunteer it.
+- The **moderator** gets a public one-line summary: role and what the persona optimises for. The
+  moderator's prompt is the one place every persona appears at once, so the private block there
+  would put every concern one prompt away from the whole cast.
+- The concern is **stripped** from the `persona.structured` event, from the dossier API and from
+  every export. The dossier's type does not even declare the field, so code that tried to render it
+  would not compile ([`../../frontend/src/components/Dossier.tsx`](../../frontend/src/components/Dossier.tsx);
+  [`../../matrix_studio/export.py`](../../matrix_studio/export.py)).
+
+Why so strict about the UI in particular? Because, in the design's words, "an operator who could
+read the withheld concern off a panel in the browser has been handed the answer the conversation was
+supposed to produce". The dossier shows a "Withheld concern — Hidden" note instead. It says
+*Hidden* rather than *not drawn out* because nothing detects a reveal
+([`../MOBILE-UI.md`](../MOBILE-UI.md) §4.4).
+
+The concern is visible in one place: the new-run form, where you write it, and where a copied setup
+brings it back for editing. That is authoring, not a view of the run.
+
+### What was measured, and what was not
+
+- **It holds.** A 15-turn run had zero verbatim leaks. The riskier route was memory: with cognition
+  on, a persona writes memories about its own reasoning, and those memories go back into its prompt.
+  That was pre-registered as a likely leak. All 100 memories and reflections across three runs were
+  read; none carried a concern. Memories referred to the persona's *condition*, never the worry
+  behind it ([`../PHASE6-COGNITION-INTERACTION.md`](../PHASE6-COGNITION-INTERACTION.md)).
+- **The reveal was never tested.** In the 15-turn run nobody asked any persona why it held its
+  position, so there was nothing to reveal. The design document draws the uncomfortable conclusion:
+  "nothing in a run creates pressure to ask a stakeholder why. Left alone, `underlying_concern` may
+  be inert in practice — carried, never surfaced."
+
+So the concern shapes what a persona pushes for, and that is observed. Whether a run ever surfaces
+it depends on someone asking, which in practice means you, through an aside or a branch.
+
+## The validity note
+
+`validity` is a note for the operator: is this position sound, outdated, misapplied or
+overgeneralised? It reaches no prompt at all, public or private. Telling a persona its own position
+is outdated would collapse the exercise.
+
+It exists for calibration. If the firmest positions were also the soundest, you could "win" any
+panel by conceding to whoever pushed hardest. A test asserts that the shipped example stays
+calibrated, with firmness and soundness deliberately not lined up
+([`../PHASE6-STRUCTURED-PERSONAS.md`](../PHASE6-STRUCTURED-PERSONAS.md)). The cast-drafting tool asks
+for the same property: at least one firmly held position should be questionable
+([`../../matrix_studio/persona_wizard.py`](../../matrix_studio/persona_wizard.py)).
+
+## The dismissal rule
+
+`dismisses` was the most useful field and the hardest to word. Both ways of getting it wrong are
+measured ([`../PHASE6-DISMISSAL-RETUNE.md`](../PHASE6-DISMISSAL-RETUNE.md)):
+
+| wording | delivered as | dismissal rate (3 runs, 15 turns) | talking past |
+|---|---|---|---|
+| "Ignore the things you consider not your problem" | hand-written prose | 0.400, 0.333, 0.333 | 1.67 |
+| the same words | rendered from the structured fields | 0.000, 0.000, 0.000 | 1.00 |
+| "say once, briefly, that it is not yours to weigh" plus three prohibitions (first shipped) | rendered | 0.200, 0.000, 0.000 | 1.67 |
+| "you MUST say plainly … every time it comes up … not optional" (`mandatory`, the default) | rendered | 0.400, 0.400, 0.200 | 1.00 |
+
+The success criterion was committed before any candidate wording existed: a mean of at least 0.30
+with no run at zero, and talking past no worse than 2. Only `mandatory` met both.
+
+Two things make this more than a tuning result:
+
+- **Declining is not disengaging.** The shipped wording requires the persona to say plainly,
+  every time, that a concern is not its to weigh, and then, in the same turn, to answer the
+  substance anyway and put the other side's point in its strongest form. It keeps one prohibition
+  from the first version: "never let declining be your whole turn". The other two prohibitions
+  (do not repeat a dismissal, do not answer by restating your position) were dropped as the likeliest
+  suppressors ([`../../matrix_studio/personas.py`](../../matrix_studio/personas.py),
+  `_rule_mandatory`). Engaging with the substance is what keeps dismissal from turning into the
+  monologues of the third arm above. (The README's Phase 6 section still describes the earlier
+  wording's prohibitions.)
+- **The general lesson: "A rendered instruction must require an utterance, not license an
+  omission."** The exact words that worked in hand-written prose produced *nothing* through the
+  renderer. In prose they sat inside a block of conduct imperatives that supplied force the sentence
+  lacked on its own. Rendered alone, a permission reads as optional and the model defaults to
+  silence. The evidence-lean rule below was written to this lesson.
+
+The pre-registration has its own history. The earlier round had read a single good run as "the
+retune working as designed"; three runs later the mean was the control's rate. The document exists
+because "a criterion chosen once the transcripts are on screen is not a criterion, it is a
+description".
+
+## The evidence lean
+
+Long runs kept ending with "I'd want to see evidence before deciding". A first measurement over 8
+stored runs found that personas already named the data they needed and the result that would move
+them (all 43 requests), because the holding rule makes them. What was missing was a best guess
+(stated for 0.58 of requests) and a current lean (statable in 2 of 8 runs). A request for evidence
+left the room with nothing to act on meanwhile ([`../EVIDENCE-LEAN.md`](../EVIDENCE-LEAN.md)).
+
+The rule asks for exactly that and nothing more. When a persona says it needs evidence, it must say
+in the same message what it expects the evidence to show and which way that makes it lean today.
+The rule also says outright that "a guess is not evidence: your position still moves only when
+something on your list actually turns up". That clause is there because pushing a room toward a lean
+is pressure toward resolution, which is the pressure the holding rule exists to resist.
+
+What it was measured to do, three runs per arm each time:
+
+| study | brief | runs ending with a stated lean, on vs off | notes |
+|---|---|---|---|
+| [`EVIDENCE-LEAN.md`](../EVIDENCE-LEAN.md) | first brief, 40 turns | 2 of 3 vs 1 of 3 | the best-guess criterion missed; the default was not changed |
+| [`EVIDENCE-LEAN-2.md`](../EVIDENCE-LEAN-2.md) | same brief, fresh runs, measure fixed in advance | 3 of 3 vs 0 of 3 (9 of 9 passes vs 1 of 9) | all guardrails met; default turned on |
+| [`EVIDENCE-LEAN-3.md`](../EVIDENCE-LEAN-3.md) | a different kind of brief, 36 turns | 3 of 3 vs 1 of 3 | guardrails met; standing dissent rose |
+
+The first study also showed that the best-guess share is too noisy to use at this size: one run
+scored 0.00 on one analyst pass and 1.00 on another.
+
+The obvious risk was that personas would talk themselves into agreement on their own guesses. A
+dedicated check judged the final ten turns of twelve stored runs, under shuffled labels, for
+folding: dropping or softening a firm position without its stated condition being met. The judge
+was the assistant that built the feature, labelled as such, and the arms were recognisable in
+practice. It found one fold with the rule on and none with it off, within the pre-registered
+allowance. The document still records the direction rather than
+waving it through. Both doubtful cases were the same persona, the one whose conditions nobody in the
+room could produce, and in the fold it gave ground for a reason on neither condition while claiming
+it was on its list ([`../EVIDENCE-LEAN-FOLDING.md`](../EVIDENCE-LEAN-FOLDING.md)). That observation
+is why position-shift flags exist (see [Reading the results](reading-the-results.md)).
+
+The settled-or-folded study found a related pattern: personas mostly moved on *another* persona's
+condition, not their own ([`../CAPITULATION-STUDY.md`](../CAPITULATION-STUDY.md)). One rater, small
+numbers, a direction rather than an estimate.
+
+## What is still not established
+
+The honest summary in the README is that "the dismissal rule is measured and fixed; the rest of the
+behavioural case is not established". In particular:
+
+- **Distinct positions are unstable when convictions are rendered from data.** Hand-written prose
+  scored 5, 5, 5; the rendered arms scored 5, 3, 3 and 5, 5, 3 and 2, 2, 5. The judge was later
+  shown to be stable on this count (spread 0 over five judgements on each of four transcripts), so
+  the runs themselves differ ([`../JUDGE-VARIANCE.md`](../JUDGE-VARIANCE.md)). It remains the one
+  signal pointing at a real cost of rendering convictions from data.
+- **Divergence, accommodation, citation rate and turn length differences** between prose and
+  rendered personas are below the noise floor at n = 3
+  ([`../PHASE6-STRUCTURED-PERSONAS.md`](../PHASE6-STRUCTURED-PERSONAS.md)).
+
+What is tested and sound is the schema and its honesty properties: withholding with zero leaks,
+per-persona scoping, convictions surviving a fork, invalid firmness rejected.
+
+This is why structured personas are off by default on the server, while the launch form turns them
+on whenever a cast member has convictions. See [Why the defaults are what they are](why-the-defaults.md).
+
+## Where personas come from
+
+You can write personas by hand, start from the archetype library, or ask the drafting tool for a
+cast from a one-line brief. The drafting tool is authoring help: it fills the form and you edit and
+submit, and "nothing it returns is evidence about anything"
+([`../../matrix_studio/persona_wizard.py`](../../matrix_studio/persona_wizard.py)). The archetypes
+are labelled "not yet qualified" because none has been put through an ensemble
+([`../../matrix_studio/persona_packs.py`](../../matrix_studio/persona_packs.py)).
+
+## Related
+
+- [How a run works](how-a-run-works.md)
+- [Reading the results](reading-the-results.md)
+- The record: [`../PHASE5-PREMISE-VALIDATION.md`](../PHASE5-PREMISE-VALIDATION.md),
+  [`../PHASE6-STRUCTURED-PERSONAS.md`](../PHASE6-STRUCTURED-PERSONAS.md),
+  [`../PHASE6-DISMISSAL-RETUNE.md`](../PHASE6-DISMISSAL-RETUNE.md),
+  [`../PHASE6-COGNITION-INTERACTION.md`](../PHASE6-COGNITION-INTERACTION.md)
