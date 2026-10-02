@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import type { SimEvent } from '../types'
 
 // `avatarUrl` is called by the run-state reducer, not by this page, so it keeps its real behaviour.
@@ -98,6 +98,24 @@ describe('Theatre', () => {
 
     fireEvent.click(dialogue())
     expect(screen.getByText('End of transcript')).toBeInTheDocument()
+  })
+
+  it('marks every persona and consultant in the dialogue box as simulated, and never the injected voice', async () => {
+    vi.mocked(api.getRun).mockResolvedValue(run('complete') as never)
+    vi.mocked(api.getEvents).mockResolvedValue(events())
+    render(<Theatre runRef="r1" autoAdvance={false} />)
+    fireEvent.click(await screen.findByRole('button', { name: /Start/ }))
+    const marks = () => within(dialogue().querySelector('.th-name') as HTMLElement)
+      .queryAllByRole('img', { name: 'simulated persona' }).length
+
+    fireEvent.click(dialogue())
+    expect(marks()).toBe(1) // Ana Silva
+    nextPage()
+    expect(marks()).toBe(0) // the State DOT's letter: the operator's words, not a persona's
+    nextPage()
+    expect(marks()).toBe(2) // the consultant, and Ben Carter who asked
+    nextPage()
+    expect(marks()).toBe(1)
   })
 
   it('moves one line per press however fast the presses come', async () => {

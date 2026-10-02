@@ -235,6 +235,20 @@ export interface BranchResponse {
   max_messages: number
   model: string | null
   mutation: Record<string, unknown> | null
+  /** An added persona's name, switched because it was a real public figure's. */
+  renamed?: Renamed[]
+}
+
+/**
+ * A persona or consultant name the server switched because it belongs to a real, well-known public figure.
+ * Personas never carry a real person's name; `to` is a clearly fictional sound-alike.
+ */
+export interface Renamed {
+  from: string
+  to: string
+  reason: string
+  /** Which check caught it: the curated list of public figures, or the model check for names not on it. */
+  source?: 'list' | 'model'
 }
 
 export interface BranchTreeNode {

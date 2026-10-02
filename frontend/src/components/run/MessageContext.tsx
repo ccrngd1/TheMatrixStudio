@@ -9,6 +9,7 @@ import { useEffect, useState } from 'react'
 import { api } from '../../api'
 import type { FeedMessage, SimEvent, TurnTrace, WorkingAssumption } from '../../types'
 import { Btn, Hex, HudCell, HudStrip, Label, Panel, identityOf } from '../../ui/primitives'
+import { PersonaName } from '../../ui/PersonaName'
 
 const pad = (n: number) => String(n).padStart(2, '0')
 const clip = (s: string, n = 180) => (s.length > n ? `${s.slice(0, n).trimEnd()}…` : s)
@@ -64,7 +65,7 @@ export function MessageContext({ message: m, feed, events, assumptions, order, r
   const Neighbour = ({ x, label }: { x: FeedMessage; label: string }) => (
     <button type="button" className="cc-card w-full text-left" onClick={() => onJump(x.seq)}>
       <Label>
-        {label} · #{pad(x.turn)} {x.speaker}
+        {label} · #{pad(x.turn)} <PersonaName name={x.speaker} />
       </Label>
       <p className="cc-muted mt-1">{clip(x.content)}</p>
     </button>
@@ -75,7 +76,9 @@ export function MessageContext({ message: m, feed, events, assumptions, order, r
       <div className="flex items-center gap-3">
         <Hex name={m.speaker} slot={identityOf(m.speaker, order)} />
         <div className="min-w-0 flex-1">
-          <b className="cc-code block">{m.speaker}</b>
+          <b className="cc-code block">
+            <PersonaName name={m.speaker} />
+          </b>
           <span className="cc-muted">
             Turn {pad(m.turn)}
             {round > 1 ? ` · one of ${round} who spoke at once` : ''}
@@ -86,7 +89,9 @@ export function MessageContext({ message: m, feed, events, assumptions, order, r
 
       {m.consultant ? (
         <Panel>
-          <Label>Asked by {m.consultant.askedBy}</Label>
+          <Label>
+            Asked by {m.consultant.askedBy && <PersonaName name={m.consultant.askedBy} />}
+          </Label>
           <p className="mt-1">“{m.consultant.question}”</p>
         </Panel>
       ) : (

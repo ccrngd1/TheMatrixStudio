@@ -6,6 +6,7 @@ import { SourceViewer } from './SourceViewer'
 import { citeSegments, unsourcedCitations } from '../lib/citeText'
 import { Hint } from './Hint'
 import { Hex, identityColor, identityOf } from '../ui/primitives'
+import { PersonaName, PersonaNames } from '../ui/PersonaName'
 import { useMotion, usePhase } from '../ui/fx'
 import { TypeIn, isTyping, useArrivals } from '../ui/TypeIn'
 import '../styles/atmosphere.css'
@@ -155,7 +156,10 @@ export function ConversationFeed({
                   )}
                   <div className="cc-tx">
                     <div className="cc-tx-h">
-                      <b>{m.speaker}</b>
+                      {/* Personas and consultants are both simulated; an injected message is drawn by `Incoming`. */}
+                      <b>
+                        <PersonaName name={m.speaker} />
+                      </b>
                       <span className="cc-role">
                         {m.consultant ? 'consultant' : roundSize > 1 && !opensRound ? '· at the same time' : ''}
                       </span>
@@ -174,7 +178,8 @@ export function ConversationFeed({
                     </div>
                     {m.consultant && (
                       <p className="cc-muted italic">
-                        {m.consultant.askedBy} asked: “{m.consultant.question}”
+                        {m.consultant.askedBy && <PersonaName name={m.consultant.askedBy} />} asked: “
+                        {m.consultant.question}”
                       </p>
                     )}
                     {/* Only the text types (the body's first element); what follows it is there at once. */}
@@ -200,7 +205,9 @@ export function ConversationFeed({
         {thinking && activeSpeaker && (
           <div className="cc-composing" role="status">
             <Hex name={activeSpeaker} slot={identityOf(activeSpeaker, castOrder)} size="sm" active />
-            <span>{activeSpeaker} composing</span>
+            <span>
+              <PersonaName name={activeSpeaker} /> composing
+            </span>
             <Equaliser />
           </div>
         )}
@@ -388,8 +395,12 @@ function AssumptionCard({
         {usage && (usage.cited > 0 || usage.disputes.length > 0) && (
           <span className={`cc-num ml-1 ${usage.disputes.length ? 'text-cc-inject' : 'cc-muted'}`}>
             · cited in {usage.cited} message{usage.cited === 1 ? '' : 's'}
-            {usage.disputes.length > 0 &&
-              ` · appears disputed by ${[...new Set(usage.disputes.map((d) => d.speaker))].join(', ')}`}
+            {usage.disputes.length > 0 && (
+              <>
+                {' · appears disputed by '}
+                <PersonaNames names={[...new Set(usage.disputes.map((d) => d.speaker))]} sep=", " />
+              </>
+            )}
           </span>
         )}
         <Hint label={`assumption ${a.id}`}>
@@ -398,7 +409,7 @@ function AssumptionCard({
             <ul className="mt-2 list-inside list-disc">
               {usage.disputes.map((d, i) => (
                 <li key={i}>
-                  {d.speaker} (turn {d.turn}): {d.sentence}
+                  <PersonaName name={d.speaker} /> (turn {d.turn}): {d.sentence}
                 </li>
               ))}
             </ul>
@@ -448,14 +459,23 @@ function AssumptionCard({
 // A persona said its position moved: what it credited, and what it had said would move it. Flag-only — a
 // word match, so it asks the reader to check rather than telling them it was a fold.
 function ShiftFlag({ s, speaker }: { s: PositionShift; speaker: string }) {
+  // A credited persona or consultant is simulated and marked; an assumption or a scheduled message is not.
   const credits = s.credits.length
-    ? s.credits.map((c) => `${c.name} (${c.kind})`).join(', ')
+    ? s.credits.map((c, i) => (
+        <span key={`${c.kind}-${c.name}`}>
+          {i > 0 && ', '}
+          {c.kind === 'persona' || c.kind === 'consultant' ? <PersonaName name={c.name} /> : c.name} ({c.kind})
+        </span>
+      ))
     : 'nobody named'
   return (
     <div className="cc-flag cc-shift">
       <span className="cc-ft">SHIFT</span>
       <span className="min-w-0 flex-1">
-      <b>⚑ {speaker} says their position moved</b> — credits {credits}.
+      <b>
+        ⚑ <PersonaName name={speaker} /> says their position moved
+      </b>{' '}
+      — credits {credits}.
       {s.conditions.length > 0 && (
         <>
           {' '}

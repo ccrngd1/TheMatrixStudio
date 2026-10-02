@@ -8,6 +8,7 @@ import {
   Btn, Chip, Hex, HudCell, HudStrip, Panel, PanelButton, STANCE_COLOR, Tag, Ticks, identityOf, type RunState,
 } from '../ui/primitives'
 import { StanceCounts } from '../components/run/Stance'
+import { SIMULATED_LABEL } from '../ui/PersonaName'
 import { cached, remember } from '../lib/listCache'
 import { RUNS_KEY, listStamp, markHidden, setRunHidden, withSentHides } from '../lib/hiddenRuns'
 import './History.css'
@@ -555,6 +556,14 @@ function RunCard({
         {live && r.max_messages ? <Ticks n={r.turn_count} max={r.max_messages} live /> : null}
         <div className="cc-meta flex items-center justify-between gap-2">
           <span className="flex items-center gap-[3px]">
+            {/* The tokens carry initials only, so the simulated-persona marker leads the row once, and a screen
+                reader is given the names it cannot read off the tokens. */}
+            {cast.length > 0 && (
+              <>
+                <Icon name="bot" size={12} className="cc-botmark" />
+                <span className="sr-only">{`Cast, ${SIMULATED_LABEL}s: ${cast.join(', ')}.`}</span>
+              </>
+            )}
             {/* Ringed by end stance once the run is summarised (§6.1); the counts beside say it in glyphs. */}
             {cast.slice(0, 8).map((name) => (
               <Hex key={name} name={name} slot={identityOf(name, cast)} size="xs"

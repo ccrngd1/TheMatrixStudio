@@ -20,6 +20,7 @@ from matrix_studio.models import (
     LOW_VARIANCE_MODEL,
     ROLE_DEFAULTS,
     ROLES,
+    RUN_INDEPENDENT_ROLES,
     ModelSet,
     model_for,
 )
@@ -34,17 +35,26 @@ OPUS = "bedrock/global.anthropic.claude-opus-5"
 
 class TestAnExplicitModelWinsEverywhere:
     def test_a_conversation_model_applies_to_every_role(self):
-        """The rule a test failure taught. Every role, including the pinned ones."""
+        """The rule a test failure taught. Every role a run makes, including the pinned ones."""
         resolved = ModelSet.from_config({"model": OPUS}).as_dict()
-        assert set(resolved.values()) == {OPUS}, resolved
+        assert {v for r, v in resolved.items() if r not in RUN_INDEPENDENT_ROLES} == {OPUS}, resolved
 
     def test_including_the_temperature_sensitive_roles(self):
         """Named separately, because these are exactly the ones an earlier version
         withheld — and a test over all roles could pass while these regressed if the
         defaults ever became the same model as the conversation one."""
         ms = ModelSet.from_config({"model": OPUS})
-        for role in ROLE_DEFAULTS:
+        for role in set(ROLE_DEFAULTS) - RUN_INDEPENDENT_ROLES:
             assert ms.resolve(role) == OPUS, role
+
+    def test_the_name_check_is_not_reached_by_a_runs_model(self):
+        """The one exception, and why it is one: the name check runs before a run exists (the new-run
+        form asks as names are typed, with no run config), and the form's verdict and the create's
+        must agree. So a run's `model` does not move it; an explicit `models.name_check` does."""
+        assert ModelSet.from_config({"model": OPUS}).resolve("name_check") == LOW_VARIANCE_MODEL
+        pinned = ModelSet.from_config({"model": OPUS, "models": {"name_check": "x/other"}})
+        assert pinned.resolve("name_check") == "x/other"
+        assert RUN_INDEPENDENT_ROLES == {"name_check"}, "a new exception needs its own reason here"
 
     def test_a_per_role_override_beats_the_conversation_model(self):
         ms = ModelSet.from_config({"model": OPUS, "models": {"validation": "x/cheap"}})

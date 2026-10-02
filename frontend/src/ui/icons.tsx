@@ -34,11 +34,21 @@ export const ICONS = {
   // Not in the prototype: drawn for hiding a run from the Runs list, on the same grid and stroke.
   eye: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/>',
   eyeOff: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/><path d="M4 4l16 16"/>',
+  // Not in the prototype: the "simulated persona" marker beside every persona's name (`ui/PersonaName.tsx`). A
+  // robot head drawn on the same grid rather than an emoji, which renders as an empty box where no emoji font is.
+  bot: '<rect x="5" y="8" width="14" height="11" rx="2.5"/><path d="M12 8V5M2.5 12.5v3M21.5 12.5v3M9.5 16h5"/><circle cx="12" cy="3.6" r="1.3" fill="currentColor"/><circle cx="9.3" cy="12.3" r="1.3" fill="currentColor"/><circle cx="14.7" cy="12.3" r="1.3" fill="currentColor"/>',
 } as const
 
 export type IconName = keyof typeof ICONS
 
-export function Icon({ name, size = 16, style }: { name: IconName; size?: number; style?: CSSProperties }) {
+/**
+ * An icon. Decorative by default, and hidden from assistive technology, because the words beside it say what it
+ * is. Given a `label` it is an image with that accessible name instead: for an icon that means something the
+ * words beside it do not say (the persona marker: the name is the persona's, the icon says it is simulated).
+ */
+export function Icon({
+  name, size = 16, style, label, className,
+}: { name: IconName; size?: number; style?: CSSProperties; label?: string; className?: string }) {
   return (
     <svg
       width={size}
@@ -49,8 +59,9 @@ export function Icon({ name, size = 16, style }: { name: IconName; size?: number
       strokeWidth={1.8}
       strokeLinecap="round"
       strokeLinejoin="round"
+      className={className}
       style={{ flex: 'none', verticalAlign: -3, ...style }}
-      aria-hidden="true"
+      {...(label ? { role: 'img', 'aria-label': label } : { 'aria-hidden': true })}
       // The paths are static strings from this file, never user input.
       dangerouslySetInnerHTML={{ __html: ICONS[name] }}
     />

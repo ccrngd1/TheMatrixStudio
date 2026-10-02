@@ -5,6 +5,7 @@ import { useEffect, type ReactNode } from 'react'
 import { Icon } from '../../ui/icons'
 import { hrefOf, type RunTab } from '../../lib/route'
 import { Hex, HudCell, HudStrip, Meter, Tag, Ticks, identityOf } from '../../ui/primitives'
+import { SIMULATED_LABEL } from '../../ui/PersonaName'
 
 const pad = (n: number) => String(n).padStart(2, '0')
 
@@ -100,8 +101,12 @@ export function FaceStrip({
   if (order.length === 0) return null
   return (
     <div className="cc-faces">
+      {/* One marker for the strip, since the tokens carry initials only. Hidden from screen readers: each
+          token's accessible name already says it is a simulated persona. */}
+      <Icon name="bot" size={14} className="cc-botmark" />
       {order.map((name) => (
-        <button key={name} type="button" onClick={() => onOpen(name)} aria-label={`${name}: open dossier`}>
+        // Tokens alone, initials only: the accessible name is where the simulated-persona marker goes.
+        <button key={name} type="button" onClick={() => onOpen(name)} aria-label={`${name}, ${SIMULATED_LABEL}: open dossier`}>
           <Hex name={name} slot={identityOf(name, order)} size="sm" active={name === next} />
         </button>
       ))}

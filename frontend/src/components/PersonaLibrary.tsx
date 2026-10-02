@@ -4,6 +4,7 @@ import { api, type PersonaPack } from '../api'
 import { parseCast } from '../lib/importSetup'
 import type { DraftPersona } from '../views/newRunTypes'
 import { Hint } from './Hint'
+import { botLabel } from '../ui/PersonaName'
 
 interface Props {
   /** Names already in the cast, so an added pack never collides with one. */
@@ -57,8 +58,10 @@ export function PersonaLibrary({ taken, onAdd }: Props) {
       >
         <option value="">+ Add from library…</option>
         {packs.map((p) => (
+          // An option holds text only, so the simulated-persona marker is the plain-text form here.
           <option key={p.id} value={p.id}>
-            {p.label} ({p.qualification})
+            {p.label}
+            {p.persona?.name ? `, as ${botLabel(p.persona.name)}` : ''} ({p.qualification})
           </option>
         ))}
       </select>

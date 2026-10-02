@@ -136,6 +136,7 @@ async def test_the_engine_flags_it_beside_the_message_and_the_record_carries_it(
 
     model = await ex.run_model(db, await db.get_run("sh1"))
     md = ex.render(model, "md")
-    assert "⚑ Theo says their position moved; credits Mina (persona)." in md
+    # Both names are personas, so both carry the "(bot) " marker (persona_label.py).
+    assert "⚑ (bot) Theo says their position moved; credits (bot) Mina (persona)." in md
     assert "None of their stated conditions appears to be named" in md
     assert "1 position shift(s) flagged, 1 naming none" in br.render_markdown(br.run_brief(model))

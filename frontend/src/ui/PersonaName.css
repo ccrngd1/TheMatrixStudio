@@ -1,0 +1,9 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* The simulated-persona marker (`PersonaName.tsx`). The glyph and the name never part across a line break: a
+   robot at the end of one line and the name at the start of the next reads as two things. */
+.cc-pname { white-space:nowrap; }
+/* Sized to the text it sits in, in the text's own colour, a little quieter than the name so the name still
+   leads. The vertical offset centres a 12 px glyph on the cap height of the 11–14 px text it appears in. */
+.cc-botmark { opacity:.72; margin-right:.28em; vertical-align:-2px !important; width:1em; height:1em; min-width:10px; min-height:10px; }
+/* Beside an input the name is typed into, rather than inline in text. */
+.cc-botmark.cc-botmark-field { width:14px; height:14px; align-self:center; }

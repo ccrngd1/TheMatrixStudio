@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { colorForName } from '../lib/avatar'
 import type { FeedMessage } from '../types'
+import { PersonaName } from '../ui/PersonaName'
 
 interface Props {
   /** Every revealed turn, in order. The panel is a view of this and nothing else. */
@@ -82,7 +83,9 @@ export function ParticipationPanel({ feed: all, order, onJump }: Props) {
                 className="h-2 w-2 shrink-0 rounded-full"
                 style={{ backgroundColor: colorForName(name) }}
               />
-              <span className="min-w-0 flex-1 truncate text-xs text-slate-300">{name}</span>
+              <span className="min-w-0 flex-1 truncate text-xs text-slate-300">
+                <PersonaName name={name} />
+              </span>
               {/* "3 turns · 75%" as two separate elements. A bare number beside a
                   percentage reads ambiguously, and it also means a test can ask for the
                   count without matching the share. */}

@@ -2,7 +2,7 @@
 
 Download a run or an ensemble as a full report (Markdown, HTML or PDF), or as a one-page decision brief.
 
-Exports are built from what is stored; they make no model calls. Private persona fields (withheld concerns and calibration notes) are left out.
+Exports are built from what is stored; they make no model calls. Private persona fields (withheld concerns and calibration notes) are left out. Every persona and consultant name is written "(bot) Ruth", so a reader who never opened the app knows the words are simulated; an operator's injected message is not marked.
 
 ## Prerequisites
 

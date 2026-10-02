@@ -447,7 +447,10 @@ def _md_summary(summary: Dict[str, Any]) -> List[str]:
 def render_markdown(model: Dict[str, Any]) -> str:
     if model["kind"] == "ensemble":
         return _ensemble_markdown(model)
-    m = model
+    # Every persona and consultant name says it is simulated: "(bot) Ruth" (persona_label.py).
+    from matrix_studio.persona_label import label_run_model
+
+    m = label_run_model(model)
     out = [f"# {m['name']}", ""]
     if m.get("description"):
         out += [f"*{m['description']}*", ""]
@@ -624,7 +627,10 @@ def _html_list(items: Sequence[Any]) -> str:
 def render_html(model: Dict[str, Any]) -> str:
     if model["kind"] == "ensemble":
         return _ensemble_html(model)
-    m = model
+    # Every persona and consultant name says it is simulated: "(bot) Ruth" (persona_label.py).
+    from matrix_studio.persona_label import label_run_model
+
+    m = label_run_model(model)
     b = [f"<h1>{_e(m['name'])}</h1>"]
     if m.get("description"):
         b.append(f"<p class=\"meta\"><em>{_e(m['description'])}</em></p>")

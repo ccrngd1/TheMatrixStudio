@@ -13,6 +13,28 @@ live bugs surfaced on the way, two of which were invisible to the checks that we
 supposed to catch them.
 
 ### Added
+- **Personas never carry a real person's name, and every persona name says it is simulated**
+  (the owner's request of 2026-10-02; `docs/explanation/personas-and-convictions.md`).
+  - A persona or consultant named after a real, widely known person is renamed to a gentle,
+    clearly fictional sound-alike before anything is stored ("Jeff Bezos" -> "Geoff Beesoh"),
+    and the real name is replaced with the same parody in the cast's descriptions, goals and
+    convictions, consultants' expertise, the topic, the assumptions and the scheduled messages.
+    Documents are not rewritten. Detection is deterministic first — a curated list of 243 people
+    (`matrix_studio/public_figures.json`), case- and accent-insensitive, with hand-written
+    parodies — then one cached model check per unknown full name (the new `name_check` role:
+    Haiku 4.5 at temperature 0, a JSON schema), whose suggested parody is checked rather than
+    trusted. Conservative: a single first name or surname never triggers, ordinary names are not
+    famous, and only a high-confidence verdict counts. One function (`real_names.screen_request`)
+    is called from run and ensemble creation (inside `RunManager`, so
+    `scripts/start_conversation.py` is covered too), cast templates (save and load), the persona
+    wizard, `add_persona` at a branch and the CLI. Create responses list replacements in
+    `renamed`; the new `POST /api/personas/check-names` lets the new-run form switch a name on
+    blur and say why on the persona. Model calls are charged to the owner's monthly spend; a
+    caller over their cap gets the curated list only. Stored runs are not renamed.
+  - A robot glyph before every persona's and consultant's name in the UI and the 8-bit theatre
+    (one `PersonaName` component, read as "simulated persona"), and "(bot) Ruth" in exports and
+    briefs. Display only: stored names and prompts are unchanged. An operator's injected message is
+    not marked.
 - **The 8-bit theatre** (`docs/THEATRE.md`). A second page, opened in its own tab from a
   finished run, that replays it as 8-bit characters around a conference table with the
   transcript read through a dialogue box. A consultant walks in to answer and the persona who

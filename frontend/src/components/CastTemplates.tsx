@@ -2,7 +2,9 @@
 import { useEffect, useState } from 'react'
 import { api, type CastTemplateSummary, type CreateRunBody } from '../api'
 import { parseCast } from '../lib/importSetup'
+import { attachRenamed } from '../lib/realNames'
 import type { DraftPersona } from '../views/newRunTypes'
+import { PersonaNames } from '../ui/PersonaName'
 
 interface Props {
   /** The cast as the API takes it; empty when no persona is complete yet. */
@@ -20,7 +22,10 @@ interface Props {
  */
 export async function loadCastTemplate(templateName: string) {
   const t = await api.getCastTemplate(templateName)
-  return { name: t.name, ...parseCast(t.cast) }
+  const parsed = parseCast(t.cast)
+  // A template saved before real names were checked comes back with them switched; `renamed` says which, so
+  // the loaded rows carry the same notice a typed name would.
+  return { name: t.name, ...parsed, cast: attachRenamed(parsed.cast, t.renamed) }
 }
 
 // Save the cast under a name, and start a later conversation from it.
@@ -91,7 +96,11 @@ export function CastTemplates({ getCast, onLoad, hasCast }: Props) {
           (res.dropped_documents
             ? ` ${res.dropped_documents} pasted document${res.dropped_documents === 1 ? ' was' : 's were'} ` +
               'not kept — bind a knowledge base to reuse a document.'
-            : ''),
+            : '') +
+          // Said, not silent: the saved cast differs from the one on screen.
+          (res.renamed ?? [])
+            .map((r) => ` '${r.from}' is a real public figure, so it was saved as '${r.to}'.`)
+            .join(''),
       })
       void refresh()
     } catch (e) {
@@ -145,7 +154,9 @@ export function CastTemplates({ getCast, onLoad, hasCast }: Props) {
               {templates.map((t) => (
                 <li key={t.name} className="flex items-center gap-2">
                   <span className="text-slate-300">{t.name}</span>
-                  <span className="truncate">{t.personas.join(', ')}</span>
+                  <span className="truncate">
+                    <PersonaNames names={t.personas} sep=", " />
+                  </span>
                   <button
                     onClick={() => void remove(t.name)}
                     className="ml-auto text-rose-300 hover:underline"

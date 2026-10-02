@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { api } from '../api'
 import type { AsideTarget, Persona, ThreadDetail, ThreadSummary } from '../types'
 import { Sheet } from '../ui/primitives'
+import { PersonaName, botLabel } from '../ui/PersonaName'
 import { Hint } from './Hint'
 
 interface Props {
@@ -124,10 +125,15 @@ export function AsidesDrawer({ runId, cast, turnCount, model, models = [], consu
     }
   }
 
+  // A persona or a consultant is simulated, and says so; the analyst and "the room" are not a name.
   const targetLabel = (t: ThreadSummary) =>
-    t.target === 'persona' ? `${t.persona_name}`
-      : t.target === 'consultant' ? `${t.persona_name} (consultant)`
+    t.target === 'persona' ? <PersonaName name={t.persona_name ?? ''} />
+      : t.target === 'consultant' ? <><PersonaName name={t.persona_name ?? ''} /> (consultant)</>
       : t.target === 'room' ? 'The room' : 'Analyst'
+  // Who wrote a reply: a persona (a persona thread, or one voice of the room) or a consultant. Not the analyst.
+  const simulated = (speaker: string | null) =>
+    !!speaker && (active?.target === 'persona' || active?.target === 'consultant'
+      || cast.some((c) => c.name === speaker) || consultants.includes(speaker.replace(/ \(consultant\)$/, '')))
 
   return (
     <Sheet
@@ -176,7 +182,7 @@ export function AsidesDrawer({ runId, cast, turnCount, model, models = [], consu
                     className="rounded border border-matrix-border bg-matrix-bg p-2 text-sm"
                   >
                     {consultants.map((n) => (
-                      <option key={n} value={n}>{n}</option>
+                      <option key={n} value={n}>{botLabel(n)}</option>
                     ))}
                   </select>
                 )}
@@ -188,7 +194,7 @@ export function AsidesDrawer({ runId, cast, turnCount, model, models = [], consu
                   >
                     {cast.map((c) => (
                       <option key={c.name} value={c.name}>
-                        {c.name}
+                        {botLabel(c.name)}
                       </option>
                     ))}
                   </select>
@@ -237,9 +243,9 @@ export function AsidesDrawer({ runId, cast, turnCount, model, models = [], consu
               </button>
               <span className="text-xs text-slate-500">
                 {active.target === 'persona'
-                  ? `${active.persona_name} (in character)`
+                  ? <><PersonaName name={active.persona_name ?? ''} /> (in character)</>
                   : active.target === 'consultant'
-                    ? `${active.persona_name} (consultant, answers from its sources)`
+                    ? <><PersonaName name={active.persona_name ?? ''} /> (consultant, answers from its sources)</>
                   : active.target === 'room'
                     ? 'The room'
                     : 'Analyst'}{' '}
@@ -262,7 +268,11 @@ export function AsidesDrawer({ runId, cast, turnCount, model, models = [], consu
                           : 'cc-b-them'
                     }
                   >
-                    {m.role === 'target' && <div className="cc-from">{m.speaker} · aside</div>}
+                    {m.role === 'target' && (
+                      <div className="cc-from">
+                        {simulated(m.speaker) ? <PersonaName name={m.speaker ?? ''} /> : m.speaker} · aside
+                      </div>
+                    )}
                     <p className="whitespace-pre-wrap">{m.content}</p>
                     {/* Phase 2b: promote-aside affordance on every target (AI) reply */}
                     {m.role === 'target' && onBranch && (

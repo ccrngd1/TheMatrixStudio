@@ -172,7 +172,7 @@ Edge cases:
 
 | Field | Type | Server default | Form sends | Constraints | Effect |
 |---|---|---|---|---|---|
-| `name` | string | required | trimmed | none (blank accepted) | The speaker's name in the transcript, and the key retrieval and bindings resolve by. |
+| `name` | string | required | trimmed | none (blank accepted) | The speaker's name in the transcript, and the key retrieval and bindings resolve by. A real, widely known person's name is replaced before the run is stored (see the edge cases below). |
 | `persona` | string | required | trimmed | none | Prose description: the persona's voice and manner. |
 | `goals` | list of strings | `[]` | the goals box split on newlines and `;`, blanks dropped | none | Goals shown in the persona's prompt. |
 | `documents` | list of strings | `[]` | not sent | none | Server-readable file paths, ingested before turn 1 as this persona's documents. Suffix must be `.txt`, `.text`, `.md`, `.markdown`, `.pdf` or `.docx`. |
@@ -205,6 +205,7 @@ Edge cases:
 - `document_texts` is not checked against `MAX_DOCUMENT_CHARS` at run creation; that limit applies to `POST /api/documents/extract` and knowledge-base uploads.
 - `documents` paths are read from the filesystem of whichever process prepares the run (the Prepare worker when deployed). A path that does not exist is a `document.failed` event naming the path.
 - A persona whose name also names a consultant is refused (see [Cross-field checks](#cross-field-checks)).
+- **Real names.** A persona or consultant named after a real, widely known person is renamed to a fictional sound-alike before the run is stored (`"Jeff Bezos"` becomes `"Geoff Beesoh"`), and the response lists it in `renamed` ([`http-api.md`](http-api.md#conventions)). The same replacement is made for that person's full name in every `persona`, `goals` and `structured` text in the cast, in consultants' `expertise`, in `topic`, in `config.assumptions[]` and in `config.injections[]` (a `speaker` equal to the original name follows the rename). `document_texts` and `documents` are not rewritten. A single first name or surname never matches. Checked against the curated list `matrix_studio/public_figures.json`, then, for a full name not on it, by the `name_check` model role (see [`config.models`](#configmodels-and-configmodel)).
 
 ---
 
@@ -557,7 +558,7 @@ top-level `model`) is the conversation model. Resolution for each role, first ma
 
 1. `config.models[role]`
 2. `config.model`, which applies to every role
-3. the role's deployment default, for `validation`, `speaker_selection`, `naming` and `stance`:
+3. the role's deployment default, for `validation`, `speaker_selection`, `naming`, `stance` and `name_check`:
    `bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0`
 4. the `LITELLM_MODEL` setting (default `bedrock/global.anthropic.claude-sonnet-5`)
 
@@ -573,6 +574,7 @@ top-level `model`) is the conversation model. Resolution for each role, first ma
 | `wizard` | the persona wizard | 1.0 | once, before the run | `LITELLM_MODEL` |
 | `pressure` | adaptive pressure (experimental) | 0.7 | on request | `LITELLM_MODEL` |
 | `stance` | the closing-statement classifier | 0.0 | once per summary | Haiku 4.5 |
+| `name_check` | is a persona's name a real public figure's (`matrix_studio/real_names.py`) | 0.0 | once per new full name, before the run, cached | Haiku 4.5 |
 
 | Field | Type | Server default | Form sends | Constraints | Effect |
 |---|---|---|---|---|---|
@@ -588,7 +590,7 @@ Edge cases:
 
 - An unknown role name is ignored with a log warning; an empty model string is skipped.
 - Model strings are not checked against `AVAILABLE_MODELS`.
-- Setting `model` (top-level or `config.model`) moves `validation`, `speaker_selection`, `naming` and `stance` off their deployment default as well. The new-run form always sends top-level `model` (the `/api/models` default unless another is picked), so form-created runs use that model for every role.
+- Setting `model` (top-level or `config.model`) moves `validation`, `speaker_selection`, `naming` and `stance` off their deployment default as well. It does not move `name_check`: that check also runs before any run exists, from the new-run form, and the two must agree, so only `config.models.name_check` changes it. The new-run form always sends top-level `model` (the `/api/models` default unless another is picked), so form-created runs use that model for every role.
 - `GET /api/runs/{ref}` returns `models`, what each role resolved to for that run.
 
 ---

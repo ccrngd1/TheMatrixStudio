@@ -111,6 +111,10 @@ def _question(topic: str) -> str:
 
 def run_brief(model: Dict[str, Any]) -> Dict[str, Any]:
     """The brief for ONE conversation, from `export.run_model`'s output."""
+    # Persona names say they are simulated, "(bot) Ruth", like the export's (persona_label.py).
+    from matrix_studio.persona_label import label_run_model
+
+    model = label_run_model(model)
     s = model.get("summary") or {}
     agreed, agreed_more = _cap([_clip(_text(x)) for x in s.get("consensus") or []],
                                MAX_AGREED_WITH_ASSUMPTIONS if model.get("assumptions") else MAX_AGREED)

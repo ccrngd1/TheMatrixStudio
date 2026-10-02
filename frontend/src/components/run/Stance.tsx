@@ -13,6 +13,8 @@ import type { CSSProperties, KeyboardEvent, ReactNode } from 'react'
 import type { FeedMessage, StanceBasisEntry } from '../../types'
 import { STANCE_COLOR, STANCE_LABEL, Tag, identityOf, initials, type Stance } from '../../ui/primitives'
 import { usePhase } from '../../ui/fx'
+import { ICONS } from '../../ui/icons'
+import { PersonaName, SIMULATED_LABEL } from '../../ui/PersonaName'
 
 export type StanceMap = Record<string, Stance>
 type Css = CSSProperties & Record<`--${string}`, string>
@@ -103,6 +105,9 @@ const hexPts = (x: number, y: number, r: number) =>
     })
     .join(' ')
 
+/** The simulated-persona marker's size beside a room-map node's label, in the map's own units. */
+const NODE_MARK = 7
+
 const GRAD: Record<string, [string, string]> = {
   a1: ['#f9a8d4', '#c084fc'], a2: ['#a5f3fc', '#38bdf8'], a3: ['#fde68a', '#f59e0b'],
   a4: ['#a7f3d0', '#34d399'], a5: ['#fecdd3', '#fb7185'], a6: ['#c7d2fe', '#818cf8'], a0: ['#cbd5e1', '#94a3b8'],
@@ -186,15 +191,24 @@ export function RoomMap({
         const r = 13 + Math.min(7, (turns[k] ?? 0) * 1.4)
         const st = stance?.[k]
         const slot = identityOf(k, order)
+        const label = k.split(' ')[0].toUpperCase()
+        // The marker before the label, centred with it. SVG text cannot hold an icon and is not measured here,
+        // so its width is estimated from the label's monospace font (7 px, .14em tracking ≈ 5.2 px a character).
+        const half = (label.length * 5.2 + NODE_MARK + 2) / 2
         return (
           <g key={k} className={`cc-node ${k === next ? 'cc-active' : ''}`} role="button" tabIndex={0}
-            aria-label={`${k}: ${turns[k] ?? 0} turns${st ? `, ${WORD[st]}` : ''}. Open dossier`}
+            aria-label={`${k}, ${SIMULATED_LABEL}: ${turns[k] ?? 0} turns${st ? `, ${WORD[st]}` : ''}. Open dossier`}
             onClick={() => onOpen(k)} onKeyDown={key(k)}
             style={{ '--ring': st ? STANCE_COLOR[st] : 'var(--line-hi)', ...(k === next ? ph : {}) } as Css}>
             <polygon points={hexPts(x, y, r + 4)} className="cc-halo" />
             <polygon points={hexPts(x, y, r)} fill={`url(#cc-g-${slot})`} />
             <text x={x} y={y + 3.5} className="cc-ntext">{initials(k)}</text>
-            <text x={x} y={y + r + 15} className="cc-nlabel">{k.split(' ')[0].toUpperCase()}</text>
+            {/* Decorative here: the node's accessible name above already says "simulated persona". */}
+            <svg x={x - half} y={y + r + 15 - NODE_MARK + 1} width={NODE_MARK} height={NODE_MARK} viewBox="0 0 24 24"
+              fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round"
+              style={{ color: 'var(--t2)', pointerEvents: 'none' }}
+              aria-hidden="true" dangerouslySetInnerHTML={{ __html: ICONS.bot }} />
+            <text x={x - half + NODE_MARK + 2 + (label.length * 5.2) / 2} y={y + r + 15} className="cc-nlabel">{label}</text>
           </g>
         )
       })}
@@ -298,7 +312,10 @@ export function StanceBasisList({
     <ul className="cc-plain cc-swhy-list">
       {names.map((n) => (
         <li key={n}>
-          <b>{n}</b> <span className={STANCE_CLASS[basis[n].stance]}>{STANCE_LABEL[basis[n].stance]}</span>
+          <b>
+            <PersonaName name={n} />
+          </b>{' '}
+          <span className={STANCE_CLASS[basis[n].stance]}>{STANCE_LABEL[basis[n].stance]}</span>
           <br />
           <StanceWhy entry={basis[n]} />
         </li>

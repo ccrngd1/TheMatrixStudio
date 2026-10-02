@@ -41,7 +41,8 @@ The file format is the body the run API accepts: `topic` and a `cast` whose memb
 
    Other structured-persona fields (role, background and formative events, `optimises_for`, `persuaded_by`, `formed_by`) are dropped without a warning. To keep them, start the file from the terminal.
 
-5. Go to **Launch** and tap **Run simulation**.
+5. Check the personas' names. If a persona or consultant in the file is named after a real, widely known person, the form switches it to a fictional sound-alike as it loads and says so on that persona: "'Jeff Bezos' is a real public figure, so this persona is 'Geoff Beesoh'. Personas never use real people's names." You can type a different fictional name; the server replaces the real one whatever the form shows.
+6. Go to **Launch** and tap **Run simulation**.
 
 ## Start it from the terminal
 
@@ -75,6 +76,8 @@ The file format is the body the run API accepts: `topic` and a `cast` whose memb
    python scripts/start_conversation.py setup.json --owner <sub> --max-messages 4
    python scripts/start_conversation.py setup.json --owner <sub>
    ```
+
+   A persona named after a real public figure is started under a fictional sound-alike, and the script prints a `renamed` line for each. Change the file to match if you will run it again.
 
    The script watches the run and prints turns as they land. You can stop the script at any time; the run carries on. Re-attach with `--watch <run-id>`, or pass `--no-watch` to exit at once.
 

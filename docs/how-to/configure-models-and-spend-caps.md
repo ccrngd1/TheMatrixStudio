@@ -58,7 +58,7 @@ The new-run form cannot do this, and **Import a setup** ignores the field. Use a
    }
    ```
 
-   The roles are `voice`, `speaker_selection`, `validation`, `reflection`, `summary`, `aside`, `naming`, `wizard`, `pressure` and `stance`. To set one model for the whole run as well, put it in `config.model`.
+   The roles are `voice`, `speaker_selection`, `validation`, `reflection`, `summary`, `aside`, `naming`, `wizard`, `pressure`, `stance` and `name_check`. To set one model for the whole run as well, put it in `config.model`; it applies to every role except `name_check`, the real-name check, which only `models.name_check` moves.
 
 2. Print the resolved plan without starting anything:
 
