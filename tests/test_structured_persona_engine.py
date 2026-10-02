@@ -328,7 +328,7 @@ async def test_bad_firmness_fails_at_run_start_even_with_the_feature_off(db):
 
 
 # --------------------------------------------------------------------------- #
-# docs/EVIDENCE-LEAN.md: a best guess and a current lean with every evidence request
+# docs/studies/EVIDENCE-LEAN.md: a best guess and a current lean with every evidence request
 # --------------------------------------------------------------------------- #
 
 
@@ -340,7 +340,7 @@ async def test_evidence_lean_reaches_the_prompt_only_when_asked_for(db):
     off = "\n".join(_speaker_prompts(
         await _run(db, "leanoff", personas={"enabled": True, "evidence_lean": False}), "Dana"))
     default = "\n".join(_speaker_prompts(await _run(db, "leandef", personas={"enabled": True}), "Dana"))
-    assert EVIDENCE_LEAN_RULE in default, "on by default since docs/EVIDENCE-LEAN-2.md"
+    assert EVIDENCE_LEAN_RULE in default, "on by default since docs/studies/EVIDENCE-LEAN-2.md"
     assert EVIDENCE_LEAN_RULE in on and "which way that guess makes you lean TODAY" in on
     assert "lean TODAY" not in off, "off must be byte-identical to the shipped prompt"
 

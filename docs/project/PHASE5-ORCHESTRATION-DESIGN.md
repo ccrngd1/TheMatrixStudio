@@ -1,6 +1,6 @@
 # Phase 5 design: moving the turn loop into Step Functions
 
-Companion to `AWS-SERVERLESS-ARCHITECTURE.md` §5.2/§6, which draw the state machine and
+Companion to `docs/AWS-SERVERLESS-ARCHITECTURE.md` §5.2/§6, which draw the state machine and
 give the reasoning for choosing one. This is the level below: the specific places where
 the drawing does not survive contact with the existing engine, and what to do instead.
 

@@ -45,7 +45,7 @@ VECTOR_INDEX = "matrix-studio-test-chunks"
 PREFIX = "matrix-studio-test"
 # Small on purpose: these tests are about scoping and shape, not about recall, so a
 # 4-dimensional vector makes the arithmetic readable. The real index is 1024 — see
-# docs/EMBEDDING-DIMENSION-MEASUREMENT.md, and note the dimension is immutable once
+# docs/studies/EMBEDDING-DIMENSION-MEASUREMENT.md, and note the dimension is immutable once
 # an index exists.
 DIM = 4
 

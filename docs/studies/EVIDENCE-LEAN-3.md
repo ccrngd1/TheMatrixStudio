@@ -4,7 +4,7 @@
 
 ## Why
 
-`personas.evidence_lean` became the default after `docs/EVIDENCE-LEAN-2.md`, and every measurement so far used
+`personas.evidence_lean` became the default after `docs/studies/EVIDENCE-LEAN-2.md`, and every measurement so far used
 one brief: a legal-exposure question. This asks whether it holds on a different kind of discussion — the
 operator's stored product-direction brainstorm (six structured personas, private definitions).
 

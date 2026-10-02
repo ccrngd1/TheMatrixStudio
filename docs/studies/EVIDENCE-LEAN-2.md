@@ -5,7 +5,7 @@ a result section is appended afterwards.
 
 ## Why a second one
 
-`docs/EVIDENCE-LEAN.md` met its lean criterion and missed its best-guess one. Its three-pass
+`docs/studies/EVIDENCE-LEAN.md` met its lean criterion and missed its best-guess one. Its three-pass
 re-analysis then showed the best-guess share is noise at this size (one run scored 0.00 and 1.00 across
 passes of the same transcript) while the lean held up (on 8 of 9 passes, off 4 of 9). That re-analysis
 was after the fact and on the runs it was suggested by. This comparison tests the lean on fresh runs, with

@@ -121,7 +121,7 @@ export function buildStructured(input: {
 }
 
 // Conditions that name evidence from OUTSIDE the room — a ruling, a statute, a regulator, a study, data.
-// Measured on live runs (docs/EVIDENCE-LEAN-FOLDING.md and after): the personas that moved without any of
+// Measured on live runs (docs/studies/EVIDENCE-LEAN-FOLDING.md and after): the personas that moved without any of
 // their stated conditions met were, three times in four, personas whose conditions only outside evidence
 // could satisfy. Nobody in a simulated room can produce a court case; research or a consultant can.
 const OUTSIDE_EVIDENCE =

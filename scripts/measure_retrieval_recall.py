@@ -2,11 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """Measure retrieval recall on a real corpus.
 
-Written for Phase 5 step 5b-4, when `docs/PHASE5-RETRIEVAL-DESIGN.md` had chosen
+Written for Phase 5 step 5b-4, when `docs/project/PHASE5-RETRIEVAL-DESIGN.md` had chosen
 SQLite FTS5 over vectors on operational grounds and deferred the quality question to
 a measurement. It exists to produce a number that can justify a retrieval choice —
-not to confirm a preference. Results: `docs/PHASE5-RETRIEVAL-MEASUREMENT.md` (the
-original, on FTS5 + sqlite-vec) and `docs/PHASE3-RECALL-MEASUREMENT.md` (the AWS
+not to confirm a preference. Results: `docs/project/PHASE5-RETRIEVAL-MEASUREMENT.md` (the
+original, on FTS5 + sqlite-vec) and `docs/project/PHASE3-RECALL-MEASUREMENT.md` (the AWS
 port, on in-process BM25 + S3 Vectors).
 
 **It runs against whatever backend `matrix_studio.storage.Database` is**, which is

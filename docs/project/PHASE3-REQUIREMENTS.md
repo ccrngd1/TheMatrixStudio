@@ -1,7 +1,7 @@
 # Requirements — TheMatrix Simulation Studio, Phase 3
 
 **Status:** APPROVED (CC 2026-07-09) — handed to MasterControl to build. Task ID `mss-phase3-*`.
-**Spec:** `docs/PROJECT-SPEC.md` (§6 Phase 3, §7 release-scope multipliers, §8 open questions)
+**Spec:** `docs/project/PROJECT-SPEC.md` (§6 Phase 3, §7 release-scope multipliers, §8 open questions)
 **Builds on:** Phases 0/1/1.5/2a/2b/2c (feature-complete engine + UI).
 
 ---

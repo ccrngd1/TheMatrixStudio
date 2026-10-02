@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Score the evidence-lean comparison against the criteria in docs/EVIDENCE-LEAN.md.
+"""Score the evidence-lean comparison against the criteria in docs/studies/EVIDENCE-LEAN.md.
 
 Written before the runs, and not tuned afterwards. The primary metrics are `measure_evidence_plan.score`
 applied to each run exactly as Stage 1 measured the baseline; the guardrails come from the stored runs.
@@ -30,7 +30,7 @@ async def arm(store, run_ids, repeats: int = 1):
     """One arm's metrics. With ``repeats`` > 1 the analyst scores each run that many times: the best-guess
     share is pooled over every repeat, a run "states a lean" if most repeats say so, and each run's spread
     is kept. Added after the same three runs scored 0.36 one day and 0.50 the next
-    (docs/MODERATOR-ASSUMPTIONS.md) — a single analyst pass is not a stable measurement."""
+    (docs/studies/MODERATOR-ASSUMPTIONS.md) — a single analyst pass is not a stable measurement."""
     rows, words, cost, dissenters = [], [], 0.0, []
     for rid in run_ids:
         run = await store.get_run(rid)
@@ -80,7 +80,7 @@ async def main() -> int:
     ap.add_argument("--on", nargs="+", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--criteria", type=int, choices=(1, 2), default=1,
-                    help="1: docs/EVIDENCE-LEAN.md; 2: docs/EVIDENCE-LEAN-2.md (lean by majority of passes)")
+                    help="1: docs/studies/EVIDENCE-LEAN.md; 2: docs/studies/EVIDENCE-LEAN-2.md (lean by majority of passes)")
     ap.add_argument("--repeats", type=int, default=1,
                     help="analyst passes per run; 1 reproduces the pre-registered scoring exactly")
     args = ap.parse_args()
@@ -98,7 +98,7 @@ async def main() -> int:
         print(name, json.dumps({k: v for k, v in a.items() if k != "rows"}))
 
     if args.criteria == 2:
-        # docs/EVIDENCE-LEAN-2.md: lean by majority of >= 3 passes is the primary; best-guess share is
+        # docs/studies/EVIDENCE-LEAN-2.md: lean by majority of >= 3 passes is the primary; best-guess share is
         # reported only, because a single run scored 0.00 and 1.00 on it across passes.
         if args.repeats < 3:
             print("criteria 2 requires --repeats >= 3", file=sys.stderr)

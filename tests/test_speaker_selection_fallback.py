@@ -11,7 +11,7 @@ building `scripts/eval_speaker_selection.py`:
    error logged as such, a plausible pick on every turn for ever.
 2. **The fallback was silent and cast-position biased.** `candidates[0]` is the same
    person every time for a given last speaker, so the turn-share skew measured in
-   `docs/SPEAKER-SELECTION-EVALUATION.md` could not be attributed between the model and
+   `docs/studies/SPEAKER-SELECTION-EVALUATION.md` could not be attributed between the model and
    the fallback — which is why these fixes land BEFORE any further arm is measured.
 
 These tests pin the boundary: our own defects raise, external failures degrade loudly.
@@ -141,7 +141,7 @@ async def test_the_moderators_reason_survives_an_unresolved_name():
 
 @pytest.mark.xfail(
     strict=True,
-    reason="intervention F in docs/SPEAKER-SELECTION-EVALUATION.md: `_match` scans the "
+    reason="intervention F in docs/studies/SPEAKER-SELECTION-EVALUATION.md: `_match` scans the "
            "cast in order for a SUBSTRING, so a name that merely contains a cast name "
            "resolves to that cast member. Found by writing the test above, where the "
            "moderator naming 'Nobody At All' resolved to 'Bo'. Out of scope for this "
@@ -190,7 +190,7 @@ async def test_every_fallback_logs_a_warning_naming_the_speaker_and_the_cause(ca
 class TestThereIsNoOutputCap:
     """The selection call sent `max_tokens=120` (50 with cognition off) until 2026-09-15.
 
-    Measured in `docs/SELECTION-MODEL-DEFAULT.md` §6: a reply that hits the cap returns
+    Measured in `docs/studies/SELECTION-MODEL-DEFAULT.md` §6: a reply that hits the cap returns
     `finish_reason="length"`, 120 completion tokens and **empty content** — not a partial
     object — so nothing can be matched and the fallback fires. Haiku averaged 75 tokens
     against that cap and Sonnet 5 averaged 80–87, so the cap cost Sonnet 43% of its picks

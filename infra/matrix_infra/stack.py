@@ -13,7 +13,7 @@ exists to surface the boring blockers — container image size, IAM policy shape
 the `s3vectors` API — while there is nothing else to blame for a failure.
 
 See `docs/AWS-SERVERLESS-ARCHITECTURE.md` for the design and
-`docs/AWS-IMPLEMENTATION-PLAN.md` for the ordering.
+`docs/project/AWS-IMPLEMENTATION-PLAN.md` for the ordering.
 """
 
 from typing import Dict, List, Optional
@@ -234,7 +234,7 @@ class MatrixStudioStack(Stack):
         # against the resolved run, which `api/app.py` performs for both thread
         # routes via `_require_thread_run`.
         #
-        # See docs/PHASE2-STORAGE-KEY-DESIGN.md §5. Missing from the first Phase 1
+        # See docs/project/PHASE2-STORAGE-KEY-DESIGN.md §5. Missing from the first Phase 1
         # deploy, and found by designing the port rather than by running it.
         for table_name, id_attr in (
             ("threads", "thread_id"),
@@ -1168,7 +1168,7 @@ function handler(event) {
         to run the loop in the API Lambda's background task and was cancelled on
         measurement: Lambda freezes the sandbox when the handler returns, so the run
         died in 8 ms having logged one line. API Gateway's 30-second integration
-        timeout rules out the obvious repair. See `docs/AWS-IMPLEMENTATION-PLAN.md`.
+        timeout rules out the obvious repair. See `docs/project/AWS-IMPLEMENTATION-PLAN.md`.
 
         Standard rather than Express: no duration ceiling (a 40-turn conversation at
         6–13 s/turn is minutes, and the budget is user-controlled), and Express's

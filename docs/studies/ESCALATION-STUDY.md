@@ -7,7 +7,7 @@
 `requires-escalation` is the firmness level that says *I do not have the authority to concede this*. A persona
 holding one is supposed to refuse, say so plainly, and name who it will take the question to. In fifteen Phase 6
 runs it fired once: **2 of 3 runs with cognition on, 0 of 3 without**
-(`docs/PHASE6-COGNITION-INTERACTION.md`). At n = 3 that is Fisher ≈ 0.4 — nothing. The proposed mechanism is
+(`docs/project/PHASE6-COGNITION-INTERACTION.md`). At n = 3 that is Fisher ≈ 0.4 — nothing. The proposed mechanism is
 that escalation needs *sustained* pressure to concede, and without memory every turn starts fresh.
 
 The backlog's own advice is not to repeat identical runs but to **raise the base rate**: write a brief in which a
@@ -30,7 +30,7 @@ features are deliberate:
 ## Measurement
 
 Counted by hand from the transcript, **by the assistant and labelled as such**, restricted to the persona
-holding the `requires-escalation` viewpoint — the restriction `PHASE6-COGNITION-INTERACTION.md` used, and the
+holding the `requires-escalation` viewpoint — the restriction `docs/project/PHASE6-COGNITION-INTERACTION.md` used, and the
 reason its all-persona count was below the noise gate.
 
 An **escalation utterance** requires all three: refuses to concede the position; says the decision is not the
@@ -77,7 +77,7 @@ messages were judged under shuffled labels and fingerprinted (`71ada0f`) before 
   Counting it would pass step 0 at 2 of 3 — and would still fail the primary at 2 vs 1 rather than 3 vs 0. No
   reading of these runs supports the cognition hypothesis.
 - **Against the mechanism, recorded rather than waved through:** one OFF run escalated — the first escalation seen
-  without cognition in any run of this project. The mechanism proposed in `PHASE6-COGNITION-INTERACTION.md`
+  without cognition in any run of this project. The mechanism proposed in `docs/project/PHASE6-COGNITION-INTERACTION.md`
   (escalation needs memory of sustained pressure) predicted that should not happen. With the earlier 2/3 vs 0/3
   this pools to **3 of 6 ON against 1 of 6 OFF** (Fisher ≈ 0.55): no evidence of a cognition effect.
 - **What the brief did do:** the holder **never folded** — no position-shift flags in any of the six runs — and in

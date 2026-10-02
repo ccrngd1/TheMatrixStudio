@@ -1,10 +1,10 @@
 # Phase 5 step 5b-4 — Measured FTS5 Retrieval Recall
 
 **Status:** COMPLETE. Run 2026-09-05. This is the measurement
-`docs/PHASE5-RETRIEVAL-DESIGN.md` deferred to, and it produces a verdict that
+`docs/project/PHASE5-RETRIEVAL-DESIGN.md` deferred to, and it produces a verdict that
 goes against the original preference.
 
-> **Superseded for current numbers by `docs/PHASE3-RECALL-MEASUREMENT.md`
+> **Superseded for current numbers by `docs/project/PHASE3-RECALL-MEASUREMENT.md`
 > (2026-09-11).** Every figure below was taken on **SQLite FTS5 + sqlite-vec**, all
 > three of which the AWS port replaced — the lexical arm is in-process BM25 now, the
 > vector store is S3 Vectors, and the similarity metric is cosine rather than L2. The

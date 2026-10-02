@@ -91,7 +91,7 @@ class SpeakerChoice(NamedTuple):
     ``fallback`` is ``None`` for a real decision and names the degradation otherwise.
     Before this existed the fallback returned a bare name like any other pick, so a
     provider outage and a moderator's judgement were the same event in the transcript —
-    and the turn-share skew measured in `docs/SPEAKER-SELECTION-EVALUATION.md` could not
+    and the turn-share skew measured in `docs/studies/SPEAKER-SELECTION-EVALUATION.md` could not
     be attributed between the model and the shrug.
     """
 
@@ -146,7 +146,7 @@ def _fairness_block(
     **The wording here is byte-identical to the `counts+budget` arm of
     `scripts/eval_speaker_selection.py`, deliberately, and must stay that way.** That arm
     is what was measured across 146 replays; a reworded copy of it in the engine would mean
-    the numbers in `docs/SPEAKER-SELECTION-EVALUATION.md` §10–§11 describe a prompt that no
+    the numbers in `docs/studies/SPEAKER-SELECTION-EVALUATION.md` §10–§11 describe a prompt that no
     longer exists. `--check-baseline` asserts the two are the same text.
 
     That includes the parts a copy-editor would fix. "last spoke 0 turn(s) ago" for the
@@ -199,7 +199,7 @@ def _fairness_block(
 
 #: Intervention H: relevance before fairness, and permission to say nobody.
 #:
-#: Measured in `docs/SPEAKER-SELECTION-EVALUATION.md` §13–§14: with turns spread evenly the
+#: Measured in `docs/studies/SPEAKER-SELECTION-EVALUATION.md` §13–§14: with turns spread evenly the
 #: renewal run finished its argument at turn 25 and then spent fifteen turns on "confirmed,
 #: nothing to add" — and the padding was NOT misallocation. The five fairness-motivated picks
 #: before turn 26 were all substantive; from 26 every turn was filler whoever was chosen,
@@ -314,7 +314,7 @@ Respond with ONLY the name of the persona who should speak next. Choose naturall
     # Interventions A+B, ON by default. Measured across 146 replays on two models: the
     # prompt above alone gives a Gini of turn share of 0.332 (Haiku) / 0.335 (Sonnet) and
     # leaves somebody with zero turns in 6 of 24 replays; with this block, 0.223 / 0.185 and
-    # nobody starved. See `docs/SPEAKER-SELECTION-EVALUATION.md` §10–§11.
+    # nobody starved. See `docs/studies/SPEAKER-SELECTION-EVALUATION.md` §10–§11.
     #
     # Note it is appended to BOTH prompts. The measurement used the cognition-on one, since
     # that is what every recorded transcript ran; the closing sentence is the same string in
@@ -348,7 +348,7 @@ Respond with ONLY the name of the persona who should speak next. Choose naturall
     # NO `max_tokens`. There used to be one — 120 with cognition on, 50 without — and it
     # was a Haiku-era number that quietly became the binding constraint on this call.
     #
-    # Measured 2026-09-15 (`docs/SELECTION-MODEL-DEFAULT.md` §6): a reply that hits the cap
+    # Measured 2026-09-15 (`docs/studies/SELECTION-MODEL-DEFAULT.md` §6): a reply that hits the cap
     # comes back with `finish_reason="length"`, `completion_tokens=120` and **empty
     # content** — not a partial object — so there is no name to match and the fallback
     # fires. Haiku averages 75 tokens against that cap and Sonnet 5 averages 80–87, which

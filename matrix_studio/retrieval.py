@@ -193,7 +193,7 @@ def select_discriminative_terms(
     The hypothesis was that real turn-queries are diluted (an unweighted OR over
     ~24 conversational terms, only ~39% of which appear in the corpus) and that
     keeping the rarest would sharpen ranking. The A/B in
-    ``docs/PHASE5-RETRIEVAL-MEASUREMENT.md`` refuted it: recall fell on all three
+    ``docs/project/PHASE5-RETRIEVAL-MEASUREMENT.md`` refuted it: recall fell on all three
     arms, worst on the "diluted" arm this was designed for (recall@5 0.339 vs
     0.509 baseline).
 
@@ -343,7 +343,7 @@ def apply_similarity_floor(
     correct matches span 0.228-0.870 and incorrect ones 0.166-0.699 — almost
     complete overlap. No threshold distinguishes the right passage from a wrong
     one, and pretending otherwise would trade real recall for nothing. See
-    ``docs/PHASE5-RETRIEVAL-MEASUREMENT.md``.
+    ``docs/project/PHASE5-RETRIEVAL-MEASUREMENT.md``.
 
     Rows must carry ``score`` as a **cosine distance** over UNIT vectors; the
     conversion is invalid otherwise, so a caller that cannot guarantee unit-norm
@@ -552,7 +552,7 @@ def _recorded_groups(run: Dict[str, Any]) -> List[str]:
     """The creator's Cognito groups, captured on the run row at creation.
 
     A turn runs in a Step Functions state with no JWT, so the token `identity.py` reads
-    groups from does not exist here. PHASE6-KB-DESIGN.md §8.3 records the trade: group
+    groups from does not exist here. docs/project/PHASE6-KB-DESIGN.md §8.3 records the trade: group
     membership is fixed for the run's lifetime, while the GRANT is still re-read every
     turn — which is what §8b actually requires.
 
@@ -616,7 +616,7 @@ async def retrieve_for_turn(
     | Bound knowledge bases | bindings ∩ grants, per turn | deliberate, reusable, shareable collections |
 
     The run slice is **not** replaced by KBs, which is a correction to
-    `PHASE6-KB-DESIGN.md` §6's build order — see §8.1 there. One index per *run* would
+    `docs/project/PHASE6-KB-DESIGN.md` §6's build order — see §8.1 there. One index per *run* would
     cap the install at 10,000 conversations, which §8b rejects; the KB fan-out moves that
     ceiling onto knowledge bases, where it is unreachable in practice.
 
@@ -910,7 +910,7 @@ def format_unsupported_block() -> str:
     priority hierarchy.
 
     This exact wording was chosen by live A/B against two alternatives (see
-    ``docs/PHASE5-RETRIEVAL-MEASUREMENT.md``). A softer *conditional* phrasing
+    ``docs/project/PHASE5-RETRIEVAL-MEASUREMENT.md``). A softer *conditional* phrasing
     ("if you make a factual claim...") produced only implicit hedges — the model
     sounded experienced without ever stating that it lacked a source. Adding an
     example phrase to this wording worked too, but the model echoed the example

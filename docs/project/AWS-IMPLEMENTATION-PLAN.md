@@ -1,6 +1,6 @@
 # Implementation plan: TheMatrix Studio on AWS
 
-Companion to `AWS-SERVERLESS-ARCHITECTURE.md`, which is the *what* and *why*. This is the
+Companion to `docs/AWS-SERVERLESS-ARCHITECTURE.md`, which is the *what* and *why*. This is the
 *in what order*, and what proves each step worked.
 
 Status: **in progress**, updated 2026-09-11. **Phases 0, 1, 2, 3 and 5 are complete,
@@ -81,7 +81,7 @@ The deferral paid off precisely as hoped: by Phase 3 the old justification for `
 had become *false* rather than merely outweighed (no optional extra exists to be
 missing, and Bedrock is already a hard dependency), and the flip could be made on a
 measurement taken against the stack it would actually run on. See
-`docs/PHASE3-RECALL-MEASUREMENT.md`.
+`docs/project/PHASE3-RECALL-MEASUREMENT.md`.
 
 Investigating it was still worth it: it surfaced a live bug. `mode="vector"` returned
 **zero passages** both when `sqlite-vec` was absent and when chunks were never embedded,
@@ -92,7 +92,7 @@ unreachable in both cases. Fixed, with the fallback now logging which cause fire
 the optional extra to it.
 
 **0.4 Decide the embedding dimension, with evidence.** ✅ **DONE 2026-09-10 — 1024.**
-See `docs/EMBEDDING-DIMENSION-MEASUREMENT.md`. Width is irrelevant for natural queries and
+See `docs/studies/EMBEDDING-DIMENSION-MEASUREMENT.md`. Width is irrelevant for natural queries and
 decisive for paraphrased ones (256 → 1024 is +0.117 recall@1, 15 of 128 queries, monotonic
 across four metrics), so the hoped-for 4× saving would have been paid for in paraphrase
 robustness. Two instrument defects were found and fixed on the way: query generation had been
@@ -193,7 +193,7 @@ a cross-partition read — that last one is what proves §3 rather than assuming
 *Risk:* the tests are the contract, and any that only passed because of a SQLite behaviour
 will surface here. Treat each as a question about the test, not an obstacle.
 
-### Key design settled first — `docs/PHASE2-STORAGE-KEY-DESIGN.md`
+### Key design settled first — `docs/project/PHASE2-STORAGE-KEY-DESIGN.md`
 
 The port turned out to have six places where the existing methods rely on something
 SQLite makes free. Each is a decision that, made wrong, is found *after* the port is
@@ -251,7 +251,7 @@ construction sites is one mechanical step rather than a partially migrated tree.
   51 tests, and 11 mutations caught — including that removing the lineage cycle guard
   hangs the suite (`timeout` exit 124) rather than returning a wrong answer.
 - ⚠️ **The port found §4a's "re-chunking reproduces the same ordinals" to be false.**
-  See the correction in `AWS-SERVERLESS-ARCHITECTURE.md` §4a. Determinism was the wrong
+  See the correction in `docs/AWS-SERVERLESS-ARCHITECTURE.md` §4a. Determinism was the wrong
   property — the design needs a *round trip*, and it fails on 2 of 10 real documents
   because `join_chunks` is not an exact inverse of `chunk_text` (72,149 characters
   reassembled from 72,136). Fixed by storing the ORIGINAL extracted text, which every
@@ -377,7 +377,7 @@ while the measurement instrument itself was broken three ways.
 - ✅ **`QueryVectors` scoping verified against the real service**
   (`scripts/verify_vector_retrieval.py`, 8 checks): tenant, run and persona filtering
   all hold, and passages return inline as §4a's one-round-trip design requires.
-- ✅ **The recall measurement** (2026-09-11, `docs/PHASE3-RECALL-MEASUREMENT.md`).
+- ✅ **The recall measurement** (2026-09-11, `docs/project/PHASE3-RECALL-MEASUREMENT.md`).
   40 queries × 3 arms × 3 modes over 666 chunks in the deployed account, $0.15.
   **The vector arm reproduced**: diluted recall@5 0.817 → 0.825, paraphrased
   0.617 → 0.650. The conclusion held decisively — diluted recall@1 is 0.125 lexical
@@ -537,7 +537,7 @@ All three criteria met against the deployed state machine —
 - **A cost cap terminates as `capped`**, after one turn with the cap set to $1e-6.
 
 Design decisions and the two deliberate deviations from §5.2/§6 are in
-`docs/PHASE5-ORCHESTRATION-DESIGN.md`. The short version: `PrepareTurn` and
+`docs/project/PHASE5-ORCHESTRATION-DESIGN.md`. The short version: `PrepareTurn` and
 `GenerateTurn` collapse into one Lambda because a Step Functions state's I/O caps at
 256 KB while snapshots reach 2.2 MB, and `CheckContinue` is a pure `Choice` rather than
 a native DynamoDB read because that read would use the state machine's role, which is
@@ -593,7 +593,7 @@ First-class KBs, grants, run-level and persona-level bindings (§8b). Deferred t
 because Phases 0–5 can carry per-conversation documents as an implicit run-scoped KB, and
 doing it later means designing it against a working system.
 
-**Design settled 2026-09-11 — `docs/PHASE6-KB-DESIGN.md`.** The deferral paid off: the
+**Design settled 2026-09-11 — `docs/project/PHASE6-KB-DESIGN.md`.** The deferral paid off: the
 design could be written against a deployed system, and two of its conclusions depend on
 facts that only existed once there was one.
 

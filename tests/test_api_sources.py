@@ -12,7 +12,7 @@ identical to a document that does not exist — so the route cannot be used to o
 by id, or to learn that one exists.
 
 **Full text only for what the caller OWNS.** A shared collection's S3 body lives under its owner's
-prefix, and PHASE6-KB-DESIGN.md §8.2 is explicit that a grantee retrieves passages and does not
+prefix, and docs/project/PHASE6-KB-DESIGN.md §8.2 is explicit that a grantee retrieves passages and does not
 download the source. So a grantee gets the cited passage and its neighbours — exactly what a turn
 already showed them — and a notice saying why they get no more.
 """

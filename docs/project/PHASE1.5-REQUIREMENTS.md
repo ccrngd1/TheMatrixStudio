@@ -6,7 +6,7 @@
 **Author:** Main (CABAL)
 **Date:** 2026-07-08
 **Status:** APPROVED — CC sign-off 2026-07-09 ("phase 1.5 spec looks good, start MasterControl building it"). Cleared for build.
-**Spec:** `docs/PROJECT-SPEC.md` (§6, §6a interaction design)
+**Spec:** `docs/project/PROJECT-SPEC.md` (§6, §6a interaction design)
 **Builds on:** Phase 1 (COMPLETE, verified live 2026-07-08 — FastAPI+WS backend, React UI, SQLite event store, named runs, replay). Phase 0 engine unchanged.
 
 ---

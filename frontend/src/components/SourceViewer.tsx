@@ -20,7 +20,7 @@ interface Props {
 //
 //   owned   — the whole source, every chunk, with the cited one highlighted.
 //   shared  — only the cited passage and its neighbours. A shared collection's full text belongs to
-//             its owner, and PHASE6-KB-DESIGN.md §8.2 keeps it that way: a grantee retrieves
+//             its owner, and docs/project/PHASE6-KB-DESIGN.md §8.2 keeps it that way: a grantee retrieves
 //             passages, they do not download the source. The server enforces it; this says why.
 //
 // Research made this necessary rather than merely convenient: a pass ingests a hundred sources

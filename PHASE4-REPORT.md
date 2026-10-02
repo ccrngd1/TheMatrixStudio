@@ -1,6 +1,6 @@
 # PHASE4-REPORT — TheMatrix Simulation Studio, Phase 4 build
 
-**Spec:** `docs/PHASE4-REQUIREMENTS.md` (Status: APPROVED, working decisions baked).
+**Spec:** `docs/project/PHASE4-REQUIREMENTS.md` (Status: APPROVED, working decisions baked).
 **Build order:** 4a → 4b → 4d → 4c, each with its own tests + commit + push.
 **Baseline before any Phase 4 code:** 207 backend tests passing, 18 frontend tests passing
 (verified on this machine, commit 792b5aa).

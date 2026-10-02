@@ -4,7 +4,7 @@
 <account-id>, us-east-1. This is the last unmet acceptance criterion for Phases 2
 and 3.
 
-`docs/PHASE5-RETRIEVAL-MEASUREMENT.md` measured retrieval on **SQLite FTS5 +
+`docs/project/PHASE5-RETRIEVAL-MEASUREMENT.md` measured retrieval on **SQLite FTS5 +
 sqlite-vec**. The port replaced all three moving parts at once:
 
 | | before | after |

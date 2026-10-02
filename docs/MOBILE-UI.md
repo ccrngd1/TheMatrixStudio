@@ -166,7 +166,7 @@ starves participants") would have been visible at a glance as one tiny, unconnec
 
 **The dossier never shows the concern itself.** Phase 6 forbids it: drawing the concern out is
 the exercise, and "an operator who can read it off a panel has been handed the answer"
-(`Dossier.tsx`, `docs/PHASE6-STRUCTURED-PERSONAS.md` §1). The mutation-tested guard stays:
+(`Dossier.tsx`, `docs/project/PHASE6-STRUCTURED-PERSONAS.md` §1). The mutation-tested guard stays:
 `underlying_concern` and `validity` are not declared on the dossier type, so rendering them would
 not compile. An early draft of this prototype did display the concern; that has been fixed. The
 panel's tag says *Hidden*, not *not drawn out*, because nothing detects a reveal (Phase 6: "the

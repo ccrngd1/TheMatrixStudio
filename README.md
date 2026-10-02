@@ -33,9 +33,9 @@ Screenshots are of a demonstration run on a neutral topic, captured from the dep
 - **Pre-Conversation Research** (optional) — Before turn 1, search the open web for the authorities on the subject, tier them (controlling / persuasive / commentary), and ingest them into knowledge bases: a shared corpus, one per persona, and a library per consultant. See `docs/PERSONA-RESEARCH.md`
 - **Consultants** — Experts outside the room who answer only from their own documents, with citations, or say the answer is not in their sources. Personas ask them mid-run; you can ask them from the conversation view. They never take a turn
 - **Getting to a decision** — Three measured pieces aimed at runs that would otherwise end in "it depends":
-  - *Evidence lean* (on by default): a persona that asks for evidence must also say what it expects it to show and which way it leans today. Measured on two briefs: runs ending with a stated lean 3/3 vs 0/3 and 3/3 vs 1/3 (`docs/EVIDENCE-LEAN-2.md`, `docs/EVIDENCE-LEAN-3.md`)
-  - *Working assumptions*: set what the room should reason from when nobody in it can know; each is marked in the transcript, can be forked with a different value from its card or the scrubber, and can be an ensemble variable (`docs/ASSUMPTION-ENSEMBLE.md`). Assumptions added by the moderator during a run are opt-in — measured at about two-thirds facts (`docs/MODERATOR-ASSUMPTIONS.md`)
-  - *Position-shift flags*: when a persona says its position moved, the message shows what it credited and the conditions it had said would move it, marked when none of them appears to be named (`docs/EVIDENCE-LEAN-FOLDING.md`)
+  - *Evidence lean* (on by default): a persona that asks for evidence must also say what it expects it to show and which way it leans today. Measured on two briefs: runs ending with a stated lean 3/3 vs 0/3 and 3/3 vs 1/3 (`docs/studies/EVIDENCE-LEAN-2.md`, `docs/studies/EVIDENCE-LEAN-3.md`)
+  - *Working assumptions*: set what the room should reason from when nobody in it can know; each is marked in the transcript, can be forked with a different value from its card or the scrubber, and can be an ensemble variable (`docs/studies/ASSUMPTION-ENSEMBLE.md`). Assumptions added by the moderator during a run are opt-in — measured at about two-thirds facts (`docs/studies/MODERATOR-ASSUMPTIONS.md`)
+  - *Position-shift flags*: when a persona says its position moved, the message shows what it credited and the conditions it had said would move it, marked when none of them appears to be named (`docs/studies/EVIDENCE-LEAN-FOLDING.md`)
 - **Scheduled Messages** — A message that enters a run after a given turn (a customer, a regulator's letter), marked as injected; compare runs with and without it in an ensemble
 - **Decision Brief & Exports** — A one-page brief (bottom line, what would settle it, what was assumed, standing objections, how much to trust it) and full Markdown / HTML reports
 - **Cast Templates & Persona Library** — Save a cast and reuse it; start from ready-made archetypes, labelled "not yet qualified"
@@ -57,7 +57,7 @@ it will start. Verified 2026-09-13: with no tables, startup fails outright —
 not degrade to a local database, because there is no longer one to degrade to.
 
 That is a deliberate product decision, not a migration side effect. SQLite shipped through
-v0.5.0 and was removed; `docs/PROJECT-SPEC.md` §8.2 records the change and why.
+v0.5.0 and was removed; `docs/project/PROJECT-SPEC.md` §8.2 records the change and why.
 
 ### Deploy it (≈15 minutes, mostly waiting)
 
@@ -318,7 +318,7 @@ embedding provider; the AWS port made one always available, so the measurement d
 `hybrid` fuses both by Reciprocal Rank Fusion; it wins on well-worded queries and loses to
 pure `vector` on conversational ones, because equal-weight fusion lets a weak lexical
 ranking drag down a strong semantic one. Full numbers in
-`docs/PHASE5-RETRIEVAL-MEASUREMENT.md`.
+`docs/project/PHASE5-RETRIEVAL-MEASUREMENT.md`.
 
 Vector retrieval degrades rather than fails: if the embedding provider errors, or a run's
 chunks were never embedded, the turn falls back to lexical search and continues.
@@ -419,11 +419,11 @@ passage rather than nothing. There is no absolute score floor yet.
 audited rather than trusted.
 
 Embeddings live in **S3 Vectors**, one index per knowledge base plus one shared index
-for run-scoped documents. `docs/PHASE5-RETRIEVAL-DESIGN.md` records the original
+for run-scoped documents. `docs/project/PHASE5-RETRIEVAL-DESIGN.md` records the original
 SQLite-local reasoning and `docs/AWS-SERVERLESS-ARCHITECTURE.md` §8 records what replaced
 it and why — including why the fan-out across per-KB indexes is exact rather than
 approximate. See also
-`docs/PHASE5-RETRIEVAL-MEASUREMENT.md` for the recall numbers behind the mode
+`docs/project/PHASE5-RETRIEVAL-MEASUREMENT.md` for the recall numbers behind the mode
 recommendation.
 
 ### Importing a conversation setup
@@ -530,7 +530,7 @@ is an operator calibration note (are the firmest positions also the soundest? th
 should not be), used for scoring after a run.
 
 **Why the dismissal rule is worded the way it is.** This feature comes from the
-three-arm experiment in `docs/PHASE5-PREMISE-VALIDATION.md`, which found the naive
+three-arm experiment in `docs/project/PHASE5-PREMISE-VALIDATION.md`, which found the naive
 "judge only against your own priorities" rule degraded discussion into repetitive
 parallel monologues (talking-past 4/5, cross-speaker similarity *worse* than the
 control). The shipped rule limits **priorities, not attention**: a persona must
@@ -545,7 +545,7 @@ The rule shipped in the first cut of Phase 6 *suppressed* dismissal to 0.067 —
 control's rate, with two of three runs producing none at all. The current default
 (`mandatory`) measures **0.333** against Arm B's 0.355, with the best engagement score
 of any arm (talking-past 1.00). That was verified against a criterion **pre-registered
-before the wording existed** (`docs/PHASE6-DISMISSAL-RETUNE.md`).
+before the wording existed** (`docs/project/PHASE6-DISMISSAL-RETUNE.md`).
 
 The finding worth knowing if you write your own persona instructions:
 
@@ -569,7 +569,7 @@ with zero leaks, per-persona scoping holds, convictions survive a fork, an inval
 
 Full numbers, the two measurement-instrument defects found and fixed en route, and the
 resolution floor (~0.02 similarity, ~0.2 on rates):
-`docs/PHASE6-STRUCTURED-PERSONAS.md` and `private/private/docs/BACKLOG.md` (kept out of git).
+`docs/project/PHASE6-STRUCTURED-PERSONAS.md` and `private/private/docs/BACKLOG.md` (kept out of git).
 
 ### Avatar Generation
 
@@ -738,7 +738,7 @@ All simulation state changes are captured as events in an append-only log. After
 - **Replay:** Reconstruct any moment by loading the snapshot at that turn
 - **Auditability:** Full history for debugging, analysis, and compliance
 
-Storage is DynamoDB for the event log, snapshots, runs, documents, knowledge bases and grants, with snapshot and document bodies in S3 and embeddings in S3 Vectors. Snapshots are full per-turn (not deltas) — runs are short (≤ few dozen turns), so storage cost is negligible and reconstruction is O(1). `docs/PHASE2-STORAGE-KEY-DESIGN.md` covers the key design, including why `events` and `snapshots` are partitioned by USER rather than by run: it is the only shape `dynamodb:LeadingKeys` can reach, so tenant isolation rests on a credential rather than on application code remembering a filter.
+Storage is DynamoDB for the event log, snapshots, runs, documents, knowledge bases and grants, with snapshot and document bodies in S3 and embeddings in S3 Vectors. Snapshots are full per-turn (not deltas) — runs are short (≤ few dozen turns), so storage cost is negligible and reconstruction is O(1). `docs/project/PHASE2-STORAGE-KEY-DESIGN.md` covers the key design, including why `events` and `snapshots` are partitioned by USER rather than by run: it is the only shape `dynamodb:LeadingKeys` can reach, so tenant isolation rests on a credential rather than on application code remembering a filter.
 
 ### Provider Agnosticism
 
@@ -795,7 +795,7 @@ npm run dev
   tenant isolation enforced by scoped credentials (10/10 against live IAM), the turn loop
   as a Step Functions state machine (35/35), S3 Vectors retrieval, knowledge bases with
   grants and query-time revocation (15/15), and per-user monthly spend caps. Phase 4 of
-  that plan was **cancelled** on measurement — see `docs/AWS-IMPLEMENTATION-PLAN.md`, which
+  that plan was **cancelled** on measurement — see `docs/project/AWS-IMPLEMENTATION-PLAN.md`, which
   is instructive about why
 - ✅ **Decision support (2026-09):** ensembles, research, consultants, cost forecast, decision brief, evidence plan, evidence lean (default after two pre-registered comparisons), working assumptions (operator-set, moderator-made, forkable, ensemble variable), scheduled messages, position-shift flags
 - **Next:** Explain `distinct_positions` instability in the rendered arms — the one signal of a real cost to rendering convictions from data
@@ -807,26 +807,26 @@ including what was deliberately rejected after measurement, so it is not retried
 ## Documentation
 
 - `private/docs/BACKLOG.md` (gitignored, not in the public repository) — Open, deferred and rejected work, each with a revisit trigger
-- `docs/EVIDENCE-LEAN.md`, `-2`, `-3`, `-FOLDING` — Pre-registered comparisons behind the evidence-lean default, and the check that it does not make personas fold
-- `docs/MODERATOR-ASSUMPTIONS.md` — Assumptions made by the moderator: the measurement, and three classifier attempts that missed
-- `docs/ASSUMPTION-ENSEMBLE.md` — One working assumption as the only difference between two ensemble groups
+- `docs/studies/EVIDENCE-LEAN.md`, `-2`, `-3`, `-FOLDING` — Pre-registered comparisons behind the evidence-lean default, and the check that it does not make personas fold
+- `docs/studies/MODERATOR-ASSUMPTIONS.md` — Assumptions made by the moderator: the measurement, and three classifier attempts that missed
+- `docs/studies/ASSUMPTION-ENSEMBLE.md` — One working assumption as the only difference between two ensemble groups
 - `docs/ENSEMBLE-CONVERSATIONS.md` — Ensembles: why replicates, why groups are counted separately
 - `docs/PERSONA-RESEARCH.md` — Pre-conversation research, and its pre-registered comparison
-- `docs/CITE-INLINE.md`, `docs/CAPITULATION-STUDY.md` — Inline citation and settled-or-folded studies
-- `docs/PHASE6-STRUCTURED-PERSONAS.md` — Phase 6 design: why concerns are withheld, and the re-tuned dismissal rule
-- `docs/PHASE5-PREMISE-VALIDATION.md` — The three-arm experiment that justified Phase 6 (including its negative result)
+- `docs/studies/CITE-INLINE.md`, `docs/studies/CAPITULATION-STUDY.md` — Inline citation and settled-or-folded studies
+- `docs/project/PHASE6-STRUCTURED-PERSONAS.md` — Phase 6 design: why concerns are withheld, and the re-tuned dismissal rule
+- `docs/project/PHASE5-PREMISE-VALIDATION.md` — The three-arm experiment that justified Phase 6 (including its negative result)
 - `docs/AWS-SERVERLESS-ARCHITECTURE.md` — The deployed design: tenancy, storage keys, the turn loop, retrieval, sharing
-- `docs/AWS-IMPLEMENTATION-PLAN.md` — Phase-by-phase port, including the phase that was cancelled and why
-- `docs/PHASE2-STORAGE-KEY-DESIGN.md` — Why `events` and `snapshots` are partitioned by user
-- `docs/PHASE6-KB-DESIGN.md` — Knowledge bases, grants, and the one documented exception to the tenancy model
+- `docs/project/AWS-IMPLEMENTATION-PLAN.md` — Phase-by-phase port, including the phase that was cancelled and why
+- `docs/project/PHASE2-STORAGE-KEY-DESIGN.md` — Why `events` and `snapshots` are partitioned by user
+- `docs/project/PHASE6-KB-DESIGN.md` — Knowledge bases, grants, and the one documented exception to the tenancy model
 - `infra/README.md` — Deploying the stack, every context flag, and the verification steps
-- `docs/PROJECT-SPEC.md` — Full ideation/architecture spec
-- `docs/PHASE3-REQUIREMENTS.md` — Phase 3 (release polish) acceptance criteria
-- `docs/PHASE2C-REQUIREMENTS.md` — Phase 2c (cognition) spec
-- `docs/PHASE2B-REQUIREMENTS.md` — Phase 2b (interventions) spec
-- `docs/PHASE2A-REQUIREMENTS.md` — Phase 2a (checkpointing/branching) spec
-- `docs/PHASE1.5-REQUIREMENTS.md` — Phase 1.5 (analysis layer) spec
-- `docs/PHASE0-RESEARCH.md` — Technical decisions (web stack, Bedrock, packaging, license, storage)
+- `docs/project/PROJECT-SPEC.md` — Full ideation/architecture spec
+- `docs/project/PHASE3-REQUIREMENTS.md` — Phase 3 (release polish) acceptance criteria
+- `docs/project/PHASE2C-REQUIREMENTS.md` — Phase 2c (cognition) spec
+- `docs/project/PHASE2B-REQUIREMENTS.md` — Phase 2b (interventions) spec
+- `docs/project/PHASE2A-REQUIREMENTS.md` — Phase 2a (checkpointing/branching) spec
+- `docs/project/PHASE1.5-REQUIREMENTS.md` — Phase 1.5 (analysis layer) spec
+- `docs/project/PHASE0-RESEARCH.md` — Technical decisions (web stack, Bedrock, packaging, license, storage)
 
 ## License
 

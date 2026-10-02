@@ -187,7 +187,7 @@ missing extractor raises a clear error naming the package to install; `.txt` and
 
 Slice 5b-1 was run against a real model with real documents, not only mocks.
 
-`docs/PROJECT-SPEC.md` (17,937 chars) attached to one persona and
+`docs/project/PROJECT-SPEC.md` (17,937 chars) attached to one persona and
 `PHASE4-REPORT.md` (20,414 chars) to another, 4 turns, cost **$0.0063**:
 
 | Observation | Result |
@@ -269,7 +269,7 @@ Both were fixed, and neither was visible in the mocked tests:
    The changes are additive and guarded (optional fields defaulted with `??`,
    sections rendered only when non-empty), but they need `tsc -b` and vitest on
    a machine with Node before being trusted.
-4. **5b-4** ✅ DONE — see `docs/PHASE5-RETRIEVAL-MEASUREMENT.md`.
+4. **5b-4** ✅ DONE — see `docs/project/PHASE5-RETRIEVAL-MEASUREMENT.md`.
 
    Measured on this project's own docs (381 chunks, 228k chars): lexical recall@5
    is **0.966** when the query shares the document's vocabulary and **0.254** when

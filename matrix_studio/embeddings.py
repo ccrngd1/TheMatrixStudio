@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Phase 5f: provider-agnostic text embeddings for document retrieval.
 
-`docs/PHASE5-RETRIEVAL-MEASUREMENT.md` measured FTS5 at ~0.51 recall@5 under the
+`docs/project/PHASE5-RETRIEVAL-MEASUREMENT.md` measured FTS5 at ~0.51 recall@5 under the
 engine's real query shape and showed the two free query-side fixes made it worse.
 That met the design doc's stated trigger for embeddings, so this module supplies
 them.
@@ -12,7 +12,7 @@ Design constraints inherited from the project, not chosen here:
   ``litellm.aembedding``-supported model works via config, so BYO-key holds and
   no new SDK enters the dependency tree.
 - **No local model.** ``sentence-transformers`` would pull ``torch`` (hundreds of
-  MB to GBs) and wreck the five-minute quickstart that ``PROJECT-SPEC.md`` §7
+  MB to GBs) and wreck the five-minute quickstart that ``docs/project/PROJECT-SPEC.md`` §7
   pins down. Embeddings are an API call or they are nothing.
 - **Never fatal.** An embedding failure degrades retrieval to FTS5 rather than
   ending a run. Retrieval is an enhancement; the simulation is the product.

@@ -127,14 +127,14 @@ the branch model is correct and synchronous live-editing would have been a night
   dissenters / key ideas), and **scoped aside conversations** over a *completed* run: talk to one
   persona (in-character), to a neutral analyst, or to the whole room — all **read-only**, none
   mutating the canonical run. Introduces the thread/target/mode abstraction that Phase 2 builds on.
-  See `docs/PHASE1.5-REQUIREMENTS.md`.
+  See `docs/project/PHASE1.5-REQUIREMENTS.md`.
 - **Phase 2 — Event-sourced engine + branching + Contribute mode (split into 2a/2b/2c, 2026-07-09).**
   Same UI contract throughout. CC-approved three-way split (foundation → interactions → cognition):
   - **Phase 2a — Event-sourced foundation.** Per-turn checkpointing (full serializable snapshot each
     turn; `SimSnapshot` already models it, `snapshots` already keys on `UNIQUE(run_id,turn)`), the
     branch primitive (fork the event log at turn N → resume *forward* as a new run via the existing
     `parent_run_id`/`branch_turn` columns; original immutable), and a checkpoint scrubber/replay.
-    No user-facing interventions yet beyond raw branch + replay. See `docs/PHASE2A-REQUIREMENTS.md`.
+    No user-facing interventions yet beyond raw branch + replay. See `docs/project/PHASE2A-REQUIREMENTS.md`.
   - **Phase 2b — Interventions + Contribute mode (FULL set, CC: do not reduce scope).** Activate the
     disabled "bring into conversation" affordance from Phase 1.5; promote-aside-to-room, continue/
     restart the discussion, inject a message, edit a goal, add/remove a persona — all as branch-from-
@@ -229,7 +229,7 @@ door open for tool-use/scale later.
    moved. `matrix_studio/storage/database.py` retains the SQLite implementation for one
    purpose: reading a pre-migration `.db` file from `scripts/`. Nothing in the application
    imports it. See `docs/AWS-SERVERLESS-ARCHITECTURE.md` §4 and
-   `docs/PHASE2-STORAGE-KEY-DESIGN.md`.
+   `docs/project/PHASE2-STORAGE-KEY-DESIGN.md`.
 3. **Web stack:** ✅ DECIDED — React + Vite + TypeScript + Tailwind, served as static
    assets from CloudFront (or by uvicorn in a container). Real-time transport is
    **polling**, not websockets: measured at ~1.4 KB per poll against a 30-turn run, which

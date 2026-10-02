@@ -3,7 +3,7 @@
 
 ## Why
 
-`docs/EVIDENCE-LEAN-FOLDING.md`: the one fold found was a persona giving ground for a reason on neither of
+`docs/studies/EVIDENCE-LEAN-FOLDING.md`: the one fold found was a persona giving ground for a reason on neither of
 its stated conditions while *saying* it was on its list. The holding rule asks a persona to move only when
 its own condition turns up; nothing checked that it had. This puts the check in front of the reader
 instead: at the message where a persona says it moved, what it credited — another persona, a consultant, a

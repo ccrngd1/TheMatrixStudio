@@ -191,12 +191,12 @@ class RetrievalConfigModel(BaseModel):
     # Phase 5g: ask the persona to flag in-voice when retrieval found nothing.
     disclose_unsupported: bool = False
     # Ask personas to cite each passage they rely on inline, as [title #n]. ON for new runs, by the
-    # operator's decision of 2026-09-28 (docs/CITE-INLINE.md). The default lives HERE, in the request
+    # operator's decision of 2026-09-28 (docs/studies/CITE-INLINE.md). The default lives HERE, in the request
     # model, so it is written into each new run's stored config: the engine's own default stays off,
     # which keeps a resumed or branched run created before this exactly as it was.
     cite_inline: bool = True
     # Experimental, DEFAULT OFF: measured harmful in
-    # docs/PHASE5-RETRIEVAL-MEASUREMENT.md (recall fell on all three arms).
+    # docs/project/PHASE5-RETRIEVAL-MEASUREMENT.md (recall fell on all three arms).
     term_limit: int = Field(default=0, ge=0)
     max_df_ratio: float = Field(default=0.5, gt=0.0, le=1.0)
     score_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -249,7 +249,7 @@ class PersonaConfigModel(BaseModel):
     # Typed loosely here and validated by PersonaConfig, so an unknown name is a
     # 422 rather than a silent fallback to the default wording.
     dismissal_rule: Any = "mandatory"
-    # docs/EVIDENCE-LEAN.md. On by default since 2026-09-29 (docs/EVIDENCE-LEAN-2.md, operator decision).
+    # docs/studies/EVIDENCE-LEAN.md. On by default since 2026-09-29 (docs/studies/EVIDENCE-LEAN-2.md, operator decision).
     evidence_lean: bool = True
 
 
@@ -1361,7 +1361,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         # runs in a Step Functions state with no JWT, so this is the only moment the
         # creator's verified group membership is available to record — and without it a
         # KB granted to a group would list in the API and retrieve nothing during the run.
-        # PHASE6-KB-DESIGN.md §8.3 states the window that buys.
+        # docs/project/PHASE6-KB-DESIGN.md §8.3 states the window that buys.
         result = await manager.create_run(request, owner_sub=user, groups=groups)
         return result
 
@@ -2288,7 +2288,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
 
         Write permission is ownership alone (Phase 6), and reading the S3 body is the same
         boundary: a KB document's body lives under its owner's prefix, and a grantee's credentials
-        cannot fetch it. That is PHASE6-KB-DESIGN.md §8.2 on purpose — *a grantee retrieves
+        cannot fetch it. That is docs/project/PHASE6-KB-DESIGN.md §8.2 on purpose — *a grantee retrieves
         passages; they do not download the source file* — and this route does not widen it with
         elevated credentials. A grantee gets the cited passage and its neighbours from the vector
         index, which is exactly what a turn already showed them, plus a plain statement that the

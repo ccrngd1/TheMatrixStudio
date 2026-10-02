@@ -3,7 +3,7 @@
 
 ## Why this exists
 
-`docs/PHASE5-PREMISE-VALIDATION.md` ran a three-arm experiment and concluded
+`docs/project/PHASE5-PREMISE-VALIDATION.md` ran a three-arm experiment and concluded
 **"PROCEED with structured personas (Arm B)"**. Arm B was the only arm that
 improved on both axes at once: it cut the accommodation rate 40%, raised the
 dismissal rate five-fold, produced the lowest cross-speaker similarity *and* the
@@ -66,7 +66,7 @@ lacks on its own.
 So the rule is a **named variant** (``DISMISSAL_RULES``), not a boolean, and both
 failing wordings are retained verbatim so their negative results stay reproducible.
 The criterion was pre-registered before any wording existed:
-``docs/PHASE6-DISMISSAL-RETUNE.md``.
+``docs/project/PHASE6-DISMISSAL-RETUNE.md``.
 
 Pure functions and pydantic models only: no LLM, no database, no state.
 """
@@ -373,7 +373,7 @@ _HOLDING_RULE = (
 )
 
 
-# Stage 2 of "conversations end in 'it depends'" (docs/EVIDENCE-LEAN.md). Measured on 8 stored runs:
+# Stage 2 of "conversations end in 'it depends'" (docs/studies/EVIDENCE-LEAN.md). Measured on 8 stored runs:
 # personas already name the data they need and the result that would move them (the holding rule makes
 # them) — 100% of 43 requests — but only 58% said what they EXPECTED it to show, and 2 of 8 runs let
 # the analyst state a current lean. So a request for evidence left the room with nothing to act on
@@ -404,7 +404,7 @@ EVIDENCE_LEAN_RULE = (
 #   mandatory The SHIPPED default. Measured at n=3: dismissal 0.333 (matching Arm B's
 #             0.355) with talking-past 1.00 — the best engagement score of any arm.
 #             Pre-registered criterion, both conditions passed:
-#             docs/PHASE6-DISMISSAL-RETUNE.md.
+#             docs/project/PHASE6-DISMISSAL-RETUNE.md.
 #
 # `retuned` and `blunt` are kept verbatim so both negative results stay reproducible;
 # tests lock their text for the same reason.

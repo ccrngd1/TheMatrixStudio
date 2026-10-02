@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Score the cite-inline comparison against the criteria in docs/CITE-INLINE.md.
+"""Score the cite-inline comparison against the criteria in docs/studies/CITE-INLINE.md.
 
 Written before the runs finished and not tuned afterwards. Reads the deployed store; creates nothing.
 
@@ -80,7 +80,7 @@ async def main() -> int:
     ap.add_argument("--off", nargs="+", required=True)
     ap.add_argument("--on", nargs="+", required=True)
     ap.add_argument("--comparison", type=int, choices=(1, 2), default=1,
-                    help="which pre-registered criteria to score against (docs/CITE-INLINE.md)")
+                    help="which pre-registered criteria to score against (docs/studies/CITE-INLINE.md)")
     args = ap.parse_args()
     db = Database(table_prefix=os.environ.get("TABLE_PREFIX", "matrix-studio"),
                   bucket=os.environ["DATA_BUCKET"], region=os.environ["AWS_REGION"])

@@ -61,7 +61,7 @@ question.** Whether a persona volunteered its private motivation is a semantic
 judgment, and this project has already learned that lesson once: the Phase 5
 disclosure-compliance regex scored 0/3 for every wording, the LLM judge that replaced
 it scored 100% for every wording, and the decision was ultimately made *by reading the
-output* (`docs/PHASE5-RETRIEVAL-MEASUREMENT.md`).
+output* (`docs/project/PHASE5-RETRIEVAL-MEASUREMENT.md`).
 
 So this script is a **cheap pre-filter with a known-high false-positive rate**. Its job
 is to narrow ~30 turns and ~50 memories down to a handful worth reading. The verdict

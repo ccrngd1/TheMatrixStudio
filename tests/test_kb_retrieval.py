@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Phase 6 step 3: retrieval fanned out across per-KB indexes.
 
-`docs/PHASE6-KB-DESIGN.md` §3. The claims tested here are that the fan-out loses no
+`docs/project/PHASE6-KB-DESIGN.md` §3. The claims tested here are that the fan-out loses no
 recall, that merging is sound because the metric is cosine, that the similarity floor
 applies once after the merge, and that a failed KB degrades visibly rather than silently.
 

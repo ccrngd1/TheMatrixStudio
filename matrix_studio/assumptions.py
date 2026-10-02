@@ -7,7 +7,7 @@ Stage 1 of "conversations end in 'it depends'" measured that personas name the d
 result that would move them, and then stop: the data does not exist inside a simulation, so a firm
 persona's correct reply is "show me", every time. An assumption lets the room carry on — "assume churn
 is about 7%" — and makes the dependence visible, so a reader knows which conclusions rest on it and can
-fork the run with a different value to see what it was worth (`docs/EVIDENCE-LEAN.md`, BACKLOG Stage 3).
+fork the run with a different value to see what it was worth (`docs/studies/EVIDENCE-LEAN.md`, BACKLOG Stage 3).
 
 ## What an assumption is NOT
 
@@ -252,7 +252,7 @@ def verified_asks(asks: Any, conversation: Sequence[Dict[str, Any]]) -> Tuple[Li
 
 
 #: Word overlap at which a proposal counts as repeating an assumption already in force. Measured
-#: (docs/MODERATOR-ASSUMPTIONS.md): 2 of 9 made were verbatim repeats despite "do not repeat" in the prompt.
+#: (docs/studies/MODERATOR-ASSUMPTIONS.md): 2 of 9 made were verbatim repeats despite "do not repeat" in the prompt.
 REPEAT_OVERLAP = 0.8
 
 

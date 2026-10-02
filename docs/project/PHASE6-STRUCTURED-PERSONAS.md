@@ -6,7 +6,7 @@ one clear regression against Arm B, and two properties that turned out to be
 untestable in a 15-turn run.
 
 This phase acts on a verdict that was already reached and then left on the shelf.
-`docs/PHASE5-PREMISE-VALIDATION.md` ran a three-arm experiment and concluded
+`docs/project/PHASE5-PREMISE-VALIDATION.md` ran a three-arm experiment and concluded
 **"PROCEED with structured personas (Arm B)"**; Phase 5 went to document
 retrieval instead. Nothing here is a new hypothesis — it is the implementation
 of an existing measured recommendation, plus the one change that recommendation

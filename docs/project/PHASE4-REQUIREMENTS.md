@@ -9,7 +9,7 @@
 4. **4c (adaptive pressure) IS in scope**, built last, opt-in/experimental, gated behind the 4a agency check.
 5. Version target = **0.4.0**.
 6. Sequencing = **Phase 3 first (done)** → Phase 4 now. Build order 4a → 4b → 4d → 4c.
-**Spec:** `docs/PROJECT-SPEC.md` (§4a cognition fidelity + priority hierarchy; §6 phase plan)
+**Spec:** `docs/project/PROJECT-SPEC.md` (§4a cognition fidelity + priority hierarchy; §6 phase plan)
 **Builds on:** Phases 0/1/1.5/2a/2b/2c (feature-complete engine + UI) and Phase 3 (release polish).
 **Origin:** Convergent-design pass against an external emergent-narrative prompt ("Mestre Daedalus v2.0", r/PromptEngineering) — see §4a. Four items graduated from that review: a priority-hierarchy validation gate, latent/pending-thread state, an adaptive-pressure intervention, and a structured output contract.
 

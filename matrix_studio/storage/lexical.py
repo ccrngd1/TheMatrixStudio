@@ -3,7 +3,7 @@
 In-process BM25, replacing SQLite FTS5 for the operator-facing document search.
 
 **Why this is small on purpose.** Lexical retrieval is not the retrieval path. The
-project measured it: `docs/PHASE5-RETRIEVAL-MEASUREMENT.md` §5f puts lexical recall@1
+project measured it: `docs/project/PHASE5-RETRIEVAL-MEASUREMENT.md` §5f puts lexical recall@1
 at **0.017** against vector's **0.367** on the diluted queries a turn actually
 produces — 22× worse. So the engine retrieves by embedding, and this exists for
 `/documents/search`, the endpoint whose job is to let an operator *inspect* what a
@@ -67,7 +67,7 @@ def tokenize(text: str) -> List[str]:
 
     * this serves `/documents/search`, an INSPECTION endpoint. The engine retrieves by
       embedding, measured 22× better at recall@1 (0.367 vs 0.017,
-      `PHASE5-RETRIEVAL-MEASUREMENT.md` §5f);
+      `docs/project/PHASE5-RETRIEVAL-MEASUREMENT.md` §5f);
     * handling morphological variation is precisely what embeddings do, and the
       measurement that chose them over lexical was largely a measurement of that;
     * a hundred lines of Porter, or a dependency, to improve the arm that was measured

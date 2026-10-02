@@ -567,7 +567,7 @@ def test_retrieval_mode_default_is_vector():
     """Pins the default, because changing it silently is exactly what happened once.
 
     The default moved "fts" -> "vector" on the evidence in
-    `docs/PHASE3-RECALL-MEASUREMENT.md`, and the whole 872-test suite passed either
+    `docs/project/PHASE3-RECALL-MEASUREMENT.md`, and the whole 872-test suite passed either
     way — so a user-visible retrieval behaviour was, at that moment, unguarded. This
     test is the guard: the value is asserted here and the reasoning lives in
     `RetrievalConfig.mode`'s docstring, so anyone flipping it back has to read the

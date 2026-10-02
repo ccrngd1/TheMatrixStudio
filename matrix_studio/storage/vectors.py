@@ -32,7 +32,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
-# Measured, not chosen by default — see `docs/EMBEDDING-DIMENSION-MEASUREMENT.md`. 256 to
+# Measured, not chosen by default — see `docs/studies/EMBEDDING-DIMENSION-MEASUREMENT.md`. 256 to
 # 1024 is +0.117 recall@1 on paraphrased queries, and paraphrase robustness is the entire
 # reason vector retrieval was chosen over lexical.
 EMBEDDING_DIMENSION = 1024

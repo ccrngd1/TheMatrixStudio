@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Run the moderator's assumption check on stored transcripts, recording nothing to the runs.
 
-For docs/MODERATOR-ASSUMPTIONS.md, addendum 2: fresh proposals to label, so a classifier can be tried
+For docs/studies/MODERATOR-ASSUMPTIONS.md, addendum 2: fresh proposals to label, so a classifier can be tried
 again on data it was not fitted to. At every point the check would have fired live (after every
 ``--every``-th completed turn) it is given the conversation up to that point and the shadow ledger, and
 its answer is put through the same verbatim-asks and repeat checks the engine uses. No cap.

@@ -270,7 +270,7 @@ export function Dossier({ agent, feed, runId, stance, basis, onClose }: Props) {
           <p className="cc-sm cc-t2 mt-1.5">
             If a concern was authored behind these positions, it is not shown here, and the dossier is not told
             whether one was. Drawing it out in conversation is the exercise: an operator who can read it off a
-            panel has been handed the answer (docs/PHASE6-STRUCTURED-PERSONAS.md §1).
+            panel has been handed the answer (docs/project/PHASE6-STRUCTURED-PERSONAS.md §1).
           </p>
         </Panel>
       )}

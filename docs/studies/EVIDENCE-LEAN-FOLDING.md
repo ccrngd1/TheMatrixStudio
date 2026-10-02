@@ -5,7 +5,7 @@ is appended afterwards; the criteria are not edited.
 
 ## Why
 
-`personas.evidence_lean` became the default on 2026-09-29 (`docs/EVIDENCE-LEAN-2.md`). It asks a persona
+`personas.evidence_lean` became the default on 2026-09-29 (`docs/studies/EVIDENCE-LEAN-2.md`). It asks a persona
 that wants evidence to state a best guess and a lean, and says a guess is not evidence. Pushing toward a
 lean is pressure toward resolution — the pressure Phase 6's holding rule exists to resist — and the
 comparisons' guardrail for it was coarse (standing dissenters in the summary). This checks the risk

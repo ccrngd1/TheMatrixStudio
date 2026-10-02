@@ -38,7 +38,7 @@ this document exists to prevent.
 The first is the one a user asking for an ensemble is asking. It needs replicates, because
 the only way to know whether a finding is robust is to see how often it recurs under
 identical conditions. The second is a harness question — closer to
-`SPEAKER-SELECTION-EVALUATION.md` than to a product feature.
+`docs/studies/SPEAKER-SELECTION-EVALUATION.md` than to a product feature.
 
 ---
 
@@ -414,9 +414,9 @@ and the report should say so rather than presenting five echoes as agreement.
 
 ## Related
 
-- `docs/SPEAKER-SELECTION-EVALUATION.md` — fairness interventions, the Gini 0.458 → 0.075
+- `docs/studies/SPEAKER-SELECTION-EVALUATION.md` — fairness interventions, the Gini 0.458 → 0.075
   result, and the arm-comparison methodology this document reuses
-- `docs/SELECTION-MODEL-DEFAULT.md` — the temperature / `supports_sampling_params` finding
+- `docs/studies/SELECTION-MODEL-DEFAULT.md` — the temperature / `supports_sampling_params` finding
   in §6 above
 - `matrix_studio/ensemble.py` — stage 1: `measure`, `extract_positions`, `per_persona`,
   `agreements_and_dissents`, `synthesise`

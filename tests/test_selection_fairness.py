@@ -3,7 +3,7 @@
 The moderator can now see who is overdue (interventions A+B), and that is ON by default.
 
 Adopted 2026-09-15 on 146 replays over four transcripts and two models
-(`docs/SPEAKER-SELECTION-EVALUATION.md` §10–§11):
+(`docs/studies/SPEAKER-SELECTION-EVALUATION.md` §10–§11):
 
     prompt                     Gini (Haiku / Sonnet)   replays that starved somebody to 0
     shipped, no counts            0.332 / 0.335                 6 of 24

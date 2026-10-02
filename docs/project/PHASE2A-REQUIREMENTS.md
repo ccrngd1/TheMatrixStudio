@@ -6,7 +6,7 @@
 **Author:** Main (CABAL)
 **Date:** 2026-07-09
 **Status:** APPROVED — CC sign-off 2026-07-09 ("go for 2a"). Defaults confirmed: full-snapshot-per-turn (deltas deferred); resume-entry shape is implementer's choice provided the fresh-start path stays identical. Cleared for build.
-**Spec:** `docs/PROJECT-SPEC.md` (§3.6/§3.7 branching, §4 event-sourcing keystone, §6 Phase 2a, §6a)
+**Spec:** `docs/project/PROJECT-SPEC.md` (§3.6/§3.7 branching, §4 event-sourcing keystone, §6 Phase 2a, §6a)
 **Builds on:** Phase 0/1/1.5 (COMPLETE, verified live 2026-07-09; HEAD 27c040f). Engine, SQLite event store, FastAPI+WS, React UI, named runs, replay, summaries+asides all working.
 
 ---

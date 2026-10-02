@@ -202,7 +202,7 @@ async def test_returns_no_more_than_requested_even_if_the_model_overshoots():
 async def test_the_prompt_asks_for_the_two_calibration_properties():
     """Neither can be verified by a test — they are judgments about content — so what
     is checked is that the prompt actually requests them. Without both, a generated
-    panel converges or teaches nothing (docs/PHASE5-PREMISE-VALIDATION.md)."""
+    panel converges or teaches nothing (docs/project/PHASE5-PREMISE-VALIDATION.md)."""
     with patch("matrix_studio.persona_wizard.litellm.acompletion",
                return_value=_resp(_payload(_member()))) as call:
         await suggest_cast(brief="a brief", count=DEFAULT_PERSONAS)

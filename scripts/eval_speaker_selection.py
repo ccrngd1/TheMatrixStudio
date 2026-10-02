@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 """
-Stage 1 of `docs/SPEAKER-SELECTION-EVALUATION.md`: score selection arms by REPLAY.
+Stage 1 of `docs/studies/SPEAKER-SELECTION-EVALUATION.md`: score selection arms by REPLAY.
 
 ## Why replay
 
@@ -299,7 +299,7 @@ async def select(prompt: str, cast_names: List[str], model: str) -> Tuple[Option
     # was the single biggest confound in the first model sweep: Sonnet 5 averages 80–87
     # output tokens on the `counts` prompt, and a reply that hits the cap returns EMPTY
     # content, so 43% of its picks were scored as unresolvable when the model had in fact
-    # answered. See `docs/SELECTION-MODEL-DEFAULT.md` §6.
+    # answered. See `docs/studies/SELECTION-MODEL-DEFAULT.md` §6.
     response = await _with_retry(lambda: litellm.acompletion(
         model=model,
         messages=[{"role": "user", "content": prompt}],

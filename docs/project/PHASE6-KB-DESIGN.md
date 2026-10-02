@@ -1,6 +1,6 @@
 # Phase 6 design: knowledge bases, grants, and the tenancy exception
 
-Companion to `AWS-SERVERLESS-ARCHITECTURE.md` §5.3/§8b, which give the entity model and
+Companion to `docs/AWS-SERVERLESS-ARCHITECTURE.md` §5.3/§8b, which give the entity model and
 the index-granularity decision. This is the level below: the places where §8b leaves a
 choice open, the one place it changes a security invariant, and what the migration
 actually costs now that there is live data.

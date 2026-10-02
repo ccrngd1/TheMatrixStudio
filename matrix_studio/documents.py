@@ -12,7 +12,7 @@ Design notes:
 - **PDF and Word support are optional extras.** ``.txt`` and ``.md`` need nothing
   installed. A missing extractor raises ``ExtractionError`` naming the package to
   install, rather than failing obscurely deep inside a third-party import — the
-  base install stays light, which is the constraint ``PROJECT-SPEC.md`` §7 pins.
+  base install stays light, which is the constraint ``docs/project/PROJECT-SPEC.md`` §7 pins.
 - **Chunking is paragraph-aware with overlap.** Splitting mid-sentence produces
   chunks that retrieve badly; overlap stops a passage that straddles a boundary
   from being unfindable from either side.

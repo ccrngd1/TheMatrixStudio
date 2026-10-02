@@ -3,7 +3,7 @@
 """
 Phase 6 step 6: copy existing run documents into per-KB vector indexes.
 
-`docs/PHASE6-KB-DESIGN.md` §4. What this is *for* is worth being blunt about: the 48
+`docs/project/PHASE6-KB-DESIGN.md` §4. What this is *for* is worth being blunt about: the 48
 documents in the deployed account are **all my own test data** — 46 from the recall
 measurement corpora, 2 from Phase 2 verification, no user documents at all. So this
 script is not rescuing anything. It is a **rehearsal on disposable data**, which is a

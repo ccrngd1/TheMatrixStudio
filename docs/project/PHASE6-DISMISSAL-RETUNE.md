@@ -24,7 +24,7 @@ rate from 0.067 (control, no `dismisses` authored) to 0.333 (Arm B). Phase 6 shi
 behind a re-tuned rule and measures **0.067 across three runs** — the control's rate,
 with two of three runs containing no dismissal of any kind.
 
-Diagnosis (`docs/PHASE6-STRUCTURED-PERSONAS.md` §*The one callable finding*): the
+Diagnosis (`docs/project/PHASE6-STRUCTURED-PERSONAS.md` §*The one callable finding*): the
 rule contains **one** clause instructing the persona to decline and **six** telling it
 to engage or constraining how it declines, three of them outright prohibitions aimed
 at the dismissal rather than at the evasion. The single permission is also the

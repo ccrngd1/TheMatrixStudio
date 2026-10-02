@@ -95,10 +95,10 @@ export function NewRunForm({
   // deliberate rather than cautious: it searches the open web and costs a few minutes and
   // a quarter of a dollar per run, so it is a decision the operator makes each time.
   const [research, setResearch] = useState(false)
-  // Ask personas to cite each passage they rely on, inline. On by default (docs/CITE-INLINE.md).
+  // Ask personas to cite each passage they rely on, inline. On by default (docs/studies/CITE-INLINE.md).
   const [citeInline, setCiteInline] = useState(true)
   // A best guess and a current lean with every evidence request. On by default since 2026-09-29
-  // (docs/EVIDENCE-LEAN-2.md); sent explicitly either way, so the run records what was chosen.
+  // (docs/studies/EVIDENCE-LEAN-2.md); sent explicitly either way, so the run records what was chosen.
   const [evidenceLean, setEvidenceLean] = useState(true)
   // Experts outside the room (matrix_studio/experts.py).
   const [consultants, setConsultants] = useState<DraftConsultant[]>([])
@@ -1028,7 +1028,7 @@ export function NewRunForm({
               <Hint label="conversation method">
                 <strong>Moderated</strong> — a model reads the room each turn and picks one
                 speaker. One voice call per turn; who speaks is a judgement, and everything in
-                docs/SPEAKER-SELECTION-EVALUATION.md is about making that judgement fairer.
+                docs/studies/SPEAKER-SELECTION-EVALUATION.md is about making that judgement fairer.
                 <br />
                 <br />
                 <strong>Rotation</strong> — everyone speaks once per round, in order, each one
@@ -1733,7 +1733,7 @@ export function NewRunForm({
                   a lean. A guess never counts as the evidence itself.
                   <br />
                   <br />
-                  Measured twice (docs/EVIDENCE-LEAN.md, EVIDENCE-LEAN-2.md): on fresh runs scored three
+                  Measured twice (docs/studies/EVIDENCE-LEAN.md, docs/studies/EVIDENCE-LEAN-2.md): on fresh runs scored three
                   times each, every run with this on ended with a stated lean (3 of 3, 9 of 9 passes)
                   against none without it (0 of 3), with objections, length and cost within bounds. On by
                   default; untick it to compare against how personas speak without it.
@@ -1783,7 +1783,7 @@ export function NewRunForm({
                   only to the passages that were in view.
                   <br />
                   <br />
-                  Measured on a small comparison (docs/CITE-INLINE.md): every message with a source in
+                  Measured on a small comparison (docs/studies/CITE-INLINE.md): every message with a source in
                   view cited it, none cited a passage it was not given, and messages were no longer.
                   On by default; untick it to compare against how personas speak without it.
                 </Hint>

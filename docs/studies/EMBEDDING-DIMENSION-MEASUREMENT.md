@@ -84,7 +84,7 @@ Cost: **$0.3234** for query generation (once, then cached) plus $0.0024 per embe
 The mechanism makes sense: truncating dimensions costs you most exactly where the query
 does **not** share vocabulary with the passage — which is the capability embeddings exist to
 provide, and the reason vector retrieval was chosen over lexical in the first place
-(`PHASE5-RETRIEVAL-MEASUREMENT.md` §5f: lexical recall@1 of 0.017 on diluted queries).
+(`docs/project/PHASE5-RETRIEVAL-MEASUREMENT.md` §5f: lexical recall@1 of 0.017 on diluted queries).
 Buying a 4× cost reduction by giving up paraphrase robustness is trading away the thing that
 was being paid for.
 

@@ -12,7 +12,7 @@ TEST_VECTOR_BUCKET = "matrix-studio-test-vectors"
 TEST_VECTOR_INDEX = "matrix-studio-test-chunks"
 
 #: Dimension of the test vector index. Matches production (1024, measured — see
-#: docs/EMBEDDING-DIMENSION-MEASUREMENT.md), because an index's dimension is immutable
+#: docs/studies/EMBEDDING-DIMENSION-MEASUREMENT.md), because an index's dimension is immutable
 #: after creation and a test fixture that disagreed with the real one would let a
 #: width bug through.
 TEST_VECTOR_DIM = 1024

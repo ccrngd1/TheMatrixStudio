@@ -712,7 +712,7 @@ export const api = {
    * The source behind a passage a turn retrieved. Scoped to the RUN: it opens only documents this
    * conversation could have retrieved, and a 404 is the same answer for "not reachable from here"
    * as for "does not exist". Full text only for sources you own; a collection shared with you
-   * returns the cited passage and its neighbours (PHASE6-KB-DESIGN.md §8.2).
+   * returns the cited passage and its neighbours (docs/project/PHASE6-KB-DESIGN.md §8.2).
    */
   /** Which in-view passage each message quotes, by message seq. Verbatim evidence only. */
   getRunQuotes: (ref: string) =>

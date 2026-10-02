@@ -27,7 +27,7 @@ nothing to act on in the meantime.
 the same message what it expects the evidence to show and which way that makes it lean today; a guess
 is not evidence, and the position still moves only when something on its list turns up. Worded as a
 required utterance because the dismissal retune found that a permission goes to zero through the
-persona renderer (`docs/PHASE6-DISMISSAL-RETUNE.md`). Off by default.
+persona renderer (`docs/project/PHASE6-DISMISSAL-RETUNE.md`). Off by default.
 
 ## Design
 
@@ -55,7 +55,7 @@ extracts the evidence plan with every unsupplied column written as `not stated`.
   missed → keep it off; the wording does not work.
 
 **What n = 3 can say.** Whether the wording moves these rates a lot or not. It cannot estimate them
-precisely, and guardrail 1 is a coarse proxy for capitulation — the study's `docs/CAPITULATION-STUDY.md`
+precisely, and guardrail 1 is a coarse proxy for capitulation — the study's `docs/studies/CAPITULATION-STUDY.md`
 showed the deterministic lists recall 0.41 on this brief, so a folded/settled reading of the on arm's
 position changes is worth doing by hand if the primaries pass, and is not part of the verdict.
 
@@ -93,7 +93,7 @@ pre-registration. The off-arm baseline (0.36) is also below Stage 1's 0.58 on st
 Stage 1 figure is not a stable baseline at n = 3.
 
 **Caveat added 2026-09-29.** Re-scoring the same three off-arm runs a day later
-(`docs/MODERATOR-ASSUMPTIONS.md`) gave best guess 0.50 and a lean in 2 of 3, against 0.36 and 1 of 3
+(`docs/studies/MODERATOR-ASSUMPTIONS.md`) gave best guess 0.50 and a lean in 2 of 3, against 0.36 and 1 of 3
 here. The analyst that extracts the evidence plan is not stable on identical transcripts, so the
 differences above (0.57 vs 0.36; 2 of 3 vs 1 of 3) are within its noise. The verdict is unchanged — the
 flag stays opt-in — but it should not be read as evidence the wording works. Scoring each run several

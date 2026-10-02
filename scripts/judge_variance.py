@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Judge the same transcripts repeatedly and report each field's spread (docs/JUDGE-VARIANCE.md).
+"""Judge the same transcripts repeatedly and report each field's spread (docs/studies/JUDGE-VARIANCE.md).
 
 Uses `score_validation.judge_arm` unmodified, so what is measured is the shipped judge — same prompt,
 schema, temperature and model as a real scoring run.

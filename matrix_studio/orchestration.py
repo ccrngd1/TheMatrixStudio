@@ -4,7 +4,7 @@
 A run cannot execute on AWS today. `POST /api/runs` returns 201, logs `Starting
 simulation`, and the sandbox freezes when the handler returns — Lambda stops
 scheduling the event loop the moment the response goes out, so an
-`asyncio.create_task` background run dies in milliseconds. `docs/AWS-IMPLEMENTATION-PLAN.md`
+`asyncio.create_task` background run dies in milliseconds. `docs/project/AWS-IMPLEMENTATION-PLAN.md`
 records the measurement and cancels Phase 4 on the strength of it. This module is
 what replaces it.
 
@@ -16,7 +16,7 @@ state machine can branch on. `turn_budget=1` is what ships, so a slice is a turn
 
 A Step Functions state's input/output is capped at **256 KB**. Snapshot bodies here
 are mean 45 KB and max 2.2 MB, measured over 619 real snapshots
-(`docs/PHASE2-STORAGE-KEY-DESIGN.md` §3 — one already exceeds DynamoDB's 400 KB item
+(`docs/project/PHASE2-STORAGE-KEY-DESIGN.md` §3 — one already exceeds DynamoDB's 400 KB item
 limit). Passing engine state through the execution payload therefore works for short
 conversations and fails for exactly the long ones this phase exists to enable.
 
@@ -380,7 +380,7 @@ def _emitter(db: Database, run_id: str, start_seq: int = 0):
     The engine's own `_emit` closures also push to an `on_event` subscriber. There is
     nobody to push to here: the WebSocket broker lives in the API process and a slice
     runs in a different one. The UI polls `events?after_seq=` instead, which is what
-    `docs/PHASE5-ORCHESTRATION-DESIGN.md` §8 settles.
+    `docs/project/PHASE5-ORCHESTRATION-DESIGN.md` §8 settles.
     """
     counter = {"seq": start_seq}
 

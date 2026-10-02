@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Emit the three premise-validation arms from a single source of truth.
 
-Phase 5 premise validation (``docs/PHASE5-PREMISE-VALIDATION.md``) asks whether
+Phase 5 premise validation (``docs/project/PHASE5-PREMISE-VALIDATION.md``) asks whether
 structured persona data — and then source grounding on top of it — produces
 genuinely more divergent, more specific stakeholder positions than the prose
 personas the engine ships with today.
@@ -160,7 +160,7 @@ CAST: List[Dict[str, Any]] = [
                 "validity": "sound",
                 "sources": [
                     {
-                        "cite": "docs/PROJECT-SPEC.md, section 8.2",
+                        "cite": "docs/project/PROJECT-SPEC.md, section 8.2",
                         "quote": (
                             "State/storage backend: SQLite (embeddable, ships easily) vs "
                             "Postgres vs event-log files. Leaning SQLite for a "
@@ -168,7 +168,7 @@ CAST: List[Dict[str, Any]] = [
                         ),
                     },
                     {
-                        "cite": "docs/PROJECT-SPEC.md, section 7",
+                        "cite": "docs/project/PROJECT-SPEC.md, section 7",
                         "quote": (
                             "Install/run story - DECIDED: easy-run Python project "
                             "(pip/pyproject) + Docker container image."
@@ -590,7 +590,7 @@ CAST: List[Dict[str, Any]] = [
                 "validity": "misapplied",
                 "sources": [
                     {
-                        "cite": "docs/PROJECT-SPEC.md, section 2",
+                        "cite": "docs/project/PROJECT-SPEC.md, section 2",
                         "quote": (
                             "Confirmed use case: a demo/showcase tool CC ships to his "
                             "customers, so those customers can demo multi-agent "
@@ -762,7 +762,7 @@ def build_arm(kind: str) -> Dict[str, Any]:
 
     # Phase 6 dismissal-rule variants. Arms E and F differ from Arm D ONLY in
     # config.personas.dismissal_rule — same prose, same structured data — which is
-    # what makes the rule the single variable. See docs/PHASE6-DISMISSAL-RETUNE.md.
+    # what makes the rule the single variable. See docs/project/PHASE6-DISMISSAL-RETUNE.md.
     RULE_BY_KIND = {
         "shipped": "retuned", "mandatory": "mandatory", "blunt": "blunt",
         # Arm G reuses the SHIPPED default rule; its variable is cognition, not wording.
@@ -809,7 +809,7 @@ ARMS = {
     # interaction between convictions and memory/reflection is the single variable.
     # All nine runs before this one held cognition OFF, so the configuration a real
     # user is most likely to enable had never been tried.
-    # See docs/PHASE6-COGNITION-INTERACTION.md.
+    # See docs/project/PHASE6-COGNITION-INTERACTION.md.
     "arm-g-cognition": "cognition",
 }
 

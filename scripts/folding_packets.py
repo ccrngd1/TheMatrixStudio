@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Anonymous judging packets for docs/EVIDENCE-LEAN-FOLDING.md: defended positions and final turns, no arm.
+"""Anonymous judging packets for docs/studies/EVIDENCE-LEAN-FOLDING.md: defended positions and final turns, no arm.
 
     AWS_REGION=us-east-1 DATA_BUCKET=... scripts/folding_packets.py --owner SUB --runs RUN ... \\
         --packets private/labels/folding-packets.md --key private/labels/folding-key.json

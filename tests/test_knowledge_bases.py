@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Phase 6 step 1: knowledge bases, grants, and the authorisation decision.
 
-`docs/PHASE6-KB-DESIGN.md` §2 is the reason this file is separate and thorough. Sharing
+`docs/project/PHASE6-KB-DESIGN.md` §2 is the reason this file is separate and thorough. Sharing
 introduces the **first exception to §3's tenancy invariant**: a shared KB is read by
 someone who does not own it, so access stops being a partition constraint
 `dynamodb:LeadingKeys` can enforce and becomes an authorisation *decision*. §8b names

@@ -5,7 +5,7 @@ below: step 0 FAILED, so H1 was not tested; the judgements are reported alone, a
 
 ## The question
 
-§9 of `PERSONA-RESEARCH.md`: 15 of 15 research-arm runs converged, against 9 of 15 controls. Converging
+§9 of `docs/PERSONA-RESEARCH.md`: 15 of 15 research-arm runs converged, against 9 of 15 controls. Converging
 means the moderator declined to call anyone twice — "nothing left to add". It does not say whether the
 room *resolved* the question or *folded*: gave ground without being given a reason. A persuasive
 research corpus could produce either. An idea from a brainstorm run of this tool states the test:

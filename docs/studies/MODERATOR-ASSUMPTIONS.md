@@ -17,7 +17,7 @@ kind of thing**, and **does it fire at all** on a real brief.
 - **On arm:** three new runs of the operator's six-persona renewal brief (private definitions), 40 turns,
   deployment default models, structured personas and cognition on, `evidence_lean` off —
   `dynamic_assumptions: {enabled: true, every: 4, limit: 3}`. Launched together.
-- **Control:** the three off-arm runs of `docs/EVIDENCE-LEAN.md` (`a2b3b412`, `5c34a226`, `4a086d55`),
+- **Control:** the three off-arm runs of `docs/studies/EVIDENCE-LEAN.md` (`a2b3b412`, `5c34a226`, `4a086d55`),
   whose definition is identical except for this flag. Declared here, before any on-arm result exists.
   **Caveat:** they ran on 2026-09-28, a day before the on arm, rather than alongside it. Models and
   settings are the same; nothing else in the engine changes a run without assumptions (verified by
@@ -95,7 +95,7 @@ assumptions were labelled before the effects pass.
   reason from costs a check and changes nothing; whether that is the wording of the block or the moment
   they arrive (mid-argument, in a six-persona room) is not separable at this n.
 - **The analyst's evidence-plan scores are unstable on identical transcripts.** The same three control
-  runs scored best-guess 0.50 and a lean in 2 of 3 here, and 0.36 and 1 of 3 when `docs/EVIDENCE-LEAN.md`
+  runs scored best-guess 0.50 and a lean in 2 of 3 here, and 0.36 and 1 of 3 when `docs/studies/EVIDENCE-LEAN.md`
   scored them the day before. So the reported evidence-plan comparison (on 0.33 vs off 0.50; lean 0 vs 2)
   is within that noise and supports nothing, and the EVIDENCE-LEAN result should be read with the same
   caveat.

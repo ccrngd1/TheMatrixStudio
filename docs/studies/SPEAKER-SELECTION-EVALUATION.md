@@ -18,7 +18,7 @@ work — the previous round's error was choosing what counted as success after s
 - **model**: `speaker_selection` role — Haiku 4.5 by default, `temperature=0.3`, and **no
   output cap** since 2026-09-15. It was 120 tokens (50 with cognition off); that cap was the
   binding constraint on the first model sweep and is the subject of
-  `docs/SELECTION-MODEL-DEFAULT.md` §6–§7. Every number in §2 and §8 was measured with it
+  `docs/studies/SELECTION-MODEL-DEFAULT.md` §6–§7. Every number in §2 and §8 was measured with it
   still in place.
 - **output**: `{"speaker": …, "reason": …}` with cognition on; a bare name with it off.
 - **resolution**: `_match` scans the cast in order for a name that appears as a substring.
@@ -263,7 +263,7 @@ marker becomes a lie.
 
 The first pass (§8) had no same-protocol baseline and one pass per cell. This one has both,
 on Haiku 4.5 — the shipping default — with the output cap removed (see
-`docs/SELECTION-MODEL-DEFAULT.md` §7, which is why these numbers supersede §8's rather than
+`docs/studies/SELECTION-MODEL-DEFAULT.md` §7, which is why these numbers supersede §8's rather than
 extend them). Six cells × 4 transcripts × 3 repeats, closed loop, 73 replays, ~2,300
 selection calls, **~$8.8**.
 
@@ -344,7 +344,7 @@ reduce how often it fires and therefore how often a turn is forced.
 
 Identical protocol to §10 — six cells × 4 transcripts × 3 repeats, closed loop, no output cap
 — with `speaker_selection` on `global.anthropic.claude-sonnet-5`. 73 replays, ~2,050 calls,
-**~$21** (2.6× the Haiku pass; see `docs/SELECTION-MODEL-DEFAULT.md` §6 for why the multiplier
+**~$21** (2.6× the Haiku pass; see `docs/studies/SELECTION-MODEL-DEFAULT.md` §6 for why the multiplier
 is 2.6 and not 2). Note Sonnet discards `temperature=0.3`, so every cell here ran at an
 effective temperature of 1 — which is the main reason three repeats is the minimum.
 

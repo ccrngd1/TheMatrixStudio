@@ -32,7 +32,7 @@ export function giniOfShares(shares: number[]): number {
  *
  * A row per cast member INCLUDING anyone with zero turns, because that is the finding worth
  * surfacing: a persona with an authored knowledge base and convictions who never spoke is
- * the failure mode `docs/SPEAKER-SELECTION-EVALUATION.md` exists to remove, and a panel that
+ * the failure mode `docs/studies/SPEAKER-SELECTION-EVALUATION.md` exists to remove, and a panel that
  * only lists speakers would hide exactly that.
  */
 export function ParticipationPanel({ feed: all, order, onJump }: Props) {

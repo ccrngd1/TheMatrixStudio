@@ -3,7 +3,7 @@
 """
 Phase 6 step 7: prove the KB fan-out returns EXACTLY what one index returned.
 
-`docs/PHASE6-KB-DESIGN.md` §5 asks for recall to be re-measured across two KBs, on the
+`docs/project/PHASE6-KB-DESIGN.md` §5 asks for recall to be re-measured across two KBs, on the
 grounds that "querying two indexes and merging could rank differently from one index with
 a filter" — and that this should be measured rather than reasoned about, because the
 `distance_to_cosine` bug is what happens when a metric is reasoned about.

@@ -3,7 +3,7 @@
 Phase 6 step 5 — the switch: `retrieve_for_turn` searches bound knowledge bases
 alongside the run's own documents.
 
-`docs/PHASE6-KB-DESIGN.md` §8.1 records why the run slice is NOT replaced, which is a
+`docs/project/PHASE6-KB-DESIGN.md` §8.1 records why the run slice is NOT replaced, which is a
 correction to §6's build order: one vector index per *run* would cap the install at
 10,000 conversations, which §8b rejects outright. So retrieval reads two sources and
 merges them, and the ceiling moves onto knowledge bases where it is unreachable.

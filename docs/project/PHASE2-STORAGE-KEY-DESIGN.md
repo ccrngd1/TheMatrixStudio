@@ -1,6 +1,6 @@
 # Phase 2 key design: the six problems the port has to solve first
 
-Companion to `AWS-SERVERLESS-ARCHITECTURE.md` §4/§4a, which give the table list and
+Companion to `docs/AWS-SERVERLESS-ARCHITECTURE.md` §4/§4a, which give the table list and
 the DynamoDB-vs-S3 rule. This is the level below that: the specific places where the
 existing 53 storage methods do something SQLite makes free and DynamoDB does not.
 

@@ -81,7 +81,7 @@ _REFUSED: Dict[str, str] = {
     ),
     "selection.fairness": (
         "Already measured: Gini 0.458 -> 0.075. Settled in "
-        "docs/SPEAKER-SELECTION-EVALUATION.md, so re-litigating it per cell spends money "
+        "docs/studies/SPEAKER-SELECTION-EVALUATION.md, so re-litigating it per cell spends money "
         "to reproduce a known result (§5)."
     ),
     "selection.stop_when_converged": (

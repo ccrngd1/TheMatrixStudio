@@ -327,7 +327,7 @@ def test_the_vector_index_dimension_matches_the_measured_choice(template: Templa
     An index's dimension is fixed at creation, so a wrong value here is not a
     config change later — it is re-creating every index and re-embedding every
     document. The value came from measurement
-    (docs/EMBEDDING-DIMENSION-MEASUREMENT.md), so this test also pins the code to
+    (docs/studies/EMBEDDING-DIMENSION-MEASUREMENT.md), so this test also pins the code to
     the evidence rather than to a default.
     """
     assert EMBEDDING_DIMENSION == 1024
@@ -844,7 +844,7 @@ def test_id_only_lookups_have_an_index(template: Template):
     Both partitions are keyed by run, so without an index there is no partition to
     read. The fallback would be a Scan — O(table), and it reads ACROSS TENANTS, so
     a tenancy slip becomes a full-table disclosure instead of a mistake confined to
-    one partition. See docs/PHASE2-STORAGE-KEY-DESIGN.md §5.
+    one partition. See docs/project/PHASE2-STORAGE-KEY-DESIGN.md §5.
 
     Missing from the first Phase 1 deploy; found by designing the storage port.
     """

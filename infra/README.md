@@ -1,7 +1,7 @@
 # Infrastructure (Phase 1)
 
 CDK app for the AWS deployment. See `docs/AWS-SERVERLESS-ARCHITECTURE.md` for the
-design and `docs/AWS-IMPLEMENTATION-PLAN.md` for the phase ordering.
+design and `docs/project/AWS-IMPLEMENTATION-PLAN.md` for the phase ordering.
 
 **Status: deployed** to account <account-id>, us-east-1, on 2026-09-10. All four
 acceptance checks pass, including a live Bedrock call from the Lambda.

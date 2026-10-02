@@ -8,7 +8,7 @@ Lens** (Nov 2025), not written from memory. That pass corrected one outright err
 single query cannot span vector indexes), inverted one constraint (index count is not the
 limiting factor — fan-out is), and surfaced one gap the design had missed entirely (choosing
 the embedding dimension deliberately — §8). Claims still resting on measurement rather than
-documentation are the ones drawn from this repository's own `docs/PHASE5-RETRIEVAL-MEASUREMENT.md`
+documentation are the ones drawn from this repository's own `docs/project/PHASE5-RETRIEVAL-MEASUREMENT.md`
 and `data/matrix_studio.db`, and are labelled as measured where they appear.
 
 **Premise (revised).** AWS-only — local-run capability is explicitly dropped. The target
@@ -579,7 +579,7 @@ infrastructure was needed at all. That conclusion was right about *scale* and wr
 ### Correction: retrieval must be VECTOR, and this project already measured it
 
 The previous revision recommended in-process BM25 and was wrong. It contradicted
-`docs/PHASE5-RETRIEVAL-MEASUREMENT.md` §5f, which measured all three modes against the
+`docs/project/PHASE5-RETRIEVAL-MEASUREMENT.md` §5f, which measured all three modes against the
 same ground truth. On **diluted** queries — the shape the engine actually produces, since
 a turn's query is built from conversational text rather than a well-formed search string:
 
@@ -655,7 +655,7 @@ Titan Text Embeddings v2 — the model the Phase 5f measurement used, so the mod
 numbers transfer — supports **256, 512 and 1024** output dimensions. The design should not
 simply take 1024 because it is the default. S3 Vectors accepts 1 to 4096.
 
-**Measured, and the answer is 1024** — see `docs/EMBEDDING-DIMENSION-MEASUREMENT.md`. All
+**Measured, and the answer is 1024** — see `docs/studies/EMBEDDING-DIMENSION-MEASUREMENT.md`. All
 three widths were run against an identical 128-query set (resolution 0.008 per query):
 
 | arm | 256 | 512 | 1024 |
@@ -772,7 +772,7 @@ S3 Vectors they cannot, and the honest options are both imperfect:
 
 Recommended split: the fake for the ~55 existing retrieval tests, which are about plumbing
 and scoping; plus one **quality suite** against a real index, run deliberately rather than
-on every commit, using the ground truth already built for `PHASE5-RETRIEVAL-MEASUREMENT.md`.
+on every commit, using the ground truth already built for `docs/project/PHASE5-RETRIEVAL-MEASUREMENT.md`.
 That preserves the fast inner loop and keeps the measured recall numbers honest — which
 matters, because the switch from lexical to vector is exactly the kind of change a green
 plumbing suite would pass while retrieval quality silently regressed.
@@ -1255,7 +1255,7 @@ as orchestrator states; adds per-user spend caps.
    run about X across the org". If that is wanted, add a DynamoDB-Streams-to-S3 path and
    query with Athena rather than distorting the operational key design.
 7. **Which embedding model, and at which dimension.** ~~Open~~ **DECIDED: Titan Text
-   Embeddings v2 at 1024** (`docs/EMBEDDING-DIMENSION-MEASUREMENT.md`). Verified to be the
+   Embeddings v2 at 1024** (`docs/studies/EMBEDDING-DIMENSION-MEASUREMENT.md`). Verified to be the
    most expensive decision to reverse: an S3 Vectors index's **dimension, distance metric and
    non-filterable metadata keys cannot be changed after creation**, so a different model or
    width means creating new indexes and re-populating every one. Titan Text Embeddings v2 is

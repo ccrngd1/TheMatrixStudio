@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Score the moderator-assumptions comparison against the criteria in docs/MODERATOR-ASSUMPTIONS.md.
+"""Score the moderator-assumptions comparison against the criteria in docs/studies/MODERATOR-ASSUMPTIONS.md.
 
 Written before the on-arm runs, and not tuned afterwards. Two passes, in this order:
 

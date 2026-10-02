@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any, List, Optional
 
 # Titan Text Embeddings v2 at 1024 dimensions. Measured, not chosen by default:
-# see docs/EMBEDDING-DIMENSION-MEASUREMENT.md. 256 would be a 4x saving in vector
+# see docs/studies/EMBEDDING-DIMENSION-MEASUREMENT.md. 256 would be a 4x saving in vector
 # storage and cost and holds recall on natural queries, but loses 0.117 recall@1
 # on paraphrased ones (15 of 128 queries, monotonic across four metrics) — and
 # paraphrase robustness is the entire reason vector retrieval was chosen over

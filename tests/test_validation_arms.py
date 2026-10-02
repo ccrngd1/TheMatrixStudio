@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for the Phase 5 premise-validation arm generator.
 
-The premise-validation experiment (``docs/PHASE5-PREMISE-VALIDATION.md``) only
+The premise-validation experiment (``docs/project/PHASE5-PREMISE-VALIDATION.md``) only
 means anything if two properties hold, so both are locked here rather than left
 as claims in a document:
 

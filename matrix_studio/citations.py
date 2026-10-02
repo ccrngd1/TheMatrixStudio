@@ -139,7 +139,7 @@ class CitationContext:
     by_speaker: Dict[str, Set[str]] = field(default_factory=dict)
     #: What THIS speaker retrieved on EARLIER turns, as ``(title, ordinal)``. First-hand too: they read
     #: it. Without this, recalling a passage read twenty turns ago was rejected as "never retrieved",
-    #: regenerated and flagged — observed 2026-09-28 (docs/CITE-INLINE.md, comparison 2). Kept apart
+    #: regenerated and flagged — observed 2026-09-28 (docs/studies/CITE-INLINE.md, comparison 2). Kept apart
     #: from ``own`` so a caller can still tell "in front of them now" from "read before".
     earlier: Set[Tuple[str, int]] = field(default_factory=set)
 

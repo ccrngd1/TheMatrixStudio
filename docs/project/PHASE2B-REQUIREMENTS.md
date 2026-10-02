@@ -1,7 +1,7 @@
 # Requirements — TheMatrix Simulation Studio, Phase 2b
 
 **Status:** DRAFT — for CC approval (2026-07-09)
-**Spec:** `docs/PROJECT-SPEC.md` (§3.6/§3.7 branching, §6 Phase 2b, §6a interaction design)
+**Spec:** `docs/project/PROJECT-SPEC.md` (§3.6/§3.7 branching, §6 Phase 2b, §6a interaction design)
 **Builds on:** Phase 2a (fork + resume-forward plumbing, per-turn checkpointing, scrubber).
 
 ---

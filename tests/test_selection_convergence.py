@@ -9,7 +9,7 @@ counts always match the transcript — declines only on the fair run and at the 
 that protocol was chosen after seeing the result, so a live run decides. These tests opt in
 explicitly.
 
-Why it exists (`docs/SPEAKER-SELECTION-EVALUATION.md` §13–§14): with turns spread evenly, run
+Why it exists (`docs/studies/SPEAKER-SELECTION-EVALUATION.md` §13–§14): with turns spread evenly, run
 `d7d739dd` stated every position by turn 25 of 40 and spent the last fifteen turns on
 "confirmed, nothing to add". The padding was **not** misallocation — the five
 fairness-motivated picks before turn 26 were all substantive, and from turn 26 every turn was

@@ -2,7 +2,7 @@
 """
 DynamoDB + S3 storage. The Phase 2 replacement for the SQLite layer.
 
-Read `docs/PHASE2-STORAGE-KEY-DESIGN.md` before changing anything here — it records
+Read `docs/project/PHASE2-STORAGE-KEY-DESIGN.md` before changing anything here — it records
 the six places where the original 53 methods relied on something SQLite makes free,
 and why each is solved the way it is. Two of those are silent when wrong (sort-key
 ordering, and a denormalised field drifting), so they will not announce themselves.
@@ -133,7 +133,7 @@ _RUN_FIELDS = (
     # silently unsearchable during a run while appearing in the API's KB listing: a
     # feature that half-works, which is the failure mode this phase exists to avoid.
     #
-    # The honest cost, stated in PHASE6-KB-DESIGN.md §8.3: membership is fixed for the
+    # The honest cost, stated in docs/project/PHASE6-KB-DESIGN.md §8.3: membership is fixed for the
     # run's lifetime. The GRANT is still re-read every turn, which is what §8b requires;
     # only membership is stale.
     "groups_json",
@@ -3406,7 +3406,7 @@ class DynamoStorage:
 
         This is how a GRANTEE sees a source. A KB document's S3 body lives under the owner's
         prefix and tenant object ARNs are scoped to `…/{sub}/*`, so a grantee's credentials cannot
-        read it — deliberately (PHASE6-KB-DESIGN.md §8.2: a grantee retrieves passages, they do
+        read it — deliberately (docs/project/PHASE6-KB-DESIGN.md §8.2: a grantee retrieves passages, they do
         not download the source file). The passage text travels in the vector's metadata for that
         same reason, and `GetVectors` by key is a read of exactly what a k-NN query already
         returns to them. So a shared collection can show the cited passage and its neighbours,
@@ -4049,7 +4049,7 @@ class DynamoStorage:
         One KB being unavailable must not lose the others. But partial results are not
         free: the merged top-k is then drawn from a smaller pool, so a passage that would
         have ranked first is absent and something worse takes its place — the
-        "confidently irrelevant passage" hazard `PHASE5-RETRIEVAL-MEASUREMENT.md`
+        "confidently irrelevant passage" hazard `docs/project/PHASE5-RETRIEVAL-MEASUREMENT.md`
         records. The failures are therefore RETURNED, not merely logged, so the caller can
         put them in the event log where a reader will see them.
         """

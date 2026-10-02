@@ -63,7 +63,7 @@ reflection could not confound the variable, validation gate at its default in
 all arms.
 
 Every source excerpt in Arm C is a **real quote from a real file** in this repo
-or the 8-bit spec — `docs/PROJECT-SPEC.md`, `README.md`, `PHASE4-REPORT.md`, the
+or the 8-bit spec — `docs/project/PROJECT-SPEC.md`, `README.md`, `PHASE4-REPORT.md`, the
 stakeholder-review `design.md`, plus one measured figure ($0.0006/turn) taken
 from an actual probe run on this machine. Nothing was fabricated to make
 grounding look good.

@@ -24,7 +24,7 @@ used and being ignored.
 
 ## Two calibration properties the prompt enforces
 
-Both come from `docs/PHASE5-PREMISE-VALIDATION.md`, where they were authoring rules
+Both come from `docs/project/PHASE5-PREMISE-VALIDATION.md`, where they were authoring rules
 for a hand-built cast:
 
 1. **Firmness must not correlate with correctness.** If the firmest positions are

@@ -81,7 +81,7 @@ just a constant, and the prose has to move with it.
    conversation model. Re-anchor it on the *role*, asserting selection's model directly.
    Its sibling at line 99 (`assert default != LOW_VARIANCE_MODEL`, "this test proves nothing
    if the two defaults are the same model") is the same trap caught once already.
-6. **`docs/SPEAKER-SELECTION-EVALUATION.md` §1** records "Haiku 4.5 by default,
+6. **`docs/studies/SPEAKER-SELECTION-EVALUATION.md` §1** records "Haiku 4.5 by default,
    `temperature=0.3`" as the mechanism under test. Every baseline number in §2 and §8 was
    measured on Haiku at 0.3, so they are not the baseline for a Sonnet selector.
 

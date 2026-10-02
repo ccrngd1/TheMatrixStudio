@@ -47,12 +47,12 @@ ARM_FILES = {
     # Phase 6: Arm B's content as structured DATA + the re-tuned dismissal rule.
     # Optional so the original three-arm comparison still scores on its own.
     "D_shipped": "arm-d-shipped.json",
-    # Phase 6 dismissal-rule variants (docs/PHASE6-DISMISSAL-RETUNE.md).
+    # Phase 6 dismissal-rule variants (docs/project/PHASE6-DISMISSAL-RETUNE.md).
     "E_mandatory": "arm-e-mandatory.json",
     "F_blunt": "arm-f-blunt.json",
     # Arm G (cognition ON) is scored in its OWN results directory against a 30-turn
     # Arm E baseline — never mixed with the 15-turn runs, which would make turn count
-    # a second variable. See docs/PHASE6-COGNITION-INTERACTION.md.
+    # a second variable. See docs/project/PHASE6-COGNITION-INTERACTION.md.
     "G_cognition": "arm-g-cognition.json",
 }
 
@@ -436,13 +436,13 @@ async def judge_arm(label: str, conv: List[Dict[str, Any]], model: str) -> Dict[
         # `temperature=0` is the intent — a judge should be as repeatable as the provider allows — but
         # Sonnet 5 REFUSES any temperature but 1, and without `drop_params` litellm raises
         # `UnsupportedParamsError` rather than adjusting. So `--judge` failed outright against the
-        # default model from the day it became the default (found 2026-09-29 by docs/JUDGE-VARIANCE.md,
+        # default model from the day it became the default (found 2026-09-29 by docs/studies/JUDGE-VARIANCE.md,
         # which could not run). Dropped rather than removed: on a model that honours 0 this still asks
         # for it, and on one that does not the judge runs at the only temperature it has — which is why
         # its variance has to be measured rather than assumed.
         temperature=0,
         # Sized for the model's REASONING, not for the ~250-token answer. Measured 2026-09-29
-        # (docs/JUDGE-VARIANCE.md): at 900 tokens, 5 of 20 judge calls on Sonnet 5 came back with
+        # (docs/studies/JUDGE-VARIANCE.md): at 900 tokens, 5 of 20 judge calls on Sonnet 5 came back with
         # `finish_reason="length"` and EMPTY content — a 25% silent failure rate, each one landing as
         # an arm with no numbers rather than an error. The same failure `research.ASK_MAX_TOKENS`
         # records, arrived at independently here.

@@ -1260,7 +1260,7 @@ An infra test asserts no provider key is an environment variable on any function
 
 - `docs/ENSEMBLE-CONVERSATIONS.md` — §2 for why research must be snapshotted per ensemble, §3.2 for
   the traffic-control premise research breaks, §5.2 for the axis it resembles
-- `docs/PHASE6-KB-DESIGN.md` — the two binding scopes, grants, and the query-time re-check
-- `docs/PHASE5-RETRIEVAL-DESIGN.md`, `tests/test_kb_source_floor.py` — the floor this extends
+- `docs/project/PHASE6-KB-DESIGN.md` — the two binding scopes, grants, and the query-time re-check
+- `docs/project/PHASE5-RETRIEVAL-DESIGN.md`, `tests/test_kb_source_floor.py` — the floor this extends
 - `matrix_studio/documents.py` `ingest_text` — the seam a found page enters through
 - `matrix_studio/personas.py` — `evidence_that_shifts`, rendered with `firmness`

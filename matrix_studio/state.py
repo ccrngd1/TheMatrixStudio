@@ -124,7 +124,7 @@ class SelectionConfig(BaseModel):
 
     **It defaults to ON**, which is unlike every other config block in this file, and the
     reason is that the alternative is measured to be worse. Across 146 replays over four
-    transcripts and two models (`docs/SPEAKER-SELECTION-EVALUATION.md` §10–§11), the
+    transcripts and two models (`docs/studies/SPEAKER-SELECTION-EVALUATION.md` §10–§11), the
     shipped prompt without it scores a Gini of turn share of 0.332 (Haiku 4.5) and 0.335
     (Sonnet 5), and starves at least one persona to **zero turns** in 6 of 24 replays. With
     it: 0.223 and 0.185, and nobody was ever starved on either model.
@@ -145,7 +145,7 @@ class SelectionConfig(BaseModel):
     #: other while doing it.
     #:
     #:   moderated      One LLM call picks one speaker per turn. Everything §1–§17 of
-    #:                  `docs/SPEAKER-SELECTION-EVALUATION.md` measures. Turn share is a
+    #:                  `docs/studies/SPEAKER-SELECTION-EVALUATION.md` measures. Turn share is a
     #:                  judgement, and making that judgement fair took eight interventions.
     #:   rotation       Everyone speaks once per round, in cast order, each SEEING what the
     #:                  earlier speakers in that round said. Turn share is equal by
@@ -281,7 +281,7 @@ class RetrievalConfig(BaseModel):
     #
     # What settles the value is measurement, not availability. Re-measured against
     # S3 Vectors on this project's own docs (22 files, 666 chunks, n=40 — see
-    # `docs/PHASE3-RECALL-MEASUREMENT.md`), on the **diluted** arm that models the
+    # `docs/project/PHASE3-RECALL-MEASUREMENT.md`), on the **diluted** arm that models the
     # engine's actual query shape (a question buried in conversational filler):
     #
     #                     recall@1   recall@5
@@ -314,7 +314,7 @@ class RetrievalConfig(BaseModel):
     )
     # Phase 5h: absolute similarity floor for vector/hybrid, as COSINE (1.0 =
     # identical, 0.0 = unrelated). Calibrated in
-    # docs/PHASE5-RETRIEVAL-MEASUREMENT.md over 180 real retrievals.
+    # docs/project/PHASE5-RETRIEVAL-MEASUREMENT.md over 180 real retrievals.
     #
     # It is an OFF-TOPIC GUARD, not a relevance filter, and the distinction is
     # measured rather than assumed: correct and incorrect retrievals overlap
@@ -341,7 +341,7 @@ class RetrievalConfig(BaseModel):
     )
     # Ask the persona to end a claim with the bracketed label of the passage it relies on.
     # OFF here on purpose, although new runs have it ON: the API request model defaults it to true
-    # and stores that in the run's config (docs/CITE-INLINE.md, decided 2026-09-28). A config with
+    # and stores that in the run's config (docs/studies/CITE-INLINE.md, decided 2026-09-28). A config with
     # no value is a run created before then, and resuming or branching it must not change its prompt.
     cite_inline: bool = Field(
         default=False,
@@ -382,7 +382,7 @@ class RetrievalConfig(BaseModel):
         return v
 
     # Experimental query/ranking knobs, both DEFAULT OFF because they were
-    # MEASURED AS HARMFUL. docs/PHASE5-RETRIEVAL-MEASUREMENT.md A/B'd them across
+    # MEASURED AS HARMFUL. docs/project/PHASE5-RETRIEVAL-MEASUREMENT.md A/B'd them across
     # three arms and recall fell in every one — worst on the "diluted" arm that
     # models the engine's real conversation-window query (recall@5 0.339 tuned vs
     # 0.509 baseline). Kept only so the measurement harness can re-evaluate them;
@@ -447,9 +447,9 @@ class PersonaConfig(BaseModel):
         description="Dismissal rule wording: mandatory | retuned | blunt | off (bool accepted)",
     )
 
-    # docs/EVIDENCE-LEAN.md: a persona asking for evidence must also say what it expects the evidence to
+    # docs/studies/EVIDENCE-LEAN.md: a persona asking for evidence must also say what it expects the evidence to
     # show and which way it leans today. ON by default since 2026-09-29, by operator decision after
-    # docs/EVIDENCE-LEAN-2.md met its pre-registered criterion (lean 3/3 vs 0/3).
+    # docs/studies/EVIDENCE-LEAN-2.md met its pre-registered criterion (lean 3/3 vs 0/3).
     evidence_lean: bool = Field(
         default=True, description="Require a best guess and a current lean with every evidence request"
     )
