@@ -225,6 +225,13 @@ Return ONLY a JSON object of exactly this shape, with no prose around it and no 
 """
 
 
+#: Output budget for one member's position extraction. Until 2026-10-02 it had no budget of its
+#: own and inherited the summary's, `settings.summary_max_tokens`. That went from 8,000 to 16,000
+#: for summaries with a long focus, which this call does not have. Kept at 8,000 so that change
+#: does not also lengthen the ensemble report, which runs closest to Lambda's 15 minutes.
+EXTRACT_MAX_TOKENS = 8000
+
+
 async def extract_positions(
     view: RunView, *, model: Optional[Any] = None, call: Optional[Any] = None
 ) -> Dict[str, Any]:
@@ -243,6 +250,7 @@ async def extract_positions(
         [{"role": "user", "content": _EXTRACT_PROMPT.format(transcript=transcript)}],
         model=model,
         temperature=0.0,
+        max_tokens=EXTRACT_MAX_TOKENS,
     )
     parsed = extract_json_object(result.get("content", "") or "")
     if parsed is None:

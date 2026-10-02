@@ -191,6 +191,7 @@ class TestTheModelFacingSteps:
         async def fake(messages, model=None, temperature=0.4, max_tokens=None):
             seen["prompt"] = messages[0]["content"]
             seen["temperature"] = temperature
+            seen["max_tokens"] = max_tokens
             return {"content": '```json\n{"personas": [], "outcome": "escalated"}\n```',
                     "cost_usd": 0.01}
 
@@ -199,6 +200,8 @@ class TestTheModelFacingSteps:
         assert got["_cost_usd"] == 0.01
         assert "[1] Ada:" in seen["prompt"]
         assert seen["temperature"] == 0.0, "extraction is not a creative act"
+        # Its own budget, so raising the summary's (2026-10-02) did not lengthen the ensemble report.
+        assert seen["max_tokens"] == ensemble.EXTRACT_MAX_TOKENS == 8000
 
     async def test_an_unreadable_extraction_is_dropped_not_guessed(self):
         async def fake(messages, model=None, temperature=0.4, max_tokens=None):

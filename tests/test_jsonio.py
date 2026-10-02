@@ -229,5 +229,7 @@ def test_the_summary_has_its_own_token_budget():
     from matrix_studio.settings import Settings
 
     s = Settings(_env_file=None)
-    assert s.summary_max_tokens >= 8000
+    # 16000 since 2026-10-02: two summaries with a long focus were cut off at 8000. Exact, because
+    # the deployed workers' timeouts are sized for this number (see the comment on the setting).
+    assert s.summary_max_tokens == 16000
     assert s.summary_max_tokens > s.litellm_max_tokens

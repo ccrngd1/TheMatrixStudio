@@ -36,7 +36,7 @@ cost a test failure to get right — and the residual risk is handled by logging
 | `speaker_selection` | one name, ≤120 tokens | 0.3 | once per turn | consistency and low cost |
 | `validation` | ≤50 tokens, pass/fail | **0.0** | once per turn, plus retries | determinism above all |
 | `reflection` | one sentence, ≤120 tokens | 0.7 | every N turns | cheap |
-| `summary` | ≤8000 tokens over the whole transcript | 0.3 | **once per run** | strong — a human reads this |
+| `summary` | ≤16000 tokens over the whole transcript | 0.3 | **once per run** | strong — a human reads this |
 | `aside` | conversational answer | 0.3–0.6 | user-initiated | matches `summary` |
 | `naming` | two words, ≤60 tokens | 0.9 | once per run | cheapest available |
 | `wizard` | ≤16000 tokens, drafts a cast | 1.0 | once, pre-run | strong — authoring quality |

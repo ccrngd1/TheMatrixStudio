@@ -12,6 +12,10 @@ import pytest
 
 from matrix_studio import analysis
 
+# The real seam, taken at import: the suite-wide `mock_analysis_llm` fixture replaces it in every test,
+# and the budget test below is about what the real one sends to the model.
+_REAL_ACOMPLETION = analysis._acompletion
+
 
 CONVERSATION = [
     {"speaker": "Ada", "content": "We should require a provider sign-off.", "turn": 1},
@@ -399,3 +403,34 @@ async def test_a_truncated_reply_keeps_the_overview_and_names_what_it_lost(monke
     assert result["payload"]["overview"] == "A debate about weekend opening."
     assert result["payload"]["omitted"] == ["evidence_plan", "conditional_recommendation"]
     assert any("finish_reason=length" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_a_summary_asks_the_model_for_the_whole_summary_budget(monkeypatch):
+    """What reaches the model, not just what the setting says. `generate_summary` names no budget, so
+    the real seam's fallback is the summary's own: 16000 since 2026-10-02, when two summaries with a
+    long focus were cut off at 8000. A focus does not shrink it."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from matrix_studio.settings import get_settings
+
+    sent = []
+    complete = {"overview": "o", "consensus": [], "dissenters": [], "key_ideas": [], "open_questions": [],
+                "evidence_plan": [], "conditional_recommendation": ""}
+
+    async def fake_litellm(**kwargs):
+        sent.append(kwargs)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(complete)), finish_reason="stop")],
+            usage=SimpleNamespace(prompt_tokens=100, completion_tokens=20),
+        )
+
+    monkeypatch.setattr(analysis, "_acompletion", _REAL_ACOMPLETION)
+    with patch("matrix_studio.analysis.litellm.acompletion", side_effect=fake_litellm):
+        result = await analysis.generate_summary(
+            CONVERSATION, topic="t", focus="Weigh every objection in turn. " * 40,
+        )
+    assert result["parsed"] is True and "omitted" not in result["payload"]
+    assert [k["max_tokens"] for k in sent] == [get_settings().summary_max_tokens]
+    assert sent[0]["max_tokens"] == 16000

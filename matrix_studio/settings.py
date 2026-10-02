@@ -65,7 +65,27 @@ class Settings(BaseSettings):
     # truncated mid-value, so a strict parse returned nothing and the UI showed an
     # empty summary with a JSON blob in the overview. A turn is 2-4 sentences; a
     # summary is a whole analysis of the transcript. Sharing one number was the bug.
-    summary_max_tokens: int = Field(default=8000, ge=1)
+    #
+    # 16000, raised from 8000 on 2026-10-02: two stored summaries with a long custom focus
+    # were cut off at 8000 and lost their later fields. A normal run's summary is about
+    # 3,400-6,000 output tokens, so 8000 had little room for a focus that asks for more.
+    # - Ceiling: Sonnet 5, the summary's default model, allows 128,000 output tokens on
+    #   Bedrock (Haiku 4.5, 64,000). The budget covers the model's reasoning as well as the
+    #   reply: Sonnet 5 thinks by default, and those tokens come out of this number.
+    # - Cost: output is billed for the tokens generated, not for the ceiling, so a summary
+    #   that needs 5,000 costs the same as before. Only a summary that would have been cut
+    #   off costs more, and that is the one that needed the room.
+    # - Time is the real limit. At the slowest output rate recorded on the deployed stack,
+    #   ~30 tokens/s (see `analysis.ASIDE_MAX_TOKENS`), all 16000 take ~9 minutes. Both
+    #   workers that generate a deployed summary, finalise and aside, went to 15 minutes for
+    #   it (`infra/matrix_infra/stack.py`, pinned by a template test that reads this line).
+    #   15 is Lambda's maximum, so past ~18000 a full-length summary no longer fits with
+    #   the 1.5x margin that test asks for.
+    # - Used by any `analysis._acompletion` call that passes no budget, which is now only
+    #   the summary. Asides and the stance classifier have their own budgets
+    #   (`stance.CLASSIFIER_MAX_TOKENS`, 3000), and the ensemble's position extraction,
+    #   which used to inherit this one, stays at 8000 (`ensemble.EXTRACT_MAX_TOKENS`).
+    summary_max_tokens: int = Field(default=16000, ge=1)
 
     # Selectable models offered in the UI (new-run form + in-thread analysis /
     # branch pickers). Comma-separated model strings; env AVAILABLE_MODELS. The

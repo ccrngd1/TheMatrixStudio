@@ -1233,8 +1233,15 @@ function handler(event) {
             # Back to a summary-sized budget. The ensemble report was briefly built here and
             # outgrew it — measured 12–19 minutes against Lambda's 15-minute ceiling — so it
             # moved to `ensemble_report_lambda` below and this state now only DISPATCHES it.
-            # Five minutes is the summary's own need plus room for a slow provider.
-            Duration.minutes(5),
+            #
+            # 15 minutes, up from 5 on 2026-10-02, when the summary's output budget went from
+            # 8,000 to 16,000 tokens (`settings.summary_max_tokens`). At the slowest output rate
+            # recorded on the deployed stack, ~30 tokens/s, a summary that uses the whole budget
+            # takes ~9 minutes; even 8,000 was ~4.5 minutes against the old 5. A normal summary
+            # (3,400-6,000 tokens) is 2-3.5 minutes at that rate, and Lambda bills the time
+            # used, not the ceiling. A timeout here is the costly failure: it stores nothing, so
+            # every Finalise retry pays for the summary again. 15 is Lambda's maximum.
+            Duration.minutes(15),
         )
         self.ensemble_report_lambda = self._worker(
             "EnsembleReportFunction", "ensemble-report",
@@ -1256,8 +1263,14 @@ function handler(event) {
             # One aside reply: a single model call over a finished transcript (a room aside is up to
             # six, concurrently). Generated here rather than in the HTTP request, because the request
             # is cut off at 30 s and a long transcript, an open question or a cold start crossed that
-            # (HTTP 504, 2026-09-28). Three minutes is several times the slowest reply measured.
-            Duration.minutes(3),
+            # (HTTP 504, 2026-09-28). Three minutes was several times the slowest reply measured.
+            #
+            # It also generates any summary a user asks for (`service.dispatch_summary`), and that
+            # is what sizes it now: 15 minutes, up from 3 on 2026-10-02, when the summary budget
+            # went to 16,000 tokens. ~9 minutes at ~30 tokens/s if a summary uses all of it, as the
+            # Finalise worker above explains; even 8,000 was ~4.5. There are no retries here
+            # (`AsideNoRetries`), so a timeout would lose the summary and store nothing.
+            Duration.minutes(15),
         )
 
         research = sfn_tasks.LambdaInvoke(

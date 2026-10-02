@@ -17,6 +17,7 @@ in-process — so they run in the same pytest invocation as everything else.
 """
 
 import re
+from pathlib import Path
 
 import aws_cdk as cdk
 import pytest
@@ -1258,6 +1259,39 @@ def test_the_workers_are_not_capped_at_the_api_gateway_timeout(template: Templat
         fn = next(f for lid, f in functions.items() if lid.startswith(prefix))
         assert fn["Properties"]["Timeout"] >= 300, (
             f"{prefix} timeout is {fn['Properties']['Timeout']}s"
+        )
+
+
+#: The slowest model output rate recorded on the deployed stack (`analysis.ASIDE_MAX_TOKENS`).
+SLOWEST_TOKENS_PER_SECOND = 30
+
+
+def _summary_max_tokens() -> int:
+    """The app's summary budget, read from its source rather than imported: this suite runs in
+    the infra venv, which does not install the app. A test that restated the number would keep
+    passing after the budget was raised past what these timeouts hold."""
+    settings = Path(__file__).resolve().parents[2] / "matrix_studio" / "settings.py"
+    found = re.search(r"summary_max_tokens: int = Field\(default=(\d+)", settings.read_text())
+    assert found, f"could not find summary_max_tokens in {settings}"
+    return int(found.group(1))
+
+
+def test_the_summary_workers_outlast_a_summary_that_uses_its_whole_budget(template: Template):
+    """Finalise generates a run's summary and the aside worker generates a requested one. Either
+    one timing out stores nothing: the aside worker does not retry, and each Finalise retry pays
+    for the summary again.
+
+    Raised on 2026-10-02, when the budget went from 8,000 to 16,000 tokens. At ~30 tokens/s that is
+    ~9 minutes, against timeouts of 5 and 3; even 8,000 tokens was ~4.5. The 1.5 is room for the
+    transcript to be read and for a cold start.
+    """
+    need = _summary_max_tokens() / SLOWEST_TOKENS_PER_SECOND
+    functions = template.find_resources("AWS::Lambda::Function")
+    for prefix in ("FinaliseFunction", "AsideFunction"):
+        fn = next(f for lid, f in functions.items() if lid.startswith(prefix))
+        timeout = fn["Properties"]["Timeout"]
+        assert timeout >= 1.5 * need, (
+            f"{prefix} timeout is {timeout}s; a full-length summary takes ~{need:.0f}s"
         )
 
 
