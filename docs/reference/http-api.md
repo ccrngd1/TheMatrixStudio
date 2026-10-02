@@ -1340,7 +1340,7 @@ Edge cases:
 
 All four are downloads (`Content-Disposition: attachment`), read through the caller's partition, and make no model call.
 
-Every persona and consultant name in a run's export and brief is written `(bot) <name>`: the cast headings, each transcript speaker, and the summary fields that are a name (a dissenter's `speaker`, an evidence row's `asked_by`, a key idea's `proposed_by`) when they name somebody in the cast. An operator's injected message is not marked, and the analyst's prose is never rewritten (`matrix_studio/persona_label.py`). The stored names are unchanged.
+Every persona and consultant name in a run's export and brief is written `(bot) <name>`: the cast headings, each transcript speaker, and the summary fields that are a name (a dissenter's `speaker`, an evidence row's `asked_by`, a key idea's `proposed_by`, an underlying-concern row's `speaker`) when they name somebody in the cast. An operator's injected message is not marked, and the analyst's prose is never rewritten (`matrix_studio/persona_label.py`). The stored names are unchanged.
 
 ### `GET /api/runs/{ref}/export`
 

@@ -109,3 +109,82 @@ def test_the_brief_marks_standing_objections_and_evidence():
 def test_an_ensemble_model_passes_through():
     m = {"kind": "ensemble", "id": "e1"}
     assert label_run_model(m) is m
+
+
+# --------------------------------------------------------------------------- #
+# The summary's underlying concerns: each row's `speaker` names a persona too
+# --------------------------------------------------------------------------- #
+
+
+def _concerns_model(withheld=False):
+    return _model(summary={
+        "overview": "o", "consensus": [], "open_questions": [], "key_ideas": [], "dissenters": [],
+        "concerns": [
+            {"speaker": "Ruth", "concern": "the clause binds us for a decade", "surfaced": "yes",
+             "where": "turn 1: Ruth said Sam is wrong", "addressed": "no"},
+            {"speaker": "not stated", "concern": "an unowned worry", "surfaced": "no",
+             "where": "not stated", "addressed": "no"},
+        ],
+        "concerns_withheld": withheld,
+    })
+
+
+def test_a_concern_rows_speaker_is_marked_and_its_quote_is_not():
+    out = label_run_model(_concerns_model())
+    rows = out["summary"]["concerns"]
+    assert rows[0]["speaker"] == "(bot) Ruth"
+    # "not stated" names nobody in the cast, so it is not made into a persona.
+    assert rows[1]["speaker"] == "not stated"
+    # `where` is the analyst's quote: prose, left exactly as written.
+    assert rows[0]["where"] == "turn 1: Ruth said Sam is wrong"
+    assert label_run_model(out) == out
+
+
+@pytest.mark.parametrize("withheld", [False, True])
+def test_the_exports_concern_table_marks_the_persona(withheld):
+    md = ex.render_markdown(_concerns_model(withheld))
+    row = next(line for line in md.splitlines() if "the clause binds us" in line)
+    assert row.startswith("| (bot) Ruth | the clause binds us for a decade |")
+    assert "| not stated | an unowned worry |" in md
+    assert "(bot) not stated" not in md
+    html = ex.render_html(_concerns_model(withheld))
+    assert "<tr><td>(bot) Ruth</td><td>the clause binds us for a decade</td>" in html
+    assert "(bot) not stated" not in html
+
+
+@pytest.mark.parametrize("fmt", ["md", "html"])
+@pytest.mark.parametrize("withheld", [False, True])
+def test_the_briefs_concern_lines_mark_the_persona(fmt, withheld):
+    b = br.run_brief(_concerns_model(withheld))
+    assert any(line.startswith("(bot) Ruth (surfaced: yes; addressed: no): the clause binds us")
+               for line in b["concerns"])
+    assert not any("(bot) not stated" in line for line in b["concerns"])
+    out = br.render(b, fmt)
+    assert "(bot) Ruth (surfaced: yes; addressed: no)" in out
+    assert "(bot) not stated" not in out
+
+
+def test_with_every_name_marked_the_worst_case_brief_stays_one_page():
+    """`test_brief`'s worst cases use names nobody in the cast has, so none of them is marked. Here the
+    dissenter, the evidence row and the concerns all name the cast's one persona, on the same model, and
+    the brief still fits the one-page bound of 650 (measured: 642 with assumptions, 645 without; the
+    clipped lines give the marker's characters back)."""
+    from tests.test_brief import _PLAN_ROW
+    from tests.test_export import _run_model
+
+    long = "a considered, specific sentence that a persona might well say in a long debate " * 4
+    m = _run_model(topic=long * 3, summary={
+        "overview": long * 4, "consensus": [long] * 10, "open_questions": [long] * 10, "key_ideas": [],
+        "dissenters": [{"speaker": "Morgan", "position": long}] * 10,
+        "evidence_plan": [{**{k: long for k in _PLAN_ROW}, "asked_by": "Morgan"}] * 10,
+        "conditional_recommendation": long * 4,
+        "concerns": [{"speaker": "Morgan", "concern": long, "surfaced": "no", "where": long,
+                      "addressed": "no"}] * 10,
+        "concerns_withheld": True},
+        assumptions=[{"id": f"A{i}", "statement": long, "basis": long, "source": "operator", "turn": 0}
+                     for i in range(8)])
+    b = br.run_brief(m)
+    assert all(line.startswith("(bot) Morgan") for line in b["concerns"] + b["dissent"])
+    assert len(br.render_markdown(b).split()) < 650
+    m.pop("assumptions")
+    assert len(br.render_markdown(br.run_brief(m)).split()) < 650

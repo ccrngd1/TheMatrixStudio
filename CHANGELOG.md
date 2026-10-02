@@ -170,7 +170,9 @@ supposed to catch them.
   (`yes`/`partly`/`no`, with a quote or turn), and whether it was addressed. It is given the concerns
   in both modes, so on a withheld run it is the post-run reveal, labelled "Underlying concerns
   (hidden during the run)" in the summary panel, the decision brief and the exports. A run with no
-  concerns authored gets no such field and the same summary prompt as before.
+  concerns authored gets no such field and the same summary prompt as before. Each row's persona
+  carries the simulated-persona marker (the glyph in the panel, "(bot) Ruth" in the brief and the
+  exports) unless the analyst left it "not stated".
   - `scripts/check_concern_leak.py` applies to withheld runs only, and says so.
 - `docs/project/AWS-IMPLEMENTATION-PLAN.md` item 0.3 (make vector retrieval the default) moved
   to Phase 3, where SQLite and FTS disappear anyway. Flipping the default today would

@@ -13,7 +13,8 @@ to a renderer, and nowhere upstream of it.
 **Who is marked.** Personas and consultants (both simulated). Not an operator's injected or scheduled
 message, which is a real person's words in the room, and not a narrator. In the model's summary, only
 the fields that ARE a name — a dissenter's `speaker`, an evidence row's `asked_by`, a key idea's
-`proposed_by` — and only when they name somebody in the cast; the analyst's prose is never rewritten.
+`proposed_by`, an underlying-concern row's `speaker` — and only when they name somebody in the cast;
+the analyst's prose (a concern row's `where` quote included) is never rewritten.
 """
 
 from __future__ import annotations
@@ -93,4 +94,9 @@ def label_run_model(model: Dict[str, Any], extra_names: Optional[Iterable[str]] 
                 for field in ("proposed_by", "speaker"):
                     if field in idea:
                         idea[field] = _mark_if_known(idea.get(field), known)
+        # The underlying concerns (`analysis.CONCERN_KEYS`): `speaker` is the persona the concern was
+        # authored for, so it is a name; a speaker the analyst left "not stated" names nobody and stays.
+        for row in s.get("concerns") or []:
+            if isinstance(row, dict):
+                row["speaker"] = _mark_if_known(row.get("speaker"), known)
     return m

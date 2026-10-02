@@ -269,7 +269,17 @@ export function SummaryPanel({
                 {(p.concerns ?? []).map((row, i) => (
                   <li key={i} className="rounded border border-matrix-border p-2">
                     <div>
-                      <span className="font-semibold text-slate-200">{row.speaker}</span> — {row.concern}
+                      {/* `speaker` is the persona the concern was authored for, so it is a name and carries the
+                          simulated-persona marker, as a dissenter's does. "not stated" names nobody and is shown
+                          as the gap it is, unmarked. */}
+                      <span className="font-semibold text-slate-200">
+                        {row.speaker && row.speaker !== NOT_STATED ? (
+                          <PersonaName name={row.speaker} />
+                        ) : (
+                          <span className="italic text-amber-400/80">{NOT_STATED}</span>
+                        )}
+                      </span>{' '}
+                      — {row.concern}
                     </div>
                     <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-2 text-xs">
                       {CONCERN_LABELS.map(([key, label]) => (

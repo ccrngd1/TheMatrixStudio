@@ -392,7 +392,8 @@ def test_concern_text_is_escaped_and_cannot_break_a_table():
     hostile = "<script>alert(1)</script> | x"
     m = _run_model(summary={"overview": "o", "concerns": [{**CONCERN_ROW, "concern": hostile}]})
     assert "<script>alert" not in ex.render_html(m)
-    row = next(line for line in ex.render_markdown(m).splitlines() if line.startswith("| Morgan"))
+    # Morgan is in the cast, so the persona column says the name is simulated (persona_label.py).
+    row = next(line for line in ex.render_markdown(m).splitlines() if line.startswith("| (bot) Morgan"))
     assert "\\| x" in row
 
 

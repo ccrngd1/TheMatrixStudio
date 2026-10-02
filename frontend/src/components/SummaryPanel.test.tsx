@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import { describe, expect, it } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { SummaryPanel } from './SummaryPanel'
 import type { StoredSummary } from '../types'
 
@@ -109,6 +109,32 @@ describe('SummaryPanel', () => {
     expect(screen.queryByText(/hidden during the run/)).not.toBeInTheDocument()
     expect(screen.getByText(/The budget line has my name on it/)).toBeInTheDocument()
     expect(screen.getAllByText('addressed')).toHaveLength(2)
+  })
+
+  // A concern row's `speaker` is a persona's name, so it carries the simulated-persona marker, as a dissenter's
+  // does (`ui/PersonaName.tsx`). The quote in `where` is the analyst's prose and is not touched.
+  it.each([true, false])('marks each concern’s persona as simulated (withheld: %s)', (withheld) => {
+    renderSummary(withConcerns(withheld))
+    const row = screen.getByText(/My team takes the pager if this slips/).closest('li') as HTMLElement
+    expect(within(row).getAllByRole('img', { name: 'simulated persona' })).toHaveLength(1)
+    expect(within(row).getByText('Dana', { selector: '.cc-pname' })).toBeInTheDocument()
+    const other = screen.getByText(/The budget line has my name on it/).closest('li') as HTMLElement
+    expect(within(other).getByText('Ravi', { selector: '.cc-pname' })).toBeInTheDocument()
+    expect(within(row).getByText('turn 4: “someone has to carry it”')).toBeInTheDocument()
+  })
+
+  it('leaves a concern whose persona the analyst did not state unmarked, as the gap it is', () => {
+    renderSummary({
+      ...generated,
+      payload: {
+        ...generated.payload,
+        concerns_withheld: false,
+        concerns: [{ speaker: 'not stated', concern: 'An unowned worry', surfaced: 'no', where: 'turn 2', addressed: 'no' }],
+      },
+    })
+    const row = screen.getByText(/An unowned worry/).closest('li') as HTMLElement
+    expect(within(row).queryByRole('img', { name: 'simulated persona' })).not.toBeInTheDocument()
+    expect(within(row).getByText('not stated')).toHaveClass('italic')
   })
 
   it('shows no concerns block for a summary without any', () => {
